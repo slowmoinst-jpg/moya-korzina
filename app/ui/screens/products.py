@@ -1,4 +1,4 @@
-"""Экран «Номенклатура»: эталоны, матрица сопоставления, кандидаты, автосопоставление."""
+"""Экран «Товары»: список, связи с магазинами, поиск в каталоге, автоподбор."""
 from __future__ import annotations
 
 import pandas as pd
@@ -16,7 +16,7 @@ def render() -> None:
     products = repo.list_products(active_only=False)
     stores = repo.list_stores()
 
-    tab_list, tab_map, tab_edit = st.tabs(["Эталоны", "Сопоставление", "Добавить / изменить"])
+    tab_list, tab_map, tab_edit = st.tabs(["Список", "Связать с магазином", "Добавить или изменить"])
     with tab_list:
         _matrix(products, stores)
     with tab_map:
@@ -28,8 +28,8 @@ def render() -> None:
 # ---------- таблица эталонов со статусом сопоставления ----------
 def _matrix(products, stores) -> None:
     if not products:
-        st.info("Эталонов пока нет. Добавьте их на вкладке «Добавить / изменить» "
-                "или импортируйте чек на экране «История».")
+        st.info("Товаров пока нет. Заведите их на вкладке «Добавить или изменить» — "
+                "или загрузите чек на экране «История», и они появятся сами.")
         return
 
     matrix = repo.mapping_matrix()
@@ -49,7 +49,7 @@ def _matrix(products, stores) -> None:
 
     theme.block(theme.table(
         grid="minmax(0,1fr) 150px 78px 52px " + " ".join("96px" for _ in stores),
-        header=["Эталон", "Категория", "Вес", "Ед."] + [st_.name for st_ in stores],
+        header=["Товар", "Категория", "Вес", "Ед."] + [st_.name for st_ in stores],
         rows=body,
         aligns=["left", "left", "right", "center"] + ["center" for _ in stores],
     ))
@@ -57,8 +57,8 @@ def _matrix(products, stores) -> None:
     done = sum(1 for p in products for s in stores if matrix.get((p.id, s.id)))
     any_store = sum(1 for p in products if any(matrix.get((p.id, s.id)) for s in stores))
     st.caption(
-        f"Эталонов: {len(products)} · сопоставлено хотя бы в одном магазине: {any_store} · "
-        f"всего подтверждённых пар: {done}"
+        f"Товаров: {len(products)} · нашлись хотя бы в одном магазине: {any_store} · "
+        f"связок с магазинами: {done}"
     )
 
 
@@ -69,7 +69,7 @@ def _mapping(products, stores) -> None:
 
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Автосопоставить всё", key="auto_match_btn"):
+        if st.button("Подобрать всё", key="auto_match_btn"):
             fn, err = load("app.matcher", "auto_match")
             if err:
                 module_warning(err)
@@ -77,31 +77,31 @@ def _mapping(products, stores) -> None:
                 st.info("Нечего сопоставлять — номенклатура пуста.")
             else:
                 try:
-                    with st.spinner("Автосопоставление..."):
+                    with st.spinner("Подбираем товары в магазинах…"):
                         st.session_state["match_report"] = ("auto", fn(product_ids, store_codes))
                     st.rerun()
                 except Exception as exc:  # noqa: BLE001
-                    show_exception(exc, "Автосопоставление не удалось")
+                    show_exception(exc, "Подбор не удался")
     with c2:
         if st.button("Обновить цены", key="refresh_prices_btn"):
             fn, err = load("app.matcher", "refresh_prices")
             if err:
                 module_warning(err)
             elif not product_ids:
-                st.info("Номенклатура пуста.")
+                st.info("Список товаров пуст.")
             else:
                 try:
-                    with st.spinner("Запрашиваем цены у коннекторов..."):
+                    with st.spinner("Спрашиваем цены у магазинов…"):
                         st.session_state["match_report"] = ("prices", fn(product_ids, store_codes))
                     st.rerun()
                 except Exception as exc:  # noqa: BLE001
-                    show_exception(exc, "Обновление цен не удалось")
+                    show_exception(exc, "Не удалось обновить цены")
 
     _report()
     st.divider()
 
     if not products:
-        st.info("Сначала добавьте хотя бы один эталон.")
+        st.info("Сначала добавьте хотя бы один товар.")
         return
     if not stores:
         st.info("Справочник магазинов пуст.")
@@ -109,7 +109,7 @@ def _mapping(products, stores) -> None:
 
     c1, c2 = st.columns(2)
     with c1:
-        product = st.selectbox("Эталон", products, format_func=lambda p: p.name, key="map_product")
+        product = st.selectbox("Товар", products, format_func=lambda p: p.name, key="map_product")
     with c2:
         store = st.selectbox("Магазин", stores, format_func=lambda s: s.name, key="map_store")
 
@@ -137,18 +137,18 @@ def _mapping(products, stores) -> None:
             st.rerun()
         return
 
-    st.info("Сопоставление не подтверждено.")
+    st.info("Связь убрали.")
     if st.button("Найти кандидатов", type="primary", key="find_cand_btn"):
         fn, err = load("app.matcher", "find_candidates")
         if err:
             module_warning(err)
         else:
             try:
-                with st.spinner("Ищем в каталоге магазина..."):
+                with st.spinner("Ищем в каталоге магазина…"):
                     cands = fn(product.id, store.code, 3)
                 st.session_state["candidates"] = (product.id, store.code, list(cands or []))
             except Exception as exc:  # noqa: BLE001
-                show_exception(exc, "Поиск кандидатов не удался")
+                show_exception(exc, "Поиск в магазине не удался")
 
     saved = st.session_state.get("candidates")
     if not saved or saved[0] != product.id or saved[1] != store.code:
@@ -156,10 +156,10 @@ def _mapping(products, stores) -> None:
 
     candidates = saved[2]
     if not candidates:
-        st.warning("Кандидатов не найдено. Уточните наименование эталона и попробуйте снова.")
+        st.warning("Ничего не нашли. Попробуйте название покороче — например, без граммовки.")
         return
 
-    st.write("**Топ-3 кандидата:**")
+    st.write("**Что нашлось в магазине**")
     for i, cand in enumerate(candidates):
         with st.container(border=True):
             c1, c2, c3, c4 = st.columns([5, 2, 2, 2])
@@ -174,10 +174,10 @@ def _mapping(products, stores) -> None:
                     try:
                         fn(product.id, store.code, getattr(cand, "sku", None))
                         st.session_state.pop("candidates", None)
-                        st.success("Сопоставление подтверждено.")
+                        st.success("Готово: товар связан с этим магазином.")
                         st.rerun()
                     except Exception as exc:  # noqa: BLE001
-                        show_exception(exc, "Не удалось подтвердить")
+                        show_exception(exc, "Не получилось связать")
 
 
 def _report() -> None:
@@ -187,7 +187,7 @@ def _report() -> None:
         return
     kind, data = report
     if not isinstance(data, dict):
-        st.success(f"Готово. Результат: {data}")
+        st.success(f"Готово.")
         return
 
     if kind == "auto":
@@ -199,7 +199,7 @@ def _report() -> None:
                     pd.DataFrame(
                         [
                             {
-                                "Эталон": r.get("product_name") or r.get("product_id"),
+                                "Товар": r.get("product_name") or r.get("product_id"),
                                 "Магазин": r.get("store_code"),
                                 "Причина": r.get("reason") or "—",
                                 "Лучший score": num(r.get("best_score")) if r.get("best_score") else "—",
@@ -223,12 +223,12 @@ def _form(products) -> None:
     selected = st.selectbox(
         "Что редактируем",
         options,
-        format_func=lambda p: "+ Новый эталон" if p is None else f"{p.id}. {p.name}",
+        format_func=lambda p: "+ Новый товар" if p is None else f"{p.id}. {p.name}",
         key="prod_edit_select",
     )
 
     with st.form("product_form"):
-        name = st.text_input("Наименование*", value=selected.name if selected else "")
+        name = st.text_input("Название", value=selected.name if selected else "")
         c1, c2 = st.columns(2)
         with c1:
             brand = st.text_input("Бренд", value=(selected.brand or "") if selected else "")
@@ -252,7 +252,7 @@ def _form(products) -> None:
 
     if submitted:
         if not name.strip():
-            st.error("Наименование обязательно.")
+            st.error("Напишите название.")
             return
         product = Product(
             id=selected.id if selected else None,
@@ -275,7 +275,7 @@ def header_stats() -> str:
     ready = sum(1 for p in products if any(matrix.get((p.id, s.id)) for s in stores))
     pairs = sum(1 for p in products for s in stores if matrix.get((p.id, s.id)))
     return theme.stat_chips([
-        ("Эталонов", str(len(products))),
+        ("Товаров", str(len(products))),
         ("Готовы к расчёту", f"{ready} из {len(products)}"),
-        ("Подтверждённых пар", str(pairs)),
+        ("Связок с магазинами", str(pairs)),
     ])

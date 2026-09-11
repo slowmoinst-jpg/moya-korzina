@@ -30,7 +30,7 @@ from app.ui.screens import result as result_screen  # noqa: E402
 
 SCREENS = {
     "История": history_screen.render,
-    "Номенклатура": products_screen.render,
+    "Товары": products_screen.render,
     "Корзина": basket_screen.render,
     "Результат": result_screen.render,
     "Карты и акции": cards_screen.render,
@@ -39,7 +39,7 @@ SCREENS = {
 
 SCREEN_MODULES = {
     "История": history_screen,
-    "Номенклатура": products_screen,
+    "Товары": products_screen,
     "Корзина": basket_screen,
     "Результат": result_screen,
     "Карты и акции": cards_screen,
@@ -49,7 +49,7 @@ SCREEN_MODULES = {
 # надзаголовок над названием экрана
 EYEBROWS = {
     "История": "Покупки семьи",
-    "Номенклатура": "Эталоны и артикулы магазинов",
+    "Товары": "Что покупаем и где это лежит",
     "Корзина": "Что покупаем",
     "Результат": "Разбиение и экономия",
     "Карты и акции": "Условия, которые учитывает расчёт",
@@ -105,7 +105,7 @@ def main() -> None:
     try:
         _init_db()
     except Exception as exc:  # noqa: BLE001
-        show_exception(exc, "Не удалось инициализировать базу")
+        show_exception(exc, "Не удалось открыть базу данных")
         return
 
     # программное переключение экрана (например, после кнопки «Рассчитать»)
@@ -124,7 +124,7 @@ def main() -> None:
     try:
         SCREENS[name]()
     except Exception as exc:  # noqa: BLE001 — UI не должен падать целиком
-        show_exception(exc, f"Ошибка на экране «{name}»")
+        show_exception(exc, f"Что-то сломалось на экране «{name}»")
 
 
 if __name__ == "__main__":

@@ -53,7 +53,7 @@ def _pick_basket():
             name = st.text_input("Название новой корзины", placeholder="Например: Неделя 38")
             if st.form_submit_button("Создать корзину"):
                 if not name.strip():
-                    st.error("Введите название.")
+                    st.error("Напишите название корзины.")
                 else:
                     new_id = repo.create_basket(name.strip())
                     st.session_state["basket_id"] = new_id
@@ -106,7 +106,7 @@ def _price_html(pid: int, stores, cell) -> str:
 def _add_item(basket_id: int, products) -> None:
     theme.heading("Добавить позицию")
     if not products:
-        st.info("Номенклатура пуста. Заведите эталоны на экране «Номенклатура».")
+        st.info("Список товаров пуст. Заведите их на экране «Товары».")
         return
 
     col1, col2, col3 = st.columns([4, 2, 2])
@@ -207,7 +207,7 @@ def _items(basket_id: int, items) -> None:
 def _calculate(basket_id: int, basket_name, items) -> None:
     theme.heading("Расчёт")
     if not items:
-        st.info("Добавьте позиции — тогда можно считать.")
+        st.info("Добавьте позиции — тогда посчитаем.")
         return
 
     if st.button("Рассчитать", type="primary", key="calc_btn"):
@@ -216,13 +216,13 @@ def _calculate(basket_id: int, basket_name, items) -> None:
             module_warning(err)
             return
         try:
-            with st.spinner("Обновляем цены и подбираем варианты..."):
+            with st.spinner("Обновляем цены и подбираем варианты…"):
                 variants, baseline = fn(basket_id, True)
         except ImportError as exc:
             module_warning(f"Расчёт недоступен: {exc}")
             return
         except Exception as exc:  # noqa: BLE001
-            show_exception(exc, "Расчёт не удался")
+            show_exception(exc, "Расчёт не получился")
             return
 
         st.session_state["calc"] = {

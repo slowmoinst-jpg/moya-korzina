@@ -42,7 +42,7 @@ def _table(stores) -> None:
         store.id if store else None,
     )
     if not rows:
-        st.info("История пуста. Загрузите файл чека ниже — позиции появятся в этой таблице.")
+        st.info("Покупок пока нет. Загрузите чек ниже — позиции появятся в этой таблице.")
         return
 
     esc = theme.esc
@@ -85,7 +85,7 @@ def _import(stores) -> None:
         '<path d="M12 16V4.5M7.5 9 12 4.5 16.5 9"></path>'
         '<path d="M4.5 15.5v2.8a1.7 1.7 0 0 0 1.7 1.7h11.6a1.7 1.7 0 0 0 1.7-1.7v-2.8"></path></svg>'
         '<span style="font-size:13px;color:var(--ink2);line-height:1.45;">PDF от ОФД или текстовая выгрузка. '
-        'Позиции разбираются и связываются с эталонами автоматически.</span></div>'
+        'Позиции разбираются и связываются с товарами сами.</span></div>'
     )
     col1, col2 = st.columns([2, 1])
     with col1:
@@ -103,10 +103,10 @@ def _import(stores) -> None:
             return
         path = save_upload(uploaded)
         try:
-            with st.spinner("Разбираем чек..."):
+            with st.spinner("Разбираем чек…"):
                 result = fn(path, store.code if store else None)
         except Exception as exc:  # noqa: BLE001 — показываем пользователю, а не падаем
-            show_exception(exc, "Импорт не удался")
+            show_exception(exc, "Не удалось прочитать чек")
             return
         finally:
             drop_file(path)
@@ -115,14 +115,14 @@ def _import(stores) -> None:
 
 def _show_import_result(result) -> None:
     if not isinstance(result, dict):
-        st.success("Чек импортирован.")
+        st.success("Чек загружен.")
         st.write(result)
         return
 
     rows = result.get("rows") or []
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Позиций", len(rows) if isinstance(rows, list) else rows)
-    c2.metric("Новых эталонов", result.get("products_created", 0))
+    c2.metric("Новых товаров", result.get("products_created", 0))
     c3.metric("Итог чека", rub(result.get("total")))
     c4.metric("Дата / магазин", f"{result.get('date') or '—'} · {result.get('store') or '—'}")
 
@@ -133,7 +133,7 @@ def _show_import_result(result) -> None:
                 table.append(
                     {
                         "Строка чека": r.get("raw_name") or r.get("name") or "",
-                        "Эталон": r.get("product_name") or r.get("product") or "—",
+                        "Товар": r.get("product_name") or r.get("product") or "—",
                         "Кол-во": f"{num(r.get('qty'))} {unit_label(r.get('unit'))}",
                         "Цена": rub(r.get("unit_price") or r.get("price")),
                         "Сумма": rub(r.get("total")),
@@ -143,7 +143,7 @@ def _show_import_result(result) -> None:
                 table.append({"Строка чека": str(r)})
         st.dataframe(pd.DataFrame(table), hide_index=True)
 
-    st.success("Чек импортирован. Обновите фильтры выше, чтобы увидеть строки в истории.")
+    st.success("Чек загружен — позиции уже в таблице выше.")
 
 
 def header_stats() -> str:

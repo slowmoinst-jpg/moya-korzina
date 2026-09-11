@@ -28,7 +28,7 @@ def _refresh_units() -> None:
 def render() -> None:
     calc = st.session_state.get("calc")
     if not calc:
-        st.info("Расчёта ещё не было. Перейдите на экран «Корзина» и нажмите «Рассчитать».")
+        st.info("Расчёта ещё не было. Соберите корзину и нажмите «Рассчитать».")
         if st.button("К корзине", key="res_to_basket"):
             goto("Корзина")
             st.rerun()
@@ -44,8 +44,8 @@ def render() -> None:
 
     if not variants:
         st.warning(
-            "Оптимизатор не вернул ни одного варианта. Обычно это значит, что у позиций корзины "
-            "нет подтверждённых сопоставлений или загруженных цен — проверьте экран «Номенклатура»."
+            "Ни одного варианта не вышло. Обычно это значит, что у позиций нет цен: "
+            "загляните на экран «Товары» и нажмите «Обновить цены»."
         )
         return
 
@@ -132,7 +132,7 @@ def _best(variant, baseline: float) -> None:
 
     missing = getattr(variant, "missing_products", None) or []
     if missing:
-        st.warning("Нет цены или сопоставления: " + ", ".join(str(m) for m in missing))
+        st.warning("Не нашли цену для: " + ", ".join(str(m) for m in missing))
 
     if stores:
         for column, store in zip(st.columns(len(stores)), stores):
@@ -166,7 +166,7 @@ def _compact(index: int, variant, baseline: float) -> None:
     with st.expander("Разбивка по магазинам"):
         missing = getattr(variant, "missing_products", None) or []
         if missing:
-            st.warning("Нет цены или сопоставления: " + ", ".join(str(m) for m in missing))
+            st.warning("Не нашли цену для: " + ", ".join(str(m) for m in missing))
         stores = getattr(variant, "stores", None) or []
         if stores:
             for column, store in zip(st.columns(len(stores)), stores):
@@ -225,7 +225,7 @@ def _store_card(store) -> None:
     )
 
     if below:
-        st.warning("Заказ ниже минимальной суммы магазина — доставка может быть недоступна.")
+        st.warning("Заказ меньше минимальной суммы магазина — его могут не принять.")
 
 
 def header_stats() -> str:

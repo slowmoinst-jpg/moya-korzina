@@ -67,15 +67,15 @@ def _cards(cards) -> None:
 
     if saved:
         if not bank.strip() or not name.strip():
-            st.error("Банк и название обязательны.")
+            st.error("Заполните банк и название карты.")
         else:
             repo.upsert_card(Card(selected.id if selected else None, bank.strip(), name.strip()))
-            st.success("Карта сохранена.")
+            st.success("Карту сохранили.")
             st.rerun()
 
     if selected and st.button("Удалить карту", key="card_delete_btn"):
         repo.delete_card(selected.id)
-        st.success("Карта удалена (вместе с её акциями).")
+        st.success("Карту удалили вместе с её акциями.")
         st.rerun()
 
 
@@ -125,7 +125,7 @@ def _offers(cards, stores) -> None:
         st.warning("Сначала заведите хотя бы одну карту на вкладке «Карты».")
         return
     if not stores:
-        st.warning("Справочник магазинов пуст.")
+        st.warning("Магазинов пока нет.")
         return
 
     selected = st.selectbox(
@@ -203,12 +203,12 @@ def _offers(cards, stores) -> None:
                 cap_used=float(cap_used),
             )
         )
-        st.success("Акция сохранена.")
+        st.success("Акцию сохранили.")
         st.rerun()
 
     if selected and st.button("Удалить акцию", key="offer_delete_btn"):
         repo.delete_offer(selected.id)
-        st.success("Акция удалена.")
+        st.success("Акцию удалили.")
         st.rerun()
 
 
@@ -223,7 +223,7 @@ def _csv(stores) -> None:
         raw = uploaded.getvalue().decode("utf-8-sig")
         df = pd.read_csv(io.StringIO(raw))
     except Exception as exc:  # noqa: BLE001
-        show_exception(exc, "Не удалось прочитать CSV")
+        show_exception(exc, "Не удалось прочитать файл")
         return
 
     st.dataframe(df, hide_index=True)
@@ -231,16 +231,16 @@ def _csv(stores) -> None:
     required = {"bank", "card", "store_code", "percent", "cap_rub"}
     missing = required - set(df.columns)
     if missing:
-        st.error("В файле нет обязательных колонок: " + ", ".join(sorted(missing)))
+        st.error("В файле не хватает колонок: " + ", ".join(sorted(missing)))
         return
 
     if st.button("Загрузить акции", type="primary", key="offers_csv_btn"):
         try:
             created, updated, errors = _import_offers(df)
         except Exception as exc:  # noqa: BLE001
-            show_exception(exc, "Загрузка не удалась")
+            show_exception(exc, "Не удалось загрузить файл")
             return
-        st.success(f"Готово: добавлено {created}, обновлено {updated}.")
+        st.success(f"Готово: добавили {created}, обновили {updated}.")
         for err in errors:
             st.warning(err)
         if created or updated:

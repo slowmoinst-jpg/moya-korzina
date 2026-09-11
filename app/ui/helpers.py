@@ -80,12 +80,15 @@ def load(module_path: str, *names: str):
 
 
 def module_warning(message: str) -> None:
-    st.warning(f"{message}\n\nЭкран работает, возможность появится, когда соседний модуль будет готов.")
+    """Человеку — одна фраза, разработчику — подробности под катом."""
+    st.warning("Эта возможность сейчас недоступна. Остальное на экране работает.")
+    with st.expander("Подробности для разработчика"):
+        st.code(message)
 
 
 def show_exception(exc: BaseException, prefix: str = "Ошибка") -> None:
-    st.error(f"{prefix}: {type(exc).__name__}: {exc}")
-    with st.expander("Подробности"):
+    st.error(f"{prefix}. Остальное на экране работает.")
+    with st.expander("Подробности для разработчика"):
         st.code("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
 
 
