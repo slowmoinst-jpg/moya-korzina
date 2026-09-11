@@ -72,6 +72,18 @@ h3{font-weight:600;font-size:1.2rem;}
 /* полоса прокрутки не должна превращать 100vw в горизонтальный скролл */
 .stApp{overflow-x:hidden;}
 
+/* разделы в панели — пилюли, а не радиокнопки */
+.st-key-topbar [role="radiogroup"]{gap:4px;flex-wrap:wrap;}
+.st-key-topbar [data-testid="stRadioOption"]{
+  padding:8px 15px;border-radius:999px;transition:background 140ms ease, color 140ms ease;
+}
+.st-key-topbar [data-testid="stRadioOption"]:hover{background:var(--tint);}
+.st-key-topbar [data-testid="stRadioOption"][data-selected="true"]{background:var(--warm-soft);}
+.st-key-topbar [data-testid="stRadioOption"][data-selected="true"] p{font-weight:600;color:var(--ink);}
+.st-key-topbar [data-testid="stRadioOption"] p{font-size:0.92rem;color:var(--ink2);white-space:nowrap;}
+/* кружок радиокнопки — див прямо перед подписью; в навигации он лишний */
+.st-key-topbar [data-testid="stRadioOption"] div:has(+ [data-testid="stMarkdownContainer"]){display:none;}
+
 /* шапка экрана */
 .mk-pagehead{
   display:flex;align-items:flex-end;justify-content:space-between;gap:24px;
