@@ -52,9 +52,6 @@ EYEBROWS = {
     "Карты и акции": "Условия, которые учитывает расчёт",
 }
 
-st.set_page_config(page_title="Оптимизатор продуктовой корзины", page_icon="🛒",
-                   layout="wide", initial_sidebar_state="collapsed")
-theme.inject()
 
 
 @st.cache_resource
@@ -93,6 +90,14 @@ def _header_stats(name: str) -> str:
 
 
 def main() -> None:
+    """Точка входа. Вызывается на КАЖДОМ прогоне скрипта, а не при импорте модуля:
+    Python кэширует модули, поэтому рисовать интерфейс на уровне модуля нельзя —
+    при первом открытии экран появится, а при любом повторном запуске будет пусто.
+    """
+    st.set_page_config(page_title="Оптимизатор продуктовой корзины", page_icon="🛒",
+                       layout="wide", initial_sidebar_state="collapsed")
+    theme.inject()
+
     try:
         _init_db()
     except Exception as exc:  # noqa: BLE001
@@ -118,4 +123,5 @@ def main() -> None:
         show_exception(exc, f"Ошибка на экране «{name}»")
 
 
-main()
+if __name__ == "__main__":
+    main()
