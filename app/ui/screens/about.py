@@ -85,7 +85,7 @@ def render() -> None:
 def _intro() -> None:
     theme.block(
         '<div class="mk-card" style="padding:24px 26px;display:flex;flex-direction:column;gap:12px;">'
-        '<div class="mk-eyebrow" style="color:var(--warm);">Экономия на домашних покупках — без смены магазинов и привычек</div>'
+        '<div class="mk-eyebrow" style="color:var(--warm);">Экономьте на еженедельных закупках</div>'
         '<div style="font-size:19px;line-height:1.5;max-width:62ch;">Вы покупаете то же, что и всегда, — а платите меньше. '
         'Продукт сам сверяет цены магазинов, считает кэшбэк ваших карт и говорит, что где брать, '
         'чтобы недельная закупка обошлась дешевле.</div>'
