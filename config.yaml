@@ -8,6 +8,8 @@ connectors:
   cache_ttl_hours: 6
   timeout_sec: 10
   failure_threshold: 3                # после стольких неудач подряд магазин до конца сеанса идёт из fallback
+  magnit_shop_code:                   # код магазина Магнита задаёт регион и цены;
+                                      # подсмотреть в адресе magnit.ru после выбора магазина (параметр shopCode)
 optimizer:
   max_stores: 2                      # MVP: перебор разбиений на 1-2 магазина
   top_n: 3

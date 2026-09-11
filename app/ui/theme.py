@@ -56,27 +56,21 @@ h3{font-weight:600;font-size:1.2rem;}
 /* верхняя панель: во всю ширину, содержимое по колонке страницы */
 .st-key-topbar{
   position:sticky;top:0;z-index:1000;
-  /* элемент — flex-child шириной 100%, поэтому одних отрицательных полей мало */
-  width:calc(100% + 160px) !important;max-width:none !important;
-  margin:-2.2rem -80px 26px !important;padding:13px 80px;
+  /* растяжка на всю ширину окна, не завися от отступов .block-container,
+     которые Streamlit меняет с шириной экрана */
+  /* с запасом в 20px с каждой стороны: 100vw считает вместе с полосой прокрутки,
+     а .block-container — без неё, и панель не доставала до правого края.
+     Лишнее срезает overflow-x у .stApp */
+  width:calc(100vw + 40px) !important;max-width:none !important;
+  margin-left:calc(50% - 50vw - 20px) !important;margin-right:calc(50% - 50vw - 20px) !important;
+  margin-top:-2.2rem !important;margin-bottom:26px !important;
+  /* содержимое панели встаёт по той же колонке, что и страница */
+  padding:13px calc(20px + max(1.6rem, calc(50vw - 635px)));
   background:var(--surface);border-bottom:1px solid var(--line);
   box-shadow:0 1px 2px rgba(42,36,30,0.03), 0 12px 30px -24px rgba(42,36,30,0.5);
 }
-@media (max-width:1200px){
-  .st-key-topbar{width:calc(100% + 4rem) !important;
-    margin-left:-2rem !important;margin-right:-2rem !important;
-    padding-left:2rem;padding-right:2rem;}
-}
-.st-key-topbar [role="radiogroup"]{gap:4px;flex-wrap:wrap;}
-.st-key-topbar [data-testid="stRadioOption"]{
-  padding:8px 15px;border-radius:999px;transition:background 140ms ease, color 140ms ease;
-}
-.st-key-topbar [data-testid="stRadioOption"]:hover{background:var(--tint);}
-.st-key-topbar [data-testid="stRadioOption"][data-selected="true"]{background:var(--warm-soft);}
-.st-key-topbar [data-testid="stRadioOption"][data-selected="true"] p{font-weight:600;color:var(--ink);}
-.st-key-topbar [data-testid="stRadioOption"] p{font-size:0.92rem;color:var(--ink2);white-space:nowrap;}
-/* кружок радиокнопки — див прямо перед подписью; в навигации он лишний */
-.st-key-topbar [data-testid="stRadioOption"] div:has(+ [data-testid="stMarkdownContainer"]){display:none;}
+/* полоса прокрутки не должна превращать 100vw в горизонтальный скролл */
+.stApp{overflow-x:hidden;}
 
 /* шапка экрана */
 .mk-pagehead{

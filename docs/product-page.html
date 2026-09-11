@@ -1,0 +1,353 @@
+<title>Моя корзина</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=Literata:opsz,wght@7..72,400;7..72,600;7..72,700&display=swap">
+<style>
+  :root{
+    --paper:#FBF7F1; --surface:#FFFFFF; --tint:#F5EFE6;
+    --ink:#2A241E; --ink2:#6E6459; --ink3:#9C9288;
+    --line:#EAE2D6; --line2:#DACFBF;
+    --warm:#BD6533; --warm-soft:#FFEADD;
+    --green:#3D8E53; --green-soft:#E4F6E6;
+    --red:#BB584D;
+    --shadow:0 1px 2px rgba(42,36,30,.04), 0 18px 40px -30px rgba(42,36,30,.5);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#191612; --surface:#221E19; --tint:#2A251F;
+      --ink:#F0E8DC; --ink2:#B6AB9C; --ink3:#8A8072;
+      --line:#332D25; --line2:#433B31;
+      --warm:#E08A52; --warm-soft:#3A2317;
+      --green:#6CBB80; --green-soft:#1B2E20;
+      --red:#D9786A;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 18px 40px -30px rgba(0,0,0,.9);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#191612; --surface:#221E19; --tint:#2A251F;
+    --ink:#F0E8DC; --ink2:#B6AB9C; --ink3:#8A8072;
+    --line:#332D25; --line2:#433B31;
+    --warm:#E08A52; --warm-soft:#3A2317;
+    --green:#6CBB80; --green-soft:#1B2E20;
+    --red:#D9786A;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 18px 40px -30px rgba(0,0,0,.9);
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:"Golos Text","Segoe UI",system-ui,sans-serif;
+    font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased;
+    font-feature-settings:"tnum" 1,"lnum" 1;
+  }
+  a{color:var(--warm);text-decoration:none;}
+  a:hover{color:var(--ink);text-decoration:underline;}
+  a:focus-visible, .btn:focus-visible{outline:2px solid var(--warm);outline-offset:3px;border-radius:6px;}
+  h1,h2,h3{font-family:"Literata",Georgia,"Times New Roman",serif;
+    letter-spacing:-.02em;text-wrap:balance;margin:0;}
+  p{margin:0;max-width:64ch;}
+
+  .wrap{max-width:1060px;margin:0 auto;padding:0 28px;}
+  .eyebrow{font-size:11px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--ink3);}
+  .serif{font-family:"Literata",Georgia,serif;font-weight:600;letter-spacing:-.025em;}
+  section{padding:56px 0;border-top:1px solid var(--line);}
+  section:first-of-type{border-top:none;}
+  .stack{display:flex;flex-direction:column;gap:18px;}
+
+  /* шапка */
+  .top{position:sticky;top:0;z-index:10;background:var(--surface);
+    border-bottom:1px solid var(--line);}
+  .top .wrap{display:flex;align-items:center;gap:14px;padding-top:12px;padding-bottom:12px;}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:-.012em;}
+  .top nav{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;}
+  .top nav a{padding:7px 13px;border-radius:999px;font-size:14px;color:var(--ink2);}
+  .top nav a:hover{background:var(--tint);color:var(--ink);text-decoration:none;}
+
+  /* герой */
+  .hero{padding:60px 0 52px;}
+  .hero h1{font-size:clamp(38px,5.4vw,62px);line-height:1.03;font-weight:600;}
+  .lede{font-size:19px;color:var(--ink2);max-width:56ch;}
+  .btn{display:inline-flex;align-items:center;gap:9px;padding:12px 22px;border-radius:11px;
+    font-size:15px;font-weight:600;border:1px solid var(--line2);background:var(--surface);color:var(--ink);}
+  .btn:hover{border-color:var(--warm);text-decoration:none;}
+  .btn-primary{background:var(--warm);border-color:var(--warm);color:#FFF;}
+  .btn-primary:hover{background:var(--ink);border-color:var(--ink);color:var(--paper);}
+
+  /* панель расчёта */
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:18px;
+    box-shadow:var(--shadow);padding:26px 28px;}
+  .figures{display:flex;flex-wrap:wrap;gap:36px;align-items:flex-end;}
+  .fig{display:flex;flex-direction:column;gap:4px;}
+  .fig .v{font-family:"Literata",Georgia,serif;font-weight:600;letter-spacing:-.025em;
+    font-size:clamp(30px,4vw,44px);line-height:1;}
+  .bar{display:flex;height:15px;border-radius:8px;overflow:hidden;background:var(--tint);}
+  .bar i{display:block;}
+  .barlabels{display:flex;justify-content:space-between;gap:16px;font-size:13px;color:var(--ink2);}
+
+  /* разбиение */
+  .split{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:18px;}
+  .storecard{background:var(--surface);border:1px solid var(--line);border-radius:16px;
+    box-shadow:var(--shadow);overflow:hidden;}
+  .storecard header{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:14px 18px;border-bottom:1px solid var(--line);}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;}
+  .kv{display:flex;justify-content:space-between;gap:14px;padding:7px 18px;font-size:14px;}
+  .kv+.kv{border-top:1px solid var(--line);}
+  .kv b{font-weight:600;}
+  .edge{background:var(--tint);font-size:13px;padding:11px 18px;color:var(--ink2);}
+
+  /* механика */
+  .mech{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;}
+  .note{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px 22px;
+    display:flex;flex-direction:column;gap:10px;box-shadow:var(--shadow);}
+  .swap{display:flex;align-items:baseline;gap:10px;font-size:15px;flex-wrap:wrap;}
+  .cheap{color:var(--green);font-weight:600;}
+  .dear{color:var(--ink3);text-decoration:line-through;}
+  pre{margin:0;overflow-x:auto;background:var(--tint);border-radius:13px;padding:18px 20px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;line-height:1.65;
+    color:var(--ink);}
+
+  /* шаги */
+  ol.steps{list-style:none;margin:0;padding:0;display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:18px;counter-reset:s;}
+  ol.steps li{counter-increment:s;display:flex;flex-direction:column;gap:8px;
+    padding-top:14px;border-top:2px solid var(--line2);}
+  ol.steps li::before{content:counter(s,decimal-leading-zero);font-family:"Literata",Georgia,serif;
+    font-size:13px;font-weight:600;color:var(--warm);letter-spacing:.06em;}
+  ol.steps h3{font-size:17px;}
+
+  /* статус */
+  table{border-collapse:collapse;width:100%;font-size:14px;}
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--surface);}
+  th,td{text-align:left;padding:11px 16px;border-top:1px solid var(--line);vertical-align:top;}
+  th{font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);
+    background:var(--tint);border-top:none;}
+  .tag{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;
+    font-size:12px;font-weight:600;white-space:nowrap;}
+  .tag-ok{background:var(--green-soft);color:var(--green);}
+  .tag-no{background:var(--warm-soft);color:var(--warm);}
+
+  footer{border-top:1px solid var(--line);padding:34px 0 56px;color:var(--ink2);font-size:14px;}
+  @media (prefers-reduced-motion: reduce){*{transition:none !important;animation:none !important;}}
+</style>
+
+<div class="top">
+  <div class="wrap">
+    <span class="brand">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+           stroke-linecap="round" stroke-linejoin="round" style="color:var(--warm)" aria-hidden="true">
+        <path d="M3 6h2.2l2 11.2a1.6 1.6 0 0 0 1.6 1.3h8.1a1.6 1.6 0 0 0 1.6-1.3L20 9H6.4"></path>
+        <path d="M10 13h5"></path>
+      </svg>Моя корзина
+    </span>
+    <nav>
+      <a href="#kak">Как считает</a>
+      <a href="#pochemu">Почему не «где дешевле»</a>
+      <a href="#ustroystvo">Устройство</a>
+      <a href="#status">Что работает</a>
+    </nav>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <section class="hero stack">
+    <span class="eyebrow">Оптимизатор продуктовой корзины</span>
+    <h1>Один и тот же список.<br>Разные магазины. Разная цена.</h1>
+    <p class="lede">Семья покупает примерно одно и то же. Цены расходятся по магазинам, карты дают кэшбэк
+      с лимитами и минимальным чеком. Продукт складывает это вместе и говорит, что где брать.</p>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;padding-top:6px;">
+      <a class="btn btn-primary" href="https://moya-korzina-cfvunmlj6hhzc7qe3curbx.streamlit.app">Открыть приложение</a>
+      <a class="btn" href="https://github.com/slowmoinst-jpg/moya-korzina">Исходный код</a>
+    </div>
+  </section>
+
+  <section id="kak" class="stack">
+    <span class="eyebrow">Демонстрационный расчёт · корзина из 16 позиций</span>
+    <h2 style="font-size:30px;">Экономия считается от привычного магазина</h2>
+    <div class="panel stack">
+      <div class="figures">
+        <div class="fig">
+          <span class="eyebrow">Как обычно, в одном магазине</span>
+          <span class="v" style="color:var(--ink2)">3 690,40 ₽</span>
+        </div>
+        <div class="fig">
+          <span class="eyebrow">Разбить на два</span>
+          <span class="v">3 415,25 ₽</span>
+        </div>
+        <div class="fig">
+          <span class="eyebrow" style="color:var(--green)">Экономия</span>
+          <span class="v" style="color:var(--green)">275,15 ₽</span>
+          <span style="font-weight:600;color:var(--green);font-size:15px;">7,46 %</span>
+        </div>
+      </div>
+      <div class="stack" style="gap:9px;">
+        <div class="bar">
+          <i style="width:92.55%;background:var(--ink);"></i>
+          <i style="width:7.45%;background:var(--green);"></i>
+        </div>
+        <div class="barlabels">
+          <span>Заплатим в двух магазинах</span>
+          <span>Было бы в одном</span>
+        </div>
+      </div>
+      <p style="font-size:14px;color:var(--ink2);max-width:none;">В расчёт уже включён штраф 150 ₽ за второй
+        заказ — иначе разбиение всегда выглядело бы выгоднее, чем оно есть.</p>
+    </div>
+
+    <div class="split" style="padding-top:6px;">
+      <div class="storecard">
+        <header>
+          <span style="font-weight:600;display:inline-flex;align-items:center;gap:9px;">
+            <span class="dot" style="background:var(--red)"></span>Магнит</span>
+          <span style="font-size:12px;color:var(--ink2);">9 позиций</span>
+        </header>
+        <div class="kv"><span>Товары</span><b>2 007,10 ₽</b></div>
+        <div class="kv"><span>Доставка</span><b style="color:var(--green)">0,00 ₽</b></div>
+        <div class="kv"><span>Кэшбэк 5 %</span><b style="color:var(--green)">−100,36 ₽</b></div>
+        <div class="kv"><span><b>Итого</b></span><b class="serif" style="font-size:19px;">1 906,74 ₽</b></div>
+        <div class="edge">Чек на 7,10 ₽ выше порога бесплатной доставки в 2 000 ₽</div>
+      </div>
+      <div class="storecard">
+        <header>
+          <span style="font-weight:600;display:inline-flex;align-items:center;gap:9px;">
+            <span class="dot" style="background:var(--green)"></span>ВкусВилл</span>
+          <span style="font-size:12px;color:var(--ink2);">7 позиций</span>
+        </header>
+        <div class="kv"><span>Товары</span><b>1 509,45 ₽</b></div>
+        <div class="kv"><span>Доставка</span><b style="color:var(--green)">0,00 ₽</b></div>
+        <div class="kv"><span>Кэшбэк 10 %</span><b style="color:var(--green)">−150,94 ₽</b></div>
+        <div class="kv"><span><b>Итого</b></span><b class="serif" style="font-size:19px;">1 358,51 ₽</b></div>
+        <div class="edge">Чек на 9,45 ₽ выше минимального в 1 500 ₽, с которого работает кэшбэк</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="pochemu" class="stack">
+    <span class="eyebrow">Главная мысль</span>
+    <h2 style="font-size:30px;">Дешевле по строке ≠ выгоднее итогом</h2>
+    <p>Оба чека выше подобрались к порогам почти вплотную — и это не совпадение. Перебор ищет не самую
+      низкую цену на каждую позицию, а самый низкий итог. Поэтому в разбиении есть две строки,
+      которые на первый взгляд стоят не в том магазине.</p>
+
+    <div class="mech">
+      <div class="note">
+        <span class="eyebrow">Уехало туда, где дороже</span>
+        <div class="swap">
+          <span>Пюре детское яблоко-груша</span>
+        </div>
+        <div class="swap">
+          <span class="dear">Магнит 45,90 ₽</span>
+          <span style="color:var(--ink3)">→</span>
+          <span class="cheap">ВкусВилл 52,90 ₽</span>
+        </div>
+        <p style="font-size:14px;color:var(--ink2);">Переплата 7 ₽ держит чек ВкусВилла выше 1 500 ₽.
+          Без неё пропадает кэшбэк 150,94 ₽ — в двадцать раз больше переплаты.</p>
+      </div>
+      <div class="note">
+        <span class="eyebrow">Осталось там, где дороже</span>
+        <div class="swap">
+          <span>Икра лососевая копчёная 180 г</span>
+        </div>
+        <div class="swap">
+          <span class="cheap">ВкусВилл 154,00 ₽</span>
+          <span style="color:var(--ink3)">✗</span>
+          <span class="dear">Магнит 189,00 ₽</span>
+        </div>
+        <p style="font-size:14px;color:var(--ink2);">Уберите её из Магнита — чек падает ниже 2 000 ₽
+          и добавляется доставка 149 ₽. Экономия 35 ₽ оборачивается расходом.</p>
+      </div>
+    </div>
+
+    <p style="padding-top:6px;">Выгода существует только на уровне варианта целиком. Отсюда и перебор
+      разбиений вместо жадного выбора по строкам:</p>
+    <pre>subtotal = сумма(цена × количество) по позициям, отнесённым в магазин
+доставка = 0, если subtotal ≥ порога бесплатной доставки, иначе тариф
+кэшбэк   = 0, если subtotal &lt; минимального чека,
+           иначе min(subtotal × процент ⁄ 100, остаток лимита карты)
+итог     = subtotal + доставка − кэшбэк
+вариант  = сумма итогов + штраф × (число магазинов − 1)</pre>
+  </section>
+
+  <section id="ustroystvo" class="stack">
+    <span class="eyebrow">Как получается ответ</span>
+    <h2 style="font-size:30px;">Четыре шага от чека до разбиения</h2>
+    <ol class="steps">
+      <li>
+        <h3>Чек</h3>
+        <p style="font-size:14px;color:var(--ink2);">PDF от ОФД разбирается построчно: позиция,
+          количество, цена. Весовые узнаются по дробному количеству.</p>
+      </li>
+      <li>
+        <h3>Сопоставление</h3>
+        <p style="font-size:14px;color:var(--ink2);">«ВК/ПОЛ.Сыр СТРАЧАТЕЛЛА мяг.200г» превращается
+          в эталон и связывается с артикулами магазинов. Подтверждённое не спрашивается снова.</p>
+      </li>
+      <li>
+        <h3>Цены</h3>
+        <p style="font-size:14px;color:var(--ink2);">Коннектор магазина отдаёт актуальную цену.
+          Снимки не перезаписываются — из них растёт история цен.</p>
+      </li>
+      <li>
+        <h3>Перебор</h3>
+        <p style="font-size:14px;color:var(--ink2);">Все разбиения корзины между магазинами,
+          для каждого — лучшая карта. Наверх выходят три варианта.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section id="status" class="stack">
+    <span class="eyebrow">Без прикрас</span>
+    <h2 style="font-size:30px;">Что работает, а что нет</h2>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Часть</th><th>Состояние</th><th>Подробности</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Цены Магнита</td>
+            <td><span class="tag tag-ok">живые</span></td>
+            <td>Берутся с сайта магазина. Цена зависит от выбранного магазина — регион задаётся в настройках.</td>
+          </tr>
+          <tr>
+            <td>Цены ВкусВилла</td>
+            <td><span class="tag tag-no">резервные</span></td>
+            <td>Сайт не отвечает на запросы — расчёт идёт по заранее записанному прайсу и это видно.</td>
+          </tr>
+          <tr>
+            <td>Импорт чеков</td>
+            <td><span class="tag tag-ok">работает</span></td>
+            <td>PDF и текст. Импорт из «Мои чеки онлайн» ФНС — следующий шаг.</td>
+          </tr>
+          <tr>
+            <td>Банковские акции</td>
+            <td><span class="tag tag-ok">вручную</span></td>
+            <td>Справочник и загрузка CSV. Персональные предложения из приложений банков не собираются.</td>
+          </tr>
+          <tr>
+            <td>Глубина перебора</td>
+            <td><span class="tag tag-ok">2 магазина</span></td>
+            <td>Разбиение на три и больше — в планах, вместе с учётом замен при отсутствии товара.</td>
+          </tr>
+          <tr>
+            <td>Данные в примере</td>
+            <td><span class="tag tag-no">вымышленные</span></td>
+            <td>Чек, условия карт и названия банков демонстрационные. Свои подставляются при первом импорте.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:14px;color:var(--ink2);">Цены на сайте и в зале расходятся на 5–15 %, поэтому
+      итог — ориентир, а не прайс-лист. 62 автоматические проверки следят за тем, чтобы формула
+      и разбиение считались одинаково от сборки к сборке.</p>
+  </section>
+</div>
+
+<footer>
+  <div class="wrap" style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;">
+    <span>Python, SQLite, Streamlit. Запускается одной командой.</span>
+    <span style="margin-left:auto;display:flex;gap:18px;flex-wrap:wrap;">
+      <a href="https://moya-korzina-cfvunmlj6hhzc7qe3curbx.streamlit.app">Приложение</a>
+      <a href="https://github.com/slowmoinst-jpg/moya-korzina">Репозиторий</a>
+    </span>
+  </div>
+</footer>

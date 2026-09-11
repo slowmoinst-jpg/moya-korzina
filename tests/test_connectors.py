@@ -100,10 +100,10 @@ def test_unknown_sku_is_skipped_not_raised():
 
 # ---------- падение сети ----------
 def test_network_failure_falls_back_to_csv(monkeypatch):
-    def boom(self, params):
-        raise RuntimeError("API магазина отвалился")
+    def boom(self, url, params=None):
+        raise RuntimeError("сайт магазина отвалился")
 
-    monkeypatch.setattr(MagnitConnector, "_api_get", boom)
+    monkeypatch.setattr(MagnitConnector, "_get_html", boom)
     conn = get_connector("magnit")
     found = conn.search("страчателла")
     assert found, "падение API не должно оставлять расчёт без цен"
@@ -115,11 +115,16 @@ def test_network_failure_falls_back_to_csv(monkeypatch):
 def test_cache_prevents_second_network_call(monkeypatch):
     calls: list[dict] = []
 
-    def fake_api(self, params):
-        calls.append(params)
-        return {"items": [{"id": "42", "name": "Сыр Страчателла 200 г", "price": 199.0}]}
+    def fake_page(self, url, params=None):
+        calls.append(params or {})
+        return (
+            '<article class="unit-catalog-product-preview">'
+            '<a title="Сыр Страчателла 200 г" href="/product/42-syr-strachatella">'
+            '<span class="pl-text unit-catalog-product-preview-prices__regular">'
+            '<span>199&#8202;₽</span></span></a></article></main>'
+        )
 
-    monkeypatch.setattr(MagnitConnector, "_api_get", fake_api)
+    monkeypatch.setattr(MagnitConnector, "_get_html", fake_page)
     conn = get_connector("magnit")
     first = conn.search("страчателла")
     second = conn.search("страчателла")
