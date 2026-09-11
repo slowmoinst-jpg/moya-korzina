@@ -125,6 +125,18 @@
   .tag-ok{background:var(--green-soft);color:var(--green);}
   .tag-no{background:var(--warm-soft);color:var(--warm);}
 
+  /* источники */
+  .sources{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px;}
+  .srcgroup{background:var(--surface);border:1px solid var(--line);border-radius:16px;
+    box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;}
+  .srcgroup > h3{padding:16px 20px 12px;font-size:17px;}
+  .srcgroup > h3 + p{padding:0 20px 14px;font-size:13px;color:var(--ink2);border-bottom:1px solid var(--line);}
+  .src{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 12px;
+    padding:12px 20px;border-top:1px solid var(--line);align-items:baseline;}
+  .src:first-of-type{border-top:none;}
+  .src b{font-weight:600;font-size:14px;}
+  .src .src-note{grid-column:1 / -1;font-size:13px;color:var(--ink2);line-height:1.5;}
+
   footer{border-top:1px solid var(--line);padding:34px 0 56px;color:var(--ink2);font-size:14px;}
   @media (prefers-reduced-motion: reduce){*{transition:none !important;animation:none !important;}}
 </style>
@@ -141,6 +153,7 @@
     <nav>
       <a href="#kak">Как считает</a>
       <a href="#pochemu">Почему не «где дешевле»</a>
+      <a href="#istochniki">Источники</a>
       <a href="#ustroystvo">Устройство</a>
       <a href="#status">Что работает</a>
     </nav>
@@ -267,14 +280,93 @@
 вариант  = сумма итогов + штраф × (число магазинов − 1)</pre>
   </section>
 
+
+  <section id="istochniki" class="stack">
+    <span class="eyebrow">Откуда берутся данные</span>
+    <h2 style="font-size:30px;">Три источника: чеки, магазины, банки</h2>
+    <p>Чтобы расчёт был честным, нужны три вещи: что семья обычно покупает, сколько это стоит
+      сегодня в каждом магазине и какие условия дают карты. Каждая приходит своим путём.</p>
+
+    <div class="sources">
+      <div class="srcgroup">
+        <h3>Покупки</h3>
+        <p>Что и в каком количестве берёт семья. Отсюда же берётся сумма, с которой сравнивается экономия.</p>
+        <div class="src"><b>Чек из PDF от ОФД</b><span class="tag tag-ok">работает</span>
+          <span class="src-note">Разбирается построчно: позиция, количество, цена. Весовые узнаются
+            по дробному количеству.</span></div>
+        <div class="src"><b>Чек текстом</b><span class="tag tag-ok">работает</span>
+          <span class="src-note">Если PDF не читается, подойдёт обычная текстовая выгрузка.</span></div>
+        <div class="src"><b>JSON из «Мои чеки онлайн» ФНС</b><span class="tag tag-ok">работает</span>
+          <span class="src-note">И от операторов фискальных данных. Суммы там в копейках — пересчитываются
+            в рубли, структура ищется на любой глубине вложенности.</span></div>
+        <div class="src"><b>Таблица заказа CSV или XLSX</b><span class="tag tag-ok">работает</span>
+          <span class="src-note">Выгрузка из личного кабинета магазина или список, собранный руками.
+            Колонки узнаются по названию, лишние игнорируются.</span></div>
+        <div class="src"><b>Выгрузка из ФНС по авторизации</b><span class="tag tag-no">в планах</span>
+          <span class="src-note">Чтобы чеки подтягивались сами, без выгрузки файла руками.</span></div>
+      </div>
+
+      <div class="srcgroup">
+        <h3>Сайты магазинов</h3>
+        <p>Цены меняются каждый день, поэтому берутся не из памяти, а с сайта — и сохраняются
+          снимками, из которых растёт история цен.</p>
+        <div class="src"><b>Магнит</b><span class="tag tag-ok">живые цены</span>
+          <span class="src-note">Каталог сайта: страница поиска отдаёт карточки с ценами, карточка товара
+            открывается по артикулу. Цена зависит от выбранного магазина, регион задаётся кодом.</span></div>
+        <div class="src"><b>ВкусВилл</b><span class="tag tag-no">не отвечает</span>
+          <span class="src-note">Сайт не отзывается на запросы, поэтому цены берутся из заранее
+            записанного прайса — и это видно в интерфейсе.</span></div>
+        <div class="src"><b>Пятёрочка</b><span class="tag tag-ok">из ваших чеков</span>
+          <span class="src-note">Базовый магазин: цены приходят вместе с загруженной покупкой,
+            от них и считается экономия.</span></div>
+        <div class="src"><b>Едадил</b><span class="tag tag-no">в планах</span>
+          <span class="src-note">Акции офлайн-каталогов Пятёрочки, Ленты и Дикси — то, чего нет
+            в интернет-витринах.</span></div>
+        <div class="src"><b>Ozon Fresh, Лента, Самокат, Яндекс Лавка</b><span class="tag tag-no">в планах</span>
+          <span class="src-note">Витрины рисуются скриптами, поэтому понадобится браузерный разбор,
+            а не простой запрос.</span></div>
+        <div class="src"><b>Перекрёсток</b><span class="tag tag-no">нужен другой путь</span>
+          <span class="src-note">Обычным запросом не берётся: либо расширение браузера на стороне
+            пользователя, либо договорённость с магазином.</span></div>
+      </div>
+
+      <div class="srcgroup">
+        <h3>Банки</h3>
+        <p>Кэшбэк решает не меньше, чем цена: процент, лимит за период, минимальный чек и срок
+          меняют ответ целиком.</p>
+        <div class="src"><b>Свой справочник карт и акций</b><span class="tag tag-ok">работает</span>
+          <span class="src-note">Магазин, процент, лимит, минимальный чек, срок и отметка об активации —
+            вводятся руками один раз.</span></div>
+        <div class="src"><b>Загрузка акций из CSV</b><span class="tag tag-ok">работает</span>
+          <span class="src-note">Когда карт много, проще залить таблицей, чем вбивать по одной.</span></div>
+        <div class="src"><b>Остаток лимита за период</b><span class="tag tag-ok">учитывается</span>
+          <span class="src-note">Выбранный кэшбэк вычитается из лимита: после исчерпания следующие
+            позиции идут уже без скидки, и расчёт это знает.</span></div>
+        <div class="src"><b>Персональные предложения из приложений банков</b><span class="tag tag-no">в планах</span>
+          <span class="src-note">Они у каждого свои и живут внутри приложения. Собирать их предполагается
+            расширением браузера — на стороне пользователя и с его ведома.</span></div>
+        <div class="src"><b>Карты лояльности и подписки магазинов</b><span class="tag tag-no">в планах</span>
+          <span class="src-note">Подписка с бесплатной доставкой меняет арифметику так же сильно,
+            как кэшбэк.</span></div>
+        <div class="src"><b>Промокоды на первый и повторный заказ</b><span class="tag tag-no">в планах</span>
+          <span class="src-note">Разовые скидки, которые сейчас приходится держать в голове.</span></div>
+      </div>
+    </div>
+
+    <p style="font-size:14px;color:var(--ink2);">Магазины не обязаны отдавать цены роботам:
+      разметка меняется без предупреждения, а часть витрин закрыта намеренно. Поэтому каждый источник
+      изолирован — упавший не мешает остальным, — а юридическая сторона разбора оценивается
+      до того, как продуктом начнёт пользоваться кто-то кроме семьи.</p>
+  </section>
+
   <section id="ustroystvo" class="stack">
     <span class="eyebrow">Как получается ответ</span>
     <h2 style="font-size:30px;">Четыре шага от чека до разбиения</h2>
     <ol class="steps">
       <li>
-        <h3>Чек</h3>
-        <p style="font-size:14px;color:var(--ink2);">PDF от ОФД разбирается построчно: позиция,
-          количество, цена. Весовые узнаются по дробному количеству.</p>
+        <h3>Покупки</h3>
+        <p style="font-size:14px;color:var(--ink2);">Чек PDF от ОФД, JSON из «Мои чеки онлайн» ФНС
+          или таблица заказа из личного кабинета магазина. Весовые узнаются по дробному количеству.</p>
       </li>
       <li>
         <h3>Сопоставление</h3>
@@ -314,9 +406,10 @@
             <td>Сайт не отвечает на запросы — расчёт идёт по заранее записанному прайсу и это видно.</td>
           </tr>
           <tr>
-            <td>Импорт чеков</td>
-            <td><span class="tag tag-ok">работает</span></td>
-            <td>PDF и текст. Импорт из «Мои чеки онлайн» ФНС — следующий шаг.</td>
+            <td>Загрузка покупок</td>
+            <td><span class="tag tag-ok">пять форматов</span></td>
+            <td>Чек PDF и текстом, JSON от ФНС и операторов фискальных данных, таблица заказа
+              CSV или XLSX. Автоматическая выгрузка из ФНС по авторизации — следующий шаг.</td>
           </tr>
           <tr>
             <td>Банковские акции</td>

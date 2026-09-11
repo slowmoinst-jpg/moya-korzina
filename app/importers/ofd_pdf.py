@@ -140,11 +140,29 @@ def _read_txt(path: str) -> str:
         return fh.read()
 
 
+SUPPORTED = (".pdf", ".txt", ".json", ".csv", ".xlsx", ".xlsm")
+
+
 def parse_receipt(path: str) -> Receipt:
-    """Разбирает чек из файла: .pdf через pdfplumber, .txt через parse_receipt_text."""
+    """Разбирает покупку из файла, выбирая разбор по расширению.
+
+    .pdf  — бумажный чек ОФД через pdfplumber
+    .txt  — тот же чек текстом
+    .json — выгрузка чека из «Мои чеки онлайн» ФНС или от оператора данных
+    .csv / .xlsx — таблица: выгрузка заказа из личного кабинета или свой список
+    """
     if not os.path.exists(path):
         raise FileNotFoundError(path)
     ext = os.path.splitext(path)[1].lower()
+
+    if ext in (".json", ".csv", ".xlsx", ".xlsm"):
+        # поздний импорт: sources берёт Receipt отсюда, встречный импорт был бы кольцом
+        from app.importers import sources
+
+        if ext == ".json":
+            return sources.parse_receipt_json(_read_txt(path))
+        return sources.parse_receipt_table(path)
+
     text = _read_pdf(path) if ext == ".pdf" else _read_txt(path)
     return parse_receipt_text(text)
 

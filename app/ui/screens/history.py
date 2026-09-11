@@ -76,7 +76,7 @@ def _table(stores) -> None:
 
 
 def _import(stores) -> None:
-    theme.heading("Загрузка чека")
+    theme.heading("Загрузить покупки")
     theme.block(
         '<div class="mk-card" style="border-style:dashed;border-color:var(--line2);padding:18px 20px;'
         'display:flex;align-items:center;gap:14px;margin-bottom:10px;">'
@@ -84,19 +84,23 @@ def _import(stores) -> None:
         'stroke-linecap="round" stroke-linejoin="round" style="color:var(--warm);flex:none;">'
         '<path d="M12 16V4.5M7.5 9 12 4.5 16.5 9"></path>'
         '<path d="M4.5 15.5v2.8a1.7 1.7 0 0 0 1.7 1.7h11.6a1.7 1.7 0 0 0 1.7-1.7v-2.8"></path></svg>'
-        '<span style="font-size:13px;color:var(--ink2);line-height:1.45;">PDF от ОФД или текстовая выгрузка. '
+        '<span style="font-size:13px;color:var(--ink2);line-height:1.45;">'
+        '<b>Чек</b> — PDF от ОФД или текст. <b>JSON</b> — выгрузка из «Мои чеки онлайн» ФНС. '
+        '<b>Таблица</b> — CSV или XLSX с заказом из личного кабинета магазина.<br>'
         'Позиции разбираются и связываются с товарами сами.</span></div>'
     )
     col1, col2 = st.columns([2, 1])
     with col1:
-        uploaded = st.file_uploader("Файл чека", type=["pdf", "txt"], key="hist_upload")
+        uploaded = st.file_uploader("Чек, выгрузка или таблица",
+                                    type=["pdf", "txt", "json", "csv", "xlsx"],
+                                    key="hist_upload")
     with col2:
         store = store_selectbox(stores, "Магазин чека (необязательно)", key="hist_store_imp", with_all=True)
 
     if uploaded is None:
         return
 
-    if st.button("Импортировать чек", type="primary", key="hist_import_btn"):
+    if st.button("Загрузить", type="primary", key="hist_import_btn"):
         fn, err = load("app.importers", "import_receipt")
         if err:
             module_warning(err)
