@@ -66,7 +66,14 @@
 
   /* герой */
   .hero{padding:60px 0 52px;}
-  .hero h1{font-size:clamp(38px,5.4vw,62px);line-height:1.03;font-weight:600;}
+  .hero h1{font-size:clamp(31px,4.4vw,50px);line-height:1.08;font-weight:600;max-width:17ch;}
+  .lede em{font-style:normal;color:var(--ink);font-weight:600;}
+  .usp{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px;
+    padding-top:10px;}
+  .usp > div{display:flex;flex-direction:column;gap:7px;padding-top:13px;
+    border-top:2px solid var(--line2);}
+  .usp b{font-size:15px;font-weight:600;}
+  .usp span{font-size:13.5px;color:var(--ink2);line-height:1.5;}
   .lede{font-size:19px;color:var(--ink2);max-width:56ch;}
   .btn{display:inline-flex;align-items:center;gap:9px;padding:12px 22px;border-radius:11px;
     font-size:15px;font-weight:600;border:1px solid var(--line2);background:var(--surface);color:var(--ink);}
@@ -184,10 +191,28 @@
 
   <section class="hero stack">
     <span class="eyebrow" style="color:var(--warm);">Экономьте на еженедельных закупках</span>
-    <h1>Ваша корзина стоит меньше,<br>чем вы за неё платите.</h1>
-    <p class="lede">Список тот же, магазины привычные, привычки менять не нужно. Продукт сверяет
-      цены, считает кэшбэк ваших карт и показывает, где та же корзина обойдётся дешевле —
-      с точностью до рубля.</p>
+    <h1>Экономьте на покупках продуктов домой вместе с&nbsp;«Моей&nbsp;корзиной»</h1>
+    <p class="lede">Другие сервисы показывают, где дешевле <em>каждый товар</em>. «Моя корзина»
+      считает <em>итог всей закупки</em> — вместе с доставкой, минимальным чеком и остатком лимита
+      по вашим картам — и говорит, что где брать.</p>
+
+    <div class="usp">
+      <div>
+        <b>Ваши продукты, а не каталог</b>
+        <span>Список собирается из ваших чеков: те же марки, та же граммовка, то же количество.
+          Ничего не нужно заводить заново.</span>
+      </div>
+      <div>
+        <b>Ваши карты и их лимиты</b>
+        <span>Процент, минимальный чек, срок и сколько кэшбэка уже потрачено за период.
+          После исчерпания лимита выгода считается честно — без него.</span>
+      </div>
+      <div>
+        <b>Итог, а не цена строки</b>
+        <span>Закупка делится между магазинами так, чтобы итог вышел минимальным —
+          со штрафом за лишний заказ и порогами бесплатной доставки.</span>
+      </div>
+    </div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;padding-top:6px;">
       <a class="btn btn-primary" href="https://moya-korzina-cfvunmlj6hhzc7qe3curbx.streamlit.app">Открыть приложение</a>
       <a class="btn" href="https://github.com/slowmoinst-jpg/moya-korzina">Исходный код</a>
