@@ -101,6 +101,8 @@
   .swap{display:flex;align-items:baseline;gap:10px;font-size:15px;flex-wrap:wrap;}
   .cheap{color:var(--green);font-weight:600;}
   .dear{color:var(--ink3);text-decoration:line-through;}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.92em;
+    background:var(--tint);padding:1px 6px;border-radius:5px;}
   pre{margin:0;overflow-x:auto;background:var(--tint);border-radius:13px;padding:18px 20px;
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;line-height:1.65;
     color:var(--ink);}
@@ -136,6 +138,20 @@
   .src:first-of-type{border-top:none;}
   .src b{font-weight:600;font-size:14px;}
   .src .src-note{grid-column:1 / -1;font-size:13px;color:var(--ink2);line-height:1.5;}
+
+  /* разбор вблизи */
+  .closeup{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;
+    background:var(--surface);border:1px solid var(--line);border-radius:16px;
+    box-shadow:var(--shadow);padding:24px 26px;}
+  @media (max-width:820px){.closeup{grid-template-columns:minmax(0,1fr);}}
+  .closeup ol{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:10px;
+    font-size:14px;color:var(--ink2);}
+  .closeup ol b{color:var(--ink);}
+  .closeup pre{font-size:12px;}
+  .rules{display:flex;flex-wrap:wrap;gap:8px;}
+  .rule{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:999px;
+    background:var(--tint);font-size:12.5px;color:var(--ink2);}
+  .rule b{color:var(--ink);font-weight:600;}
 
   footer{border-top:1px solid var(--line);padding:34px 0 56px;color:var(--ink2);font-size:14px;}
   @media (prefers-reduced-motion: reduce){*{transition:none !important;animation:none !important;}}
@@ -351,6 +367,58 @@
         <div class="src"><b>Промокоды на первый и повторный заказ</b><span class="tag tag-no">в планах</span>
           <span class="src-note">Разовые скидки, которые сейчас приходится держать в голове.</span></div>
       </div>
+    </div>
+
+
+    <div class="stack" style="gap:14px;padding-top:10px;">
+      <span class="eyebrow">Разбор вблизи</span>
+      <h3 style="font-size:23px;">Откуда берётся цена Магнита</h3>
+      <p>Обещанного в спецификации API каталога не существует: <code>/api/catalog/search</code>
+        отвечает 404. Зато сам сайт собирается на сервере — товары и цены уже лежат в разметке
+        страницы, которую отдают браузеру. Их оттуда и читаем.</p>
+
+      <div class="closeup">
+        <ol>
+          <li><b>Поиск.</b> Запрос к странице поиска с названием товара. В ответ приходит
+            каталог: карточки товаров идут в разметке подряд, у каждой в заголовке ссылки лежит
+            полное название, а рядом — цена.</li>
+          <li><b>Выбор.</b> Из карточек собираются кандидаты, каждому считается похожесть
+            на ваш товар. Показываются три лучших — какой из них правильный, решает человек,
+            и это решение запоминается.</li>
+          <li><b>Артикул.</b> В ссылке на товар стоит числовой артикул. Он и становится
+            ключом: карточка товара открывается по одному артикулу, без остальной части адреса.</li>
+          <li><b>Обновление.</b> Дальше цена берётся сразу по артикулу, без поиска. Каждый
+            ответ сохраняется снимком с отметкой времени — так набирается история цен.</li>
+        </ol>
+        <div class="stack" style="gap:12px;">
+          <pre>поиск   magnit.ru/search/?term=огурцы короткоплодные
+        → артикул 1000227406
+          «Огурцы короткоплодные тепличные 450г»
+          119,99 ₽
+
+цена    magnit.ru/product/1000227406
+        → 119,99 ₽</pre>
+          <p style="font-size:13px;color:var(--ink2);">Граммовка вынимается из названия:
+            «450г» в конце превращается в вес, по нему товары сравниваются с допуском ±20 %.</p>
+        </div>
+      </div>
+
+      <p style="padding-top:4px;">Цена в Магните зависит от конкретного магазина. Без указания кода
+        сайт отдаёт свой по умолчанию — сейчас это Краснодар. Свой код видно в адресной строке
+        после выбора магазина, и он прописывается в настройках: тогда расчёт считает по вашим ценам,
+        а не по чужому городу.</p>
+
+      <div class="rules">
+        <span class="rule"><b>1 запрос в секунду</b> — не больше</span>
+        <span class="rule">ответы <b>кэшируются на 6 часов</b></span>
+        <span class="rule">после <b>3 неудач подряд</b> — резервный прайс до конца сеанса</span>
+        <span class="rule">разметка сменилась — <b>тихий откат</b>, а не падение</span>
+      </div>
+
+      <p style="font-size:14px;color:var(--ink2);">Последнее важнее, чем кажется: сайт магазина
+        может поменяться в любой день, и тогда разбор перестанет находить цены. Расчёт в этом случае
+        не останавливается — он идёт по резервному прайсу, а в интерфейсе видно, что цены
+        не живые.</p>
     </div>
 
     <p style="font-size:14px;color:var(--ink2);">Магазины не обязаны отдавать цены роботам:
