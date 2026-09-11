@@ -56,7 +56,10 @@
   .top{position:sticky;top:0;z-index:10;background:var(--surface);
     border-bottom:1px solid var(--line);}
   .top .wrap{display:flex;align-items:center;gap:14px;padding-top:12px;padding-bottom:12px;}
-  .brand{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:-.012em;}
+  .brand{display:flex;align-items:baseline;gap:10px;font-weight:600;letter-spacing:-.012em;}
+  .brand .slogan{font-weight:400;font-size:13px;color:var(--ink3);letter-spacing:0;
+    padding-left:10px;border-left:1px solid var(--line);}
+  @media (max-width:880px){.brand .slogan{display:none;}}
   .top nav{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;}
   .top nav a{padding:7px 13px;border-radius:999px;font-size:14px;color:var(--ink2);}
   .top nav a:hover{background:var(--tint);color:var(--ink);text-decoration:none;}
@@ -165,6 +168,7 @@
         <path d="M3 6h2.2l2 11.2a1.6 1.6 0 0 0 1.6 1.3h8.1a1.6 1.6 0 0 0 1.6-1.3L20 9H6.4"></path>
         <path d="M10 13h5"></path>
       </svg>Моя корзина
+      <span class="slogan">Тот же список — меньше итог</span>
     </span>
     <nav>
       <a href="#kak">Как считает</a>
@@ -179,7 +183,7 @@
 <div class="wrap">
 
   <section class="hero stack">
-    <span class="eyebrow">Оптимизатор продуктовой корзины</span>
+    <span class="eyebrow" style="color:var(--warm);">Тот же список — меньше итог</span>
     <h1>Один и тот же список.<br>Разные магазины. Разная цена.</h1>
     <p class="lede">Семья покупает примерно одно и то же. Цены расходятся по магазинам, карты дают кэшбэк
       с лимитами и минимальным чеком. Продукт складывает это вместе и говорит, что где брать.</p>

@@ -85,6 +85,7 @@ def render() -> None:
 def _intro() -> None:
     theme.block(
         '<div class="mk-card" style="padding:24px 26px;display:flex;flex-direction:column;gap:12px;">'
+        '<div class="mk-eyebrow" style="color:var(--warm);">Тот же список — меньше итог</div>'
         '<div style="font-size:19px;line-height:1.5;max-width:62ch;">Семья покупает примерно одно и то же. '
         'Цены расходятся по магазинам, карты дают кэшбэк с лимитами и минимальным чеком. '
         'Продукт складывает это вместе и говорит, что где брать.</div>'
