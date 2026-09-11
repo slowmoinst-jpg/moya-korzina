@@ -266,3 +266,16 @@ def _form(products) -> None:
         pid = repo.upsert_product(product)
         st.success(f"Сохранено (ID {pid}).")
         st.rerun()
+
+
+def header_stats() -> str:
+    products = repo.list_products(active_only=False)
+    stores = [s for s in repo.list_stores() if s.code != "pyaterochka"]
+    matrix = repo.mapping_matrix()
+    ready = sum(1 for p in products if any(matrix.get((p.id, s.id)) for s in stores))
+    pairs = sum(1 for p in products for s in stores if matrix.get((p.id, s.id)))
+    return theme.stat_chips([
+        ("Эталонов", str(len(products))),
+        ("Готовы к расчёту", f"{ready} из {len(products)}"),
+        ("Подтверждённых пар", str(pairs)),
+    ])

@@ -252,3 +252,19 @@ def _calculate(basket_id: int, basket_name, items) -> None:
                 ),
                 hide_index=True,
             )
+
+
+def header_stats() -> str:
+    # на первом заходе ключа в session_state ещё нет — берём первую корзину
+    basket_id = st.session_state.get("basket_id")
+    if not basket_id:
+        baskets = repo.list_baskets()
+        basket_id = baskets[0]["id"] if baskets else None
+    if not basket_id:
+        return ""
+    items = repo.basket_items(int(basket_id))
+    if not items:
+        return theme.stat_chips([("Позиций", "0")])
+    _, totals = _price_matrix(items, repo.list_stores())
+    priced = [(s.name, totals[s.code]) for s in repo.list_stores() if totals.get(s.code)]
+    return theme.stat_chips([("Позиций", str(len(items)))] + [(n, rub(v)) for n, v in priced])

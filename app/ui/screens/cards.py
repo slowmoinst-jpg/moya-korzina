@@ -336,3 +336,15 @@ def _bool(value, default: bool = False) -> bool:
     if text in {"0", "false", "нет", "no", "n", ""}:
         return False
     return default
+
+
+def header_stats() -> str:
+    offers = repo.list_offers()
+    cap = sum(float(o.cap_rub or 0) for o in offers)
+    used = sum(float(o.cap_used or 0) for o in offers)
+    return theme.stat_chips([
+        ("Карт", str(len(repo.list_cards()))),
+        ("Акций", str(len(offers))),
+        ("Лимит кэшбэка", rub(cap)),
+        ("Использовано", rub(used)),
+    ])

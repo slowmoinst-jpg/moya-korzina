@@ -144,3 +144,14 @@ def _show_import_result(result) -> None:
         st.dataframe(pd.DataFrame(table), hide_index=True)
 
     st.success("Чек импортирован. Обновите фильтры выше, чтобы увидеть строки в истории.")
+
+
+def header_stats() -> str:
+    rows = repo.list_history()
+    total = sum(float(r.get("total") or 0) for r in rows)
+    dates = sorted({str(r.get("date") or "") for r in rows if r.get("date")})
+    return theme.stat_chips([
+        ("Строк", str(len(rows))),
+        ("Сумма покупок", rub(total)),
+        ("Последний чек", dates[-1] if dates else None),
+    ])

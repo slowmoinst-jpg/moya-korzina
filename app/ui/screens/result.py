@@ -226,3 +226,17 @@ def _store_card(store) -> None:
 
     if below:
         st.warning("Заказ ниже минимальной суммы магазина — доставка может быть недоступна.")
+
+
+def header_stats() -> str:
+    calc = st.session_state.get("calc") or {}
+    variants = calc.get("variants") or []
+    if not variants:
+        return ""
+    best = variants[0]
+    return theme.stat_chips([
+        ("Baseline", rub(calc.get("baseline"))),
+        ("Лучший итог", rub(getattr(best, "total", None))),
+        ("Экономия", rub(getattr(best, "savings_rub", None))),
+        ("Доля", pct(getattr(best, "savings_pct", None))),
+    ])

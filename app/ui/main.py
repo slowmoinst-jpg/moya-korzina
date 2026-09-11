@@ -35,7 +35,25 @@ SCREENS = {
     "Карты и акции": cards_screen.render,
 }
 
-st.set_page_config(page_title="Оптимизатор продуктовой корзины", page_icon="🛒", layout="wide")
+SCREEN_MODULES = {
+    "История": history_screen,
+    "Номенклатура": products_screen,
+    "Корзина": basket_screen,
+    "Результат": result_screen,
+    "Карты и акции": cards_screen,
+}
+
+# надзаголовок над названием экрана
+EYEBROWS = {
+    "История": "Покупки семьи",
+    "Номенклатура": "Эталоны и артикулы магазинов",
+    "Корзина": "Что покупаем",
+    "Результат": "Разбиение и экономия",
+    "Карты и акции": "Условия, которые учитывает расчёт",
+}
+
+st.set_page_config(page_title="Оптимизатор продуктовой корзины", page_icon="🛒",
+                   layout="wide", initial_sidebar_state="collapsed")
 theme.inject()
 
 
@@ -62,6 +80,18 @@ def _init_db() -> bool:
     return True
 
 
+def _header_stats(name: str) -> str:
+    """Сводка справа в шапке: экран отдаёт её функцией header_stats(), если умеет."""
+    module = SCREEN_MODULES.get(name)
+    getter = getattr(module, "header_stats", None)
+    if not getter:
+        return ""
+    try:
+        return getter()
+    except Exception:  # noqa: BLE001 — сводка не повод ронять экран
+        return ""
+
+
 def main() -> None:
     try:
         _init_db()
@@ -76,13 +106,12 @@ def main() -> None:
     if st.session_state.get("screen") not in SCREENS:
         st.session_state["screen"] = "История"
 
-    st.sidebar.markdown(theme.logo(), unsafe_allow_html=True)
-    st.sidebar.radio("Экран", list(SCREENS), key="screen")
-    st.sidebar.divider()
-    st.sidebar.caption("MVP оптимизатора продуктовой корзины")
+    with st.container(key="topbar", horizontal=True, vertical_alignment="center", gap="medium"):
+        st.markdown(theme.logo(), unsafe_allow_html=True)
+        st.radio("Экран", list(SCREENS), key="screen", horizontal=True, label_visibility="collapsed")
 
     name = st.session_state["screen"]
-    st.title(name)
+    theme.page_header(name, EYEBROWS.get(name), _header_stats(name))
     try:
         SCREENS[name]()
     except Exception as exc:  # noqa: BLE001 — UI не должен падать целиком
