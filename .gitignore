@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/basket.db
+data/cache/
+.streamlit/secrets.toml
+# макеты канваса — рабочие файлы дизайна, живут в опубликованном артефакте
+design/

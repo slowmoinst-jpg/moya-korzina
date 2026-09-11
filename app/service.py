@@ -1,0 +1,163 @@
+"""Интеграционный слой: собирает корзину, цены, акции и зовёт оптимизатор.
+
+Единственная точка входа для UI: calculate(basket_id).
+"""
+from __future__ import annotations
+
+import logging
+
+from app import config, repo
+from app.models import BasketLine, Offer, Store, Variant
+
+log = logging.getLogger(__name__)
+
+
+def _price_for_line(product_id: int, store: Store, qty: float, unit: str) -> tuple[float | None, bool]:
+    """Стоимость позиции целиком в магазине: (цена * qty, в наличии).
+
+    Для весовых берём price_per_kg, для штучных — цену упаковки.
+    """
+    snap = repo.latest_price_for(product_id, store.id)
+    if not snap:
+        return None, False
+    if unit == "kg":
+        base = snap.get("price_per_kg") or snap.get("price")
+    else:
+        base = snap.get("price")
+    if base is None:
+        return None, False
+    return round(float(base) * qty, 2), bool(snap.get("in_stock", 1))
+
+
+def build_basket_lines(basket_id: int) -> list[BasketLine]:
+    """Строки корзины с ценами по всем магазинам, где есть подтверждённое сопоставление."""
+    stores = repo.list_stores()
+    lines: list[BasketLine] = []
+    for item in repo.basket_items(basket_id):
+        line = BasketLine(
+            product_id=item["product_id"],
+            name=item["name"],
+            unit=item["unit"] or "pcs",
+            qty=float(item["qty"]),
+        )
+        for store in stores:
+            price, in_stock = _price_for_line(line.product_id, store, line.qty, line.unit)
+            if price is not None:
+                line.prices[store.code] = price
+                line.in_stock[store.code] = in_stock
+        lines.append(line)
+    return lines
+
+
+def _history_price(product_id: int) -> float | None:
+    """Последняя цена за единицу из истории покупок."""
+    with repo.get_conn() as c:
+        r = c.execute(
+            "SELECT unit_price FROM purchase_history WHERE product_id=? ORDER BY date DESC, id DESC LIMIT 1",
+            (product_id,),
+        ).fetchone()
+    return float(r["unit_price"]) if r else None
+
+
+def baseline_total(basket_id: int) -> float:
+    """Baseline: стоимость всей корзины в одном базовом магазине без акций (раздел 2 спецификации).
+
+    Порядок источников цены: цена базового магазина -> последняя цена из истории покупок ->
+    минимальная известная цена среди остальных магазинов.
+    """
+    base_store = repo.get_store(config.get("baseline_store", "pyaterochka"))
+    total = 0.0
+    for item in repo.basket_items(basket_id):
+        qty, unit, pid = float(item["qty"]), item["unit"] or "pcs", item["product_id"]
+        price = None
+        if base_store:
+            price, _ = _price_for_line(pid, base_store, qty, unit)
+        if price is None:
+            hp = _history_price(pid)
+            price = round(hp * qty, 2) if hp is not None else None
+        if price is None:
+            others = []
+            for store in repo.list_stores():
+                p, _ = _price_for_line(pid, store, qty, unit)
+                if p is not None:
+                    others.append(p)
+            price = min(others) if others else 0.0
+        total += price
+    return round(total, 2)
+
+
+def offers_map(day: str | None = None) -> dict[int, list[Offer]]:
+    """store_id -> действующие акции (срок, активация, остаток лимита учтены)."""
+    return {s.id: repo.offers_for_store(s.id, day) for s in repo.list_stores()}
+
+
+def price_coverage(basket_id: int) -> dict[str, tuple[int, int]]:
+    """store_code -> (позиций с ценой, всего позиций). Для подсказки в UI."""
+    lines = build_basket_lines(basket_id)
+    out: dict[str, tuple[int, int]] = {}
+    for store in repo.list_stores():
+        have = sum(1 for ln in lines if store.code in ln.prices)
+        out[store.code] = (have, len(lines))
+    return out
+
+
+def calculate(basket_id: int, refresh: bool = True) -> tuple[list[Variant], float]:
+    """Главный расчёт: (топ-N вариантов, baseline).
+
+    refresh=True сначала обновляет цены коннекторами по подтверждённым сопоставлениям.
+    Падение коннектора не блокирует расчёт — идём на последних известных ценах (раздел 9).
+    """
+    items = repo.basket_items(basket_id)
+    if not items:
+        return [], 0.0
+
+    if refresh:
+        try:
+            from app.matcher import refresh_prices
+
+            store_codes = [s.code for s in repo.list_stores()]
+            refresh_prices([it["product_id"] for it in items], store_codes)
+        except Exception as exc:  # коннектор/матчер недоступен — работаем на снимках цен
+            log.warning("Обновление цен не удалось, считаем по последним снимкам: %s", exc)
+
+    lines = build_basket_lines(basket_id)
+    baseline = baseline_total(basket_id)
+
+    from app.optimizer import optimize
+
+    variants: list[Variant] = optimize(
+        lines=lines,
+        stores=repo.list_stores(),
+        offers=offers_map(),
+        baseline=baseline,
+        penalty=float(config.get("extra_order_penalty_rub", 150.0)),
+        top_n=int(config.get("optimizer.top_n", 3)),
+        max_stores=int(config.get("optimizer.max_stores", 2)),
+    )
+    _resolve_card_names(variants)
+    return variants, baseline
+
+
+def _resolve_card_names(variants: list[Variant]) -> None:
+    """Оптимизатор знает только card_id — имя карты подставляем здесь."""
+    names = {c.id: f"{c.bank} {c.name}" for c in repo.list_cards()}
+    for v in variants:
+        for sb in v.stores:
+            if sb.card_id and not sb.card_name:
+                sb.card_name = names.get(sb.card_id)
+            for ln in sb.lines:
+                if ln.card_id and not ln.card_name:
+                    ln.card_name = names.get(ln.card_id)
+
+
+def save_best(basket_id: int, variants: list[Variant]) -> list[int]:
+    """Сохраняет варианты в БД (таблицы variants / variant_lines)."""
+    by_code = {s.code: s.id for s in repo.list_stores()}
+    ids = []
+    for v in variants:
+        rows = []
+        for sb in v.stores:
+            for ln in sb.lines:
+                rows.append((by_code.get(sb.store_code), sb.card_id, ln.product_id, ln.qty, ln.price, ln.discount))
+        ids.append(repo.save_variant(basket_id, v.total, v.baseline, v.savings_rub, v.savings_pct, rows))
+    return ids

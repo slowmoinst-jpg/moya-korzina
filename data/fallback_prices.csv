@@ -1,0 +1,49 @@
+store_code,sku,name,price,unit,weight_g,price_per_kg,in_stock
+magnit,magnit-ogurcy-450,Огурцы короткоплодные гладкие 450 г,98.90,pcs,450,,1
+magnit,magnit-strachatella-200,Сыр Страчателла мягкий 200 г,279.00,pcs,200,,1
+magnit,magnit-hlebcy-240,Хлебцы ржано-пшеничные хрустящие 240 г,46.90,pcs,240,,1
+magnit,magnit-forel-200,Форель слабосолёная кусок 200 г,429.00,pcs,200,,1
+magnit,magnit-axe-ice-chill-50,Дезодорант-карандаш Axe Ice Chill 50 мл,259.00,pcs,50,,1
+magnit,magnit-sliva-kg,Слива свежая весовая,219.00,kg,,219.00,1
+magnit,magnit-ikra-180,Икра лососевая копчёная 180 г,189.00,pcs,180,,1
+magnit,magnit-nektarin-kg,Нектарины весовые,169.00,kg,,169.00,1
+magnit,magnit-syrok-45,Сырок глазированный ванильный 45 г,47.90,pcs,45,,1
+magnit,magnit-pure-banan-yabloko-210,Пюре детское банан-яблоко 210 г,54.90,pcs,210,,1
+magnit,magnit-tunec-185,Тунец в масле кусочками 185 г,164.90,pcs,185,,1
+magnit,magnit-salyami-kg,Салями сырокопчёная весовая,1749.00,kg,,1749.00,1
+magnit,magnit-doktorskaya-400,Колбаса Докторская варёная 400 г,219.00,pcs,400,,1
+magnit,magnit-persiki-500,Персики консервированные половинки 500 г,249.00,pcs,500,,1
+magnit,magnit-fior-di-latte-kg,Сыр Фиор ди латте весовой,1249.00,kg,,1249.00,1
+magnit,magnit-pure-yabloko-grusha-200,Пюре детское яблоко-груша 200 г,45.90,pcs,200,,1
+vkusvill,vkusvill-ogurcy-450,Огурцы короткоплодные 450 г,119.00,pcs,450,,1
+vkusvill,vkusvill-strachatella-200,Сыр Страчателла 200 г,219.00,pcs,200,,1
+vkusvill,vkusvill-hlebcy-240,Хлебцы ржано-пшеничные 240 г,59.00,pcs,240,,1
+vkusvill,vkusvill-forel-200,Форель слабосолёная филе-кусок 200 г,359.00,pcs,200,,1
+vkusvill,vkusvill-axe-ice-chill-50,Дезодорант-стик Axe Ice Chill 50 мл,329.00,pcs,50,,1
+vkusvill,vkusvill-sliva-kg,Слива тёмная весовая,289.00,kg,,289.00,1
+vkusvill,vkusvill-ikra-180,Икра лососевая копчёная 180 г,154.00,pcs,180,,1
+vkusvill,vkusvill-nektarin-kg,Нектарины жёлтые весовые,139.00,kg,,139.00,1
+vkusvill,vkusvill-syrok-45,Сырок творожный глазированный ваниль 45 г,58.00,pcs,45,,1
+vkusvill,vkusvill-pure-banan-yabloko-210,Пюре детское банан-яблоко 210 г,44.90,pcs,210,,1
+vkusvill,vkusvill-tunec-185,Тунец натуральный в масле 185 г,199.00,pcs,185,,1
+vkusvill,vkusvill-salyami-kg,Салями сырокопчёная весовая,2090.00,kg,,2090.00,1
+vkusvill,vkusvill-doktorskaya-400,Колбаса Докторская варёная 400 г,269.00,pcs,400,,1
+vkusvill,vkusvill-persiki-500,Персики консервированные 500 г,209.00,pcs,500,,1
+vkusvill,vkusvill-fior-di-latte-kg,Сыр Фиор ди латте весовой,989.00,kg,,989.00,1
+vkusvill,vkusvill-pure-yabloko-grusha-200,Пюре детское яблоко-груша 200 г,52.90,pcs,200,,1
+pyaterochka,pyaterochka-ogurcy-450,Огурцы короткоплодные 450 г,99.90,pcs,450,,1
+pyaterochka,pyaterochka-strachatella-200,Сыр Страчателла мягкий 200 г,239.00,pcs,200,,1
+pyaterochka,pyaterochka-hlebcy-240,Хлебцы ржано-пшеничные 240 г,49.90,pcs,240,,1
+pyaterochka,pyaterochka-forel-200,Форель слабосолёная кусок 200 г,379.00,pcs,200,,1
+pyaterochka,pyaterochka-axe-ice-chill-50,Дезодорант-карандаш Axe Ice Chill 50 мл,289.00,pcs,50,,1
+pyaterochka,pyaterochka-sliva-kg,Слива весовая,239.00,kg,,239.00,1
+pyaterochka,pyaterochka-ikra-180,Икра лососевая копчёная 180 г,159.00,pcs,180,,1
+pyaterochka,pyaterochka-nektarin-kg,Нектарины весовые,149.00,kg,,149.00,1
+pyaterochka,pyaterochka-syrok-45,Сырок глазированный ванильный 45 г,49.90,pcs,45,,1
+pyaterochka,pyaterochka-pure-banan-yabloko-210,Пюре детское банан-яблоко 210 г,45.90,pcs,210,,1
+pyaterochka,pyaterochka-tunec-185,Тунец в масле 185 г,179.00,pcs,185,,1
+pyaterochka,pyaterochka-salyami-kg,Салями сырокопчёная весовая,1790.00,kg,,1790.00,1
+pyaterochka,pyaterochka-doktorskaya-400,Колбаса Докторская варёная 400 г,229.00,pcs,400,,1
+pyaterochka,pyaterochka-persiki-500,Персики консервированные 500 г,219.00,pcs,500,,1
+pyaterochka,pyaterochka-fior-di-latte-kg,Сыр Фиор ди латте весовой,1090.00,kg,,1090.00,1
+pyaterochka,pyaterochka-pure-yabloko-grusha-200,Пюре детское яблоко-груша 200 г,45.90,pcs,200,,1

@@ -1,0 +1,13 @@
+# Конфигурация оптимизатора продуктовой корзины
+db_path: data/basket.db
+baseline_store: pyaterochka          # магазин, относительно которого считается экономия
+extra_order_penalty_rub: 150.0       # штраф за каждый дополнительный заказ (раздел 6)
+weight_tolerance_pct: 20             # допуск по граммовке для штучных товаров
+connectors:
+  rate_limit_rps: 1.0                # не чаще 1 запроса в секунду на магазин
+  cache_ttl_hours: 6
+  timeout_sec: 10
+  failure_threshold: 3                # после стольких неудач подряд магазин до конца сеанса идёт из fallback
+optimizer:
+  max_stores: 2                      # MVP: перебор разбиений на 1-2 магазина
+  top_n: 3
