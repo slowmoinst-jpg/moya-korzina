@@ -74,7 +74,7 @@ def _mapping(products, stores) -> None:
             if err:
                 module_warning(err)
             elif not product_ids:
-                st.info("Нечего сопоставлять — номенклатура пуста.")
+                st.info("Связывать пока нечего — список товаров пуст.")
             else:
                 try:
                     with st.spinner("Подбираем товары в магазинах…"):
@@ -131,7 +131,7 @@ def _mapping(products, stores) -> None:
             )
         else:
             st.caption("Цена ещё не загружена — нажмите «Обновить цены».")
-        if st.button("Сбросить сопоставление", key="drop_map_btn"):
+        if st.button("Убрать связь", key="drop_map_btn"):
             repo.drop_mapping(product.id, store.id)
             st.session_state.pop("candidates", None)
             st.rerun()
@@ -181,7 +181,7 @@ def _mapping(products, stores) -> None:
 
 
 def _report() -> None:
-    """Итог последнего автосопоставления / обновления цен."""
+    """Итог последнего подбора или обновления цен."""
     report = st.session_state.get("match_report")
     if not report:
         return

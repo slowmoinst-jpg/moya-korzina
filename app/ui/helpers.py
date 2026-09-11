@@ -113,7 +113,7 @@ def drop_file(path: str) -> None:
 def store_selectbox(stores, label: str = "Магазин", key: str | None = None, with_all: bool = False):
     """Выбор магазина. with_all=True добавляет пункт «Все магазины» (значение None)."""
     if not stores:
-        st.info("Справочник магазинов пуст — он заполняется при инициализации базы.")
+        st.info("Магазинов пока нет — они появляются при первом запуске.")
         return None
     options = ([None] + list(stores)) if with_all else list(stores)
     return st.selectbox(
