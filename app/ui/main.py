@@ -21,6 +21,7 @@ import streamlit as st  # noqa: E402
 from app import repo  # noqa: E402
 from app.ui import theme  # noqa: E402
 from app.ui.helpers import show_exception  # noqa: E402
+from app.ui.screens import about as about_screen  # noqa: E402
 from app.ui.screens import basket as basket_screen  # noqa: E402
 from app.ui.screens import cards as cards_screen  # noqa: E402
 from app.ui.screens import history as history_screen  # noqa: E402
@@ -33,6 +34,7 @@ SCREENS = {
     "Корзина": basket_screen.render,
     "Результат": result_screen.render,
     "Карты и акции": cards_screen.render,
+    "О продукте": about_screen.render,
 }
 
 SCREEN_MODULES = {
@@ -41,6 +43,7 @@ SCREEN_MODULES = {
     "Корзина": basket_screen,
     "Результат": result_screen,
     "Карты и акции": cards_screen,
+    "О продукте": about_screen,
 }
 
 # надзаголовок над названием экрана
@@ -50,6 +53,7 @@ EYEBROWS = {
     "Корзина": "Что покупаем",
     "Результат": "Разбиение и экономия",
     "Карты и акции": "Условия, которые учитывает расчёт",
+    "О продукте": "Зачем это нужно и как считает",
 }
 
 
