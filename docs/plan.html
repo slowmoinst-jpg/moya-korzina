@@ -1,0 +1,291 @@
+<title>Что осталось сделать</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=Literata:opsz,wght@7..72,400;7..72,600;7..72,700&display=swap">
+<style>
+  :root{
+    --paper:#FBF7F1; --surface:#FFFFFF; --tint:#F5EFE6;
+    --ink:#2A241E; --ink2:#6E6459; --ink3:#9C9288;
+    --line:#EAE2D6; --line2:#DACFBF;
+    --warm:#BD6533; --warm-soft:#FFEADD;
+    --green:#3D8E53; --green-soft:#E4F6E6;
+    --red:#BB584D; --red-soft:#FBE7E4;
+    --shadow:0 1px 2px rgba(42,36,30,.04), 0 18px 40px -30px rgba(42,36,30,.5);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#191612; --surface:#221E19; --tint:#2A251F;
+      --ink:#F0E8DC; --ink2:#B6AB9C; --ink3:#8A8072;
+      --line:#332D25; --line2:#433B31;
+      --warm:#E08A52; --warm-soft:#3A2317;
+      --green:#6CBB80; --green-soft:#1B2E20;
+      --red:#D9786A; --red-soft:#341E1A;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 18px 40px -30px rgba(0,0,0,.9);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#191612; --surface:#221E19; --tint:#2A251F;
+    --ink:#F0E8DC; --ink2:#B6AB9C; --ink3:#8A8072;
+    --line:#332D25; --line2:#433B31;
+    --warm:#E08A52; --warm-soft:#3A2317;
+    --green:#6CBB80; --green-soft:#1B2E20;
+    --red:#D9786A; --red-soft:#341E1A;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 18px 40px -30px rgba(0,0,0,.9);
+  }
+
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:"Golos Text","Segoe UI",system-ui,sans-serif;
+    font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased;
+    font-feature-settings:"tnum" 1,"lnum" 1;}
+  a{color:var(--warm);text-decoration:none;}
+  a:hover{color:var(--ink);text-decoration:underline;}
+  a:focus-visible{outline:2px solid var(--warm);outline-offset:3px;border-radius:5px;}
+  h1,h2,h3{font-family:"Literata",Georgia,"Times New Roman",serif;
+    letter-spacing:-.02em;text-wrap:balance;margin:0;}
+  p{margin:0;max-width:68ch;}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;
+    background:var(--tint);padding:1px 6px;border-radius:5px;}
+
+  .wrap{max-width:1080px;margin:0 auto;padding:0 28px;}
+  .eyebrow{font-size:11px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--ink3);}
+  section{padding:44px 0;border-top:1px solid var(--line);}
+  section:first-of-type{border-top:none;}
+  .stack{display:flex;flex-direction:column;gap:16px;}
+
+  header.page{padding:48px 0 8px;}
+  header.page h1{font-size:clamp(32px,4.4vw,48px);line-height:1.06;font-weight:600;max-width:16ch;}
+  .lede{font-size:18px;color:var(--ink2);max-width:62ch;}
+
+  .near{background:var(--surface);border:1px solid var(--line);border-radius:16px;
+    box-shadow:var(--shadow);padding:22px 24px;display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px;}
+  .near > div{display:flex;flex-direction:column;gap:6px;}
+  .near b{font-size:15px;}
+  .near span{font-size:13.5px;color:var(--ink2);line-height:1.5;}
+
+  .stage{background:var(--surface);border:1px solid var(--line);border-radius:16px;
+    box-shadow:var(--shadow);overflow:hidden;}
+  .stage > header{display:flex;align-items:baseline;justify-content:space-between;gap:14px;
+    flex-wrap:wrap;padding:16px 20px;border-bottom:1px solid var(--line);background:var(--tint);}
+  .stage > header h3{font-size:19px;}
+  .stage > header .when{font-size:12.5px;color:var(--ink2);}
+  .item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 14px;
+    padding:13px 20px;border-top:1px solid var(--line);align-items:baseline;}
+  .item:first-of-type{border-top:none;}
+  .item b{font-weight:600;font-size:14.5px;}
+  .item .why{grid-column:1 / -1;font-size:13px;color:var(--ink2);line-height:1.5;}
+
+  .tag{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;
+    font-size:12px;font-weight:600;white-space:nowrap;}
+  .ok{background:var(--green-soft);color:var(--green);}
+  .mid{background:var(--warm-soft);color:var(--warm);}
+  .no{background:var(--red-soft);color:var(--red);}
+
+  .done{display:flex;flex-wrap:wrap;gap:8px;}
+  .done span{padding:5px 12px;border-radius:999px;background:var(--green-soft);color:var(--green);
+    font-size:12.5px;font-weight:500;}
+
+  footer{border-top:1px solid var(--line);padding:28px 0 52px;color:var(--ink2);font-size:13.5px;}
+  @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important;}}
+</style>
+
+<div class="wrap">
+
+  <header class="page stack">
+    <span class="eyebrow">План после MVP · сентябрь 2026</span>
+    <h1>Что осталось сделать</h1>
+    <p class="lede">Разбор спецификации: что закрыто, что осталось и в каком порядке это брать.
+      Три пункта оказались почти готовы — код уже написан, не хватает мелочи. С них и начинать.</p>
+  </header>
+
+  <section class="stack">
+    <span class="eyebrow">Уже работает</span>
+    <h2 style="font-size:26px;">Закрыто в MVP</h2>
+    <div class="done">
+      <span>Загрузка покупок: PDF, текст, JSON, CSV, XLSX</span>
+      <span>История с фильтрами</span>
+      <span>Справочник товаров</span>
+      <span>Поиск кандидатов и подтверждение</span>
+      <span>Автоподбор с порогом похожести</span>
+      <span>Нормализация названий из чека</span>
+      <span>Ручная корзина с сохранением</span>
+      <span>Живые цены Магнита</span>
+      <span>Единый интерфейс магазина и заглушка</span>
+      <span>Не чаще запроса в секунду, кэш 6 часов</span>
+      <span>Справочник карт и акций, загрузка CSV</span>
+      <span>Учёт остатка лимита</span>
+      <span>Расчёт по формуле раздела 6</span>
+      <span>Перебор разбиений и топ-3</span>
+      <span>Штраф за лишний заказ</span>
+      <span>Шесть экранов</span>
+    </div>
+  </section>
+
+  <section class="stack">
+    <span class="eyebrow">Сюрприз при разборе</span>
+    <h2 style="font-size:26px;">Три пункта почти готовы</h2>
+    <p>Это не оценка на глаз — проверено в коде и запуском.</p>
+    <div class="near">
+      <div>
+        <b>Перебор трёх магазинов — работает</b>
+        <span>Проверено запуском: <code>max_stores=3</code> считает корзину за 0,07 секунды.
+          Но пока бесполезен — третьего магазина с ценами просто нет. Значит, задача не
+          «включить перебор», а «добыть третьи цены».</span>
+      </div>
+      <div>
+        <b>Динамика цен — данные уже копятся</b>
+        <span>Снимки цен пишутся с первого дня и не перезаписываются, выборка истории
+          в хранилище готова. Не хватает только экрана с графиком.</span>
+      </div>
+      <div>
+        <b>Корзина из истории — схема готова</b>
+        <span>У корзины уже есть признак источника: ручная, средняя за месяц или из прошлой
+          покупки. Осталось написать сам подсчёт.</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="stack">
+    <span class="eyebrow">Порядок работ</span>
+    <h2 style="font-size:26px;">Пять этапов</h2>
+
+    <div class="stage">
+      <header>
+        <h3>1 · Дешёвое и заметное</h3>
+        <span class="when">Дни. Ничьих разрешений не требует</span>
+      </header>
+      <div class="item"><b>Корзина «как в прошлый раз» и «по среднему за месяц»</b>
+        <span class="tag ok">почти готово</span>
+        <span class="why">Самая частая работа семьи — собрать тот же список снова. Сейчас его
+          набирают руками, хотя история уже загружена.</span></div>
+      <div class="item"><b>Экран динамики цен</b>
+        <span class="tag ok">почти готово</span>
+        <span class="why">График цены товара по магазинам во времени. Отвечает на вопрос
+          «подорожало или мне кажется» и показывает, что снимки копятся не зря.</span></div>
+      <div class="item"><b>Справочник условий карт по восьми банкам</b>
+        <span class="tag ok">общий контур</span>
+        <span class="why">Процент, лимит и минимальный чек по каждой карте. Данных мало,
+          меняются раз в месяц — ведутся файлом и раздаются всем сразу.</span></div>
+      <div class="item"><b>Напоминание переключить категории</b>
+        <span class="tag ok">дёшево</span>
+        <span class="why">Первого числа кэшбэк обнуляется, если категории не выбраны заново.
+          Забытая галочка стоит дороже, чем разница в ценах.</span></div>
+      <div class="item"><b>Напоминание о регулярных покупках</b>
+        <span class="tag ok">дёшево</span>
+        <span class="why">Товар покупали каждую неделю, а в этой корзине его нет — стоит спросить.</span></div>
+    </div>
+
+    <div class="stage">
+      <header>
+        <h3>2 · Источники покупок и третьи цены</h3>
+        <span class="when">Недели. Часть упирается в чужие сроки</span>
+      </header>
+      <div class="item"><b>Заявка в ФНС на открытое API проверки чека</b>
+        <span class="tag mid">подавать сразу</span>
+        <span class="why">Рассматривается долго, а ответ на главный вопрос — отдаёт ли сервис
+          состав позиций — можно получить только так.</span></div>
+      <div class="item"><b>Приём QR с чека</b>
+        <span class="tag mid">средне</span>
+        <span class="why">Фотография кода вместо файла. Источник за ней подставляется потом:
+          ФНС по заявке или сторонний сервис по договору.</span></div>
+      <div class="item"><b>Третий магазин с живыми ценами</b>
+        <span class="tag mid">средне</span>
+        <span class="why">Без него перебор трёх магазинов бессмысленен. ВкусВилл не отвечает —
+          нужен другой кандидат, и это решение надо принять до кода.</span></div>
+      <div class="item"><b>Карты лояльности и подписки магазинов</b>
+        <span class="tag ok">дёшево</span>
+        <span class="why">Подписка с бесплатной доставкой меняет итог не меньше кэшбэка,
+          а вводится руками за минуту.</span></div>
+      <div class="item"><b>Баллы отдельно от рублей</b>
+        <span class="tag no">до Яндекса и ВБ</span>
+        <span class="why">Расчёт сейчас складывает всё как рубли. «Ягодки» тратятся только
+          на площадке и сгорают через год, баллы Плюса тратятся не везде. Если добавить эти
+          банки как есть, продукт начнёт завышать выгоду.</span></div>
+    </div>
+
+    <div class="stage">
+      <header>
+        <h3>3 · Расширение браузера</h3>
+        <span class="when">Самое дорогое — и закрывает больше всего</span>
+      </header>
+      <div class="item"><b>Один механизм на четыре задачи</b>
+        <span class="tag mid">крупно</span>
+        <span class="why">Чеки из «Мои чеки онлайн», история из кабинетов Пятёрочки и Магнита,
+          персональные предложения банков и партнёрские каталоги на скриптах. Всё это закрыто
+          для сервера, но открыто человеку в его же браузере.</span></div>
+      <div class="item"><b>Данные не уезжают без спроса</b>
+        <span class="tag ok">принцип</span>
+        <span class="why">Расширение работает на машине пользователя и отдаёт продукту только то,
+          что он подтвердил. Это не деталь реализации, а обещание, которое стоит написать
+          на странице.</span></div>
+    </div>
+
+    <div class="stage">
+      <header>
+        <h3>4 · Качество сопоставления</h3>
+        <span class="when">Когда источников станет больше</span>
+      </header>
+      <div class="item"><b>Автоподтверждение по штрихкоду</b>
+        <span class="tag mid">нужен источник</span>
+        <span class="why">Поле под штрихкод в модели есть, но разбор каталога Магнита его
+          не достаёт. Сначала научиться его брать, потом автоподтверждать.</span></div>
+      <div class="item"><b>Подсказка через языковую модель</b>
+        <span class="tag mid">средне</span>
+        <span class="why">Выбрать лучшего кандидата и объяснить выбор. Полезно там, где название
+          в чеке сокращено до неузнаваемости.</span></div>
+      <div class="item"><b>Допустимые замены</b>
+        <span class="tag mid">средне</span>
+        <span class="why">Другой бренд той же категории, если товара нет в наличии. Требует
+          и справочника замен, и учёта в расчёте.</span></div>
+      <div class="item"><b>Объяснение варианта по позициям</b>
+        <span class="tag ok">частично есть</span>
+        <span class="why">Сейчас видно, что чек подобрался к порогу. Осталось сказать про каждую
+          строку, почему она попала именно в этот магазин.</span></div>
+    </div>
+
+    <div class="stage">
+      <header>
+        <h3>5 · За пределами одной семьи</h3>
+        <span class="when">Когда продуктом захочет пользоваться кто-то ещё</span>
+      </header>
+      <div class="item"><b>Несколько пользователей и вход</b>
+        <span class="tag no">крупно</span>
+        <span class="why">Сейчас база одна на всех и без входа. Это сознательное решение MVP,
+          но оно же мешает показать продукт кому-то, кроме себя.</span></div>
+      <div class="item"><b>Переезд на PostgreSQL</b>
+        <span class="tag no">крупно</span>
+        <span class="why">Нужен вместе с несколькими пользователями, не раньше.</span></div>
+      <div class="item"><b>Магазины, которых не взять иначе</b>
+        <span class="tag no">переговоры</span>
+        <span class="why">Перекрёсток и подобные берутся только договорённостью с сетью.
+          Это не разработка, а другой разговор.</span></div>
+    </div>
+  </section>
+
+  <section class="stack">
+    <span class="eyebrow">Что решить до кода</span>
+    <h2 style="font-size:26px;">Три вопроса владельцу</h2>
+    <div class="stage">
+      <div class="item"><b>Какой магазин станет третьим</b><span class="tag mid">блокирует этап 2</span>
+        <span class="why">ВкусВилл написан, но не отвечает. Пока третьего нет, перебор трёх
+          магазинов и вся дальнейшая глубина расчёта стоят на месте.</span></div>
+      <div class="item"><b>Как считать баллы</b><span class="tag mid">блокирует два банка</span>
+        <span class="why">Считать «ягодки» рублями нельзя. Варианты: не добавлять такие банки,
+          считать с понижающим коэффициентом или показывать отдельной строкой и не смешивать
+          с деньгами.</span></div>
+      <div class="item"><b>Кому продукт после семьи</b><span class="tag mid">определяет этап 5</span>
+        <span class="why">Если только для себя — вход и несколько пользователей не нужны никогда,
+          и это экономит крупный кусок работы.</span></div>
+    </div>
+  </section>
+</div>
+
+<footer>
+  <div class="wrap" style="display:flex;gap:18px;flex-wrap:wrap;">
+    <span>Разбор спецификации и кода, сентябрь 2026.</span>
+    <span style="margin-left:auto;display:flex;gap:16px;flex-wrap:wrap;">
+      <a href="./">О продукте</a>
+      <a href="./sources.html">Источники данных</a>
+      <a href="https://github.com/slowmoinst-jpg/moya-korzina">Репозиторий</a>
+    </span>
+  </div>
+</footer>
