@@ -1,0 +1,319 @@
+<title>Откуда брать покупки и офферы</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=Literata:opsz,wght@7..72,400;7..72,600;7..72,700&display=swap">
+<style>
+  :root{
+    --paper:#FBF7F1; --surface:#FFFFFF; --tint:#F5EFE6;
+    --ink:#2A241E; --ink2:#6E6459; --ink3:#9C9288;
+    --line:#EAE2D6; --line2:#DACFBF;
+    --warm:#BD6533; --warm-soft:#FFEADD;
+    --green:#3D8E53; --green-soft:#E4F6E6;
+    --red:#BB584D; --red-soft:#FBE7E4;
+    --shadow:0 1px 2px rgba(42,36,30,.04), 0 18px 40px -30px rgba(42,36,30,.5);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#191612; --surface:#221E19; --tint:#2A251F;
+      --ink:#F0E8DC; --ink2:#B6AB9C; --ink3:#8A8072;
+      --line:#332D25; --line2:#433B31;
+      --warm:#E08A52; --warm-soft:#3A2317;
+      --green:#6CBB80; --green-soft:#1B2E20;
+      --red:#D9786A; --red-soft:#341E1A;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 18px 40px -30px rgba(0,0,0,.9);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#191612; --surface:#221E19; --tint:#2A251F;
+    --ink:#F0E8DC; --ink2:#B6AB9C; --ink3:#8A8072;
+    --line:#332D25; --line2:#433B31;
+    --warm:#E08A52; --warm-soft:#3A2317;
+    --green:#6CBB80; --green-soft:#1B2E20;
+    --red:#D9786A; --red-soft:#341E1A;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 18px 40px -30px rgba(0,0,0,.9);
+  }
+
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:"Golos Text","Segoe UI",system-ui,sans-serif;
+    font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased;
+    font-feature-settings:"tnum" 1,"lnum" 1;}
+  a{color:var(--warm);text-decoration:none;}
+  a:hover{color:var(--ink);text-decoration:underline;}
+  a:focus-visible{outline:2px solid var(--warm);outline-offset:3px;border-radius:5px;}
+  h1,h2,h3{font-family:"Literata",Georgia,"Times New Roman",serif;
+    letter-spacing:-.02em;text-wrap:balance;margin:0;}
+  p{margin:0;max-width:68ch;}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;
+    background:var(--tint);padding:1px 6px;border-radius:5px;}
+
+  .wrap{max-width:1120px;margin:0 auto;padding:0 28px;}
+  .eyebrow{font-size:11px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--ink3);}
+  section{padding:46px 0;border-top:1px solid var(--line);}
+  section:first-of-type{border-top:none;}
+  .stack{display:flex;flex-direction:column;gap:16px;}
+
+  header.page{padding:48px 0 8px;}
+  header.page h1{font-size:clamp(32px,4.4vw,48px);line-height:1.06;font-weight:600;max-width:19ch;}
+  .lede{font-size:18px;color:var(--ink2);max-width:62ch;}
+
+  .verdict{background:var(--surface);border:1px solid var(--line);border-radius:16px;
+    box-shadow:var(--shadow);padding:22px 24px;display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;}
+  .verdict > div{display:flex;flex-direction:column;gap:6px;}
+  .verdict b{font-size:15px;}
+  .verdict span{font-size:13.5px;color:var(--ink2);line-height:1.5;}
+
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--surface);
+    box-shadow:var(--shadow);}
+  table{border-collapse:collapse;width:100%;font-size:14px;min-width:760px;}
+  th,td{text-align:left;padding:12px 16px;border-top:1px solid var(--line);vertical-align:top;}
+  th{font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);
+    background:var(--tint);border-top:none;white-space:nowrap;}
+  td b{font-weight:600;}
+  td .hint{display:block;font-size:12.5px;color:var(--ink2);margin-top:3px;line-height:1.45;}
+
+  .tag{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;
+    font-size:12px;font-weight:600;white-space:nowrap;}
+  .ok{background:var(--green-soft);color:var(--green);}
+  .mid{background:var(--warm-soft);color:var(--warm);}
+  .no{background:var(--red-soft);color:var(--red);}
+
+  ol.plan{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:12px;max-width:72ch;}
+  ol.plan b{font-weight:600;}
+  ol.plan span{display:block;font-size:14px;color:var(--ink2);margin-top:3px;}
+
+  footer{border-top:1px solid var(--line);padding:28px 0 52px;color:var(--ink2);font-size:13.5px;}
+  @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important;}}
+</style>
+
+<div class="wrap">
+
+  <header class="page stack">
+    <span class="eyebrow">Разведка источников · сентябрь 2026</span>
+    <h1>Откуда брать покупки и банковские предложения</h1>
+    <p class="lede">Что уже можно подключить, что потребует заявки или договора, а что закрыто
+      и обходится только на стороне пользователя. Проверено поиском по открытым источникам —
+      всё, что требует заявки или договора, помечено отдельно.</p>
+  </header>
+
+  <section class="stack">
+    <div class="verdict">
+      <div>
+        <b>Состав покупок даёт только чек</b>
+        <span>Ни один банк не отдаёт, <em>что</em> вы купили: выписка знает магазин и сумму,
+          но не строки. Товары есть только в фискальном чеке — значит, дорога к ним через ФНС
+          или через личный кабинет магазина.</span>
+      </div>
+      <div>
+        <b>У ФНС есть официальный путь</b>
+        <span>Открытое API проверки чека ККТ работает по заявке и мастер-токену, бесплатно.
+          Оговорка: ФНС пишет, что сервис не предназначен для личного использования — значит,
+          заявку подаёт продукт, а не семья.</span>
+      </div>
+      <div>
+        <b>Персональных офферов нет ни у кого</b>
+        <span>Ни один из восьми банков не отдаёт наружу персональные предложения клиента.
+          Открытые API ЦБ, обязательные с 2026 года, покрывают счета и выписки — не кэшбэк.</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="stack">
+    <span class="eyebrow">Источник 1</span>
+    <h2 style="font-size:27px;">Покупки: что и в каком количестве куплено</h2>
+    <p>Порядок в таблице — от готового к самому спорному.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Способ</th><th>Что даёт</th><th>Доступ</th><th>Зрелость</th><th>Чем платим</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>Файл чека: PDF, текст</b><span class="hint">Уже работает в продукте</span></td>
+            <td>Полный состав: позиция, количество, цена, сумма</td>
+            <td>Ничего не нужно</td>
+            <td><span class="tag ok">готово</span></td>
+            <td>Человек сам сохраняет файл</td>
+          </tr>
+          <tr>
+            <td><b>JSON чека от ФНС и ОФД</b><span class="hint">Уже работает в продукте</span></td>
+            <td>Полный состав, суммы в копейках</td>
+            <td>Выгрузка вручную из личного кабинета</td>
+            <td><span class="tag ok">готово</span></td>
+            <td>Ручная выгрузка</td>
+          </tr>
+          <tr>
+            <td><b>Таблица заказа: CSV, XLSX</b><span class="hint">Уже работает в продукте</span></td>
+            <td>Состав онлайн-заказа</td>
+            <td>Выгрузка из личного кабинета магазина</td>
+            <td><span class="tag ok">готово</span></td>
+            <td>Ручная выгрузка</td>
+          </tr>
+          <tr>
+            <td><b>QR с чека → открытое API ФНС</b>
+              <span class="hint">kkt-online.nalog.ru — официальный сервис</span></td>
+            <td>Чек по фискальным признакам. Состав позиций в описании прямо не заявлен —
+              уточняется при подаче заявки</td>
+            <td>Заявка в ФНС, мастер-токен, логин для поддержки. Бесплатно</td>
+            <td><span class="tag mid">нужна заявка</span></td>
+            <td>Время на заявку; ФНС ограничивает объёмы в одностороннем порядке</td>
+          </tr>
+          <tr>
+            <td><b>QR с чека → мобильное API ФНС</b>
+              <span class="hint">Тот самый интерфейс, которым пользуется приложение «Проверка чеков»</span></td>
+            <td>Полный чек со всеми позициями</td>
+            <td>Вход по номеру телефона и коду из СМС. Не документирован, держится
+              на разборе сообществом</td>
+            <td><span class="tag mid">серая зона</span></td>
+            <td>Может отвалиться при любом обновлении приложения; условия использования
+              под вопросом</td>
+          </tr>
+          <tr>
+            <td><b>QR с чека → сторонний сервис</b>
+              <span class="hint">OFD.ru «QR Cash», proverkacheka.com и подобные</span></td>
+            <td>Чек по QR, обычно с позициями</td>
+            <td>Договор и оплата по запросам</td>
+            <td><span class="tag mid">по договору</span></td>
+            <td>Деньги за запрос; зависимость от посредника</td>
+          </tr>
+          <tr>
+            <td><b>«Мои чеки онлайн» ФНС</b>
+              <span class="hint">lkdr.nalog.ru — все электронные чеки, привязанные к телефону</span></td>
+            <td>Вся история электронных чеков в одном месте — самый полный источник</td>
+            <td>Публичного интерфейса для программ нет. Только личный кабинет и приложение</td>
+            <td><span class="tag no">закрыто</span></td>
+            <td>Остаётся ручная выгрузка или расширение браузера на стороне пользователя</td>
+          </tr>
+          <tr>
+            <td><b>Личный кабинет магазина</b>
+              <span class="hint">X5 Club для Пятёрочки, приложение Магнита</span></td>
+            <td>История покупок и электронные чеки по карте лояльности</td>
+            <td>Публичного интерфейса нет. Вход по телефону и коду</td>
+            <td><span class="tag no">закрыто</span></td>
+            <td>Только расширение браузера с ведома пользователя либо партнёрство с сетью</td>
+          </tr>
+          <tr>
+            <td><b>Банковская выписка</b>
+              <span class="hint">В том числе через Открытые API ЦБ</span></td>
+            <td>Где и сколько потрачено. <b>Состава корзины нет</b></td>
+            <td>Стандарты ЦБ опубликованы, обязательность с 2026 сдвинута</td>
+            <td><span class="tag no">не тот слой</span></td>
+            <td>Для нашей задачи бесполезно: без строк чека нечего оптимизировать</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="stack">
+    <span class="eyebrow">Источник 2</span>
+    <h2 style="font-size:27px;">Банки: персональные предложения и кэшбэк</h2>
+    <p>Проверено восемь банков. Картина одинаковая: наружу отдаются интерфейсы для бизнеса —
+      приём платежей, счета, выписки, зарплатные проекты. Личный кэшбэк клиента не отдаёт никто.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Банк</th><th>Что есть публично</th><th>Персональные офферы</th><th>Реальный путь</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>Сбер</b></td>
+            <td>Sber API для бизнеса, больше 400 сервисов. СберСпасибо — партнёрская программа
+              для магазинов, не выдача предложений клиенту</td>
+            <td><span class="tag no">нет</span></td>
+            <td>Расширение браузера или ручной ввод</td>
+          </tr>
+          <tr>
+            <td><b>Т-Банк</b></td>
+            <td>Портал разработчика: бизнес, инвестиции, приём платежей, оплата частями.
+              Раздел про спецпредложения адресован мерчантам</td>
+            <td><span class="tag no">нет</span></td>
+            <td>Единственный банк с публичным контактом для интеграций —
+              есть кому написать запрос</td>
+          </tr>
+          <tr>
+            <td><b>Альфа-Банк</b></td>
+            <td>Партнёрский API для бизнеса, инструкция обновляется. Участник пилота
+              открытого банкинга</td>
+            <td><span class="tag no">нет</span></td>
+            <td>Расширение браузера; следить за открытым банкингом</td>
+          </tr>
+          <tr>
+            <td><b>ВТБ</b></td>
+            <td>Промышленный обмен данными по Открытым API вместе со Сбером</td>
+            <td><span class="tag no">нет</span></td>
+            <td>То же</td>
+          </tr>
+          <tr>
+            <td><b>Промсвязьбанк</b></td>
+            <td>Участник соглашения об обмене данными по счетам</td>
+            <td><span class="tag no">нет</span></td>
+            <td>То же</td>
+          </tr>
+          <tr>
+            <td><b>Яндекс Банк</b></td>
+            <td>Интерфейсов для сторонних разработчиков не нашлось</td>
+            <td><span class="tag no">нет</span></td>
+            <td>Расширение браузера; кэшбэк завязан на экосистему</td>
+          </tr>
+          <tr>
+            <td><b>Озон Банк</b></td>
+            <td>Публичных интерфейсов для разработчиков не нашлось</td>
+            <td><span class="tag no">нет</span></td>
+            <td>То же</td>
+          </tr>
+          <tr>
+            <td><b>ВБ Банк</b></td>
+            <td>Публичных интерфейсов для разработчиков не нашлось. Кэшбэк во внутренних баллах,
+              тратится только внутри площадки</td>
+            <td><span class="tag no">нет</span></td>
+            <td>В расчёт входит хуже прочих: баллы не рубли</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="font-size:14px;color:var(--ink2);">Открытые API Банка России стоит держать в поле
+      зрения, но не ждать от них нашей задачи. В стандарт входят согласие на доступ, счета, баланс,
+      транзакции и выписки. Персональные акции туда не входят, и обязательные сроки сдвинуты
+      до принятия закона.</p>
+  </section>
+
+  <section class="stack">
+    <span class="eyebrow">Что делать</span>
+    <h2 style="font-size:27px;">Порядок работ</h2>
+    <ol class="plan">
+      <li><b>Подать заявку в ФНС на открытое API проверки чека.</b>
+        <span>Бесплатно, официально, отвечает на главный вопрос: даёт ли сервис состав позиций.
+          Пока заявка идёт, продукт живёт на файлах. Это единственный путь, который не придётся
+          прятать и переделывать.</span></li>
+      <li><b>Сделать приём QR с чека.</b>
+        <span>Фотография кода вместо файла — самый короткий путь для человека. Источник за ним
+          подставляется потом: ФНС по заявке, сторонний сервис по договору или мобильный
+          интерфейс как временная мера.</span></li>
+      <li><b>Расширение браузера для личных кабинетов.</b>
+        <span>Один механизм закрывает сразу и «Мои чеки онлайн», и кабинеты магазинов,
+          и банковские предложения — всё то, что закрыто для сервера, но открыто человеку
+          в его же браузере. Данные не покидают его машину без спроса.</span></li>
+      <li><b>Написать в банки, начиная с Т-Банка.</b>
+        <span>У него единственного есть публичный адрес для запросов об интеграции.
+          Отрицательный ответ тоже результат: он закрывает вопрос и оставляет расширение
+          единственным вариантом.</span></li>
+      <li><b>Карты лояльности и подписки — раньше банковских акций.</b>
+        <span>Подписка с бесплатной доставкой меняет итог не меньше кэшбэка, а данные о ней
+          вводятся руками за минуту и не требуют ничьего разрешения.</span></li>
+    </ol>
+  </section>
+</div>
+
+<footer>
+  <div class="wrap" style="display:flex;gap:18px;flex-wrap:wrap;">
+    <span>Разведка по открытым источникам, сентябрь 2026. Всё, что помечено «нужна заявка»
+      или «по договору», требует подтверждения у самой организации.</span>
+    <span style="margin-left:auto;display:flex;gap:16px;flex-wrap:wrap;">
+      <a href="./">О продукте</a>
+      <a href="https://github.com/slowmoinst-jpg/moya-korzina">Репозиторий</a>
+    </span>
+  </div>
+</footer>
