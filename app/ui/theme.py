@@ -84,6 +84,28 @@ h3{font-weight:600;font-size:1.2rem;}
 /* кружок радиокнопки — див прямо перед подписью; в навигации он лишний */
 .st-key-topbar [data-testid="stRadioOption"] div:has(+ [data-testid="stMarkdownContainer"]){display:none;}
 
+/* телефон: меню в одну прокручиваемую строку вместо трёх, экономим четверть экрана */
+@media (max-width:640px){
+  .st-key-topbar{
+    width:100vw !important;margin-left:calc(50% - 50vw) !important;
+    margin-right:calc(50% - 50vw) !important;margin-top:-1.2rem !important;
+    margin-bottom:16px !important;padding:10px 1rem;
+  }
+  .st-key-topbar [role="radiogroup"]{
+    flex-wrap:nowrap !important;overflow-x:auto;scrollbar-width:none;
+    -webkit-overflow-scrolling:touch;
+  }
+  .st-key-topbar [role="radiogroup"]::-webkit-scrollbar{display:none;}
+  .st-key-topbar [data-testid="stRadioOption"]{flex:0 0 auto;padding:7px 13px;}
+  .st-key-topbar [data-testid="stRadioOption"] p{font-size:0.88rem;}
+  .block-container{padding-top:1.2rem;padding-left:1rem;padding-right:1rem;}
+  h1{font-size:1.9rem !important;}
+  .mk-pagehead h1{font-size:1.9rem;}
+  .mk-pagehead{gap:14px;margin-bottom:16px;}
+  /* марка занимает место, а иконки достаточно */
+  .st-key-topbar .mk-brand-name{display:none;}
+}
+
 /* шапка экрана */
 .mk-pagehead{
   display:flex;align-items:flex-end;justify-content:space-between;gap:24px;
@@ -168,7 +190,7 @@ def logo() -> str:
     <path d="M3 6h2.2l2 11.2a1.6 1.6 0 0 0 1.6 1.3h8.1a1.6 1.6 0 0 0 1.6-1.3L20 9H6.4"></path>
     <path d="M10 13h5"></path>
   </svg>
-  <span style="font-weight:600;font-size:16px;letter-spacing:-0.012em;">Моя корзина</span>
+  <span class="mk-brand-name" style="font-weight:600;font-size:16px;letter-spacing:-0.012em;">Моя корзина</span>
 </div>
 """
 
@@ -242,11 +264,14 @@ def table(grid: str, header: list[str], rows: list[list[str]],
         out.append("</div>")
         return "".join(out)
 
-    parts = ['<div class="mk-card" style="overflow:hidden;">', line(header, head=True)]
+    # overflow-x:auto, а не hidden: на телефоне широкая таблица должна прокручиваться,
+    # иначе правые колонки просто исчезают
+    parts = ['<div class="mk-card" style="overflow-x:auto;overflow-y:hidden;">',
+             '<div style="min-width:max-content;">', line(header, head=True)]
     parts += [line(r) for r in rows]
     if foot:
         parts.append(line(foot, footer=True))
-    parts.append("</div>")
+    parts.append("</div></div>")
     return "".join(parts)
 
 

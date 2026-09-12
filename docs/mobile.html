@@ -1,0 +1,221 @@
+<title>Упаковка в мобильное приложение</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=Literata:opsz,wght@7..72,400;7..72,600;7..72,700&display=swap">
+<style>
+  :root{
+    --paper:#FBF7F1; --surface:#FFFFFF; --tint:#F5EFE6;
+    --ink:#2A241E; --ink2:#6E6459; --ink3:#9C9288;
+    --line:#EAE2D6; --line2:#DACFBF;
+    --warm:#BD6533; --warm-soft:#FFEADD;
+    --green:#3D8E53; --green-soft:#E4F6E6;
+    --red:#BB584D; --red-soft:#FBE7E4;
+    --shadow:0 1px 2px rgba(42,36,30,.04), 0 18px 40px -30px rgba(42,36,30,.5);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#191612; --surface:#221E19; --tint:#2A251F;
+      --ink:#F0E8DC; --ink2:#B6AB9C; --ink3:#8A8072;
+      --line:#332D25; --line2:#433B31;
+      --warm:#E08A52; --warm-soft:#3A2317;
+      --green:#6CBB80; --green-soft:#1B2E20;
+      --red:#D9786A; --red-soft:#341E1A;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 18px 40px -30px rgba(0,0,0,.9);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#191612; --surface:#221E19; --tint:#2A251F;
+    --ink:#F0E8DC; --ink2:#B6AB9C; --ink3:#8A8072;
+    --line:#332D25; --line2:#433B31;
+    --warm:#E08A52; --warm-soft:#3A2317;
+    --green:#6CBB80; --green-soft:#1B2E20;
+    --red:#D9786A; --red-soft:#341E1A;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 18px 40px -30px rgba(0,0,0,.9);
+  }
+
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:"Golos Text","Segoe UI",system-ui,sans-serif;
+    font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased;
+    font-feature-settings:"tnum" 1,"lnum" 1;}
+  a{color:var(--warm);text-decoration:none;}
+  a:hover{color:var(--ink);text-decoration:underline;}
+  a:focus-visible{outline:2px solid var(--warm);outline-offset:3px;border-radius:5px;}
+  h1,h2,h3{font-family:"Literata",Georgia,"Times New Roman",serif;
+    letter-spacing:-.02em;text-wrap:balance;margin:0;}
+  p{margin:0;max-width:68ch;}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;
+    background:var(--tint);padding:1px 6px;border-radius:5px;}
+
+  .wrap{max-width:1060px;margin:0 auto;padding:0 28px;}
+  .eyebrow{font-size:11px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--ink3);}
+  section{padding:44px 0;border-top:1px solid var(--line);}
+  section:first-of-type{border-top:none;}
+  .stack{display:flex;flex-direction:column;gap:16px;}
+
+  header.page{padding:48px 0 8px;}
+  header.page h1{font-size:clamp(31px,4.4vw,46px);line-height:1.07;font-weight:600;max-width:17ch;}
+  .lede{font-size:18px;color:var(--ink2);max-width:62ch;}
+
+  .facts{background:var(--surface);border:1px solid var(--line);border-radius:16px;
+    box-shadow:var(--shadow);padding:22px 24px;display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px;}
+  .facts > div{display:flex;flex-direction:column;gap:6px;}
+  .facts b{font-size:15px;}
+  .facts span{font-size:13.5px;color:var(--ink2);line-height:1.5;}
+
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--surface);
+    box-shadow:var(--shadow);}
+  table{border-collapse:collapse;width:100%;font-size:14px;min-width:820px;}
+  th,td{text-align:left;padding:12px 16px;border-top:1px solid var(--line);vertical-align:top;}
+  th{font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);
+    background:var(--tint);border-top:none;white-space:nowrap;}
+  td b{font-weight:600;}
+  td .hint{display:block;font-size:12.5px;color:var(--ink2);margin-top:3px;line-height:1.45;}
+
+  .tag{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;
+    font-size:12px;font-weight:600;white-space:nowrap;}
+  .ok{background:var(--green-soft);color:var(--green);}
+  .mid{background:var(--warm-soft);color:var(--warm);}
+  .no{background:var(--red-soft);color:var(--red);}
+
+  ol.plan{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:12px;max-width:72ch;}
+  ol.plan b{font-weight:600;}
+  ol.plan span{display:block;font-size:14px;color:var(--ink2);margin-top:3px;}
+
+  footer{border-top:1px solid var(--line);padding:28px 0 52px;color:var(--ink2);font-size:13.5px;}
+  @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important;}}
+</style>
+
+<div class="wrap">
+
+  <header class="page stack">
+    <span class="eyebrow">Решение об упаковке · сентябрь 2026</span>
+    <h1>Как продукт попадёт в телефон</h1>
+    <p class="lede">Сканировать QR с чека без камеры нельзя, а камера живёт в телефоне —
+      значит, мобильная упаковка перестала быть украшением и стала условием следующего шага.
+      Разбор вариантов и три факта, которые сужают выбор сильнее всего.</p>
+  </header>
+
+  <section class="stack">
+    <div class="facts">
+      <div>
+        <b>Ядро уже готово к другому интерфейсу</b>
+        <span>Проверено: <code>streamlit</code> импортируется только внутри <code>app/ui</code>.
+          Все 22 модуля расчёта — цены, сопоставление, разбор чеков, оптимизатор — про интерфейс
+          ничего не знают. Вторая «морда» стоит только морды.</span>
+      </div>
+      <div>
+        <b>В RuStore физлицо опубликоваться не может</b>
+        <span>Публикация доступна юрлицам и индивидуальным предпринимателям, зарегистрированным
+          в России. Для семейного продукта без ИП это закрытая дверь — и именно она отсекает
+          привычный путь «собрать APK и выложить».</span>
+      </div>
+      <div>
+        <b>У Telegram есть штатный сканер QR</b>
+        <span>Мини-приложение может попросить отсканировать код камерой и получить строку —
+          ровно то, что нужно для чека. Распространение без магазинов и без ИП,
+          вход уже есть.</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="stack">
+    <span class="eyebrow">Варианты</span>
+    <h2 style="font-size:27px;">Пять способов оказаться в телефоне</h2>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Способ</th><th>Что даёт</th><th>Чего не даёт</th><th>Цена</th><th>Оценка</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>Браузер на телефоне</b><span class="hint">Текущий интерфейс, открытый по ссылке</span></td>
+            <td>Работает уже сегодня: меню в одну строку, таблицы прокручиваются, вёрстка
+              проверена на 375 пикселях</td>
+            <td>Нет иконки на экране, нет камеры, нужно помнить адрес</td>
+            <td>Сделано</td>
+            <td><span class="tag ok">готово</span></td>
+          </tr>
+          <tr>
+            <td><b>Устанавливаемое веб-приложение</b><span class="hint">Иконка на домашнем экране</span></td>
+            <td>Иконка, полноэкранный режим, доступ к камере из браузера</td>
+            <td>Требует своего скрипта на странице, а Streamlit чужие скрипты не пускает —
+              пришлось бы ставить обёртку перед приложением</td>
+            <td>Дни, но костыльно</td>
+            <td><span class="tag mid">неудобно на Streamlit</span></td>
+          </tr>
+          <tr>
+            <td><b>Мини-приложение в Telegram</b><span class="hint">Отдельный тонкий интерфейс поверх того же ядра</span></td>
+            <td>Штатный сканер QR, вход из коробки, распространение без магазинов и без ИП,
+              уведомления, семья уже там</td>
+            <td>Интерфейс придётся написать заново — Streamlit внутрь не поместится</td>
+            <td>Недели</td>
+            <td><span class="tag ok">рекомендую</span></td>
+          </tr>
+          <tr>
+            <td><b>Обёртка в APK</b><span class="hint">Веб-приложение в оболочке</span></td>
+            <td>Настоящая иконка и камера, привычный вид приложения</td>
+            <td>В RuStore нужен ИП. Раздача файлом упрётся в проверку разработчика,
+              которую Google вводит с осени 2026 и расширяет в 2027</td>
+            <td>Недели плюс регистрация ИП</td>
+            <td><span class="tag mid">после ИП</span></td>
+          </tr>
+          <tr>
+            <td><b>Настоящее приложение</b><span class="hint">Родной интерфейс и сервер отдельно</span></td>
+            <td>Всё, что умеет телефон: фон, уведомления, работа без сети</td>
+            <td>Переписывание интерфейса и отдельный сервер; магазины всё равно требуют ИП</td>
+            <td>Месяцы</td>
+            <td><span class="tag no">не сейчас</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="stack">
+    <span class="eyebrow">Что переиспользуется</span>
+    <h2 style="font-size:27px;">Мобильная версия не начинается с нуля</h2>
+    <p>Всё, что считает, уже отделено от интерфейса и переезжает без единой правки:
+      разбор чеков во всех пяти форматах, нормализация названий и сопоставление с магазинами,
+      коннекторы цен с кэшем и ограничением частоты, формула кэшбэка с лимитами и минимальным
+      чеком, перебор разбиений, сборка корзины из истории, справочник банков. Это примерно
+      всё, что делалось до сих пор.</p>
+    <p>Писать заново придётся только экраны. Причём не все шесть: в телефоне нужны три —
+      снять чек, посмотреть корзину, увидеть результат. Ведение справочников и разбор
+      сопоставлений удобнее оставить на большом экране.</p>
+  </section>
+
+  <section class="stack">
+    <span class="eyebrow">Предложение</span>
+    <h2 style="font-size:27px;">Три шага</h2>
+    <ol class="plan">
+      <li><b>Мобильная вёрстка текущего интерфейса.</b>
+        <span>Уже сделано: меню было три строки и занимало четверть экрана — стало одной
+          прокручиваемой строкой вдвое ниже, широкие таблицы прокручиваются внутри себя,
+          а не обрезаются. Телефоном можно пользоваться сегодня, просто по ссылке.</span></li>
+      <li><b>Мини-приложение в Telegram с тремя экранами.</b>
+        <span>Снять QR с чека, поправить корзину, увидеть разбиение. Тот же расчёт, тонкий
+          интерфейс, распространение ссылкой. Это же снимает вопрос входа: Telegram сам
+          говорит, кто пользователь, — а значит, решается и мультипользовательский режим,
+          который в плане стоял отдельным крупным пунктом.</span></li>
+      <li><b>Магазины приложений — если появится ИП и спрос.</b>
+        <span>Раньше этого момента обёртка в APK стоит дороже, чем даёт: семья прекрасно
+          обходится ссылкой, а чужим людям продукт пока не показывается.</span></li>
+    </ol>
+    <p style="font-size:14px;color:var(--ink2);">Неочевидное следствие второго шага: мини-приложение
+      закрывает сразу три пункта плана — сканирование QR, вход и несколько пользователей.
+      Поэтому оно дешевле, чем выглядит: это не «ещё одна платформа», а способ закрыть то,
+      что всё равно предстояло делать.</p>
+  </section>
+</div>
+
+<footer>
+  <div class="wrap" style="display:flex;gap:18px;flex-wrap:wrap;">
+    <span>Разбор вариантов упаковки, сентябрь 2026.</span>
+    <span style="margin-left:auto;display:flex;gap:16px;flex-wrap:wrap;">
+      <a href="./">О продукте</a>
+      <a href="./plan.html">План работ</a>
+      <a href="./sources.html">Источники данных</a>
+    </span>
+  </div>
+</footer>
