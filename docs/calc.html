@@ -1,0 +1,399 @@
+<title>Прикиньте свою выгоду</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=Literata:opsz,wght@7..72,400;7..72,600;7..72,700&display=swap">
+<style>
+  :root{
+    --paper:#FBF7F1; --surface:#FFFFFF; --tint:#F5EFE6;
+    --ink:#2A241E; --ink2:#6E6459; --ink3:#9C9288;
+    --line:#EAE2D6; --line2:#DACFBF;
+    --warm:#BD6533; --warm-soft:#FFEADD;
+    --green:#3D8E53; --green-soft:#E4F6E6;
+    --red:#BB584D; --amber:#B17F22;
+    --shadow:0 1px 2px rgba(42,36,30,.04), 0 18px 40px -30px rgba(42,36,30,.5);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#191612; --surface:#221E19; --tint:#2A251F;
+      --ink:#F0E8DC; --ink2:#B6AB9C; --ink3:#8A8072;
+      --line:#332D25; --line2:#433B31;
+      --warm:#E08A52; --warm-soft:#3A2317;
+      --green:#6CBB80; --green-soft:#1B2E20;
+      --red:#D9786A; --amber:#C9993F;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 18px 40px -30px rgba(0,0,0,.9);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#191612; --surface:#221E19; --tint:#2A251F;
+    --ink:#F0E8DC; --ink2:#B6AB9C; --ink3:#8A8072;
+    --line:#332D25; --line2:#433B31;
+    --warm:#E08A52; --warm-soft:#3A2317;
+    --green:#6CBB80; --green-soft:#1B2E20;
+    --red:#D9786A; --amber:#C9993F;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 18px 40px -30px rgba(0,0,0,.9);
+  }
+
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:"Golos Text","Segoe UI",system-ui,sans-serif;
+    font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased;
+    font-feature-settings:"tnum" 1,"lnum" 1;}
+  a{color:var(--warm);text-decoration:none;}
+  a:hover{color:var(--ink);text-decoration:underline;}
+  :focus-visible{outline:2px solid var(--warm);outline-offset:2px;border-radius:6px;}
+  h1,h2,h3{font-family:"Literata",Georgia,"Times New Roman",serif;
+    letter-spacing:-.02em;text-wrap:balance;margin:0;}
+  p{margin:0;max-width:66ch;}
+
+  .wrap{max-width:1120px;margin:0 auto;padding:0 24px;}
+  .eyebrow{font-size:11px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--ink3);}
+  .serif{font-family:"Literata",Georgia,serif;font-weight:600;letter-spacing:-.025em;}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;
+    box-shadow:var(--shadow);}
+
+  header.page{padding:44px 0 26px;display:flex;flex-direction:column;gap:14px;}
+  header.page h1{font-size:clamp(30px,4.2vw,44px);line-height:1.07;font-weight:600;max-width:17ch;}
+  .lede{font-size:17px;color:var(--ink2);max-width:60ch;}
+
+  .layout{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:22px;align-items:start;
+    padding-bottom:48px;}
+  @media (max-width:900px){.layout{grid-template-columns:minmax(0,1fr);}}
+
+  /* товары */
+  .goods{overflow:hidden;}
+  .goods > header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+    flex-wrap:wrap;padding:15px 18px;border-bottom:1px solid var(--line);background:var(--tint);}
+  .goods > header h2{font-size:17px;}
+  .row{display:grid;grid-template-columns:26px minmax(0,1fr) 104px 92px;gap:12px;align-items:center;
+    padding:9px 18px;border-top:1px solid var(--line);}
+  .row:first-of-type{border-top:none;}
+  .row.off{opacity:.42;}
+  .row .nm{font-size:14px;}
+  .row .best{font-size:13px;font-weight:600;color:var(--green);text-align:right;}
+  .qty{display:flex;align-items:center;gap:6px;justify-content:center;}
+  .qty button{width:24px;height:24px;border:1px solid var(--line2);border-radius:7px;
+    background:var(--surface);color:var(--ink2);font-size:14px;line-height:1;cursor:pointer;}
+  .qty button:hover{border-color:var(--warm);color:var(--ink);}
+  .qty span{min-width:52px;text-align:center;font-size:13px;font-weight:500;}
+  input[type=checkbox]{width:17px;height:17px;accent-color:var(--warm);cursor:pointer;}
+
+  /* настройки */
+  .tune{display:flex;flex-direction:column;gap:14px;padding:16px 18px;}
+  .tune h3{font-size:15px;}
+  .field{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;}
+  .field label{color:var(--ink2);}
+  input[type=number],select{font:inherit;font-size:13px;padding:5px 8px;border-radius:8px;
+    border:1px solid var(--line2);background:var(--surface);color:var(--ink);width:88px;}
+  select{width:auto;max-width:160px;}
+  .bank{border-top:1px solid var(--line);padding-top:11px;display:flex;flex-direction:column;gap:8px;}
+  .bank .head{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;}
+
+  /* результат */
+  .result{position:sticky;top:16px;display:flex;flex-direction:column;gap:14px;}
+  .big{padding:20px 22px;display:flex;flex-direction:column;gap:14px;}
+  .figs{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-end;}
+  .fig{display:flex;flex-direction:column;gap:3px;}
+  .fig .v{font-family:"Literata",Georgia,serif;font-weight:600;letter-spacing:-.025em;
+    font-size:30px;line-height:1;}
+  .bar{display:flex;height:13px;border-radius:7px;overflow:hidden;background:var(--tint);}
+  .bar i{display:block;transition:width .25s ease;}
+  .split{display:flex;flex-direction:column;gap:9px;}
+  .store{display:flex;flex-direction:column;gap:4px;padding:11px 13px;background:var(--tint);
+    border-radius:11px;font-size:13px;}
+  .store .top{display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:600;}
+  .store .edge{font-size:12px;color:var(--ink2);}
+  .month{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+    padding:13px 16px;background:var(--green-soft);border-radius:12px;}
+  .month b{font-family:"Literata",Georgia,serif;font-size:22px;color:var(--green);}
+  .cta{display:flex;gap:10px;flex-wrap:wrap;}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:11px 18px;border-radius:11px;
+    font-size:14px;font-weight:600;border:1px solid var(--line2);background:var(--surface);color:var(--ink);}
+  .btn:hover{border-color:var(--warm);text-decoration:none;}
+  .btn-primary{background:var(--warm);border-color:var(--warm);color:#fff;}
+  .btn-primary:hover{background:var(--ink);border-color:var(--ink);color:var(--paper);}
+
+  .honest{font-size:12.5px;color:var(--ink2);line-height:1.5;padding:12px 14px;
+    background:var(--tint);border-radius:11px;}
+  @media (prefers-reduced-motion: reduce){*{transition:none!important;}}
+</style>
+
+<div class="wrap">
+  <header class="page">
+    <span class="eyebrow" style="color:var(--warm);">Экономьте на еженедельных закупках</span>
+    <h1>Прикиньте выгоду на своей корзине</h1>
+    <p class="lede">Отметьте, что покупаете вы, и впишите условия своих карт. Считает та же
+      формула, что и в приложении: с доставкой, минимальным чеком и лимитом кэшбэка.</p>
+  </header>
+
+  <div class="layout">
+    <div style="display:flex;flex-direction:column;gap:18px;">
+      <section class="card goods">
+        <header>
+          <h2>Что вы покупаете</h2>
+          <span style="font-size:12.5px;color:var(--ink2);">Зелёным — где дешевле эта строка</span>
+        </header>
+        <div id="goods"></div>
+      </section>
+
+      <section class="card tune">
+        <h3>Ваши условия</h3>
+        <div class="field">
+          <label for="usual">Привычный магазин, с которым сравниваем</label>
+          <select id="usual"></select>
+        </div>
+        <div class="field">
+          <label for="trips">Закупок в месяц</label>
+          <input type="number" id="trips" min="1" max="30" step="1" value="4">
+        </div>
+        <div class="field">
+          <label for="penalty">Неудобство второго заказа, ₽</label>
+          <input type="number" id="penalty" min="0" max="1000" step="10" value="150">
+        </div>
+        <div id="banks"></div>
+      </section>
+    </div>
+
+    <aside class="result">
+      <section class="card big">
+        <div class="figs">
+          <div class="fig">
+            <span class="eyebrow">Как обычно</span>
+            <span class="v" id="base" style="color:var(--ink2)">—</span>
+          </div>
+          <div class="fig">
+            <span class="eyebrow">С разбиением</span>
+            <span class="v" id="best">—</span>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:7px;">
+          <div class="bar"><i id="bar-paid" style="width:100%;background:var(--ink);"></i><i id="bar-save" style="width:0;background:var(--green);"></i></div>
+          <div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ink2);">
+            <span id="save-line">Экономия за закупку</span>
+            <span id="save-pct">—</span>
+          </div>
+        </div>
+        <div class="month">
+          <span style="font-size:13px;">Экономия за месяц</span>
+          <b id="month">—</b>
+        </div>
+        <div class="split" id="split"></div>
+      </section>
+
+      <div class="honest">
+        Цены здесь демонстрационные — это пример, а не прайс-лист. Настоящую выгоду приложение
+        считает по вашему чеку и сегодняшним ценам магазинов: состав корзины у каждого свой,
+        и именно он решает, где выгоднее.
+      </div>
+
+      <div class="cta">
+        <a class="btn btn-primary" href="https://moya-korzina-cfvunmlj6hhzc7qe3curbx.streamlit.app">Посчитать по своему чеку</a>
+        <a class="btn" href="./">О продукте</a>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+const STORES = [
+  {code:"magnit", name:"Магнит", color:"var(--red)", fee:149, free:2000},
+  {code:"vkusvill", name:"ВкусВилл", color:"var(--green)", fee:99, free:1500},
+  {code:"pyaterochka", name:"Пятёрочка", color:"var(--amber)", fee:199, free:2500},
+];
+
+const CARDS = {
+  magnit:      {percent:5,  cap:1500, min:1000},
+  vkusvill:    {percent:10, cap:500,  min:1500},
+  pyaterochka: {percent:3,  cap:1000, min:0},
+};
+
+const ITEMS = [
+  {name:"Огурцы короткоплодные 450 г", unit:"pcs", qty:1, p:{magnit:98.9, vkusvill:119, pyaterochka:99.9}},
+  {name:"Страчателла 200 г", unit:"pcs", qty:1, p:{magnit:279, vkusvill:219, pyaterochka:239}},
+  {name:"Хлебцы ржано-пшеничные 240 г", unit:"pcs", qty:2, p:{magnit:46.9, vkusvill:59, pyaterochka:49.9}},
+  {name:"Форель слабосолёная 200 г", unit:"pcs", qty:1, p:{magnit:429, vkusvill:359, pyaterochka:379}},
+  {name:"Дезодорант Axe Ice Chill 50 мл", unit:"pcs", qty:1, p:{magnit:259, vkusvill:329, pyaterochka:289}},
+  {name:"Слива", unit:"kg", qty:0.9, p:{magnit:219, vkusvill:289, pyaterochka:239}},
+  {name:"Икра лососевая копчёная 180 г", unit:"pcs", qty:1, p:{magnit:189, vkusvill:154, pyaterochka:159}},
+  {name:"Нектарины", unit:"kg", qty:0.5, p:{magnit:169, vkusvill:139, pyaterochka:149}},
+  {name:"Сырок глазированный 45 г", unit:"pcs", qty:2, p:{magnit:47.9, vkusvill:58, pyaterochka:49.9}},
+  {name:"Пюре детское банан-яблоко 210 г", unit:"pcs", qty:1, p:{magnit:54.9, vkusvill:44.9, pyaterochka:45.9}},
+  {name:"Тунец в масле 185 г", unit:"pcs", qty:2, p:{magnit:164.9, vkusvill:199, pyaterochka:179}},
+  {name:"Салями сырокопчёная", unit:"kg", qty:0.3, p:{magnit:1749, vkusvill:2089, pyaterochka:1790}},
+  {name:"Колбаса Докторская 400 г", unit:"pcs", qty:1, p:{magnit:219, vkusvill:269, pyaterochka:229}},
+  {name:"Персики консервированные 500 г", unit:"pcs", qty:2, p:{magnit:249, vkusvill:209, pyaterochka:219}},
+  {name:"Фиор ди латте", unit:"kg", qty:0.35, p:{magnit:1249, vkusvill:989, pyaterochka:1090}},
+  {name:"Пюре детское яблоко-груша 200 г", unit:"pcs", qty:1, p:{magnit:45.9, vkusvill:52.9, pyaterochka:45.9}},
+];
+
+const state = ITEMS.map(i => ({...i, on:true}));
+
+const money = v => (v==null||isNaN(v)) ? "—"
+  : v.toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2}).replace(/ /g," ") + " ₽";
+const qtyText = it => it.unit==="kg"
+  ? it.qty.toLocaleString("ru-RU",{maximumFractionDigits:3}) + " кг"
+  : it.qty + " шт";
+const lineCost = (it, code) => Math.round(it.p[code] * it.qty * 100) / 100;
+
+/* ---------- разметка ---------- */
+function drawGoods(){
+  const host = document.getElementById("goods");
+  host.innerHTML = "";
+  state.forEach((it, idx) => {
+    const cheapest = STORES.reduce((a,s)=> lineCost(it,s.code) < lineCost(it,a.code) ? s : a, STORES[0]);
+    const row = document.createElement("div");
+    row.className = "row" + (it.on ? "" : " off");
+    row.innerHTML =
+      `<input type="checkbox" ${it.on?"checked":""} aria-label="${it.name}">` +
+      `<span class="nm">${it.name}</span>` +
+      `<span class="qty"><button type="button" aria-label="меньше">−</button>` +
+      `<span>${qtyText(it)}</span><button type="button" aria-label="больше">+</button></span>` +
+      `<span class="best">${it.on ? money(lineCost(it,cheapest.code)) + "<br>" +
+        `<span style="font-weight:400;color:var(--ink3);font-size:11.5px;">${cheapest.name}</span>` : ""}</span>`;
+    const [box,, qty] = row.children;
+    box.addEventListener("change", () => { it.on = box.checked; render(); });
+    const [minus,, plus] = qty.children;
+    const step = it.unit==="kg" ? 0.1 : 1;
+    minus.addEventListener("click", () => { it.qty = Math.max(step, Math.round((it.qty-step)*1000)/1000); render(); });
+    plus.addEventListener("click", () => { it.qty = Math.round((it.qty+step)*1000)/1000; render(); });
+    host.appendChild(row);
+  });
+}
+
+function drawTune(){
+  const usual = document.getElementById("usual");
+  usual.innerHTML = STORES.map(s=>`<option value="${s.code}">${s.name}</option>`).join("");
+  usual.value = "pyaterochka";
+  usual.addEventListener("change", render);
+  document.getElementById("trips").addEventListener("input", render);
+  document.getElementById("penalty").addEventListener("input", render);
+
+  const host = document.getElementById("banks");
+  host.innerHTML = "";
+  STORES.forEach(s => {
+    const c = CARDS[s.code];
+    const box = document.createElement("div");
+    box.className = "bank";
+    box.innerHTML =
+      `<span class="head"><span class="dot" style="background:${s.color}"></span>Карта для «${s.name}»</span>` +
+      `<div class="field"><label>Кэшбэк, %</label><input type="number" min="0" max="50" step="0.5" value="${c.percent}"></div>` +
+      `<div class="field"><label>Лимит кэшбэка, ₽</label><input type="number" min="0" step="100" value="${c.cap}"></div>` +
+      `<div class="field"><label>Минимальный чек, ₽</label><input type="number" min="0" step="100" value="${c.min}"></div>`;
+    const [, pf, cf, mf] = box.children;
+    pf.querySelector("input").addEventListener("input", e => { c.percent = +e.target.value||0; render(); });
+    cf.querySelector("input").addEventListener("input", e => { c.cap = +e.target.value||0; render(); });
+    mf.querySelector("input").addEventListener("input", e => { c.min = +e.target.value||0; render(); });
+    host.appendChild(box);
+  });
+}
+
+/* ---------- расчёт: формула раздела 6 ---------- */
+function storeTotal(subtotal, store){
+  if (subtotal <= 0) return {subtotal:0, delivery:0, cashback:0, total:0};
+  const card = CARDS[store.code];
+  const delivery = subtotal >= store.free ? 0 : store.fee;
+  // кэшбэк округляется до копеек до вычитания — так же, как в приложении,
+  // иначе итог расходится с расчётом на копейку
+  const raw = subtotal < card.min ? 0 : Math.min(subtotal * card.percent / 100, card.cap);
+  const cashback = Math.round(raw * 100) / 100;
+  return {subtotal, delivery, cashback, total: Math.round((subtotal + delivery - cashback) * 100) / 100};
+}
+
+function evaluate(chosen, pair, penalty){
+  const sums = {};
+  pair.forEach(s => sums[s.code] = 0);
+  chosen.forEach((it, i) => {
+    const code = pair[it.__where].code;
+    sums[code] += lineCost(it, code);
+  });
+  const parts = pair.map(s => ({store:s, ...storeTotal(Math.round(sums[s.code]*100)/100, s)}))
+                    .filter(p => p.subtotal > 0);
+  const total = parts.reduce((a,p)=>a+p.total, 0) + penalty * Math.max(0, parts.length - 1);
+  return {total: Math.round(total*100)/100, parts};
+}
+
+function bestSplit(chosen, penalty){
+  let best = null;
+  // один магазин
+  STORES.forEach(s => {
+    chosen.forEach(it => it.__where = 0);
+    const r = evaluate(chosen, [s], penalty);
+    if (!best || r.total < best.total) best = r;
+  });
+  // две пары: перебираем все разбиения
+  for (let a = 0; a < STORES.length; a++){
+    for (let b = a+1; b < STORES.length; b++){
+      const pair = [STORES[a], STORES[b]];
+      const n = chosen.length;
+      if (n === 0 || n > 20) continue;
+      for (let mask = 0; mask < (1<<n); mask++){
+        chosen.forEach((it,i)=> it.__where = (mask>>i) & 1);
+        const r = evaluate(chosen, pair, penalty);
+        if (r.total < best.total) best = r;
+      }
+    }
+  }
+  return best;
+}
+
+/* ---------- вывод ---------- */
+function render(){
+  drawGoods();
+  const chosen = state.filter(i => i.on);
+  const usual = STORES.find(s => s.code === document.getElementById("usual").value) || STORES[0];
+  const trips = Math.max(1, +document.getElementById("trips").value || 1);
+  const penalty = Math.max(0, +document.getElementById("penalty").value || 0);
+
+  const baseSum = Math.round(chosen.reduce((a,it)=>a + lineCost(it, usual.code), 0)*100)/100;
+  const baseDelivery = baseSum > 0 && baseSum < usual.free ? usual.fee : 0;
+  const base = Math.round((baseSum + baseDelivery)*100)/100;
+  const best = chosen.length ? bestSplit(chosen, penalty) : {total:0, parts:[]};
+  const save = Math.round((base - best.total)*100)/100;
+  const pct = base > 0 ? Math.round(save / base * 10000)/100 : 0;
+
+  document.getElementById("base").textContent = chosen.length ? money(base) : "—";
+  document.getElementById("best").textContent = chosen.length ? money(best.total) : "—";
+  document.getElementById("save-pct").textContent = chosen.length && save > 0
+    ? money(save) + " · " + pct.toLocaleString("ru-RU",{maximumFractionDigits:2}) + " %" : "—";
+  document.getElementById("month").textContent = chosen.length && save > 0
+    ? money(Math.round(save*trips*100)/100) : "—";
+
+  const paid = base > 0 ? Math.max(0, Math.min(100, best.total / base * 100)) : 100;
+  document.getElementById("bar-paid").style.width = paid + "%";
+  document.getElementById("bar-save").style.width = (100 - paid) + "%";
+  document.getElementById("save-line").textContent = save > 0
+    ? `Экономия за закупку` : `Разбивать нечего — выгоднее одним заказом`;
+
+  const split = document.getElementById("split");
+  split.innerHTML = "";
+  best.parts.forEach(p => {
+    const card = CARDS[p.store.code];
+    const edges = [];
+    if (p.delivery === 0 && p.subtotal >= p.store.free)
+      edges.push(`доставка бесплатна: чек выше ${money(p.store.free)}`);
+    else if (p.delivery > 0)
+      edges.push(`доставка ${money(p.delivery)}: до бесплатной не хватает ${money(p.store.free - p.subtotal)}`);
+    if (p.cashback > 0){
+      const capped = p.subtotal * card.percent / 100 > card.cap + 0.005;
+      edges.push(capped ? `кэшбэк упёрся в лимит ${money(card.cap)}` : `кэшбэк ${card.percent} %`);
+    } else if (card.min > 0 && p.subtotal < card.min){
+      edges.push(`кэшбэка нет: до минимального чека ${money(card.min)} не хватает ${money(card.min - p.subtotal)}`);
+    }
+    const el = document.createElement("div");
+    el.className = "store";
+    el.innerHTML =
+      `<span class="top"><span><span class="dot" style="background:${p.store.color}"></span> ${p.store.name}</span>` +
+      `<span>${money(p.total)}</span></span>` +
+      `<span class="edge">товары ${money(p.subtotal)}${edges.length ? " · " + edges.join(" · ") : ""}</span>`;
+    split.appendChild(el);
+  });
+  if (best.parts.length > 1){
+    const note = document.createElement("div");
+    note.className = "edge";
+    note.style.cssText = "font-size:12px;color:var(--ink3);padding-left:4px;";
+    note.textContent = `Включён штраф ${money(penalty)} за второй заказ.`;
+    split.appendChild(note);
+  }
+}
+
+drawTune();
+render();
+</script>
