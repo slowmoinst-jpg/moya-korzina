@@ -104,7 +104,17 @@ def test_calculate_returns_top3(demo_db):
     variants, baseline = service.calculate(demo_db, refresh=False)
     assert baseline == BASELINE
     assert 1 <= len(variants) <= 3
-    assert variants == sorted(variants, key=lambda v: v.total), "варианты не отсортированы по итогу"
+    # Порядок такой, как обещает docstring оптимизатора: сначала полноценные варианты по
+    # возрастанию итога, а варианты с непокрытыми позициями и с чеком ниже минимального
+    # заказа уходят в конец — они дешевле на бумаге, но их нельзя оформить.
+    def rank(v):
+        return (len(v.missing_products),
+                sum(1 for b in v.stores if b.below_min_order),
+                v.total)
+
+    assert variants == sorted(variants, key=rank), "варианты идут не в том порядке"
+    clean = [v for v in variants if rank(v)[:2] == (0, 0)]
+    assert clean == sorted(clean, key=lambda v: v.total), "исполнимые варианты не по возрастанию итога"
 
     stores = {s.code: s for s in repo.list_stores()}
     for v in variants:

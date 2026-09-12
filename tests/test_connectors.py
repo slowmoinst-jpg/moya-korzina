@@ -157,3 +157,73 @@ def test_throttle_pauses_but_does_not_break_call():
     assert time.monotonic() - start < interval * 0.5
 
     assert get_connector("stub").search("хлебцы"), "после паузы вызов живой"
+
+
+# ---------- магазин, регион и наличие ----------
+def test_magnit_marks_absent_product_instead_of_substituting_price(monkeypatch):
+    """404 от Магнита — это «в этом магазине такого не продают», а не сбой разбора.
+
+    Раньше на это место молча подставлялась цена из data/fallback_prices.csv, и человек
+    получал корзину, которую не смог бы заказать. Теперь позиция помечается отсутствующей.
+    """
+    monkeypatch.setattr(MagnitConnector, "_get_html", lambda self, url, params=None: (None, 404))
+    conn = get_connector("magnit")
+    snaps = conn.get_prices(["1000013732"])
+
+    assert len(snaps) == 1
+    assert snaps[0].in_stock is False, "товар, которого нет в магазине, обязан быть помечен"
+
+
+def test_magnit_absent_product_is_not_offered_by_optimizer():
+    """Помеченная позиция не должна попасть в этот магазин при разбиении."""
+    from app.models import BasketLine, Store
+    from app.optimizer.optimizer import _available
+
+    store = Store(id=1, code="magnit", name="Магнит", delivery_fee=0.0, free_delivery_from=0.0)
+    line = BasketLine(product_id=1, name="Молоко", unit="pcs", qty=1.0)
+    line.prices["magnit"] = 89.0
+    line.in_stock["magnit"] = False
+    assert _available(line, store) is False
+
+
+def test_magnit_falls_back_only_when_store_is_unreachable(monkeypatch):
+    """Обрыв связи — другое дело: тут справочная цена уместна, товар считаем доступным."""
+    monkeypatch.setattr(MagnitConnector, "_get_html", lambda self, url, params=None: (None, 0))
+    conn = get_connector("magnit")
+    snaps = conn.get_prices(["magnit-ogurcy-450"])
+
+    assert snaps and snaps[0].price > 0
+    assert snaps[0].in_stock is True
+
+
+def test_magnit_selects_store_by_cookies_not_by_query(monkeypatch):
+    """Сайт слушает куки shopCode/x_shop_type/nmg_dt; параметры адреса он игнорирует."""
+    monkeypatch.setattr(config, "get", lambda key, default=None: {
+        "connectors.magnit_shop_code": "019652",
+        "connectors.magnit_shop_type": "MM",
+        "connectors.magnit_delivery": True,
+    }.get(key, default))
+    cookies = MagnitConnector()._shop_cookies()
+
+    assert cookies["shopCode"] == '"019652"'
+    assert cookies["x_shop_type"] == "MM"
+    assert cookies["nmg_dt"] == "DELIVERY_TYPE_DELIVERY"
+
+
+def test_magnit_reads_price_from_schema_org_markup():
+    """Цена берётся из разметки Schema.org: она переживает перерисовку вёрстки."""
+    from app.connectors.magnit import _LD_PRICE
+
+    page = '<script type="application/ld+json">{"@type":"Product",' \
+           '"offers":{"@type":"Offer","price":175.99,"priceCurrency":"RUB"}}</script>'
+    assert _LD_PRICE.search(page).group(1) == "175.99"
+
+
+def test_magnit_survives_cache_written_by_previous_version():
+    """В кэше могли остаться записи прежнего формата — одной строкой вместо пары."""
+    from app.connectors.magnit import _unpack
+
+    assert _unpack("<html>страница</html>") == ("<html>страница</html>", 200)
+    assert _unpack(("<html>", 200)) == ("<html>", 200)
+    assert _unpack([None, 404]) == (None, 404)
+    assert _unpack(None) == (None, 0)

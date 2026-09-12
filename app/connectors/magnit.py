@@ -10,10 +10,22 @@
 (раздел 9 спецификации): если разбор ничего не нашёл, коннектор молча берёт цены
 из data/fallback_prices.csv и не роняет расчёт по остальным магазинам.
 
-ВАЖНО ПРО РЕГИОН: цена зависит от выбранного магазина. Без указания кода сайт
-отдаёт свой магазин по умолчанию (сейчас Краснодар). Свой код можно подсмотреть
-в адресной строке magnit.ru после выбора магазина — параметр shopCode — и
-прописать в config.yaml как connectors.magnit_shop_code.
+ВАЖНО ПРО РЕГИОН. Проверено запросами 12.09.2026: магазин выбирается НЕ параметром
+в адресе, а КУКАМИ shopCode / x_shop_type, а способ получения — кукой nmg_dt.
+Тот же адрес с разными shopCode в query отдаёт одну и ту же цену; с разными куками —
+разные. Из одного и того же адреса: коктейль «Чудо» 960 г — 175,99 ₽ в Краснодаре и
+169 ₽ в Зеленограде; молоко «Кубанский молочник» — 89 ₽ при доставке и 89,99 ₽ при
+самовывозе. А молока «Кубанский молочник» в московском магазине нет вовсе: страница
+отвечает 404.
+
+Отсюда два правила ниже. Первое: куки, а не параметры. Второе: 404 — это НЕ поломка
+разбора, а ответ «такого товара в этом магазине не продают»; подставлять на его место
+цену из data/fallback_prices.csv нельзя — человек соберёт корзину, которую не сможет
+заказать. Такой товар возвращается с in_stock=False, и оптимизатор его в этот магазин
+не кладёт.
+
+Свой код магазина можно подсмотреть в адресе magnit.ru после выбора магазина
+(параметр shopCode) и прописать в config.yaml как connectors.magnit_shop_code.
 """
 from __future__ import annotations
 
@@ -54,7 +66,24 @@ _PAGE_PRICE = re.compile(
     r'product-details-price(?:-container)?__current"[^>]*>.*?([\d\s  ,.]+)&#8202;₽', re.S
 )
 _META_PRICE = re.compile(r'<meta name="description" content="[^"]*?за ([\d,.]+)₽')
+# разметка Schema.org на странице товара: самый устойчивый источник цены, меняется реже вёрстки
+_LD_PRICE = re.compile(r'"offers"\s*:\s*\{[^}]*?"price"\s*:\s*([\d.]+)')
 _WEIGHT = re.compile(r"(\d+[.,]?\d*)\s*(г|гр|мл|кг|л)\b", re.I)
+
+
+def _unpack(value: Any) -> tuple[str | None, int]:
+    """Приводит значение из кэша к паре (страница, код ответа).
+
+    В кэше могут лежать записи прежней версии коннектора, когда `_get_html` возвращал
+    одну строку. Распаковывать такую запись как пару нельзя — расчёт свалится в резервный
+    CSV на ровном месте, и понять почему будет непросто.
+    """
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        page, status = value
+        return (page if isinstance(page, str) else None), int(status or 0)
+    if isinstance(value, str):
+        return value, 200
+    return None, 0
 
 
 def _to_float(raw: str) -> float | None:
@@ -85,30 +114,52 @@ class MagnitConnector(HttpCatalogConnector):
 
     # --- сеть ---
     def _shop_params(self) -> dict[str, Any]:
+        """Параметры адреса. Сервер их не слушает, но с ними ссылка открывается как на сайте."""
         shop = config.get("connectors.magnit_shop_code")
         return {"shopCode": shop, "shopType": "dostavka"} if shop else {}
 
-    def _get_html(self, url: str, params: dict[str, Any] | None = None) -> str | None:
-        """Страница магазина. None при любой проблеме — это ожидаемый сценарий."""
+    def _shop_cookies(self) -> dict[str, str]:
+        """Куки, которыми сайт на самом деле выбирает магазин и способ получения."""
+        shop = config.get("connectors.magnit_shop_code")
+        if not shop:
+            return {}
+        delivery = config.get("connectors.magnit_delivery", True)
+        return {
+            "shopCode": f'"{shop}"',
+            "x_shop_type": str(config.get("connectors.magnit_shop_type", "ME") or "ME"),
+            "nmg_dt": "DELIVERY_TYPE_DELIVERY" if delivery else "DELIVERY_TYPE_PICKUP",
+        }
+
+    def _get_html(self, url: str, params: dict[str, Any] | None = None) -> tuple[str | None, int]:
+        """Страница магазина и код ответа.
+
+        Код нужен вызывающему: 404 — это осмысленный ответ «в этом магазине такого товара
+        нет», и путать его с обрывом связи нельзя. Поэтому 404 не считается неудачей
+        коннектора и предохранитель на него не реагирует.
+        """
         if api_disabled(self.code):
-            return None
+            return None, 0
         try:
             import requests
         except ImportError:  # pragma: no cover
-            return None
+            return None, 0
         timeout = float(config.get("connectors.timeout_sec", 10) or 10)
         try:
-            resp = requests.get(url, params=params, headers=self._headers(), timeout=timeout)
+            resp = requests.get(url, params=params, headers=self._headers(),
+                                cookies=self._shop_cookies(), timeout=timeout)
+            if resp.status_code == 404:
+                note_success(self.code)          # магазин ответил, просто товара у него нет
+                return None, 404
             if resp.status_code != 200:
                 log.warning("%s: %s ответил %s — ухожу в fallback", self.code, url, resp.status_code)
                 note_failure(self.code)
-                return None
+                return None, resp.status_code
             note_success(self.code)
-            return resp.text
+            return resp.text, 200
         except Exception as exc:  # noqa: BLE001
             log.warning("%s: запрос к %s не удался (%s) — ухожу в fallback", self.code, url, exc)
             note_failure(self.code)
-            return None
+            return None, 0
 
     # --- разбор ---
     def _cards(self, page: str) -> list[Candidate]:
@@ -135,8 +186,8 @@ class MagnitConnector(HttpCatalogConnector):
     # --- контракт ---
     def _search(self, query: str, limit: int) -> list[Candidate]:
         params = {"term": query, **self._shop_params()}
-        page = cached_call(self.code, f"search:{query}:{limit}",
-                           lambda: self._get_html(SEARCH_URL, params))
+        page, _ = _unpack(cached_call(self.code, f"search:{query}:{limit}",
+                                      lambda: self._get_html(SEARCH_URL, params)))
         found = self._cards(page) if page else []
         if not found:
             log.warning("%s: по «%s» ничего не разобрано — беру data/fallback_prices.csv",
@@ -147,20 +198,35 @@ class MagnitConnector(HttpCatalogConnector):
         found.sort(key=lambda c: c.score, reverse=True)
         return found[:limit]
 
+    def _out_of_stock(self, skus: list[str]) -> list[PriceSnapshot]:
+        """Товары, которых в выбранном магазине нет.
+
+        Цену берём справочную, чтобы экран мог показать порядок величины, но помечаем
+        отсутствие: оптимизатор такую позицию в этот магазин не положит.
+        """
+        known = {snap.sku: snap.price for snap in self._fallback_prices(list(skus))}
+        return [PriceSnapshot(store_code=self.code, sku=sku,
+                              price=known.get(sku, 0.0), in_stock=False) for sku in skus]
+
     def _get_prices(self, skus: list[str]) -> list[PriceSnapshot]:
         out: list[PriceSnapshot] = []
-        missing: list[str] = []
+        missing: list[str] = []        # не дозвонились или не разобрали — берём справочник
+        absent: list[str] = []         # магазин ответил «нет такого товара»
         for sku in skus:
             if sku.startswith(self.fallback_sku_prefix):  # синтетический артикул из CSV
                 missing.append(sku)
                 continue
-            page = cached_call(self.code, f"product:{sku}",
-                               lambda sku=sku: self._get_html(PRODUCT_URL.format(sku=sku),
-                                                              self._shop_params()))
+            page, status = _unpack(cached_call(
+                self.code, f"product:{sku}",
+                lambda sku=sku: self._get_html(PRODUCT_URL.format(sku=sku), self._shop_params())))
+            if status == 404:
+                log.info("%s: %s не продаётся в выбранном магазине", self.code, sku)
+                absent.append(sku)
+                continue
             if not page:
                 missing.append(sku)
                 continue
-            match = _PAGE_PRICE.search(page) or _META_PRICE.search(page)
+            match = _LD_PRICE.search(page) or _PAGE_PRICE.search(page) or _META_PRICE.search(page)
             price = _to_float(match.group(1)) if match else None
             if price is None:
                 missing.append(sku)
@@ -173,6 +239,8 @@ class MagnitConnector(HttpCatalogConnector):
                 in_stock=True,
                 name=html.unescape(title.group(1)).strip() if title else None,
             ))
+        if absent:
+            out.extend(self._out_of_stock(absent))
         if missing:
             out.extend(self._fallback_prices(missing))
         return out
