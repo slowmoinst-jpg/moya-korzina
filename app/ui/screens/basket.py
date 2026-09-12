@@ -49,6 +49,7 @@ def _pick_basket():
             st.info("Корзин пока нет — создайте первую справа.")
 
     with col2:
+        _from_history()
         with st.form("new_basket_form", clear_on_submit=True):
             name = st.text_input("Название новой корзины", placeholder="Например: Неделя 38")
             if st.form_submit_button("Создать корзину"):
@@ -268,3 +269,36 @@ def header_stats() -> str:
     _, totals = _price_matrix(items, repo.list_stores())
     priced = [(s.name, totals[s.code]) for s in repo.list_stores() if totals.get(s.code)]
     return theme.stat_chips([("Позиций", str(len(items)))] + [(n, rub(v)) for n, v in priced])
+
+
+# ---------- корзина из истории покупок ----------
+def _from_history() -> None:
+    """Собрать корзину по прошлой покупке или по среднему за месяц (раздел 5.3)."""
+    from app import baskets
+
+    left, right = st.columns(2)
+    made = None
+    with left:
+        if st.button("Как в прошлый раз", key="basket_from_last", width="stretch"):
+            made = ("history", baskets.build_from_history(baskets.LAST))
+    with right:
+        if st.button("По среднему за месяц", key="basket_from_avg", width="stretch"):
+            made = ("average", baskets.build_from_history(baskets.AVERAGE))
+
+    if not made:
+        return
+    kind, result = made
+    if not result["basket_id"]:
+        st.warning("В истории пока нет покупок, из которых можно собрать корзину. "
+                   "Загрузите чек на экране «История».")
+        return
+
+    st.session_state["basket_id"] = result["basket_id"]
+    if kind == "average":
+        st.success(f"Собрали корзину по среднему: {len(result['items'])} позиций "
+                   f"за {result['months']} мес.")
+    else:
+        st.success(f"Повторили покупку от {result['date']}: {len(result['items'])} позиций.")
+    if result["skipped"]:
+        st.caption(f"Пропустили {result['skipped']}: этих товаров больше нет в справочнике.")
+    st.rerun()

@@ -19,13 +19,17 @@ def render() -> None:
     cards = repo.list_cards()
     stores = repo.list_stores()
 
-    tab_cards, tab_offers, tab_csv = st.tabs(["Карты", "Акции", "Загрузка CSV"])
+    tab_cards, tab_offers, tab_csv, tab_ref = st.tabs(
+        ["Карты", "Акции", "Загрузка CSV", "Справочник банков"])
     with tab_cards:
         _cards(cards)
     with tab_offers:
         _offers(cards, stores)
     with tab_csv:
         _csv(stores)
+    with tab_ref:
+        _reference()
+
 
 
 # ---------- карты ----------
@@ -348,3 +352,57 @@ def header_stats() -> str:
         ("Лимит кэшбэка", rub(cap)),
         ("Использовано", rub(used)),
     ])
+
+
+# ---------- справочник банков (общий контур) ----------
+def _reference() -> None:
+    """Проверенная структура программ. Проценты и лимиты человек вписывает сам."""
+    from app import bank_reference
+
+    banks = bank_reference.all_banks()
+    if not banks:
+        st.info("Справочник не найден: ожидается файл data/bank_reference.csv.")
+        return
+
+    esc = theme.esc
+    st.markdown("Как устроен кэшбэк в разных банках. Проценты и лимиты здесь не хранятся — "
+                "они меняются каждый месяц и у каждого свои, их вы вписываете на вкладке «Акции».")
+
+    rows = []
+    for row in banks:
+        title = " · ".join(x for x in (row.get("program"), row.get("card")) if x) or "—"
+        money = bank_reference.is_money(row)
+        rows.append([
+            f'<b>{esc(row["bank"])}</b><br><span style="font-size:12px;color:var(--ink3);">{esc(title)}</span>',
+            f'<span style="font-size:13px;">{esc(row.get("how_it_works") or "—")}</span>',
+            f'<span style="font-size:13px;color:var(--ink2);">{esc(row.get("categories") or "—")}</span>',
+            theme.pill(esc(row.get("currency") or "—"), "green" if money else "warm"),
+        ])
+    theme.block(theme.table(
+        grid="180px minmax(0,1fr) 190px 120px",
+        header=["Банк", "Как устроен кэшбэк", "Категории", "Начисление"],
+        rows=rows,
+        aligns=["left", "left", "left", "right"],
+    ))
+
+    st.markdown("")
+    chosen = st.selectbox("Завести карту из справочника", banks,
+                          format_func=lambda r: f"{r['bank']} · {bank_reference.card_title(r)}",
+                          key="ref_bank_select")
+    if not chosen:
+        return
+
+    for text in bank_reference.warnings(chosen):
+        st.warning(text)
+    if chosen.get("note"):
+        st.caption(chosen["note"])
+
+    exists = any(c.bank == chosen["bank"] and c.name == bank_reference.card_title(chosen)
+                 for c in repo.list_cards())
+    if exists:
+        st.success("Такая карта уже заведена — условия вписывайте на вкладке «Акции».")
+        return
+    if st.button("Завести карту", type="primary", key="ref_add_card_btn"):
+        repo.upsert_card(Card(None, chosen["bank"], bank_reference.card_title(chosen)))
+        st.success("Карту завели. Теперь добавьте её условия на вкладке «Акции».")
+        st.rerun()
