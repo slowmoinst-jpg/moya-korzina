@@ -157,10 +157,11 @@ def test_connector_prefers_pricelist_and_dates_it(db, tmp_path, monkeypatch):
 
 
 def test_connector_search_finds_pricelist_rows(db, tmp_path, monkeypatch):
+    """У Пятёрочки живого каталога нет вовсе — её поиск идёт по прайсу."""
     from app.connectors import get_connector
 
     monkeypatch.setattr(pricelist, "DIR", str(tmp_path / "prices"))
-    pricelist.save("dixy", "Название;Цена\nГречка ядрица 900 г;129,90")
-    found = get_connector("dixy").search("гречка", limit=3)
+    pricelist.save("pyaterochka", "Название;Цена\nГречка ядрица 900 г;129,90")
+    found = get_connector("pyaterochka").search("гречка", limit=3)
 
     assert found and found[0].price == 129.90

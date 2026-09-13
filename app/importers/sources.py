@@ -88,6 +88,32 @@ def _date(value: Any) -> str:
 
 
 # ---------- JSON чека ----------
+_EAN = re.compile(r"(?<!\d)(\d{12,14}|\d{8})(?!\d)")     # длинный код важнее короткого
+
+
+def _barcode(item: dict) -> str | None:
+    """Штрихкод позиции чека, если ОФД его передал.
+
+    Формат у операторов разный: где-то простое поле ean13, где-то productCode,
+    где-то вложенный productCodeNew. Марочные коды (КИЗ) сюда не годятся — из них
+    берём только часть, похожую на EAN, и только если она отдельным полем.
+    """
+    for key in ("ean13", "barcode", "productCode", "rawProductCode", "gtin", "ean"):
+        value = item.get(key) or item.get(key.capitalize())
+        if isinstance(value, (str, int)):
+            match = _EAN.search(str(value))
+            if match:
+                return match.group(1)
+    nested = item.get("productCodeNew") or item.get("ProductCodeNew")
+    if isinstance(nested, dict):
+        for node in nested.values():
+            if isinstance(node, dict):
+                found = _barcode(node)
+                if found:
+                    return found
+    return None
+
+
 def _find_receipt_node(node: Any) -> dict | None:
     """Первый объект со списком items — у разных ОФД он лежит на разной глубине."""
     if isinstance(node, dict):
@@ -127,7 +153,8 @@ def parse_receipt_json(payload: str | dict) -> Receipt:
             total = round(price * qty, 2)
         if price is None or total is None:
             continue
-        rows.append(ReceiptRow(raw_name=name, qty=qty, unit_price=price, total=total))
+        rows.append(ReceiptRow(raw_name=name, qty=qty, unit_price=price, total=total,
+                               barcode=_barcode(item)))
 
     if not rows:
         raise ValueError("В файле нет ни одной позиции с ценой")

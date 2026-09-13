@@ -13,7 +13,19 @@ def NOW() -> str:
 
 # ---------- products ----------
 def _product(r) -> Product:
-    return Product(r["id"], r["name"], r["brand"], r["weight_g"], r["unit"], r["category"], bool(r["active"]))
+    # по именам, а не по порядку: порядок колонок в таблице и полей в датаклассе
+    # разошёлся, когда добавился штрихкод, и позиционная сборка молча всё перепутала
+    keys = r.keys()
+    return Product(
+        id=r["id"],
+        name=r["name"],
+        brand=r["brand"],
+        barcode=r["barcode"] if "barcode" in keys else None,
+        weight_g=r["weight_g"],
+        unit=r["unit"],
+        category=r["category"],
+        active=bool(r["active"]),
+    )
 
 
 def list_products(active_only: bool = True) -> list[Product]:
@@ -32,14 +44,16 @@ def upsert_product(p: Product) -> int:
     with get_conn() as c:
         if p.id:
             c.execute(
-                "UPDATE products SET name=?, brand=?, weight_g=?, unit=?, category=?, active=? WHERE id=?",
-                (p.name, p.brand, p.weight_g, p.unit, p.category, int(p.active), p.id),
+                "UPDATE products SET name=?, barcode=?, brand=?, weight_g=?, unit=?, category=?, active=?"
+                " WHERE id=?",
+                (p.name, p.barcode, p.brand, p.weight_g, p.unit, p.category, int(p.active), p.id),
             )
             c.commit()
             return p.id
         cur = c.execute(
-            "INSERT INTO products (name, brand, weight_g, unit, category, active) VALUES (?,?,?,?,?,?)",
-            (p.name, p.brand, p.weight_g, p.unit, p.category, int(p.active)),
+            "INSERT INTO products (name, barcode, brand, weight_g, unit, category, active)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (p.name, p.barcode, p.brand, p.weight_g, p.unit, p.category, int(p.active)),
         )
         c.commit()
         return cur.lastrowid
@@ -138,12 +152,15 @@ def delete_offer(offer_id: int) -> None:
 
 # ---------- store_products / mapping / prices ----------
 def upsert_store_product(store_id: int, sku: str, raw_name: str, weight_g: float | None = None,
-                         unit: str | None = None, url: str | None = None) -> int:
+                         unit: str | None = None, url: str | None = None,
+                         ean: str | None = None) -> int:
     with get_conn() as c:
-        c.execute("INSERT INTO store_products (store_id, sku, raw_name, weight_g, unit, url) VALUES (?,?,?,?,?,?)"
+        c.execute("INSERT INTO store_products (store_id, sku, raw_name, weight_g, unit, url, ean)"
+                  " VALUES (?,?,?,?,?,?,?)"
                   " ON CONFLICT(store_id, sku) DO UPDATE SET raw_name=excluded.raw_name,"
-                  " weight_g=excluded.weight_g, unit=excluded.unit, url=excluded.url",
-                  (store_id, sku, raw_name, weight_g, unit, url))
+                  " weight_g=excluded.weight_g, unit=excluded.unit, url=excluded.url,"
+                  " ean=COALESCE(excluded.ean, store_products.ean)",
+                  (store_id, sku, raw_name, weight_g, unit, url, ean))
         c.commit()
         return c.execute("SELECT id FROM store_products WHERE store_id=? AND sku=?", (store_id, sku)).fetchone()["id"]
 

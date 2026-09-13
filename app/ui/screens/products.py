@@ -247,6 +247,13 @@ def _form(products) -> None:
                 format_func=lambda u: UNITS[u],
             )
             category = st.text_input("Категория", value=(selected.category or "") if selected else "")
+        barcode = st.text_input(
+            "Штрихкод",
+            value=(getattr(selected, "barcode", None) or "") if selected else "",
+            help="Самый надёжный способ связать товар с магазином: по названию «Страчателла» "
+                 "находится и сыр, и мороженое, а по штрихкоду — только он сам. "
+                 "Подставляется из чека, если оператор его передал.",
+        )
         active = st.checkbox("Активен", value=bool(selected.active) if selected else True)
         submitted = st.form_submit_button("Сохранить", type="primary")
 
@@ -257,6 +264,7 @@ def _form(products) -> None:
         product = Product(
             id=selected.id if selected else None,
             name=name.strip(),
+            barcode="".join(ch for ch in barcode if ch.isdigit()) or None,
             brand=brand.strip() or None,
             weight_g=weight_g or None,
             unit=unit,

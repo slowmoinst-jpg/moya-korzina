@@ -119,6 +119,23 @@ class VkusvillConnector(Connector):
         found.sort(key=lambda c: c.score, reverse=True)
         return found[:limit]
 
+    def _search_barcode(self, barcode: str) -> Candidate | None:
+        """Единственная сеть из наших, у которой поиск по штрихкоду — штатный инструмент.
+
+        Сервер отвечает «Товар по штрих-коду не найден», когда такого у него нет:
+        это не ошибка, а честный ответ, и мы его так и трактуем.
+        """
+        answer = mcp_client.call_tool(MCP_URL, self.code, "vkusvill_product_barcode",
+                                      {"barcode": barcode}, cache_key=f"barcode:{barcode}")
+        item = mcp_client.ok_payload(answer)
+        if not item:
+            return None
+        candidate = self._to_candidate(item)
+        if candidate:
+            candidate.ean = barcode
+            candidate.score = 1.0        # штрихкод совпал — гадать больше не о чем
+        return candidate
+
     def _get_prices(self, skus: list[str]) -> list[PriceSnapshot]:
         out: list[PriceSnapshot] = []
         missing: list[str] = []

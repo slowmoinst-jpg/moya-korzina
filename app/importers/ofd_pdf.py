@@ -22,6 +22,7 @@ class ReceiptRow:
     qty: float
     unit_price: float
     total: float
+    barcode: str | None = None      # если ОФД его отдал — это лучший ключ сопоставления
 
 
 @dataclass
@@ -195,6 +196,19 @@ def _ensure_product(raw_name: str) -> tuple[int, bool]:
     return pid, True
 
 
+def _remember_barcode(product_id: int, barcode: str) -> None:
+    """Запоминает штрихкод у эталона, если его там ещё нет.
+
+    Уже записанный не трогаем: в чеке может оказаться код другой фасовки, а тот,
+    что человек подтвердил руками, надёжнее.
+    """
+    product = repo.get_product(product_id)
+    if product is None or getattr(product, "barcode", None):
+        return
+    product.barcode = barcode
+    repo.upsert_product(product)
+
+
 def import_receipt(path: str, store_code: str | None = None) -> dict:
     """Разбирает чек и пишет его в purchase_history, заводя недостающие эталоны.
 
@@ -209,6 +223,8 @@ def import_receipt(path: str, store_code: str | None = None) -> dict:
     for row in receipt.rows:
         product_id, is_new = _ensure_product(row.raw_name)
         created += int(is_new)
+        if row.barcode:
+            _remember_barcode(product_id, row.barcode)
         repo.add_history_row(
             date=receipt.date, store_id=store_id, product_id=product_id,
             raw_name=row.raw_name, qty=row.qty, unit_price=row.unit_price, total=row.total,

@@ -13,6 +13,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    barcode TEXT,
     brand TEXT,
     weight_g REAL,
     unit TEXT NOT NULL CHECK (unit IN ('pcs', 'kg')),
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS store_products (
     store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
     sku TEXT NOT NULL,
     raw_name TEXT NOT NULL,
+    ean TEXT,
     weight_g REAL,
     unit TEXT,
     url TEXT,
@@ -149,12 +151,30 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+# Колонки, добавленные после первых выпусков. CREATE TABLE IF NOT EXISTS их не донесёт
+# до уже существующей базы, поэтому досыпаем отдельно.
+LATE_COLUMNS: list[tuple[str, str, str]] = [
+    # таблица, колонка, тип
+    ("products", "barcode", "TEXT"),
+    ("store_products", "ean", "TEXT"),
+]
+
+
+def _add_late_columns(conn: sqlite3.Connection) -> None:
+    """Досыпает недостающие колонки в базу, созданную прежней версией."""
+    for table, column, kind in LATE_COLUMNS:
+        have = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in have:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+
+
 def init_db(conn: sqlite3.Connection | None = None) -> None:
     """Создаёт схему и справочник магазинов. Идемпотентно."""
     own = conn is None
     conn = conn or get_conn()
     try:
         conn.executescript(SCHEMA_SQL)
+        _add_late_columns(conn)
         for row in SEED_STORES:
             conn.execute(
                 "INSERT INTO stores (code, name, delivery_fee, free_delivery_from, min_order, connector_type)"

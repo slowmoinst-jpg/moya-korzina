@@ -10,6 +10,7 @@ class Product:
     id: int | None
     name: str
     brand: str | None = None
+    barcode: str | None = None      # EAN-13 — самый надёжный ключ сопоставления
     weight_g: float | None = None
     unit: str = "pcs"          # 'pcs' | 'kg'
     category: str | None = None

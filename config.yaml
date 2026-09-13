@@ -19,5 +19,6 @@ connectors:
                                       #   python -c "from app.connectors.lenta import nearest_stores; print(nearest_stores('ваш адрес'))"
                                       # Код надёжнее адреса: адрес сервер разбирает сам и может выбрать не ту точку.
 optimizer:
-  max_stores: 2                      # MVP: перебор разбиений на 1-2 магазина
+  max_stores: 5                      # перебор разбиений на 1..5 магазинов —
+                                     # столько же, сколько магазинов в справочнике
   top_n: 3

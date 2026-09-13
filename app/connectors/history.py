@@ -150,8 +150,3 @@ class PyaterochkaConnector(HistoryConnector):
     """Пятёрочка. 5ka.ru закрыт наглухо, MCP нет — живём на прайсе и чеках."""
     code = "pyaterochka"
 
-
-@register("dixy")
-class DixyConnector(HistoryConnector):
-    """Дикси. dixy.ru отвечает капчей — живём на прайсе и чеках."""
-    code = "dixy"

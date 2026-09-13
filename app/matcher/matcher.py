@@ -14,6 +14,11 @@ from app.models import Candidate
 WEIGHT_PENALTY = 0.5      # во столько раз режем score кандидата с негодной граммовкой
 
 
+def digits(value) -> str:
+    """Только цифры: штрихкод записывают и с пробелами, и с дефисами, и числом."""
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
 # --- доступ к коннекторам (модуль пишется параллельно, может отсутствовать) ---
 
 def _get_connector(store_code: str):
@@ -57,8 +62,17 @@ def _mapped_rows(product_id: int, store_id: int) -> list[dict]:
 # --- поиск кандидатов ------------------------------------------------------
 
 def score_candidate(product, candidate: Candidate, tolerance_pct: float | None = None) -> float:
-    """Похожесть кандидата на эталон с учётом допуска по граммовке."""
+    """Похожесть кандидата на эталон с учётом штрихкода и допуска по граммовке.
+
+    Штрихкод бьёт всё остальное. Совпал — сомнений нет, это тот самый товар.
+    Разошёлся — это точно не он, сколько бы ни совпадали названия: именно так
+    «Страчателла» оказывалась мороженым, а детское пюре — соком.
+    """
     tol = _tolerance() if tolerance_pct is None else tolerance_pct
+    ours, theirs = digits(getattr(product, "barcode", None)), digits(candidate.ean)
+    if ours and theirs:
+        return 1.0 if ours == theirs else 0.0
+
     score = similarity(product.name, candidate.name or "")
     cand_weight = candidate.weight_g
     if cand_weight is None:
@@ -79,6 +93,10 @@ def find_candidates(product_id: int, store_code: str, limit: int = 3) -> list[Ca
         return []
 
     found = _search(connector, product.name, max(limit * 3, 10))
+    exact = connector.search_barcode(product.barcode) if getattr(product, "barcode", None) else None
+    if exact:
+        # найденный по штрихкоду идёт первым и вытесняет одноимённого из выдачи по названию
+        found = [exact] + [c for c in found if c.sku != exact.sku]
     scored: list[Candidate] = []
     for cand in found:
         if not getattr(cand, "sku", None):
@@ -97,7 +115,7 @@ def find_candidates(product_id: int, store_code: str, limit: int = 3) -> list[Ca
     confirmed_sku = confirmed["sku"] if confirmed else None
     for cand in top:
         sp_id = repo.upsert_store_product(store.id, cand.sku, cand.name, cand.weight_g,
-                                          cand.unit, cand.url)
+                                          cand.unit, cand.url, cand.ean)
         if cand.sku != confirmed_sku:                  # подтверждённое не понижаем
             repo.confirm_mapping(product_id, sp_id, confirmed=False)
     return top
@@ -143,7 +161,11 @@ def auto_match(product_ids: list[int], store_codes: list[str], threshold: float 
                                     "candidates": []})
                 continue
             best = candidates[0]
-            fits = weight_ok(product.weight_g, best.weight_g, tol)
+            # совпавший штрихкод снимает вопрос о граммовке: это тот же товар,
+            # даже если в названии магазина фасовка написана иначе
+            by_barcode = bool(digits(getattr(product, "barcode", None))
+                              and digits(best.ean) == digits(getattr(product, "barcode", None)))
+            fits = by_barcode or weight_ok(product.weight_g, best.weight_g, tol)
             if best.score >= threshold and fits:
                 confirm(product_id, store_code, best.sku)
                 auto += 1

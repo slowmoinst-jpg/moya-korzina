@@ -14,11 +14,12 @@ from app.connectors.base import (  # noqa: F401
     ConnectorError,
     HttpCatalogConnector,
     available_codes,
+    digits,
     get_connector,
     similarity,
 )
+from app.connectors.dixy import DixyConnector  # noqa: F401
 from app.connectors.history import (  # noqa: F401
-    DixyConnector,
     HistoryConnector,
     PyaterochkaConnector,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "StubConnector",
     "VkusvillConnector",
     "available_codes",
+    "digits",
     "get_connector",
     "similarity",
 ]

@@ -34,6 +34,11 @@ def normalize(text: str | None) -> str:
     return _JUNK.sub(" ", (text or "").lower().replace("ё", "е")).strip()
 
 
+def digits(value: str | None) -> str:
+    """Только цифры: штрихкод могут записать с пробелами, дефисами или как число."""
+    return re.sub(r"\D", "", str(value or ""))
+
+
 def similarity(query: str, name: str) -> float:
     """Грубая похожесть 0..1: SequenceMatcher по нормализованным строкам + бонус за вхождение."""
     q, n = normalize(query), normalize(name)
@@ -66,6 +71,26 @@ class Connector(ABC):
             except Exception as exc2:
                 log.warning("%s: fallback тоже не сработал (%s)", self.code, exc2)
                 return []
+
+    def search_barcode(self, barcode: str) -> Candidate | None:
+        """Товар по штрихкоду — самый надёжный ключ сопоставления, какой бывает.
+
+        Название можно понять двояко («Страчателла» — сыр или мороженое?), штрихкод
+        нельзя. Поэтому если магазин умеет искать по нему, этот путь идёт первым.
+        None означает «не умеет или не нашёл» и это нормальный ответ.
+        """
+        code = digits(barcode)
+        if not code:
+            return None
+        try:
+            return self._search_barcode(code)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s: поиск по штрихкоду %s упал (%s)", self.code, code, exc)
+            return None
+
+    def _search_barcode(self, barcode: str) -> Candidate | None:
+        """Большинство магазинов по штрихкоду искать не дают. Врать об этом не надо."""
+        return None
 
     def get_prices(self, skus: list[str]) -> list[PriceSnapshot]:
         if not skus:
@@ -326,7 +351,7 @@ def register(*codes: str):
 
 def _ensure_loaded() -> None:
     if not _REGISTRY:
-        from app.connectors import history, lenta, magnit, stub, vkusvill  # noqa: F401  (регистрация при импорте)
+        from app.connectors import dixy, history, lenta, magnit, stub, vkusvill  # noqa: F401  (регистрация при импорте)
 
 
 def available_codes() -> list[str]:
