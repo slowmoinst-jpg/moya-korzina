@@ -7,8 +7,10 @@
 Отсюда и берём данные.
 
 Разметка магазина может смениться в любой момент — это штатная ситуация
-(раздел 9 спецификации): если разбор ничего не нашёл, коннектор молча берёт цены
-из data/fallback_prices.csv и не роняет расчёт по остальным магазинам.
+(раздел 9 спецификации). Тогда порядок такой: сначала пробуем прочесть страницу
+разбором, потом, если включён, запасным разбором языковой моделью
+(app/connectors/smart_extract.py), и только в последнюю очередь берём цену из
+data/fallback_prices.csv. Расчёт по остальным магазинам при этом не страдает.
 
 ВАЖНО ПРО РЕГИОН. Проверено запросами 12.09.2026: магазин выбирается НЕ параметром
 в адресе, а КУКАМИ shopCode / x_shop_type, а способ получения — кукой nmg_dt.
@@ -43,6 +45,7 @@ from app.connectors.base import (
     register,
     similarity,
 )
+from app.connectors import smart_extract
 from app.connectors.cache import cached_call
 from app.models import Candidate, PriceSnapshot
 
@@ -228,15 +231,21 @@ class MagnitConnector(HttpCatalogConnector):
                 continue
             match = _LD_PRICE.search(page) or _PAGE_PRICE.search(page) or _META_PRICE.search(page)
             price = _to_float(match.group(1)) if match else None
+            in_stock = True
             if price is None:
-                missing.append(sku)
-                continue
+                # страницу мы получили, а прочесть не смогли: похоже, сменилась вёрстка.
+                # прежде чем подсунуть справочную цену, спросим модель — если она включена
+                guess = smart_extract.price_from_html(self.code, page, f"артикул {sku}")
+                if not guess:
+                    missing.append(sku)
+                    continue
+                price, in_stock = guess["price"], guess["in_stock"]
             title = re.search(r"<title>(.*?)(?:\s*–|</title>)", page, re.S)
             out.append(PriceSnapshot(
                 store_code=self.code,
                 sku=sku,
                 price=price,
-                in_stock=True,
+                in_stock=in_stock,
                 name=html.unescape(title.group(1)).strip() if title else None,
             ))
         if absent:

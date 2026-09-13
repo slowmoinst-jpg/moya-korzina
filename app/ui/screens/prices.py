@@ -96,11 +96,28 @@ def _pricelist_box(stores) -> None:
             st.rerun()
 
 
+def _safety_net() -> str:
+    """Строка о том, что будет, если магазин сменит вёрстку.
+
+    Без неё запасной разбор — невидимая настройка в конфиге, о которой человек
+    узнаёт только когда уже поздно.
+    """
+    from app.connectors import smart_extract
+
+    ok, why = smart_extract.available()
+    if ok:
+        return ("Если магазин сменит вёрстку, цену попробует прочитать языковая модель — "
+                "и в журнал уйдёт предупреждение, что разбор пора чинить.")
+    return (f"Запасной разбор вёрстки языковой моделью не включён ({why}). "
+            "Если магазин сменит разметку, цена возьмётся из справочника — она может быть неточной.")
+
+
 def _refresh_bar(products, stores) -> None:
     left, right = st.columns([3, 1])
     with left:
         st.caption("Цены сохраняются снимками с отметкой времени. Чем чаще обновляете — "
                    "тем подробнее история.")
+        st.caption(_safety_net())
     with right:
         if st.button("Обновить цены", key="prices_refresh_btn", width="stretch"):
             fn, err = load("app.matcher", "refresh_prices")

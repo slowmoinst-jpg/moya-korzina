@@ -46,6 +46,7 @@ from app.connectors.base import (
     register,
     similarity,
 )
+from app.connectors import smart_extract
 from app.connectors.cache import cached_call
 from app.connectors.history import HistoryConnector
 from app.models import Candidate, PriceSnapshot
@@ -191,7 +192,12 @@ class DixyConnector(HistoryConnector):
         page, _ = cached_call(self.code, f"product:{sku}", lambda: self._get(url))
         if not isinstance(page, str):
             return None, ""
-        return parse_price(page), page
+        price = parse_price(page)
+        if price is None:
+            # страница есть, а цены в ней не видно — вёрстка могла смениться
+            guess = smart_extract.price_from_html(self.code, page, f"артикул {sku}")
+            price = guess["price"] if guess else None
+        return price, page
 
     def _known_url(self, sku: str) -> str | None:
         """Адрес карточки, сохранённый матчером при сопоставлении."""

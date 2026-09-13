@@ -15,6 +15,13 @@ connectors:
   magnit_shop_type: ME                # формат точки из того же адреса (ME, MM, DG, GM, MC…)
   magnit_delivery: true               # true — цены доставки, false — цены самовывоза. Они разные.
   lenta_address: Москва, Ходынский бульвар 4   # Лента отвечает ценами только по адресу или коду точки:
+  smart_extract:                      # запасной разбор страницы языковой моделью:
+    enabled: false                    # включается, только если вёрстка магазина сменилась
+    model: openai/gpt-4o-mini         # ollama/llama3.1 — локально и без ключа
+    base_url:                         # для ollama: http://localhost:11434
+    max_chars: 20000                  # сколько разметки отдаём модели
+                                      # ставится отдельно: pip install scrapegraphai
+                                      # ключ — в переменной окружения, не здесь
   lenta_store_id:                     # цена и остаток у каждой точки свои. Код точки узнать так:
                                       #   python -c "from app.connectors.lenta import nearest_stores; print(nearest_stores('ваш адрес'))"
                                       # Код надёжнее адреса: адрес сервер разбирает сам и может выбрать не ту точку.

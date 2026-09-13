@@ -5,3 +5,9 @@ PyYAML>=6.0
 pandas>=2.2
 pytest>=8.0
 openpyxl>=3.1
+
+# Необязательное. Запасной разбор страницы языковой моделью, когда вёрстка магазина
+# сменилась и регулярные выражения перестали её понимать (app/connectors/smart_extract.py).
+# Тянет за собой langchain и браузер, поэтому в основной набор не входит:
+#     pip install scrapegraphai
+# Включается в config.yaml -> connectors.smart_extract.enabled, ключ — в окружении.
