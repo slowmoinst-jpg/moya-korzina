@@ -15,7 +15,8 @@ FONTS = ("https://fonts.googleapis.com/css2?"
          "&family=Literata:opsz,wght@7..72,400;7..72,600;7..72,700&display=swap")
 
 # store_code -> css-переменная с цветом магазина
-STORE_VAR = {"magnit": "--red", "vkusvill": "--green", "pyaterochka": "--amber"}
+STORE_VAR = {"magnit": "--red", "vkusvill": "--green", "pyaterochka": "--amber",
+             "lenta": "--blue", "dixy": "--warm"}
 
 CSS = """
 <style>
@@ -29,6 +30,9 @@ CSS = """
   --warm:oklch(0.60 0.13 48);  --warm-soft:oklch(0.955 0.033 48);
   --red:oklch(0.58 0.13 28);   --red-soft:oklch(0.955 0.033 28);
   --amber:oklch(0.63 0.12 78); --amber-soft:oklch(0.955 0.038 78);
+  /* единственная холодная нота в тёплой палитре — чтобы четвёртый магазин
+     отличался с одного взгляда, а не оттенком оранжевого */
+  --blue:oklch(0.55 0.11 248);  --blue-soft:oklch(0.955 0.026 248);
 }
 
 html, body, .stApp, [data-testid="stSidebar"], button, input, textarea, select{
@@ -172,6 +176,12 @@ a:hover{color:var(--ink);text-decoration:underline;}
   font-size:11px;font-weight:600;letter-spacing:0.04em;background:var(--surface);
   border:1px solid var(--line2);color:var(--ink2);}
 .mk-bar{display:flex;height:14px;border-radius:7px;overflow:hidden;background:var(--tint);}
+/* ссылка-действие: выглядит как кнопка, но это именно ссылка — уводит в магазин */
+.mk-cta{display:block;margin-top:10px;padding:11px 16px;border-radius:11px;text-align:center;
+  background:var(--ink);color:#FFFFFF !important;font-size:14px;font-weight:600;
+  text-decoration:none;border:1px solid var(--ink);transition:background .15s,border-color .15s;}
+.mk-cta:hover{background:var(--green);border-color:var(--green);}
+.mk-cta:focus-visible{outline:2px solid var(--warm);outline-offset:2px;}
 </style>
 """
 

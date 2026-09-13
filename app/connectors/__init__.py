@@ -1,7 +1,7 @@
 """Слой коннекторов цен. Публичный контракт для матчера, оптимизатора и UI.
 
     from app.connectors import get_connector
-    c = get_connector('magnit')          # 'magnit' | 'vkusvill' | 'pyaterochka' | 'stub'
+    c = get_connector('magnit')     # magnit | vkusvill | lenta | pyaterochka | dixy | stub
     c.search('страчателла', limit=3)     # -> list[Candidate] с заполненным score
     c.get_prices(['magnit-strachatella-200'])   # -> list[PriceSnapshot]
 
@@ -17,6 +17,12 @@ from app.connectors.base import (  # noqa: F401
     get_connector,
     similarity,
 )
+from app.connectors.history import (  # noqa: F401
+    DixyConnector,
+    HistoryConnector,
+    PyaterochkaConnector,
+)
+from app.connectors.lenta import LentaConnector  # noqa: F401
 from app.connectors.magnit import MagnitConnector  # noqa: F401
 from app.connectors.stub import StubConnector  # noqa: F401
 from app.connectors.vkusvill import VkusvillConnector  # noqa: F401
@@ -24,7 +30,11 @@ from app.connectors.vkusvill import VkusvillConnector  # noqa: F401
 __all__ = [
     "Connector",
     "ConnectorError",
+    "DixyConnector",
+    "HistoryConnector",
     "HttpCatalogConnector",
+    "LentaConnector",
+    "PyaterochkaConnector",
     "MagnitConnector",
     "StubConnector",
     "VkusvillConnector",

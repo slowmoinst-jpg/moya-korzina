@@ -117,7 +117,7 @@ def fallback_prices(store_code: str, skus: list[str]) -> list[PriceSnapshot]:
     return snapshots
 
 
-@register("stub", "pyaterochka")
+@register("stub")
 class StubConnector(Connector):
     """Фиксированные цены из CSV. Поиск — подстрока в названии, регистронезависимо."""
 

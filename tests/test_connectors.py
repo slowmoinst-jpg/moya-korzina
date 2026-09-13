@@ -8,6 +8,8 @@ import pytest
 from app import config
 from app.connectors import (
     ConnectorError,
+    HistoryConnector,
+    LentaConnector,
     MagnitConnector,
     StubConnector,
     VkusvillConnector,
@@ -29,26 +31,35 @@ def clean_state():
 
 @pytest.fixture
 def offline(monkeypatch):
-    """API магазина «не отвечает» — коннектор обязан уйти в fallback."""
+    """Магазин «не отвечает» — коннектор обязан уйти в fallback.
+
+    У Магнита это разбор HTML, у ВкусВилла и Ленты — вызов MCP: глушим оба пути.
+    """
+    from app.connectors import mcp_client
+
     monkeypatch.setattr(MagnitConnector, "_api_get", lambda self, params: None)
-    monkeypatch.setattr(VkusvillConnector, "_api_get", lambda self, params: None)
+    monkeypatch.setattr(MagnitConnector, "_get_html", lambda self, url, params=None: (None, 0))
+    monkeypatch.setattr(mcp_client, "call_tool", lambda *a, **k: None)
 
 
 # ---------- реестр ----------
 def test_get_connector_returns_expected_classes():
     assert isinstance(get_connector("magnit"), MagnitConnector)
     assert isinstance(get_connector("vkusvill"), VkusvillConnector)
+    assert isinstance(get_connector("lenta"), LentaConnector)
     assert isinstance(get_connector("stub"), StubConnector)
 
+    # У Пятёрочки и Дикси каталог закрыт — цены берём из собственных чеков
     pyaterochka = get_connector("pyaterochka")
-    assert isinstance(pyaterochka, StubConnector)
+    assert isinstance(pyaterochka, HistoryConnector)
     assert pyaterochka.code == "pyaterochka"
+    assert isinstance(get_connector("dixy"), HistoryConnector)
     assert get_connector("magnit").code == "magnit"
 
 
 def test_get_connector_unknown_store_raises():
     with pytest.raises(ConnectorError):
-        get_connector("lenta")
+        get_connector("perekrestok")
 
 
 # ---------- поиск ----------

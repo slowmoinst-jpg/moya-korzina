@@ -14,6 +14,10 @@ connectors:
                                       # по умолчанию, сейчас Краснодар.
   magnit_shop_type: ME                # формат точки из того же адреса (ME, MM, DG, GM, MC…)
   magnit_delivery: true               # true — цены доставки, false — цены самовывоза. Они разные.
+  lenta_address: Москва, Ходынский бульвар 4   # Лента отвечает ценами только по адресу или коду точки:
+  lenta_store_id:                     # цена и остаток у каждой точки свои. Код точки узнать так:
+                                      #   python -c "from app.connectors.lenta import nearest_stores; print(nearest_stores('ваш адрес'))"
+                                      # Код надёжнее адреса: адрес сервер разбирает сам и может выбрать не ту точку.
 optimizer:
   max_stores: 2                      # MVP: перебор разбиений на 1-2 магазина
   top_n: 3

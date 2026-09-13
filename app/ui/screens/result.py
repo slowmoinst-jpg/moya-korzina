@@ -182,7 +182,8 @@ def _store_card(store) -> None:
     below = bool(getattr(store, "below_min_order", False))
     lines = getattr(store, "lines", None) or []
 
-    soft = {"magnit": "--red-soft", "vkusvill": "--green-soft", "pyaterochka": "--amber-soft"}.get(code or "", "--tint")
+    soft = {"magnit": "--red-soft", "vkusvill": "--green-soft", "pyaterochka": "--amber-soft",
+            "lenta": "--blue-soft", "dixy": "--warm-soft"}.get(code or "", "--tint")
 
     rows = "".join(
         f'<div class="mk-row"><span>{esc(getattr(line, "product_name", "—"))} '
@@ -226,6 +227,35 @@ def _store_card(store) -> None:
 
     if below:
         st.warning("Заказ меньше минимальной суммы магазина — его могут не принять.")
+
+    _cart_button(code, lines)
+
+
+def _cart_button(code: str | None, lines) -> None:
+    """Кнопка «собрать в магазине» — только там, где сеть сама принимает готовый список.
+
+    Ссылка открывается у человека: дальше его аккаунт, его карта, его адрес. Мы к его
+    учётной записи не прикасаемся, поэтому и спрашивать у него ничего не нужно.
+    """
+    from app import service
+
+    if code not in service.CART_LINK_STORES or not lines:
+        return
+    state_key = f"cart_link_{code}"
+    if st.button(f"Собрать корзину в «{ {'vkusvill': 'ВкусВилле'}.get(code, code) }»",
+                 key=f"res_cart_{code}", use_container_width=True):
+        with st.spinner("Складываем корзину…"):
+            st.session_state[state_key] = service.cart_link(code, lines) or ""
+    link = st.session_state.get(state_key)
+    if link:
+        st.markdown(
+            f'<a class="mk-cta" href="{esc(link)}" target="_blank" rel="noopener">Открыть корзину →</a>'
+            '<div style="margin-top:8px;font-size:12px;color:var(--ink3);">'
+            'Цены, наличие и состав уточняйте на карточках товаров в магазине.</div>',
+            unsafe_allow_html=True,
+        )
+    elif link == "":
+        st.info("Магазин не отдал ссылку. Попробуйте ещё раз чуть позже.")
 
 
 def header_stats() -> str:

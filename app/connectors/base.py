@@ -326,7 +326,7 @@ def register(*codes: str):
 
 def _ensure_loaded() -> None:
     if not _REGISTRY:
-        from app.connectors import magnit, stub, vkusvill  # noqa: F401  (регистрация при импорте)
+        from app.connectors import history, lenta, magnit, stub, vkusvill  # noqa: F401  (регистрация при импорте)
 
 
 def available_codes() -> list[str]:
@@ -335,7 +335,7 @@ def available_codes() -> list[str]:
 
 
 def get_connector(store_code: str) -> Connector:
-    """'magnit' | 'vkusvill' | 'pyaterochka' | 'stub' -> экземпляр коннектора."""
+    """'magnit' | 'vkusvill' | 'lenta' | 'pyaterochka' | 'dixy' | 'stub' -> экземпляр коннектора."""
     _ensure_loaded()
     code = (store_code or "").strip().lower()
     cls = _REGISTRY.get(code)

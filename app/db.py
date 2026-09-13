@@ -134,7 +134,9 @@ SEED_STORES: list[tuple] = [
     # code, name, delivery_fee, free_delivery_from, min_order, connector_type
     ("magnit", "Магнит", 149.0, 2000.0, 500.0, "magnit"),
     ("vkusvill", "ВкусВилл", 99.0, 1500.0, 400.0, "vkusvill"),
-    ("pyaterochka", "Пятёрочка", 199.0, 2500.0, 600.0, "stub"),
+    ("pyaterochka", "Пятёрочка", 199.0, 2500.0, 600.0, "pyaterochka"),
+    ("lenta", "Лента", 199.0, 3000.0, 1000.0, "lenta"),
+    ("dixy", "Дикси", 149.0, 2000.0, 500.0, "dixy"),
 ]
 
 
