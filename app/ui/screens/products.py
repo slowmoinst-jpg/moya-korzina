@@ -63,6 +63,24 @@ def _matrix(products, stores) -> None:
 
 
 # ---------- сопоставление ----------
+def _doubts_note(product, mapping: dict) -> None:
+    """Почему это сопоставление может быть неверным.
+
+    Подтверждённое не значит проверенное: половина связей заводится автоматически.
+    Если родовое слово или марка разошлись — человек должен это увидеть здесь,
+    а не догадываться потом по странной цене.
+    """
+    from app.matcher.normalize import similarity
+    from app.matcher.quality import doubts
+
+    raw = mapping.get("raw_name") or ""
+    flags = doubts(product, raw, mapping.get("weight_g"))
+    if similarity(product.name, raw) < 0.75:
+        flags.append("похожесть названий низкая")
+    if flags:
+        st.warning("Стоит проверить: " + ", ".join(flags))
+
+
 def _mapping(products, stores) -> None:
     product_ids = [p.id for p in products if p.active]
     store_codes = [s.code for s in stores]
@@ -121,6 +139,7 @@ def _mapping(products, stores) -> None:
         st.success(
             f"Подтверждено: **{current.get('raw_name')}** (артикул `{current.get('sku')}`)"
         )
+        _doubts_note(product, current)
         price = repo.latest_price_for(product.id, store.id)
         if price:
             st.caption(

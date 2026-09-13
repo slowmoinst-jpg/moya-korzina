@@ -134,10 +134,45 @@ def _best(variant, baseline: float) -> None:
     if missing:
         st.warning("Не нашли цену для: " + ", ".join(str(m) for m in missing))
 
+    _trust()
+
     if stores:
         for column, store in zip(st.columns(len(stores)), stores):
             with column:
                 _store_card(store)
+
+
+def _trust() -> None:
+    """Насколько итоговой цифре можно верить.
+
+    Экономия считается по ценам товаров, которые приложение сопоставило само.
+    Если сопоставление шаткое — шаткая и цифра, и человек имеет право об этом
+    знать до того, как поедет за покупками, а не после.
+    """
+    from app import service
+
+    basket_id = (st.session_state.get("calc") or {}).get("basket_id")
+    if not basket_id:
+        return
+    try:
+        summary = service.doubts_summary(basket_id)
+    except Exception:  # noqa: BLE001 — проверка достоверности не повод ронять экран
+        return
+    shaky, total = summary["products"], summary["total"]
+    if not shaky:
+        return
+
+    with st.expander(f"Проверьте {shaky} из {total} позиций — сопоставление неуверенное"):
+        st.caption("Цена берётся у того товара, который мы нашли в магазине. Если нашли не тот, "
+                   "экономия посчитана неверно. Поправить связь можно на экране «Товары».")
+        rows = "".join(
+            f'<div class="mk-row"><span>{esc(r["product"])} '
+            f'<span style="color:var(--ink3);">→ {esc(r["matched"])}</span></span>'
+            f'<span style="font-size:12px;color:var(--ink2);white-space:nowrap;">'
+            f'{theme.dot(r["store_code"])}{esc(", ".join(r["flags"]))}</span></div>'
+            for r in summary["rows"]
+        )
+        st.markdown(rows, unsafe_allow_html=True)
 
 
 # ---------- остальные варианты ----------

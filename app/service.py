@@ -198,3 +198,59 @@ def cart_link(store_code: str, lines) -> str | None:
     except Exception as exc:  # noqa: BLE001  — магазин недоступен, это не повод ронять экран
         log.warning("Ссылку на корзину %s получить не удалось: %s", store_code, exc)
         return None
+
+
+# ---------- насколько можно верить цифре ----------
+CONFIDENT_SCORE = 0.75
+
+
+def basket_doubts(basket_id: int) -> list[dict]:
+    """Сопоставления корзины, в которых есть сомнения.
+
+    Экономию мы считаем по ценам тех товаров, которые сопоставили сами. Если
+    «Страчателла» уехала в мороженое, а пюре — в сок, то итоговая цифра красивая,
+    но неправдивая. Пока приложение об этом молчало, проверить это было негде.
+
+    Возвращает по строке на каждое сомнительное сопоставление: что с чем связано,
+    в каком магазине и что именно не сходится.
+    """
+    from app.matcher.normalize import similarity
+    from app.matcher.quality import doubts
+
+    stores = {s.id: s for s in repo.list_stores()}
+    out: list[dict] = []
+    for item in repo.basket_items(basket_id):
+        product = repo.get_product(item["product_id"])
+        if product is None:
+            continue
+        for store_id, store in stores.items():
+            mapping = repo.confirmed_mapping(product.id, store_id)
+            if not mapping:
+                continue
+            raw = mapping.get("raw_name") or ""
+            flags = doubts(product, raw, mapping.get("weight_g"))
+            score = round(similarity(product.name, raw), 3)
+            if score < CONFIDENT_SCORE:
+                flags.append("похожесть названий низкая")
+            if not flags:
+                continue
+            out.append({
+                "product_id": product.id,
+                "product": product.name,
+                "store_code": store.code,
+                "store": store.name,
+                "matched": raw,
+                "score": score,
+                "flags": flags,
+            })
+    return out
+
+
+def doubts_summary(basket_id: int) -> dict:
+    """Сколько позиций корзины опираются на сомнительные сопоставления."""
+    rows = basket_doubts(basket_id)
+    return {
+        "rows": rows,
+        "products": len({r["product_id"] for r in rows}),
+        "total": len(repo.basket_items(basket_id)),
+    }

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from app import config, db, repo
+from app.matcher import quality
 from app.matcher.normalize import normalize_name, parse_weight, similarity, weight_ok
 from app.models import Candidate
 
@@ -73,11 +74,24 @@ def score_candidate(product, candidate: Candidate, tolerance_pct: float | None =
     if ours and theirs:
         return 1.0 if ours == theirs else 0.0
 
+    # Родовое слово и марка — не оттенок похожести, а признак «это другой товар».
+    # Похожесть тут бессильна: «Сыр Страчателла 200 г» и «Мороженое Страчателла 92 г»
+    # отличаются ровно теми словами, которые нормализация выбрасывает как мусор.
+    name = product.name or ""
+    if quality.type_conflict(name, candidate.name or ""):
+        return 0.0
+    if quality.brand_conflict(name, candidate.name or ""):
+        return 0.0
+
     score = similarity(product.name, candidate.name or "")
     cand_weight = candidate.weight_g
     if cand_weight is None:
         cand_weight = parse_weight(candidate.name or "")[0]
     if not weight_ok(product.weight_g, cand_weight, tol):
+        # Штраф, а не отказ — и это проверено измерением. Жёсткий отказ пробовали:
+        # он обнуляет правильный по смыслу товар с чуть другой фасовкой, и наверх
+        # всплывает совсем посторонний. «Пюре детское банан-яблоко» так уехало с
+        # «Пюре из яблок и банана» на «Котлету рыбную с картофельным пюре».
         score *= WEIGHT_PENALTY
     return round(score, 4)
 
