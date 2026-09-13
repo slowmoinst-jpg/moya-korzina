@@ -228,34 +228,63 @@ def _store_card(store) -> None:
     if below:
         st.warning("Заказ меньше минимальной суммы магазина — его могут не принять.")
 
-    _cart_button(code, lines)
+    _handover(code, lines)
 
 
-def _cart_button(code: str | None, lines) -> None:
-    """Кнопка «собрать в магазине» — только там, где сеть сама принимает готовый список.
+def _handover(code: str | None, lines) -> None:
+    """Как отдать этот чек магазину. Сила способа у каждой сети своя — см. app/handover.py.
 
-    Ссылка открывается у человека: дальше его аккаунт, его карта, его адрес. Мы к его
-    учётной записи не прикасаемся, поэтому и спрашивать у него ничего не нужно.
+    Ссылку на корзину приходится спрашивать у магазина по кнопке: это сетевой вызов,
+    и каждый раз он создаёт новую ссылку. Списки и ссылки на карточки сетевого
+    вызова не требуют, поэтому показываются сразу.
     """
-    from app import service
+    from app import handover as ho
 
-    if code not in service.CART_LINK_STORES or not lines:
+    if not code or not lines:
         return
-    state_key = f"cart_link_{code}"
-    if st.button(f"Собрать корзину в «{ {'vkusvill': 'ВкусВилле'}.get(code, code) }»",
-                 key=f"res_cart_{code}", use_container_width=True):
-        with st.spinner("Складываем корзину…"):
-            st.session_state[state_key] = service.cart_link(code, lines) or ""
-    link = st.session_state.get(state_key)
-    if link:
-        st.markdown(
-            f'<a class="mk-cta" href="{esc(link)}" target="_blank" rel="noopener">Открыть корзину →</a>'
-            '<div style="margin-top:8px;font-size:12px;color:var(--ink3);">'
-            'Цены, наличие и состав уточняйте на карточках товаров в магазине.</div>',
-            unsafe_allow_html=True,
+    kind = ho.KIND_BY_STORE.get(code, ho.LIST)
+
+    if kind == ho.LINK:
+        state_key = f"handover_{code}"
+        if st.button("Собрать корзину в магазине", key=f"res_ho_{code}", use_container_width=True):
+            with st.spinner("Складываем корзину…"):
+                st.session_state[state_key] = ho.for_store(code, lines)
+        result = st.session_state.get(state_key)
+        if result and result.link:
+            st.markdown(
+                f'<a class="mk-cta" href="{esc(result.link)}" target="_blank" rel="noopener">Открыть корзину →</a>'
+                f'<div style="margin-top:8px;font-size:12px;color:var(--ink3);">{esc(result.note)} '
+                'Цены, наличие и состав уточняйте на карточках товаров.</div>',
+                unsafe_allow_html=True,
+            )
+        elif result:
+            st.info("Магазин не отдал ссылку. Ниже список позиций — соберите их сами.")
+            _handover_body(result)
+        return
+
+    with st.expander("Как собрать этот заказ"):
+        _handover_body(ho.for_store(code, lines))
+
+
+def _handover_body(result) -> None:
+    """Позиции заказа: со ссылками на карточки там, где они есть, и списком там, где нет."""
+    from app import handover as ho
+
+    st.caption(result.note)
+    if result.kind == ho.ITEMS and any(i.url for i in result.items):
+        rows = "".join(
+            f'<div class="mk-row"><span>{esc(i.name)} '
+            f'<span style="color:var(--ink3);">{num(i.qty)}&nbsp;{unit_label(i.unit)}</span></span>'
+            + (f'<a href="{esc(i.url)}" target="_blank" rel="noopener" '
+               'style="font-size:13px;font-weight:600;white-space:nowrap;">открыть →</a>'
+               if i.url else '<span style="font-size:12px;color:var(--ink3);">нет ссылки</span>')
+            + "</div>"
+            for i in result.items
         )
-    elif link == "":
-        st.info("Магазин не отдал ссылку. Попробуйте ещё раз чуть позже.")
+        st.markdown(rows, unsafe_allow_html=True)
+        st.caption("Ссылки открываются в приложении магазина — но только на телефоне.")
+    else:
+        st.code(ho.as_text(result), language=None)
 
 
 def header_stats() -> str:

@@ -1,4 +1,4 @@
-"""Цены из собственных чеков — для магазинов, куда нельзя постучаться.
+"""Цены для магазинов, куда нельзя постучаться: свои чеки плюс прайс руками.
 
 У Пятёрочки и Дикси каталог закрыт: 5ka.ru отдаёт заглушку и 403 на всё, dixy.ru
 показывает капчу вместо страниц. MCP у них нет. Значит цену надо брать не у магазина,
@@ -13,20 +13,27 @@
 осторожнее к нему надо относиться — но «старая настоящая цена» полезнее, чем
 отсутствие цены, и уж точно полезнее выдуманной.
 
-Артикул здесь синтетический: «hist-<id эталона>». Он устойчив между запусками и
-не пересекается с артикулами магазинов.
+Второй источник — прайс-лист, который человек приносит сам: data/prices_<код>.csv,
+см. app/pricelist.py. Он шире чеков, потому что покрывает и то, чего человек ещё
+не покупал, и обычно свежее. Поэтому при совпадении названий прайс главнее чека.
+
+Артикулы разведены по пространствам: «hist-<id эталона>» — из чеков, всё
+остальное — из прайса. Перепутать нельзя.
 """
 from __future__ import annotations
 
 import logging
 
-from app import repo
+from app import pricelist, repo
 from app.connectors.base import Connector, register, similarity
 from app.models import Candidate, PriceSnapshot
 
 log = logging.getLogger(__name__)
 
 PREFIX = "hist-"
+
+# магазины, которые живут на прайсе и чеках, — интерфейс предлагает им загрузку прайса
+MANUAL_STORES = ("pyaterochka", "dixy")
 
 
 def _product_id(sku: str) -> int | None:
@@ -58,12 +65,24 @@ def last_prices(store_code: str) -> dict[int, dict]:
 
 
 class HistoryConnector(Connector):
-    """Коннектор для магазина без доступного каталога. Источник — purchase_history."""
+    """Магазин без доступного каталога: цены из прайса человека и из его чеков."""
 
     fallback_sku_prefix = PREFIX
 
+    def _price_rows(self) -> dict[str, dict]:
+        """Прайс магазина, разложенный по артикулам."""
+        return {row["sku"]: row for row in pricelist.load(self.code)}
+
     def _candidates(self) -> list[Candidate]:
         found = []
+        for row in self._price_rows().values():
+            found.append(Candidate(
+                store_code=self.code,
+                sku=row["sku"],
+                name=row["name"],
+                price=row["price"],
+                unit=row["unit"],
+            ))
         for pid, row in last_prices(self.code).items():
             name = (row.get("product_name") or row.get("raw_name") or "").strip()
             if not name:
@@ -80,7 +99,7 @@ class HistoryConnector(Connector):
     def _search(self, query: str, limit: int) -> list[Candidate]:
         found = self._candidates()
         if not found:
-            log.info("%s: чеков по этому магазину пока нет — беру data/fallback_prices.csv", self.code)
+            log.info("%s: ни прайса, ни чеков — беру data/fallback_prices.csv", self.code)
             return self._fallback_search(query, limit)
         for candidate in found:
             candidate.score = similarity(query, candidate.name)
@@ -89,9 +108,23 @@ class HistoryConnector(Connector):
 
     def _get_prices(self, skus: list[str]) -> list[PriceSnapshot]:
         known = last_prices(self.code)
+        prices = self._price_rows()
+        listed_at = pricelist.updated_at(self.code)
         out: list[PriceSnapshot] = []
         missing: list[str] = []
         for sku in skus:
+            listed = prices.get(str(sku))
+            if listed:
+                out.append(PriceSnapshot(
+                    store_code=self.code,
+                    sku=str(sku),
+                    price=listed["price"],
+                    price_per_kg=listed["price"] if listed["unit"] == "kg" else None,
+                    in_stock=True,       # прайс говорит про цену, про наличие он молчит
+                    fetched_at=listed_at,
+                    name=listed["name"],
+                ))
+                continue
             pid = _product_id(sku)
             row = known.get(pid) if pid else None
             if not row:
@@ -114,11 +147,11 @@ class HistoryConnector(Connector):
 
 @register("pyaterochka")
 class PyaterochkaConnector(HistoryConnector):
-    """Пятёрочка. Каталог 5ka.ru закрыт наглухо, MCP нет — живём на чеках."""
+    """Пятёрочка. 5ka.ru закрыт наглухо, MCP нет — живём на прайсе и чеках."""
     code = "pyaterochka"
 
 
 @register("dixy")
 class DixyConnector(HistoryConnector):
-    """Дикси. dixy.ru отвечает капчей, публичного каталога нет — живём на чеках."""
+    """Дикси. dixy.ru отвечает капчей — живём на прайсе и чеках."""
     code = "dixy"

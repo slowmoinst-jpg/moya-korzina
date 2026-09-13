@@ -23,6 +23,7 @@ def render() -> None:
 
     stores = [s for s in repo.list_stores() if repo.confirmed_mapping(products[0].id, s.id) or True]
     _refresh_bar(products, stores)
+    _pricelist_box(stores)
 
     product = st.selectbox("Товар", products, format_func=lambda p: p.name, key="prices_product")
     if not product:
@@ -42,6 +43,57 @@ def render() -> None:
     else:
         st.line_chart(frame, height=320)
     _table(rows)
+
+
+def _pricelist_box(stores) -> None:
+    """Загрузка прайса для магазинов, у которых нельзя спросить цены.
+
+    У Пятёрочки и Дикси каталог закрыт, а MCP нет. Единственный способ узнать цену
+    на то, чего человек ещё не покупал, — принести её самому. Пусть приносит файлом.
+    """
+    from app import pricelist
+    from app.connectors.history import MANUAL_STORES
+
+    manual = [s for s in stores if s.code in MANUAL_STORES]
+    if not manual:
+        return
+
+    loaded = [s for s in manual if pricelist.load(s.code)]
+    title = "Прайс-листы вручную"
+    if loaded:
+        title += " — есть у: " + ", ".join(f"{s.name} ({pricelist.updated_at(s.code)})" for s in loaded)
+
+    with st.expander(title):
+        st.caption("У этих магазинов закрытый каталог: цены им неоткуда взять, кроме ваших чеков. "
+                   "Файл с ценниками закрывает и то, чего вы ещё не покупали.")
+        store = st.selectbox("Магазин", manual, format_func=lambda s: s.name, key="pl_store")
+        rows = pricelist.load(store.code)
+        if rows:
+            st.markdown(f"Сейчас загружено: **{len(rows)}** позиций от {pricelist.updated_at(store.code)}.")
+            st.dataframe(pd.DataFrame(rows)[["name", "price", "unit"]]
+                         .rename(columns={"name": "Название", "price": "Цена", "unit": "Ед."}),
+                         hide_index=True, use_container_width=True)
+
+        st.markdown("Формат простой: название и цена. Единицу и артикул можно не указывать.")
+        st.code("Название;Цена;Единица\nМолоко 1 л;79,90;шт\nЯблоки;149;кг", language=None)
+
+        uploaded = st.file_uploader("Файл с ценами", type=["csv", "txt"], key=f"pl_file_{store.code}")
+        if uploaded is not None and st.button("Загрузить прайс", key=f"pl_save_{store.code}"):
+            try:
+                text = uploaded.getvalue().decode("utf-8-sig")
+            except UnicodeDecodeError:
+                text = uploaded.getvalue().decode("cp1251", errors="replace")
+            count = pricelist.save(store.code, text)
+            if count:
+                st.success(f"Загружено {count} позиций. Нажмите «Обновить цены», чтобы они попали в расчёт.")
+                st.rerun()
+            else:
+                st.error("В файле не нашлось ни одной строки с названием и ценой. "
+                         "Проверьте, что колонки называются «Название» и «Цена».")
+
+        if rows and st.button("Удалить прайс", key=f"pl_del_{store.code}"):
+            pricelist.remove(store.code)
+            st.rerun()
 
 
 def _refresh_bar(products, stores) -> None:
