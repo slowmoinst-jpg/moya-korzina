@@ -25,6 +25,7 @@ from app.ui.screens import about as about_screen  # noqa: E402
 from app.ui.screens import basket as basket_screen  # noqa: E402
 from app.ui.screens import cards as cards_screen  # noqa: E402
 from app.ui.screens import compare as compare_screen  # noqa: E402
+from app.ui.screens import fns as fns_screen  # noqa: E402
 from app.ui.screens import history as history_screen  # noqa: E402
 from app.ui.screens import prices as prices_screen  # noqa: E402
 from app.ui.screens import products as products_screen  # noqa: E402
@@ -32,6 +33,7 @@ from app.ui.screens import result as result_screen  # noqa: E402
 
 SCREENS = {
     "История": history_screen.render,
+    "Мои чеки": fns_screen.render,
     "Товары": products_screen.render,
     "Корзина": basket_screen.render,
     "Результат": result_screen.render,
@@ -43,6 +45,7 @@ SCREENS = {
 
 SCREEN_MODULES = {
     "История": history_screen,
+    "Мои чеки": fns_screen,
     "Товары": products_screen,
     "Корзина": basket_screen,
     "Результат": result_screen,
@@ -55,6 +58,7 @@ SCREEN_MODULES = {
 # надзаголовок над названием экрана
 EYEBROWS = {
     "История": "Покупки семьи",
+    "Мои чеки": "Загрузка из сервиса ФНС",
     "Товары": "Что покупаем и где это лежит",
     "Корзина": "Что покупаем",
     "Результат": "Разбиение и экономия",

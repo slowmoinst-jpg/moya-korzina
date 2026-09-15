@@ -7,10 +7,12 @@
 Показать такую цену без адреса — значит показать цену чужого города и никак об
 этом не сказать.
 
-Устройство блока — две ступени, как в app/location.py: человек вводит АДРЕС,
-приложение показывает найденные по нему ТОЧКИ и запоминает выбранную. Вторая
-ступень необязательна: пока точка не выбрана, запросы идут по адресу, просто
-сеть разбирает его сама и может выбрать соседний магазин.
+Блок делает ровно одно: спрашивает адрес и даёт его проверить. Выбора магазина
+здесь нет намеренно — Лента отдаёт по адресу список своих физических магазинов,
+но её витрина доставки эти коды не принимает (проверено 15.09.2026, подробности в
+app/connectors/lenta.py, _where). Поэтому список показывается как подтверждение
+«адрес понят», а считается всё по самому адресу.
+
 """
 from __future__ import annotations
 
@@ -32,17 +34,13 @@ def banner() -> None:
 
 def summary() -> str:
     """Короткая строка для шапки экрана."""
-    addr = client_place.address()
-    if not addr:
-        return "Адрес не указан"
-    _, name = client_place.point("lenta")
-    return f"{addr} · Лента: {name}" if name else addr
+    return client_place.address() or "Адрес не указан"
 
 
 def editor(key: str = "addr") -> bool:
-    """Поле адреса и выбор точки. Возвращает True, если что-то изменилось.
+    """Поле адреса и его проверка. Возвращает True, если адрес изменился.
 
-    True нужен вызывающему, чтобы пересчитать показанное: цены, снятые по старому
+    True нужен вызывающему, чтобы выбросить показанное: цены, снятые по старому
     адресу, к новому отношения не имеют.
     """
     changed = False
@@ -59,6 +57,7 @@ def editor(key: str = "addr") -> bool:
         with col1:
             if st.button("Сохранить", key=f"{key}_save", type="primary"):
                 client_place.save_address(typed)
+                st.session_state.pop(f"{key}_near", None)   # проверка была про старый адрес
                 changed = True
                 # toast, а не success: вызывающий сразу перерисует экран, и обычное
                 # сообщение исчезло бы, не успев прочитаться.
@@ -67,11 +66,11 @@ def editor(key: str = "addr") -> bool:
                          else "Адрес убран — вернулись к магазину из настроек")
 
         with col2:
-            if saved and st.button("Подобрать точку Ленты", key=f"{key}_resolve"):
-                changed = _pick_point(key) or changed
+            if saved and st.button("Проверить адрес", key=f"{key}_check"):
+                _check(key)
 
         if saved:
-            changed = _current_point(key) or changed
+            _show_check(key)
 
     return changed
 
@@ -81,57 +80,36 @@ def _title() -> str:
     return f"Адрес доставки — {addr}" if addr else "Адрес доставки не указан"
 
 
-def _pick_point(key: str) -> bool:
-    """Спрашивает у Ленты точки рядом с адресом и кладёт их в состояние экрана."""
+def _check(key: str) -> None:
+    """Спрашивает у Ленты магазины рядом — это и есть проверка, что адрес понят."""
     try:
-        with st.spinner("Ищем ближайшие магазины…"):
-            found = client_place.nearby("lenta")
+        with st.spinner("Проверяем адрес…"):
+            st.session_state[f"{key}_near"] = client_place.nearby()
     except Exception as exc:  # noqa: BLE001
-        show_exception(exc, "Не получилось разобрать адрес")
-        return False
-    st.session_state[f"{key}_points"] = found
+        show_exception(exc, "Не получилось проверить адрес")
+
+
+def _show_check(key: str) -> None:
+    """Итог проверки. Пустой ответ — тоже итог, и важный."""
+    if f"{key}_near" not in st.session_state:
+        return
+    found = st.session_state[f"{key}_near"] or []
+
     if not found:
-        st.warning("По этому адресу Лента точек не нашла. Проверьте написание — "
-                   "или сеть просто не работает в этом городе.")
-    return False
+        st.warning("Лента не нашла рядом с этим адресом ни одного своего магазина. "
+                   "Скорее всего, опечатка — или сеть не работает в этом городе. "
+                   "Цены Ленты, скорее всего, окажутся пустыми.")
+        return
 
-
-def _current_point(key: str) -> bool:
-    """Показывает выбранную точку и список найденных. True — выбор изменился."""
-    changed = False
-    store_id, name = client_place.point("lenta")
-
-    if store_id:
-        col1, col2 = st.columns([3, 1])
-        col1.caption(f"Лента отвечает по точке **{name or store_id}** — "
-                     "по коду точки, он однозначнее адреса.")
-        if col2.button("Забыть точку", key=f"{key}_forget"):
-            client_place.forget_point("lenta")
-            changed = True
-
-    found = st.session_state.get(f"{key}_points") or []
-    if not found:
-        return changed
-
-    st.caption("Найденные точки — ближайшая сверху:")
-    for hub in sorted(found, key=_distance)[:5]:
-        hid = str(hub.get("id") or "")
-        if not hid:
-            continue
-        label = str(hub.get("name") or hid)
-        where = str(hub.get("address") or "")
-        col1, col2 = st.columns([4, 1])
-        col1.markdown(f"**{label}** — {where}{_distance_text(hub)}")
-        if col2.button("Выбрать", key=f"{key}_pick_{hid}", disabled=(hid == store_id)):
-            client_place.save_point("lenta", hid, label)
-            st.session_state.pop(f"{key}_points", None)
-            changed = True
-
-    return changed
+    nearest = min(found, key=_distance)
+    st.success(f"Адрес понят: ближайший магазин Ленты — {nearest.get('name') or '—'}, "
+               f"{nearest.get('address') or ''}{_distance_text(nearest)}.")
+    st.caption("Список нужен только для проверки: считается всё по самому адресу, "
+               "потому что витрина доставки работает не по этим магазинам.")
 
 
 def _distance(hub: dict) -> float:
-    """Расстояние до точки. Без него точка уходит в конец списка, а не в начало."""
+    """Расстояние до магазина. Без него магазин уходит в конец, а не в начало."""
     try:
         return float(hub.get("distance"))
     except (TypeError, ValueError):

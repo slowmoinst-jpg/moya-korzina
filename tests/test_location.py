@@ -45,48 +45,42 @@ def test_without_address_store_gets_nothing_and_falls_back(db):
     assert location.for_store("lenta") is None
 
 
-# ---------- адрес и точка ----------
-def test_changing_address_forgets_the_point(db):
-    """Самое важное правило модуля."""
-    location.save_address("Москва, Ходынский бульвар 4")
-    location.save_point("lenta", "5344", "ТК4537")
-    assert location.point("lenta") == ("5344", "ТК4537")
+# ---------- чем спрашиваем ----------
+def test_address_is_what_we_ask_with(db):
+    """Спрашиваем адресом — это единственное, что витрина Ленты принимает."""
+    from app.connectors.lenta import _where
 
     location.save_address("Екатеринбург, улица Щербакова 4")
-
-    assert location.point("lenta") == (None, None), \
-        "точка старого города осталась бы и молча считала цены чужого магазина"
-
-
-def test_same_address_saved_twice_keeps_the_point(db):
-    """Повторное сохранение того же адреса — не переезд, точку терять незачем."""
-    location.save_address("Москва, Ходынский бульвар 4")
-    location.save_point("lenta", "5344", "ТК4537")
-    location.save_address("  Москва, Ходынский бульвар 4  ")
-    assert location.point("lenta") == ("5344", "ТК4537")
-
-
-def test_point_wins_over_address_in_the_request(db):
-    """Код точки однозначен, адрес сервер разбирает сам — значит код идёт первым."""
-    from app.connectors.lenta import _where
-
-    location.save_address("Москва, Ходынский бульвар 4")
-    location.save_point("lenta", "5344", "ТК4537")
     where = _where(location.for_store("lenta"))
 
-    assert where["storeId"] == 5344
-    assert "address" not in where
+    assert where["address"] == "Екатеринбург, улица Щербакова 4"
+    assert "storeId" not in where
 
 
-def test_address_is_used_while_no_point_is_picked(db):
-    """Выбор точки необязателен: пока его нет, спрашиваем по адресу."""
+def test_address_beats_store_code(db):
+    """Проверено 15.09.2026: коды точек витрина не принимает, адрес принимает.
+
+    Ошибка здесь тихая и дорогая — по неверному коду Лента отвечает не отказом,
+    а ценой 0 и остатком 0, то есть выглядит пустым магазином. Поэтому если есть
+    и адрес, и код, уходить должен адрес.
+    """
     from app.connectors.lenta import _where
 
-    location.save_address("Москва, Ходынский бульвар 4")
-    where = _where(location.for_store("lenta"))
+    where = _where(Location(address="Москва, Ходынский бульвар 4", store_id="1278"))
 
     assert where["address"] == "Москва, Ходынский бульвар 4"
     assert "storeId" not in where
+
+
+def test_magnit_keeps_its_configured_shop(db):
+    """Адрес клиента не должен отбирать у Магнита настроенный магазин.
+
+    Магнит выбирает точку кодом в куках, а по адресу его не подобрать. Вернуть ему
+    место без кода — значит молча уехать на магазин сайта по умолчанию, в чужом
+    городе. Поэтому for_store отдаёт None, и коннектор берёт своё из config.yaml.
+    """
+    location.save_address("Екатеринбург, улица Щербакова 4")
+    assert location.for_store("magnit") is None
 
 
 # ---------- доставка до коннектора ----------
@@ -115,19 +109,19 @@ def test_saved_address_reaches_the_connector(db, monkeypatch):
     assert seen["lenta"].address == "Екатеринбург, улица Щербакова 4"
 
 
-# ---------- показ точек ----------
-def test_nearest_point_comes_first():
-    """Список точек бесполезен, если ближайшая лежит третьей.
+# ---------- проверка адреса ----------
+def test_check_names_the_nearest_shop():
+    """Проверка адреса должна назвать БЛИЖАЙШИЙ магазин, а не первый попавшийся.
 
-    Лента отдаёт точки не по расстоянию: проверка по Екатеринбургу дала
-    9110 м первой строкой и 394 м третьей.
+    Лента отдаёт магазины не по расстоянию: ответ по Екатеринбургу начинался
+    с 9110 м, а 394 м лежали третьими.
     """
     from app.ui.address import _distance
 
     hubs = [{"id": "1", "distance": 9110}, {"id": "2", "distance": 394}, {"id": "3"}]
-    order = [h["id"] for h in sorted(hubs, key=_distance)]
 
-    assert order == ["2", "1", "3"], "точка без расстояния должна уйти в конец, а не в начало"
+    assert min(hubs, key=_distance)["id"] == "2"
+    assert [h["id"] for h in sorted(hubs, key=_distance)] == ["2", "1", "3"],         "магазин без расстояния должен уйти в конец, а не в начало"
 
 
 def test_distance_reads_like_a_person_wrote_it():
@@ -136,3 +130,17 @@ def test_distance_reads_like_a_person_wrote_it():
     assert _distance_text({"distance": 394}) == " · 394 м"
     assert _distance_text({"distance": 9110}) == " · 9,1 км"
     assert _distance_text({}) == ""
+
+
+def test_header_summary_does_not_break(db):
+    """Сводка в шапке обязана работать, а не молчать.
+
+    main.py ловит любую ошибку из header_stats и показывает пустую строку — то есть
+    сломанная сводка выглядит как «адреса нет». Ровно так и случилось, когда из
+    location убрали выбор точки, а обращение к нему в сводке осталось.
+    """
+    from app.ui.address import summary
+
+    assert summary() == "Адрес не указан"
+    location.save_address("Екатеринбург, улица Щербакова 4")
+    assert summary() == "Екатеринбург, улица Щербакова 4"
