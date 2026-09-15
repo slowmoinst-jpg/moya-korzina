@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from app.ui import address as address_block
 from app.ui import theme
 from app.ui.helpers import module_warning, rub, show_exception
 
@@ -19,6 +20,11 @@ esc = theme.esc
 
 
 def render() -> None:
+    # Адрес — первым: без него цены ниже относятся к чужому магазину, и об этом
+    # надо сказать до того, как человек их прочтёт, а не после.
+    if address_block.editor("cmp_addr"):
+        st.session_state.pop("cmp_last", None)      # цены старого адреса больше не годятся
+
     query = st.text_input("Что ищем", key="cmp_query",
                           placeholder="молоко 2,5% · огурцы · хлеб бородинский")
     col1, col2 = st.columns([1, 3])
@@ -107,5 +113,4 @@ def _misses(offers) -> None:
 
 
 def header_stats() -> str:
-    query = st.session_state.get("cmp_last")
-    return f"Последний запрос: {query}" if query else "Один товар — все доставки"
+    return address_block.summary()

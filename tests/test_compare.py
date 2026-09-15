@@ -43,10 +43,12 @@ class FakeConnector:
         return [self._prices[sku] for sku in skus if sku in self._prices]
 
 
-def _use(monkeypatch, by_code: dict):
-    def get_connector(code):
+def _use(monkeypatch, by_code: dict, seen: dict | None = None):
+    def get_connector(code, location=None):
         if code not in by_code:
             raise ValueError(f"нет коннектора {code}")
+        if seen is not None:
+            seen[code] = location
         return by_code[code]
 
     monkeypatch.setattr("app.connectors.get_connector", get_connector)
@@ -172,3 +174,43 @@ def test_compare_product_uses_saved_mappings(db):
 
     assert magnit.price == 99.0 and magnit.per_unit == 99.0
     assert any(o.note == "товар не связан с магазином" for o in offers)
+
+
+# ---------- место клиента ----------
+def test_client_address_reaches_every_store(db, monkeypatch):
+    """Адрес клиента обязан доехать до коннектора, иначе он ничего не решает."""
+    from app.models import Location
+
+    seen: dict = {}
+    milk = Candidate(store_code="lenta", sku="1", name="Молоко 1 л", price=90.0, score=1.0)
+    _use(monkeypatch, {"lenta": FakeConnector("lenta", [milk])}, seen)
+    here = Location(address="Москва, Ходынский бульвар 4")
+
+    compare.compare_query("молоко", store_codes=["lenta"], location=here)
+
+    assert seen["lenta"] is here, "коннектор получил не тот адрес, что указал клиент"
+
+
+def test_two_addresses_do_not_share_a_cache_key():
+    """Цена одной точки не должна достаться клиенту другой.
+
+    Проверяется на ключе кэша, а не на ценах: именно ключ решает, разойдутся
+    два клиента или молча получат один ответ. Чужая цена выглядит как своя,
+    поэтому такую ошибку не видно глазами — только ключом.
+    """
+    from app.models import Location
+
+    moscow = Location(store_id="62", address="Москва, Ходынский бульвар 4")
+    ekb = Location(store_id="229", address="Екатеринбург, Щербакова 4")
+
+    assert moscow.key != ekb.key
+    assert Location(store_id="1", delivery=True).key != Location(store_id="1", delivery=False).key
+
+
+def test_location_without_address_is_falsy():
+    """Пустое место должно читаться как «спрашивать нечего», а не как адрес."""
+    from app.models import Location
+
+    assert not Location()
+    assert Location(address="Москва")
+    assert Location(store_id="62")

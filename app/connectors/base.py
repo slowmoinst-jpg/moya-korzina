@@ -14,7 +14,7 @@ from typing import Any
 
 from app import config
 from app.connectors.cache import cached_call
-from app.models import Candidate, PriceSnapshot
+from app.models import Candidate, Location, PriceSnapshot
 
 log = logging.getLogger(__name__)
 
@@ -50,15 +50,42 @@ def similarity(query: str, name: str) -> float:
     return round(min(1.0, ratio), 3)
 
 
+# ---------- место клиента ----------
+def configured_location(store_code: str) -> Location:
+    """Запасное место из config.yaml — то, чем продукт жил, пока адрес был один на всех.
+
+    Нужно двум сценариям: одиночной установке «для себя», где адрес и правда один,
+    и разработке, где удобно прописать точку в файл. Как только адрес приходит от
+    клиента, он побеждает: config — именно запасное значение, а не настройка поверх.
+    """
+    if store_code == "lenta":
+        return Location(
+            address=config.get("connectors.lenta_address") or None,
+            store_id=config.get("connectors.lenta_store_id") or None,
+        )
+    if store_code == "magnit":
+        return Location(
+            store_id=config.get("connectors.magnit_shop_code") or None,
+            shop_type=str(config.get("connectors.magnit_shop_type", "ME") or "ME"),
+            delivery=bool(config.get("connectors.magnit_delivery", True)),
+        )
+    return Location()
+
+
 # ---------- абстракция ----------
 class Connector(ABC):
-    """Контракт: code, search(query, limit) -> [Candidate], get_prices(skus) -> [PriceSnapshot]."""
+    """Контракт: code, search(query, limit) -> [Candidate], get_prices(skus) -> [PriceSnapshot].
+
+    Место клиента (`location`) коннектор получает при создании и несёт в каждый запрос.
+    Не задано — берётся запасное значение из config.yaml, как было до появления адресов.
+    """
 
     code: str = ""
 
-    def __init__(self, code: str | None = None) -> None:
+    def __init__(self, code: str | None = None, location: Location | None = None) -> None:
         if code:
             self.code = code
+        self.location = location or configured_location(self.code)
 
     # --- публичные методы: наружу исключений не выпускают ---
     def search(self, query: str, limit: int = 3) -> list[Candidate]:
@@ -359,11 +386,14 @@ def available_codes() -> list[str]:
     return sorted(_REGISTRY)
 
 
-def get_connector(store_code: str) -> Connector:
-    """'magnit' | 'vkusvill' | 'lenta' | 'pyaterochka' | 'dixy' | 'stub' -> экземпляр коннектора."""
+def get_connector(store_code: str, location: Location | None = None) -> Connector:
+    """'magnit' | 'vkusvill' | 'lenta' | 'pyaterochka' | 'dixy' | 'stub' -> экземпляр коннектора.
+
+    `location` — где находится клиент. Без него берётся запасное место из config.yaml.
+    """
     _ensure_loaded()
     code = (store_code or "").strip().lower()
     cls = _REGISTRY.get(code)
     if cls is None:
         raise ConnectorError(f"нет коннектора для магазина {store_code!r}; известны: {available_codes()}")
-    return cls(code)
+    return cls(code, location)

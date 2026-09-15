@@ -6,9 +6,12 @@
 
 Две особенности, которые определяют устройство модуля.
 
-Первая: сервер не хранит сессию и требует адрес или storeId В КАЖДОМ вызове. Адрес
-берётся из config.yaml (connectors.lenta_address); без него цены спрашивать
-бессмысленно — они у каждой точки свои. Проверено 13.09.2026: молоко Простоквашино
+Первая: сервер не хранит сессию и требует адрес или storeId В КАЖДОМ вызове. И это
+не помеха, а ровно то, что нужно продукту: адрес приходит ОТ КЛИЕНТА и едет
+параметром запроса (app.models.Location), никакой учётной записи для этого не надо.
+Запасное значение в config.yaml остаётся для установки «для себя», где адрес и
+правда один. Без адреса цены спрашивать бессмысленно — они у каждой точки свои.
+Проверено 13.09.2026: молоко Простоквашино
 2,5 % стоит 90,99 ₽ на Ходынском бульваре в Москве (обычная 124,99, скидка 27 %) и
 91,99 ₽ в Екатеринбурге (обычная 108,99, скидка 16 %). Различается не только цена,
 но и глубина акции.
@@ -22,10 +25,9 @@ from __future__ import annotations
 import logging
 import re
 
-from app import config
 from app.connectors import mcp_client
 from app.connectors.base import Connector, register, similarity
-from app.models import Candidate, PriceSnapshot
+from app.models import Candidate, Location, PriceSnapshot
 
 log = logging.getLogger(__name__)
 
@@ -47,21 +49,29 @@ def _number(value) -> float | None:
         return None
 
 
-def _where() -> dict:
-    """Адрес или код точки — то, без чего Лента не отвечает ценами."""
-    store_id = config.get("connectors.lenta_store_id")
-    if store_id:
-        return {"storeId": int(store_id), "channel": DEFAULT_CHANNEL}
-    address = config.get("connectors.lenta_address")
-    if address:
-        return {"address": str(address), "channel": DEFAULT_CHANNEL}
+def _where(location: Location | None = None) -> dict:
+    """Адрес или код точки — то, без чего Лента не отвечает ценами.
+
+    Код точки идёт первым: адрес сервер разбирает сам и может выбрать не ту точку,
+    а код однозначен.
+    """
+    location = location or Location()
+    if location.store_id:
+        try:
+            return {"storeId": int(location.store_id), "channel": DEFAULT_CHANNEL}
+        except (TypeError, ValueError):
+            log.warning("lenta: код точки %r не число — пробую адрес", location.store_id)
+    if location.address:
+        return {"address": str(location.address), "channel": DEFAULT_CHANNEL}
     return {}
 
 
 def nearest_stores(address: str) -> list[dict]:
     """Ближайшие точки Ленты по адресу: id, aliasId, name, address, shopType, distance.
 
-    Нужна при настройке: человек указывает адрес, а в config.yaml попадает код точки.
+    Нужна дважды: при настройке установки «для себя» (человек указывает адрес, а в
+    config.yaml попадает код точки) и в работе с клиентом — его адрес разрешается
+    в код точки один раз, дальше запросы идут по коду, который однозначен.
     """
     answer = mcp_client.call_tool(MCP_URL, "lenta", "storefront_resolve_store",
                                   {"address": address}, cache_key=f"stores:{address}")
@@ -90,10 +100,10 @@ class LentaConnector(Connector):
         )
 
     def _search(self, query: str, limit: int) -> list[Candidate]:
-        where = _where()
+        where = _where(self.location)
         if not where:
-            log.warning("%s: не задан connectors.lenta_address — без адреса цены спрашивать нечего",
-                        self.code)
+            log.warning("%s: не задан адрес клиента и нет запасного в config.yaml — "
+                        "без адреса цены спрашивать нечего", self.code)
             return self._fallback_search(query, limit)
         answer = mcp_client.call_tool(MCP_URL, self.code, "storefront_products_search",
                                       {"query": query, "page": 1, **where},
@@ -109,7 +119,7 @@ class LentaConnector(Connector):
         return found[:limit]
 
     def _get_prices(self, skus: list[str]) -> list[PriceSnapshot]:
-        where = _where()
+        where = _where(self.location)
         if not where:
             return self._fallback_prices(list(skus))
         out: list[PriceSnapshot] = []

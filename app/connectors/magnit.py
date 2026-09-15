@@ -27,7 +27,14 @@ data/fallback_prices.csv. Расчёт по остальным магазина�
 не кладёт.
 
 Свой код магазина можно подсмотреть в адресе magnit.ru после выбора магазина
-(параметр shopCode) и прописать в config.yaml как connectors.magnit_shop_code.
+(параметр shopCode). В config.yaml он остаётся запасным значением; в работе магазин
+приходит вместе с местом клиента (app.models.Location).
+
+ТРЕТЬЕ ПРАВИЛО, СЛЕДСТВИЕ ПЕРВЫХ ДВУХ: магазин обязан входить в ключ кэша. Пока
+точка была одна на всё приложение, ключа «search:молоко:3» хватало. Как только
+адрес стал приходить от клиента, тот же ключ начал бы отдавать зеленоградцу цены
+Краснодара — и это не выглядело бы поломкой, потому что чужая цена ничем не
+отличается от своей. Поэтому в ключ идёт Location.key.
 """
 from __future__ import annotations
 
@@ -118,19 +125,18 @@ class MagnitConnector(HttpCatalogConnector):
     # --- сеть ---
     def _shop_params(self) -> dict[str, Any]:
         """Параметры адреса. Сервер их не слушает, но с ними ссылка открывается как на сайте."""
-        shop = config.get("connectors.magnit_shop_code")
+        shop = self.location.store_id
         return {"shopCode": shop, "shopType": "dostavka"} if shop else {}
 
     def _shop_cookies(self) -> dict[str, str]:
         """Куки, которыми сайт на самом деле выбирает магазин и способ получения."""
-        shop = config.get("connectors.magnit_shop_code")
+        shop = self.location.store_id
         if not shop:
             return {}
-        delivery = config.get("connectors.magnit_delivery", True)
         return {
             "shopCode": f'"{shop}"',
-            "x_shop_type": str(config.get("connectors.magnit_shop_type", "ME") or "ME"),
-            "nmg_dt": "DELIVERY_TYPE_DELIVERY" if delivery else "DELIVERY_TYPE_PICKUP",
+            "x_shop_type": str(self.location.shop_type or "ME"),
+            "nmg_dt": "DELIVERY_TYPE_DELIVERY" if self.location.delivery else "DELIVERY_TYPE_PICKUP",
         }
 
     def _get_html(self, url: str, params: dict[str, Any] | None = None) -> tuple[str | None, int]:
@@ -189,7 +195,7 @@ class MagnitConnector(HttpCatalogConnector):
     # --- контракт ---
     def _search(self, query: str, limit: int) -> list[Candidate]:
         params = {"term": query, **self._shop_params()}
-        page, _ = _unpack(cached_call(self.code, f"search:{query}:{limit}",
+        page, _ = _unpack(cached_call(self.code, f"search:{query}:{limit}:{self.location.key}",
                                       lambda: self._get_html(SEARCH_URL, params)))
         found = self._cards(page) if page else []
         if not found:
@@ -220,7 +226,7 @@ class MagnitConnector(HttpCatalogConnector):
                 missing.append(sku)
                 continue
             page, status = _unpack(cached_call(
-                self.code, f"product:{sku}",
+                self.code, f"product:{sku}:{self.location.key}",
                 lambda sku=sku: self._get_html(PRODUCT_URL.format(sku=sku), self._shop_params())))
             if status == 404:
                 log.info("%s: %s не продаётся в выбранном магазине", self.code, sku)

@@ -126,6 +126,11 @@ CREATE TABLE IF NOT EXISTS variant_lines (
     discount REAL NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_prices_sp ON store_prices(store_product_id, fetched_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sp_store ON store_products(store_id);
 CREATE INDEX IF NOT EXISTS idx_mapping_product ON product_mapping(product_id);

@@ -173,7 +173,7 @@ class FakeConnector:
 def fake_connectors(monkeypatch):
     """Подменяет модуль app.connectors на заглушку (реальный пишется параллельно)."""
     module = types.ModuleType("app.connectors")
-    module.get_connector = lambda store_code: FakeConnector(store_code)
+    module.get_connector = lambda store_code, location=None: FakeConnector(store_code)
     monkeypatch.setitem(sys.modules, "app.connectors", module)
     return module
 

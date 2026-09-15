@@ -314,3 +314,25 @@ def list_variants(basket_id: int) -> list[dict]:
     with get_conn() as c:
         return [dict(r) for r in c.execute(
             "SELECT * FROM variants WHERE basket_id=? ORDER BY created_at DESC, total", (basket_id,))]
+
+
+# ---------- settings ----------
+# Пары «ключ — значение» для того немногого, что человек задаёт один раз и надолго:
+# адрес доставки и разрешённые из него точки магазинов. В config.yaml им не место —
+# там настройки установки, а это ответ пользователя, и он обязан пережить перезапуск.
+def get_setting(key: str, default: str | None = None) -> str | None:
+    with get_conn() as c:
+        row = c.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row and row["value"] is not None else default
+
+
+def set_setting(key: str, value: str | None) -> None:
+    """Пустое значение стирает ключ: «адреса нет» и «адрес пустая строка» — одно и то же."""
+    with get_conn() as c:
+        if value is None or not str(value).strip():
+            c.execute("DELETE FROM settings WHERE key = ?", (key,))
+        else:
+            c.execute("INSERT INTO settings (key, value) VALUES (?,?) "
+                      "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                      (key, str(value).strip()))
+        c.commit()

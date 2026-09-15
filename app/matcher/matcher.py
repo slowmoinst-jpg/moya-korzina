@@ -22,13 +22,25 @@ def digits(value) -> str:
 
 # --- доступ к коннекторам (модуль пишется параллельно, может отсутствовать) ---
 
-def _get_connector(store_code: str):
+def _get_connector(store_code: str, location=None):
+    """Коннектор магазина, настроенный на место клиента.
+
+    Место не передано — спрашиваем адрес клиента сами. Это важно: сопоставление и
+    цены обязаны сниматься там же, где человек будет покупать, иначе «Сравнение»
+    и «Результат» разойдутся между собой и оба будут выглядеть правдоподобно.
+    """
     try:
         from app.connectors import get_connector       # noqa: PLC0415
     except ImportError:
         return None
+    if location is None:
+        try:
+            from app import location as client_place   # noqa: PLC0415
+            location = client_place.for_store(store_code)
+        except Exception:                              # noqa: BLE001 — без адреса работаем как раньше
+            location = None
     try:
-        return get_connector(store_code)
+        return get_connector(store_code, location)
     except Exception:
         return None
 

@@ -25,6 +25,7 @@ from dataclasses import dataclass
 
 from app import repo
 from app.matcher.normalize import normalize_name, parse_weight, similarity
+from app.models import Location
 
 log = logging.getLogger(__name__)
 
@@ -110,12 +111,20 @@ def _price_of(connector, candidate) -> tuple[float | None, bool]:
 
 
 def compare_query(query: str, store_codes: list[str] | None = None,
-                  per_store: int = 1) -> list[StoreOffer]:
+                  per_store: int = 1, location: Location | None = None) -> list[StoreOffer]:
     """Ищет товар во всех доставках и приводит цены к сравнимому виду.
 
     per_store больше единицы полезен, когда нужно посмотреть, что вообще есть у
     магазина по этому запросу, а не только лучшее совпадение.
+
+    location — где находится клиент. Сравнивать доставки «вообще» нельзя: у Ленты
+    и Магнита и цена, и сам ассортимент свои в каждой точке.
+
+    Не передан — место берётся по адресу клиента из app.location, у каждой сети
+    своё: код точки Ленты для Магнита ничего не значит. Адреса нет вовсе —
+    коннектор возьмёт запасное значение из config.yaml, как было раньше.
     """
+    from app import location as client_place
     from app.connectors import get_connector
 
     stores = repo.list_stores()
@@ -125,7 +134,8 @@ def compare_query(query: str, store_codes: list[str] | None = None,
     out: list[StoreOffer] = []
     for store in stores:
         try:
-            connector = get_connector(store.code)
+            here = location if location is not None else client_place.for_store(store.code)
+            connector = get_connector(store.code, here)
         except Exception as exc:  # noqa: BLE001
             out.append(StoreOffer(store.code, store.name, note=f"нет коннектора ({exc})"))
             continue
@@ -170,6 +180,12 @@ def compare_product(product_id: int) -> list[StoreOffer]:
 
     Отвечает на другой вопрос: не «что вообще есть», а «во что мне обойдётся
     именно этот товар там, где я его уже опознал».
+
+    ОГРАНИЧЕНИЕ: снимок цены не помнит, для какой точки он был снят. Пока
+    пользователь один, это незаметно. Как только их станет двое с разными
+    адресами, здесь понадобится место в самом снимке — иначе один получит цену
+    чужого города. Живой путь (compare_query) этим уже не страдает: там место
+    входит и в запрос, и в ключ кэша.
     """
     product = repo.get_product(product_id)
     if product is None:
