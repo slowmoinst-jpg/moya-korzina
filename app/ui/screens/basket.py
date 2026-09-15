@@ -222,6 +222,11 @@ def _live_summary(items, stores, live: dict) -> None:
 
     Магазин с самой низкой суммой может просто не иметь половины корзины: сумма
     у него меньше, потому что в ней меньше товаров, а не потому что дешевле.
+
+    Считается только по живому опросу, и подпись говорит об этом прямо. Старый
+    снимок цены наличия не помнит вовсе, поэтому магазин, у которого есть сумма
+    из снимков, но нет живых ответов, в этой строке не появится — и это честнее,
+    чем поставить ему выдуманное «16 из 16».
     """
     if not live:
         return
@@ -243,7 +248,7 @@ def _live_summary(items, stores, live: dict) -> None:
         '<div style="display:flex;justify-content:space-between;align-items:center;gap:16px;'
         'flex-wrap:wrap;padding:11px 16px;border:1px solid var(--line);border-radius:11px;'
         'margin-top:8px;font-size:13px;color:var(--ink2);">'
-        '<span style="font-weight:600;">Позиций в наличии</span>'
+        '<span style="font-weight:600;">Есть в наличии, по живому опросу</span>'
         f'<span>{cells}</span></div>',
         unsafe_allow_html=True,
     )
@@ -268,8 +273,13 @@ def _ask_button(basket_id: int, items, live: dict) -> None:
             st.caption(f"Цены по адресу «{addr}». Ответы держатся 6 часов, "
                        "повторный опрос мгновенный.")
         else:
+            # Замер 15.09.2026: холодный опрос ≈7 с на позицию, по кэшу ≈1,5 с.
+            # Округляем вверх и говорим вслух: пустая полоса прогресса без срока
+            # выглядит как зависание.
+            minutes = max(1, round(len(items) * 7 / 60))
             st.caption(f"Спросим все доставки по адресу «{addr}». "
-                       f"Позиций {len(items)}, это займёт около минуты.")
+                       f"Позиций {len(items)} — это {minutes} мин в первый раз "
+                       "и несколько секунд потом, пока держится кэш.")
 
 
 def _live_totals(items, stores, live: dict, cell: dict, totals: dict) -> dict:

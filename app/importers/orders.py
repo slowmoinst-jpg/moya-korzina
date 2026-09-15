@@ -30,6 +30,13 @@
     2 шт                                    ещё двумя
     298 ₽
 
+    КАССОВЫЙ ЧЕК                         <- чек из «Мои чеки онлайн»: три числа
+    1. Мультивитамины 2 474,11 1 2 474,11   подряд без «×» и без «₽», а длинное
+    Myprotein Alpha men,                    название переносится ВНИЗ, под строку
+    комплекс витаминов и                    с числами
+    ИНН Поставщика: 246214864320
+    НДС не облагается
+
 Если прислали HTML (а письма почти всегда HTML) — теги снимаются, и дальше всё
 то же самое.
 
@@ -58,7 +65,12 @@ _TAGS = re.compile(r"<(script|style)\b.*?</\1>|<[^>]+>", re.S | re.I)
 _SPACES = re.compile(r"[ \t   ]+")
 _DROP = re.compile(
     r"^\s*(итого|итог|всего|сумма|к оплате|доставка|скидка|бонус|кэшбэк|кешбэк|"
-    r"промокод|оплачено|заказ|дата|адрес|курьер|ндс|в том числе|чаевые)\b", re.I)
+    r"промокод|оплачено|заказ|дата|адрес|курьер|ндс|в том числе|чаевые|"
+    # хвост кассового чека ФНС: у этих строк есть суммы, и без отсева
+    # «Наличные 0,00» и «Предоплата (аванс) 2 604,00» станут товарами
+    r"наличные|безналичные|предоплата|аванс|предмет расчета|предмет расчёта|"
+    r"цена|кол-во|количество|инн поставщика|инн|общество с ограниченной|"
+    r"акцизный товар|признак способа расчета|код товара)\b", re.I)
 
 # «Название 2 шт × 149,00 ₽ = 298,00 ₽» и всё, что от этого остаётся
 _FULL = re.compile(
@@ -72,6 +84,13 @@ _QTY_TOTAL = re.compile(
 # «Название 219 ₽» — одна штука
 _JUST_TOTAL = re.compile(
     rf"^(?P<name>.*?\S)[\s.·•—–-]{{2,}}(?P<total>{_MONEY})\s*{_CUR}\s*$", re.I)
+# Кассовый чек ФНС печатает три числа подряд без знака умножения и без значка
+# рубля: «1. Мультивитамины 2 474,11 1 2 474,11» — это цена, количество, сумма.
+# Порядок столбцов у разных операторов различается, поэтому ниже он проверяется
+# умножением, а не берётся на веру.
+_THREE = re.compile(
+    rf"^(?P<name>.*?[а-яa-z].*?)\s+(?P<a>{_MONEY})\s+(?P<b>{_QTY})\s+(?P<c>{_MONEY})"
+    rf"\s*{_CUR}?\s*$", re.I)
 # строка без названия: «2 × 149 ₽» — значит название было выше
 _NUMBERS_ONLY = re.compile(
     rf"^\s*(?P<qty>{_QTY})\s*(?:{_UNITS})?\.?\s*(?:{_TIMES}\s*(?P<price>{_MONEY})\s*{_CUR}?)?"
@@ -122,6 +141,30 @@ def _row(name: str, qty, price, total) -> ReceiptRow | None:
     return ReceiptRow(raw_name=name, qty=count, unit_price=unit_price, total=amount)
 
 
+def _three_numbers(name: str, a, b, c) -> ReceiptRow | None:
+    """Строка с тремя числами: цена, количество, сумма.
+
+    Порядок берём такой, как он напечатан в чеке: у ФНС колонки подписаны
+    «ЦЕНА, Р · КОЛ-ВО · СУММА, Р», и это наш основной источник.
+
+    Угадывать порядок умножением бессмысленно, и это стоит записать, чтобы никто
+    не переоткрывал: умножение коммутативно, «3 × 100» и «100 × 3» дают одну и ту
+    же сумму, так что проверка сошлась бы при любой расстановке и ничего не
+    различала. Единственная настоящая опора — подписи столбцов.
+
+    Умножение всё же считаем, но для другого: если цена на количество не сходится
+    с суммой, значит строка разобрана неверно, и тогда честнее взять только сумму
+    (последнее число в чеках самое надёжное), чем множить мусор.
+    """
+    price, qty, total = _money(a), _money(b), _money(c)
+    if total is None or total <= 0:
+        return None
+    if price is not None and qty and qty > 0:
+        if abs(price * qty - total) <= max(0.02, total * 0.01):
+            return _row(name, qty, price, total)
+    return _row(name, qty if qty else 1.0, None, total)
+
+
 # строка без названия, одни числа: «2 x 149.00 = 298.00», «2 шт», «298 ₽»
 _CALC = re.compile(rf"^\s*(?P<qty>{_QTY})\s*(?:{_UNITS})?\.?\s*{_TIMES}\s*(?P<price>{_MONEY})"
                    rf"\s*{_CUR}?[\s=·•—–-]*(?P<total>{_MONEY})?\s*{_CUR}?\s*$", re.I)
@@ -153,14 +196,15 @@ def parse_lines(text: str) -> tuple[list[ReceiptRow], list[str]]:
     skipped: list[str] = []
     name_parts: list[str] = []
     qty_seen: float | None = None
+    tail: ReceiptRow | None = None    # позиция, к которой дописывается перенос названия
 
     def name() -> str:
         return _clean_name(", ".join(name_parts[-3:]))
 
     def close(qty, price, total) -> bool:
-        nonlocal name_parts, qty_seen
+        nonlocal name_parts, qty_seen, tail
         row = _row(name(), qty, price, total)
-        name_parts, qty_seen = [], None
+        name_parts, qty_seen, tail = [], None, None
         if row:
             rows.append(row)
             return True
@@ -170,22 +214,34 @@ def parse_lines(text: str) -> tuple[list[ReceiptRow], list[str]]:
         line = _NUMBER_PREFIX.sub("", raw)
 
         if _DROP.match(line) or _HEADER.match(line):
-            name_parts, qty_seen = [], None
+            name_parts, qty_seen, tail = [], None, None
             continue
 
         # позиция целиком в одной строке
         done = False
-        for pattern in (_FULL, _QTY_TOTAL, _JUST_TOTAL):
-            match = pattern.match(line)
-            if not match:
-                continue
-            group = match.groupdict()
-            row = _row(group.get("name"), group.get("qty"), group.get("price"), group.get("total"))
+        three = _THREE.match(line)
+        if three:
+            group = three.groupdict()
+            row = _three_numbers(group["name"], group["a"], group["b"], group["c"])
             if row:
                 rows.append(row)
                 name_parts, qty_seen = [], None
+                tail = row              # хвост названия может идти следующими строками
                 done = True
-                break
+        if not done:
+            for pattern in (_FULL, _QTY_TOTAL, _JUST_TOTAL):
+                match = pattern.match(line)
+                if not match:
+                    continue
+                group = match.groupdict()
+                row = _row(group.get("name"), group.get("qty"),
+                           group.get("price"), group.get("total"))
+                if row:
+                    rows.append(row)
+                    name_parts, qty_seen = [], None
+                    tail = row
+                    done = True
+                    break
         if done:
             continue
 
@@ -216,7 +272,13 @@ def parse_lines(text: str) -> tuple[list[ReceiptRow], list[str]]:
 
         if _HAS_MONEY.search(line):
             skipped.append(raw)
-            name_parts, qty_seen = [], None
+            name_parts, qty_seen, tail = [], None, None
+        elif tail is not None and not _NUMBER_PREFIX.match(raw):
+            # Хвост названия. В кассовом чеке ФНС длинное название переносится ВНИЗ:
+            # «1. Мультивитамины 2 474,11 1 2 474,11», а следом «Myprotein Alpha men,»,
+            # «комплекс витаминов и» и так далее. Дописываем их к только что созданной
+            # позиции — иначе от товара останется первое слово.
+            tail.raw_name = _clean_name(tail.raw_name + " " + line)
         elif re.search(r"[а-яa-z]{3}", line, re.I):
             name_parts.append(line)                       # похоже на начало названия
         elif name_parts and re.search(r"[а-яa-z]", line, re.I):

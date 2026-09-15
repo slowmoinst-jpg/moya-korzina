@@ -220,3 +220,77 @@ def test_a_letter_p_inside_a_word_is_not_currency():
 
     assert len(receipt.rows) == 1
     assert receipt.rows[0].raw_name.startswith("Рис")
+
+
+# ---------- кассовый чек из «Мои чеки онлайн» ----------
+FNS = """КАССОВЫЙ ЧЕК
+ПРИХОД
+Общество с ограниченной ответственностью "Интернет Решения"
+ПРЕДМЕТ РАСЧЕТА
+ЦЕНА, Р
+КОЛ-ВО
+СУММА, Р
+1. Мультивитамины 2 474,11 1 2 474,11
+Myprotein Alpha men,
+комплекс витаминов и
+минералов для
+мужчин, 240 таблеток
+ИНН Поставщика: 246214864320
+НДС не облагается
+2. Обработка заказа в 129,89 1 129,89
+пункте выдачи
+ИНН Поставщика: 783800600274
+НДС 5%
+ИТОГ: 2 604,00
+Наличные 0,00
+Безналичные 0,00
+Предоплата (аванс) 2 604,00
+НДС не облагается 2 474,11
+НДС со ставкой 5% 6,19"""
+
+
+def test_fns_receipt_three_columns_without_multiplication_sign():
+    """Чек ФНС печатает цену, количество и сумму подряд, без «×» и без «₽»."""
+    receipt, skipped = parse_order(FNS)
+
+    assert len(receipt.rows) == 2 and not skipped
+    assert receipt.rows[0].unit_price == 2474.11 and receipt.rows[0].qty == 1
+    assert receipt.total == 2604.0
+
+
+def test_fns_wrapped_name_is_collected():
+    """Длинное название переносится ВНИЗ, под строку с числами, и его нельзя терять."""
+    name = parse_order(FNS)[0].rows[0].raw_name
+
+    assert name.startswith("Мультивитамины")
+    assert "240 таблеток" in name, "хвост названия обязан дойти до конца"
+
+
+def test_fns_payment_lines_are_not_products():
+    """«Наличные 0,00» и «Предоплата (аванс) 2 604,00» — не товары."""
+    names = [r.raw_name for r in parse_order(FNS)[0].rows]
+
+    assert not any("аличные" in n for n in names)
+    assert not any("редоплата" in n for n in names)
+    assert not any("НДС" in n for n in names)
+    assert not any("ИНН" in n for n in names)
+
+
+def test_columns_are_read_in_printed_order():
+    """Порядок берём как напечатано: у ФНС это «ЦЕНА · КОЛ-ВО · СУММА».
+
+    Угадывать его умножением нельзя, и это стоит помнить: «3 × 100» и «100 × 3»
+    дают одно и то же, так что любая проверка сошлась бы при любой расстановке.
+    """
+    receipt, _ = parse_order("Товар 100,00 3 300,00")
+    row = receipt.rows[0]
+
+    assert row.unit_price == 100.0 and row.qty == 3 and row.total == 300.0
+
+
+def test_three_numbers_that_do_not_multiply_keep_only_the_sum():
+    """Не сошлось — берём сумму и не множим мусор: последнее число надёжнее всего."""
+    receipt, _ = parse_order("Товар весовой 215,00 2 500,00")
+    row = receipt.rows[0]
+
+    assert row.total == 500.0
