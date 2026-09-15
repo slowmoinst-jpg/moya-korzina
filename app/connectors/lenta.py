@@ -19,10 +19,16 @@
 Вторая: поиск цены НЕ отдаёт — у всех найденных позиций price = 0. Цена и остаток
 приходят только из карточки товара. Отсюда та же двухходовка, что у Магнита: поиск
 находит идентификаторы, карточка даёт цифры.
+
+Третья появилась 15.09.2026: storefront_cart_link_create, ссылка на готовую корзину
+(см. cart_link ниже). Ещё 13.09 инструментов было четыре, теперь пять — значит Лента
+стала второй сетью после ВкусВилла, куда корзина уезжает целиком, а не по одной
+карточке.
 """
 from __future__ import annotations
 
 import logging
+import math
 import re
 
 from app.connectors import mcp_client
@@ -34,6 +40,7 @@ log = logging.getLogger(__name__)
 MCP_URL = "https://mcp.lenta.com/mcp"
 SITE_URL = "https://lenta.com"
 DEFAULT_CHANNEL = "lo"                       # витрина «Лента онлайн»; ещё бывают utk, b2b, ozn
+CART_LIMIT = 100                             # потолок объявлен самой Лентой
 _WEIGHT_WORD = re.compile(r"\bвесов\w*", re.I)
 
 
@@ -78,6 +85,43 @@ def _where(location: Location | None = None) -> dict:
         except (TypeError, ValueError):
             log.warning("lenta: код точки %r не число — спрашивать нечем", location.store_id)
     return {}
+
+
+def cart_link(items: list[tuple[int, float]]) -> str | None:
+    """Ссылка на корзину Ленты Онлайн по списку (id товара, количество).
+
+    Появилось 15.09.2026: ещё 13.09 у сервера было четыре инструмента, теперь пять,
+    и пятый — storefront_cart_link_create. Значит Лента перешла из «по ссылке на
+    каждый товар» в «вся корзина одной ссылкой», как ВкусВилл.
+
+    Отличия от ВкусВилла, ради которых это отдельная функция, а не общая:
+    ключ items вместо products, поле quantity вместо q, ЦЕЛОЕ количество вместо
+    дробного и потолок в сто позиций вместо двадцати. Адрес здесь не нужен —
+    единственный вызов Ленты, который без него работает.
+
+    Целое количество означает, что развесной товар так не передать: 0,4 кг сыра
+    превратятся в одну упаковку. Поэтому дробное округляем вверх — лучше показать
+    человеку в корзине больше, чем он собирался, чем молча недодать.
+
+    Кэшировать нельзя: каждый вызов создаёт новую ссылку.
+    """
+    products = []
+    for sku, qty in items[:CART_LIMIT]:
+        try:
+            number = int(math.ceil(float(qty)))
+        except (TypeError, ValueError):
+            continue
+        products.append({"id": int(sku), "quantity": max(number, 1)})
+    if not products:
+        return None
+    if len(items) > CART_LIMIT:
+        log.info("lenta: в ссылку влезает %d позиций из %d — остальные придётся отдать второй ссылкой",
+                 CART_LIMIT, len(items))
+    answer = mcp_client.call_tool(MCP_URL, "lenta", "storefront_cart_link_create",
+                                  {"items": products})
+    data = mcp_client.ok_payload(answer) or {}
+    link = data.get("link")
+    return link if isinstance(link, str) and link.startswith("http") else None
 
 
 def nearest_stores(address: str) -> list[dict]:

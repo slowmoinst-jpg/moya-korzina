@@ -164,20 +164,40 @@ def save_best(basket_id: int, variants: list[Variant]) -> list[int]:
 
 
 # ---------- передача корзины в магазин ----------
-CART_LINK_STORES = ("vkusvill",)      # где сеть сама умеет принять готовый список
+CART_LINK_STORES = ("vkusvill", "lenta")   # где сеть сама умеет принять готовый список
+
+
+def _cart_builder(store_code: str):
+    """Функция магазина, собирающая ссылку. Импорт внутри — коннектор тянет за собой сеть.
+
+    Перечислено руками, а не собрано по имени модуля: сюда попадает только то, что
+    проверено живьём, и список должен ломаться заметно, а не молча пытаться найти
+    несуществующее.
+    """
+    if store_code == "vkusvill":
+        from app.connectors.vkusvill import cart_link as build
+        return build
+    if store_code == "lenta":
+        from app.connectors.lenta import cart_link as build
+        return build
+    return None
 
 
 def cart_link(store_code: str, lines) -> str | None:
     """Ссылка, по которой человек откроет этот чек уже собранным в магазине.
 
-    Работает только там, где сеть сама такое предлагает: сегодня это ВкусВилл с его
-    инструментом vkusvill_cart_link_create. Ничего чужого мы при этом не трогаем —
-    ссылка открывается в его браузере, дальше его аккаунт, его карта, его адрес.
+    Работает там, где сеть сама такое предлагает: ВкусВилл (vkusvill_cart_link_create)
+    и Лента (storefront_cart_link_create, появился 15.09.2026). Ничего чужого мы при
+    этом не трогаем — ссылка открывается в его браузере, дальше его аккаунт, его
+    карта, его адрес.
 
     None означает «этот магазин так не умеет» и это нормальный ответ, а не ошибка:
     интерфейс тогда показывает список позиций, а не кнопку.
     """
     if store_code not in CART_LINK_STORES:
+        return None
+    build = _cart_builder(store_code)
+    if build is None:
         return None
     store = repo.get_store(store_code)
     if not store:
@@ -192,8 +212,6 @@ def cart_link(store_code: str, lines) -> str | None:
     if not items:
         return None
     try:
-        from app.connectors.vkusvill import cart_link as build
-
         return build(items)
     except Exception as exc:  # noqa: BLE001  — магазин недоступен, это не повод ронять экран
         log.warning("Ссылку на корзину %s получить не удалось: %s", store_code, exc)

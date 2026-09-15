@@ -200,13 +200,82 @@ def test_lenta_search_returns_ids_even_without_prices(monkeypatch, lenta_address
     assert found[0].sku == "11993" and found[0].price is None and found[0].unit == "kg"
 
 
+def test_lenta_cart_link_sends_items_in_lentas_own_shape(monkeypatch):
+    """У Ленты свои имена полей: items/id/quantity, а не products/xml_id/q ВкусВилла."""
+    sent = {}
+
+    def call(url, store_code, tool, arguments, cache_key=None):
+        sent.update({"tool": tool, "args": arguments, "cache": cache_key})
+        return {"ok": True, "data": {"shareId": "d265f624", "link": "https://lenta.com/basket/?share_id=d265f624"}}
+
+    monkeypatch.setattr(mcp_client, "call_tool", call)
+    link = lenta.cart_link([(80424, 2)])
+
+    assert link == "https://lenta.com/basket/?share_id=d265f624"
+    assert sent["tool"] == "storefront_cart_link_create"
+    assert sent["args"] == {"items": [{"id": 80424, "quantity": 2}]}
+    assert sent["cache"] is None, "каждый вызов создаёт новую ссылку — кэшировать нельзя"
+
+
+def test_lenta_cart_link_rounds_fractional_quantity_up(monkeypatch):
+    """Лента принимает только целое. 0,4 кг сыра — это одна упаковка, а не ноль."""
+    sent = {}
+
+    def call(url, store_code, tool, arguments, cache_key=None):
+        sent.update(arguments)
+        return {"ok": True, "data": {"link": "https://lenta.com/basket/?share_id=x"}}
+
+    monkeypatch.setattr(mcp_client, "call_tool", call)
+    lenta.cart_link([(1, 0.4), (2, 1.2), (3, 0.0), (4, 3)])
+
+    assert [p["quantity"] for p in sent["items"]] == [1, 2, 1, 3]
+
+
+def test_lenta_cart_link_respects_limit_of_hundred(monkeypatch):
+    sent = {}
+
+    def call(url, store_code, tool, arguments, cache_key=None):
+        sent.update(arguments)
+        return {"ok": True, "data": {"link": "https://lenta.com/basket/?share_id=y"}}
+
+    monkeypatch.setattr(mcp_client, "call_tool", call)
+    lenta.cart_link([(i, 1) for i in range(1, 140)])
+
+    assert len(sent["items"]) == lenta.CART_LIMIT == 100
+
+
+def test_lenta_cart_link_survives_refusal(monkeypatch):
+    monkeypatch.setattr(mcp_client, "call_tool", fake_tool({"storefront_cart_link_create": None}))
+    assert lenta.cart_link([(1, 1)]) is None
+
+
 # ---------- сервис ----------
 def test_service_offers_cart_link_only_where_store_supports_it():
     from app import service
 
     assert service.cart_link("magnit", []) is None
-    assert service.cart_link("lenta", []) is None
-    assert "vkusvill" in service.CART_LINK_STORES
+    assert service.cart_link("dixy", []) is None
+    assert set(service.CART_LINK_STORES) == {"vkusvill", "lenta"}
+
+
+def test_service_builds_lenta_link_through_lentas_own_connector(monkeypatch):
+    """Магазинов со ссылкой стало два — проверяем, что сервис зовёт коннектор нужного."""
+    from app import repo, service
+
+    called = {}
+
+    def fake_link(items):
+        called["items"] = items
+        return "https://lenta.com/x"
+
+    monkeypatch.setattr(repo, "confirmed_mapping", lambda product_id, store_id: {"sku": "80424"})
+    monkeypatch.setattr(lenta, "cart_link", fake_link)
+
+    class Line:
+        product_id, qty = 1, 2
+
+    assert service.cart_link("lenta", [Line()]) == "https://lenta.com/x"
+    assert called["items"] == [(80424, 2.0)]
 
 
 # ---------- магазины без каталога: цены из чеков ----------
