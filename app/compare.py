@@ -53,6 +53,7 @@ class StoreOffer:
     url: str | None = None
     score: float = 0.0
     note: str = ""                         # почему пусто, если пусто
+    confirmed: bool = False                # это ТОТ товар, а не похожий по названию
 
     @property
     def found(self) -> bool:

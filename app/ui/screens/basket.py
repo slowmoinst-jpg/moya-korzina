@@ -96,21 +96,23 @@ def _price_html(pid: int, stores, cell, live: dict | None = None) -> str:
     «нет» — «спросили, и товара там не продают». Второе для сборки корзины
     важнее цены: в такой магазин человека посылать незачем.
     """
-    known: dict[str, tuple[float, bool]] = {}
+    known: dict[str, tuple[float, bool, bool]] = {}     # цена, есть в наличии, подтверждена
     for store in stores:
         offer = (live or {}).get((pid, store.code))
         if offer is not None:
             if offer.price is not None:
-                known[store.code] = (float(offer.price), bool(offer.in_stock))
+                known[store.code] = (float(offer.price), bool(offer.in_stock),
+                                     bool(getattr(offer, "confirmed", False)))
             continue
         if (pid, store.code) in cell:
-            known[store.code] = (cell[(pid, store.code)], True)
+            # снимок снят по подтверждённому сопоставлению — это тот товар
+            known[store.code] = (cell[(pid, store.code)], True, True)
 
     if not known:
         return '<span style="font-size:12px;color:var(--ink3);">цен нет</span>'
 
     # победителя выбираем только среди того, что реально можно купить
-    available = [value for value, in_stock in known.values() if in_stock]
+    available = [value for value, in_stock, _ in known.values() if in_stock]
     best = min(available) if available else None
 
     parts = []
@@ -118,7 +120,7 @@ def _price_html(pid: int, stores, cell, live: dict | None = None) -> str:
         found = known.get(store.code)
         if found is None:
             continue
-        value, in_stock = found
+        value, in_stock, confirmed = found
         if not in_stock:
             parts.append(
                 f'<span style="display:inline-flex;align-items:center;gap:6px;color:var(--ink3);'
@@ -127,8 +129,15 @@ def _price_html(pid: int, stores, cell, live: dict | None = None) -> str:
             continue
         is_best = best is not None and abs(value - best) < 0.005
         style = "font-weight:600;color:var(--green);" if is_best else "color:var(--ink3);"
+        # неподтверждённую цену подчёркиваем пунктиром: это похожий по названию
+        # товар, а не обязательно тот самый
+        mark = ("" if confirmed else
+                "border-bottom:1px dotted var(--ink3);cursor:help;")
+        hint = ("" if confirmed else
+                ' title="Подобрано поиском по названию — возможно, это другой товар. '
+                'Подтвердить можно на экране «Товары»."')
         parts.append(
-            f'<span style="display:inline-flex;align-items:center;gap:6px;{style}">'
+            f'<span{hint} style="display:inline-flex;align-items:center;gap:6px;{style}{mark}">'
             f'{theme.dot(store.code)}{rub(value)}</span>'
         )
     return '<span style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px;">' + "".join(parts) + "</span>"
@@ -158,12 +167,54 @@ def _ask_stores(basket_id: int, items) -> None:
         bar.progress(n / total, text=f"{name[:44]} — {n} из {total}")
         try:
             for offer in compare.compare_query(name, per_store=1):
-                if offer.found:
-                    found[(pid, offer.store_code)] = offer
+                if not offer.found:
+                    continue
+                keep, confirmed = _agrees_with_mapping(pid, offer)
+                if not keep:
+                    continue
+                offer.confirmed = confirmed
+                found[(pid, offer.store_code)] = offer
         except Exception as exc:  # noqa: BLE001 — один товар не должен ронять весь опрос
             show_exception(exc, f"«{name}» спросить не удалось")
     bar.empty()
     st.session_state[_live_key(basket_id)] = found
+
+
+def _unconfirmed_note(live: dict) -> None:
+    """Сколько цен — догадки поиска. Молчать об этом нельзя: они уже в суммах."""
+    guessed = sum(1 for o in live.values() if not getattr(o, "confirmed", False))
+    if not guessed:
+        return
+    st.caption(
+        f"⚠️ {guessed} цен подобрано поиском по названию и может относиться к другому "
+        "товару — они подчёркнуты пунктиром и уже вошли в суммы. Подтвердить "
+        "сопоставления можно на экране «Товары»."
+    )
+
+
+def _agrees_with_mapping(pid: int, offer) -> tuple[bool, bool]:
+    """(брать ли предложение, подтверждено ли оно) — сверка поиска с сопоставлением.
+
+    Поиск ищет по названию эталона и берёт лучшее совпадение. На коротких и общих
+    названиях он промахивается дорого: на «Икра лососевая копчёная 180 г» прилетела
+    банка за 2 090 ₽, на «Салями сырокопчёная» — палка за 1 790 ₽. В сумме магазина
+    такая цена выглядит как настоящая.
+
+    Поэтому там, где человек уже подтвердил, какой это товар в магазине, его слово
+    главнее находки поиска. Три случая:
+
+        сопоставления нет          — берём находку, но помечаем как неподтверждённую;
+        сопоставление совпало      — берём и считаем подтверждённой;
+        сопоставление НЕ совпало   — находку выбрасываем: покажется цена из снимка
+                                     по подтверждённому товару, а не догадка.
+    """
+    store = repo.get_store(offer.store_code)
+    if store is None:
+        return True, False
+    mapping = repo.confirmed_mapping(pid, store.id)
+    if not mapping:
+        return True, False
+    return (str(mapping.get("sku")) == str(offer.sku)), True
 
 
 def _live_summary(items, stores, live: dict) -> None:
@@ -341,6 +392,7 @@ def _items(basket_id: int, items) -> None:
             )
 
         _live_summary(items, stores, live)
+        _unconfirmed_note(live)
 
         c1, c2 = st.columns(2)
         save = c1.form_submit_button("Сохранить изменения", type="primary")

@@ -228,3 +228,50 @@ def test_address_is_part_of_the_live_cache_key(tmp_path, monkeypatch):
     location.save_address("Екатеринбург, улица Щербакова 4")
 
     assert moscow != _live_key(7)
+
+
+def test_search_guess_loses_to_a_confirmed_mapping(tmp_path, monkeypatch):
+    """Подтверждённый человеком товар главнее находки поиска.
+
+    Именно этим лечится наблюдённое: на «Икра лососевая копчёная 180 г» поиск
+    приносил банку за 2 090 ₽, и она уходила в сумму магазина как настоящая.
+    """
+    from app import config, repo
+    from app.db import init_db
+    from app.ui.screens.basket import _agrees_with_mapping
+
+    monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "m.db"))
+    init_db()
+
+    store = repo.get_store("magnit")
+    pid = repo.upsert_product(Product(id=None, name="Икра лососевая копчёная 180 г", unit="pcs"))
+    sp_id = repo.upsert_store_product(store.id, "правильный-sku", "Икра лососевая 180 г")
+    repo.confirm_mapping(pid, sp_id, confirmed=True)
+
+    class _O:
+        def __init__(self, sku):
+            self.store_code = "magnit"
+            self.sku = sku
+
+    keep, confirmed = _agrees_with_mapping(pid, _O("правильный-sku"))
+    assert (keep, confirmed) == (True, True)
+
+    keep, confirmed = _agrees_with_mapping(pid, _O("банка-за-2090"))
+    assert keep is False, "находка, спорящая с подтверждением, не должна попадать в сумму"
+
+
+def test_without_a_mapping_the_guess_is_kept_but_marked(tmp_path, monkeypatch):
+    """У магазина без сопоставлений цена всё же нужна — но помеченной как догадка."""
+    from app import config, repo
+    from app.db import init_db
+    from app.ui.screens.basket import _agrees_with_mapping
+
+    monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "m2.db"))
+    init_db()
+    pid = repo.upsert_product(Product(id=None, name="Слива", unit="kg"))
+
+    class _O:
+        store_code = "lenta"
+        sku = "любой"
+
+    assert _agrees_with_mapping(pid, _O()) == (True, False)
