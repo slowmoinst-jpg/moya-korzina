@@ -140,3 +140,83 @@ def test_samokat_is_a_store(db):
     assert repo.get_store("samokat") is not None
     assert get_connector("samokat").code == "samokat"
     assert handover.KIND_BY_STORE["samokat"] == handover.LIST
+
+
+# ---------- настоящие чеки, а не только письма ----------
+PAPER = """ЛЕНТА
+КАССОВЫЙ ЧЕК
+1. Молоко ПРОСТОКВАШИНО 2,5% 930мл
+2 x 149.00 =298.00
+2. Хлеб БОРОДИНСКИЙ нарезка 270г
+1 x 94.00 =94.00
+3. Огурцы короткоплодные вес
+0.412 x 215.00 =88.58
+ИТОГ 480.58"""
+
+SCREENSHOT = """Ваш заказ
+Молоко Простоквашино
+2,5%, 930 мл
+2 шт
+298 ₽
+Хлеб Бородинский
+нарезка, 270 г
+1 шт
+94 ₽
+Итого 392 ₽"""
+
+NO_CURRENCY_SIGN = """Молоко Простоквашино 930 мл 2 шт 298 Р
+Хлеб Бородинский 270 г 1 шт 94 Р
+ИТОГО 478 Р"""
+
+
+def test_paper_receipt_with_name_above_the_numbers():
+    """Бумажный чек: название отдельной строкой, «2 x 149.00 =298.00» под ним."""
+    receipt, skipped = parse_order(PAPER)
+
+    assert len(receipt.rows) == 3 and not skipped
+    assert receipt.rows[0].raw_name == "Молоко ПРОСТОКВАШИНО 2,5% 930мл"
+    assert receipt.rows[0].qty == 2 and receipt.rows[0].total == 298.0
+    assert receipt.total == 480.58
+
+
+def test_receipt_headers_are_not_products():
+    """«КАССОВЫЙ ЧЕК» и название сети не должны стать позицией корзины."""
+    names = [r.raw_name for r in parse_order(PAPER)[0].rows]
+
+    assert not any("ЧЕК" in n.upper() for n in names)
+    assert "ЛЕНТА" not in names
+
+
+def test_item_numbers_are_stripped_from_names():
+    assert not parse_order(PAPER)[0].rows[0].raw_name.startswith("1.")
+
+
+def test_screenshot_with_name_split_over_two_lines():
+    """Скриншот приложения: название на двух строках, потом «2 шт», потом «298 ₽»."""
+    receipt, _ = parse_order(SCREENSHOT)
+
+    assert len(receipt.rows) == 2
+    assert receipt.rows[0].raw_name == "Молоко Простоквашино, 2,5%, 930 мл"
+    assert receipt.rows[0].qty == 2 and receipt.rows[0].total == 298.0
+
+
+def test_packaging_line_is_kept_in_the_name():
+    """«2,5%, 930 мл» — слова из трёх букв в ней нет, но терять её нельзя."""
+    first = parse_order(SCREENSHOT)[0].rows[0]
+    assert "930 мл" in first.raw_name
+
+
+def test_currency_sign_may_be_a_letter_or_missing():
+    """Распознавание с фото даёт «Р» вместо «₽», а часто не даёт ничего."""
+    receipt, _ = parse_order(NO_CURRENCY_SIGN)
+
+    assert len(receipt.rows) == 2
+    assert receipt.rows[0].total == 298.0 and receipt.total == 478.0
+
+
+def test_a_letter_p_inside_a_word_is_not_currency():
+    """Иначе «Рис» и «Ряженка» превратятся в суммы."""
+    receipt, _ = parse_order("Рис круглозёрный 900 г 1 шт 89 Р")
+
+    assert len(receipt.rows) == 1
+    assert receipt.rows[0].raw_name.startswith("Рис")
