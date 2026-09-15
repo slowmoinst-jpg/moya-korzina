@@ -161,3 +161,43 @@ def test_good_basket_raises_no_doubts(db):
     repo.set_basket_item(basket_id, product_id, 1)
 
     assert service.doubts_summary(basket_id)["products"] == 0
+
+
+# ---------- кириллица и латиница как одно имя ----------
+def test_transliteration_turns_cyrillic_into_latin():
+    from app.matcher.normalize import translit
+
+    assert translit("Рексона") == "rexona"
+    assert translit("Простоквашино") == "prostokvashino"
+    assert translit("Джипопо") == "gipopo"
+
+
+def test_same_brand_written_two_ways_is_recognised():
+    """То, о чём просили прямо: «Рексона» и «Rexona» — один и тот же товар."""
+    from app.matcher.normalize import same_word
+
+    assert same_word("Рексона", "Rexona")
+    assert same_word("Домик", "Domik")
+    assert not same_word("Рексона", "Axe")
+
+
+def test_similarity_bridges_the_two_alphabets():
+    from app.matcher.normalize import similarity
+
+    assert similarity("Дезодорант Рексона Сухость пудры 40 мл",
+                      "Antiperspirant Rexona Sukhost Pudry 40 ml") > 0.75
+    assert similarity("Молоко Простоквашино 2,5%", "Moloko Prostokvashino 2.5%") == 1.0
+
+
+def test_transliteration_never_lowers_a_score():
+    """Она может только помочь узнать товар: берём лучшее из двух прочтений."""
+    from app.matcher.normalize import similarity
+
+    assert similarity("Огурцы короткоплодные 450 г", "Огурцы короткоплодные тепличные 450г") > 0.8
+
+
+def test_transliteration_does_not_glue_different_brands():
+    from app.matcher.normalize import similarity
+
+    assert similarity("Дезодорант Axe Ice Chill 50 мл",
+                      "Антиперспирант Рексона Сухость пудры 40 мл") < 0.5

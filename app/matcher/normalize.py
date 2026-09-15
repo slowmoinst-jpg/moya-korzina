@@ -96,18 +96,78 @@ def display_name(raw: str) -> str:
     n = normalize_name(raw)
     return n[:1].upper() + n[1:] if n else raw.strip()
 
+# --- кириллица и латиница как одно и то же имя -----------------------------
+
+# Одна и та же марка в каталогах пишется по-разному: «Rexona» на ценнике и
+# «Рексона» в чеке, «Домик в деревне» и «Domik v derevne». Для сравнения строк
+# это разные слова без единой общей буквы, и похожесть честно даёт ноль.
+# Приводим кириллицу к латинице — направление выбрано потому, что оно
+# однозначное: обратное («x» это «кс» или «икс»?) породило бы догадки.
+_TRANSLIT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ж": "zh",
+    "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m", "н": "n",
+    "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f",
+    "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "", "ы": "y",
+    "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+# Сочетания, которые латиница пишет одной буквой: «кс» -> «x» сближает
+# «рексона» с «rexona», «джи» -> «g» — «джипопо» с «gipopo».
+_DIGRAPHS = (("кс", "x"), ("дж", "g"))
+
+BRAND_MATCH = 0.72       # с какой похожести считаем, что это одна и та же марка
+
+
+def translit(text: str) -> str:
+    """«Рексона» -> «rexona», «Простоквашино» -> «prostokvashino»."""
+    s = (text or "").lower().replace("ё", "е")
+    for pair, latin in _DIGRAPHS:
+        s = s.replace(pair, latin)
+    return "".join(_TRANSLIT.get(ch, ch) for ch in s)
+
+
+def same_word(a: str, b: str, threshold: float = BRAND_MATCH) -> bool:
+    """Одно ли это слово с точностью до написания: «рексона» и «rexona» — да.
+
+    Точного равенства мало: транслитерация никогда не совпадёт с фирменным
+    написанием буква в букву («reksona» против «rexona»), да и таблиц перевода
+    у каждого каталога своя.
+    """
+    x, y = translit(a), translit(b)
+    if not x or not y:
+        return False
+    if x == y or x in y or y in x:
+        return True
+    return SequenceMatcher(None, x, y).ratio() >= threshold
+
+
+def _pair_score(na: str, nb: str) -> float:
+    ratio = SequenceMatcher(None, na, nb).ratio()
+    ta, tb = set(na.split()), set(nb.split())
+    jaccard = len(ta & tb) / len(ta | tb) if (ta | tb) else 0.0
+    return max(ratio, 0.5 * ratio + 0.5 * jaccard)
+
 
 def similarity(a: str, b: str) -> float:
-    """Похожесть двух названий, 0..1 (difflib по нормализованным строкам + токены)."""
+    """Похожесть двух названий, 0..1.
+
+    Считаем дважды: как есть и в транслитерации. Второй проход нужен потому, что
+    одна и та же марка в каталогах пишется то кириллицей, то латиницей — «Рексона»
+    в чеке и «Rexona» на ценнике. Без него у этих слов нет ни одной общей буквы и
+    похожесть честно равна нулю, хотя товар один и тот же.
+
+    Берём лучшее из двух: транслитерация может только помочь узнать товар, но
+    никогда не должна мешать — иначе она начнёт сближать случайные слова.
+    """
     na, nb = normalize_name(a), normalize_name(b)
     if not na or not nb:
         return 0.0
     if na == nb:
         return 1.0
-    ratio = SequenceMatcher(None, na, nb).ratio()
-    ta, tb = set(na.split()), set(nb.split())
-    jaccard = len(ta & tb) / len(ta | tb) if (ta | tb) else 0.0
-    return round(max(ratio, 0.5 * ratio + 0.5 * jaccard), 4)
+    score = _pair_score(na, nb)
+    ta, tb = translit(na), translit(nb)
+    if (ta, tb) != (na, nb):
+        score = max(score, _pair_score(ta, tb))
+    return round(score, 4)
 
 
 def weight_ok(product_weight_g, candidate_weight_g, tolerance_pct: float = 20) -> bool:
