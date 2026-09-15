@@ -24,6 +24,7 @@ from app.ui.helpers import show_exception  # noqa: E402
 from app.ui.screens import about as about_screen  # noqa: E402
 from app.ui.screens import basket as basket_screen  # noqa: E402
 from app.ui.screens import cards as cards_screen  # noqa: E402
+from app.ui.screens import compare as compare_screen  # noqa: E402
 from app.ui.screens import history as history_screen  # noqa: E402
 from app.ui.screens import prices as prices_screen  # noqa: E402
 from app.ui.screens import products as products_screen  # noqa: E402
@@ -34,6 +35,7 @@ SCREENS = {
     "Товары": products_screen.render,
     "Корзина": basket_screen.render,
     "Результат": result_screen.render,
+    "Сравнение": compare_screen.render,
     "Цены": prices_screen.render,
     "Карты и акции": cards_screen.render,
     "О продукте": about_screen.render,
@@ -44,6 +46,7 @@ SCREEN_MODULES = {
     "Товары": products_screen,
     "Корзина": basket_screen,
     "Результат": result_screen,
+    "Сравнение": compare_screen,
     "Цены": prices_screen,
     "Карты и акции": cards_screen,
     "О продукте": about_screen,
@@ -55,6 +58,7 @@ EYEBROWS = {
     "Товары": "Что покупаем и где это лежит",
     "Корзина": "Что покупаем",
     "Результат": "Разбиение и экономия",
+    "Сравнение": "Один товар — все доставки",
     "Цены": "Как меняются цены по магазинам",
     "Карты и акции": "Условия, которые учитывает расчёт",
     "О продукте": "Зачем это нужно и как считает",

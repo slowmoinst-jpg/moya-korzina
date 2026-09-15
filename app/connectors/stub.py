@@ -73,6 +73,11 @@ def rows_for(store_code: str) -> list[dict]:
     return rows
 
 
+# Ниже этого порога кандидат уже не похож на запрос, и подсовывать его хуже, чем
+# не найти ничего: на «молоко» прилетало детское пюре с оценкой 0,39.
+RELEVANT = 0.45
+
+
 def fallback_search(store_code: str, query: str, limit: int = 3) -> list[Candidate]:
     """Топ-N кандидатов из CSV: подстрока в названии, дальше — похожесть."""
     q = (query or "").strip().lower().replace("ё", "е")
@@ -82,7 +87,7 @@ def fallback_search(store_code: str, query: str, limit: int = 3) -> list[Candida
         score = similarity(query, row["name"])
         if q and q in name_lc:
             score = max(score, 0.95)
-        elif score < 0.35:
+        elif score < RELEVANT:
             continue
         scored.append(Candidate(
             store_code=store_code,

@@ -127,6 +127,13 @@ def call_tool(url: str, store_code: str, tool: str, arguments: dict,
         if data.get("error"):
             log.warning("%s: инструмент %s ответил ошибкой: %s", store_code, tool, data["error"])
             return None
+        if _rate_limited(data):
+            # 429 от магазина — это «подожди», а не «сломалось». Отличать важно:
+            # иначе предохранитель гасит магазин до конца сеанса из-за пары лишних
+            # запросов, а расчёт молча уезжает на справочные цены.
+            log.warning("%s: магазин просит сбавить темп (лимит запросов). "
+                        "Ответа сейчас не будет, справочные цены тут не помогут.", store_code)
+            return None
         result = data.get("result") or {}
         text = "".join(part.get("text", "") for part in (result.get("content") or [])
                        if isinstance(part, dict))
@@ -140,6 +147,14 @@ def call_tool(url: str, store_code: str, tool: str, arguments: dict,
     if cache_key is None:
         return run()
     return cached_call(store_code, cache_key, run)
+
+
+def _rate_limited(data: dict) -> bool:
+    """Ответ вида {"ok": false, "code": "rate_limited"} — у ВкусВилла именно такой."""
+    result = data.get("result") or {}
+    text = "".join(part.get("text", "") for part in (result.get("content") or [])
+                   if isinstance(part, dict))
+    return "rate_limited" in text or "Превышен лимит запросов" in text
 
 
 def ok_payload(answer: Any) -> dict | None:
