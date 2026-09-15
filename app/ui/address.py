@@ -60,10 +60,11 @@ def editor(key: str = "addr") -> bool:
             if st.button("Сохранить", key=f"{key}_save", type="primary"):
                 client_place.save_address(typed)
                 changed = True
-                if (typed or "").strip():
-                    st.success("Адрес сохранён. Теперь цены считаются по нему.")
-                else:
-                    st.info("Адрес убран — вернулись к магазину из настроек.")
+                # toast, а не success: вызывающий сразу перерисует экран, и обычное
+                # сообщение исчезло бы, не успев прочитаться.
+                st.toast("Адрес сохранён — цены считаются по нему"
+                         if (typed or "").strip()
+                         else "Адрес убран — вернулись к магазину из настроек")
 
         with col2:
             if saved and st.button("Подобрать точку Ленты", key=f"{key}_resolve"):
@@ -112,20 +113,36 @@ def _current_point(key: str) -> bool:
     if not found:
         return changed
 
-    st.caption("Найденные точки — выберите свою:")
-    for hub in found[:5]:
+    st.caption("Найденные точки — ближайшая сверху:")
+    for hub in sorted(found, key=_distance)[:5]:
         hid = str(hub.get("id") or "")
         if not hid:
             continue
         label = str(hub.get("name") or hid)
         where = str(hub.get("address") or "")
-        distance = hub.get("distance")
-        suffix = f" · {round(float(distance))} м" if isinstance(distance, (int, float)) else ""
         col1, col2 = st.columns([4, 1])
-        col1.markdown(f"**{label}** — {where}{suffix}")
+        col1.markdown(f"**{label}** — {where}{_distance_text(hub)}")
         if col2.button("Выбрать", key=f"{key}_pick_{hid}", disabled=(hid == store_id)):
             client_place.save_point("lenta", hid, label)
             st.session_state.pop(f"{key}_points", None)
             changed = True
 
     return changed
+
+
+def _distance(hub: dict) -> float:
+    """Расстояние до точки. Без него точка уходит в конец списка, а не в начало."""
+    try:
+        return float(hub.get("distance"))
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def _distance_text(hub: dict) -> str:
+    """«394 м» и «9,1 км»: девять тысяч метров человек читает дольше, чем нужно."""
+    metres = _distance(hub)
+    if metres == float("inf"):
+        return ""
+    if metres < 1000:
+        return f" · {round(metres)} м"
+    return f" · {metres / 1000:.1f} км".replace(".", ",")

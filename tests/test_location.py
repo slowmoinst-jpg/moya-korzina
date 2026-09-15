@@ -113,3 +113,26 @@ def test_saved_address_reaches_the_connector(db, monkeypatch):
 
     assert isinstance(seen["lenta"], Location)
     assert seen["lenta"].address == "Екатеринбург, улица Щербакова 4"
+
+
+# ---------- показ точек ----------
+def test_nearest_point_comes_first():
+    """Список точек бесполезен, если ближайшая лежит третьей.
+
+    Лента отдаёт точки не по расстоянию: проверка по Екатеринбургу дала
+    9110 м первой строкой и 394 м третьей.
+    """
+    from app.ui.address import _distance
+
+    hubs = [{"id": "1", "distance": 9110}, {"id": "2", "distance": 394}, {"id": "3"}]
+    order = [h["id"] for h in sorted(hubs, key=_distance)]
+
+    assert order == ["2", "1", "3"], "точка без расстояния должна уйти в конец, а не в начало"
+
+
+def test_distance_reads_like_a_person_wrote_it():
+    from app.ui.address import _distance_text
+
+    assert _distance_text({"distance": 394}) == " · 394 м"
+    assert _distance_text({"distance": 9110}) == " · 9,1 км"
+    assert _distance_text({}) == ""
