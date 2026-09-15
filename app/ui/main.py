@@ -19,6 +19,7 @@ if _ROOT not in sys.path:
 import streamlit as st  # noqa: E402
 
 from app import repo  # noqa: E402
+from app.ui import address as address_block  # noqa: E402
 from app.ui import theme  # noqa: E402
 from app.ui.helpers import show_exception  # noqa: E402
 from app.ui.screens import about as about_screen  # noqa: E402
@@ -127,8 +128,15 @@ def main() -> None:
     if st.session_state.get("screen") not in SCREENS:
         st.session_state["screen"] = "История"
 
-    with st.container(key="topbar", horizontal=True, vertical_alignment="center", gap="medium"):
-        st.markdown(theme.logo(), unsafe_allow_html=True)
+    # Шапка в два ряда. Верхний — марка и адрес, нижний — переходы по экранам.
+    # Адрес стоит сразу за маркой, а не под меню: в нижнем ряду он прилипал к
+    # содержимому страницы и читался как часть экрана, а не шапки.
+    # Он определяет все цены, которые человек увидит ниже, и менять его он должен
+    # в одном и том же месте на любом экране.
+    with st.container(key="topbar"):
+        with st.container(key="topbrand", horizontal=True, vertical_alignment="center"):
+            st.markdown(theme.logo(), unsafe_allow_html=True)
+            address_block.topbar()
         st.radio("Экран", list(SCREENS), key="screen", horizontal=True, label_visibility="collapsed")
 
     name = st.session_state["screen"]

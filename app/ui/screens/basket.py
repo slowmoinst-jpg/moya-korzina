@@ -84,23 +84,166 @@ def _price_matrix(items, stores) -> tuple[dict, dict]:
     return cell, {k: round(v, 2) for k, v in totals.items()}
 
 
-def _price_html(pid: int, stores, cell) -> str:
-    known = {s.code: cell[(pid, s.code)] for s in stores if (pid, s.code) in cell}
+def _price_html(pid: int, stores, cell, live: dict | None = None) -> str:
+    """Цены этой позиции по магазинам одной строкой.
+
+    Два источника, и они не равны. Снимок из базы — то, что когда-то сняли, он
+    может быть недельной давности и снят по другому адресу. Живой опрос — цена
+    сегодняшняя и по адресу из шапки, и у него же есть наличие. Поэтому живая
+    цена вытесняет снимок, а не дополняет его.
+
+    Пустая клетка и «нет» — разные ответы. Пусто значит «не спрашивали»,
+    «нет» — «спросили, и товара там не продают». Второе для сборки корзины
+    важнее цены: в такой магазин человека посылать незачем.
+    """
+    known: dict[str, tuple[float, bool]] = {}
+    for store in stores:
+        offer = (live or {}).get((pid, store.code))
+        if offer is not None:
+            if offer.price is not None:
+                known[store.code] = (float(offer.price), bool(offer.in_stock))
+            continue
+        if (pid, store.code) in cell:
+            known[store.code] = (cell[(pid, store.code)], True)
+
     if not known:
         return '<span style="font-size:12px;color:var(--ink3);">цен нет</span>'
-    best = min(known.values())
+
+    # победителя выбираем только среди того, что реально можно купить
+    available = [value for value, in_stock in known.values() if in_stock]
+    best = min(available) if available else None
+
     parts = []
     for store in stores:
-        value = known.get(store.code)
-        if value is None:
+        found = known.get(store.code)
+        if found is None:
             continue
-        is_best = abs(value - best) < 0.005
+        value, in_stock = found
+        if not in_stock:
+            parts.append(
+                f'<span style="display:inline-flex;align-items:center;gap:6px;color:var(--ink3);'
+                f'text-decoration:line-through;">{theme.dot(store.code)}{rub(value)}</span>'
+            )
+            continue
+        is_best = best is not None and abs(value - best) < 0.005
         style = "font-weight:600;color:var(--green);" if is_best else "color:var(--ink3);"
         parts.append(
             f'<span style="display:inline-flex;align-items:center;gap:6px;{style}">'
             f'{theme.dot(store.code)}{rub(value)}</span>'
         )
     return '<span style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px;">' + "".join(parts) + "</span>"
+
+
+# ---------- живые цены по магазинам ----------
+def _live_key(basket_id: int) -> str:
+    """Ключ хранения. Адрес в ключе обязателен: цены другого города — чужие цены."""
+    from app import location as client_place
+    return f"live_{basket_id}_{client_place.address() or 'нет'}"
+
+
+def _ask_stores(basket_id: int, items) -> None:
+    """Спрашивает цены и наличие по всем позициям сразу.
+
+    Идём по позициям, а не по магазинам, потому что показать прогресс осмысленно
+    можно только так: человек видит, какой товар сейчас спрашивается.
+    """
+    from app import compare
+
+    found: dict[tuple[int, str], object] = {}
+    bar = st.progress(0.0, text="Спрашиваем магазины…")
+    total = max(1, len(items))
+    for n, item in enumerate(items, start=1):
+        pid = int(item["product_id"])
+        name = item.get("name") or ""
+        bar.progress(n / total, text=f"{name[:44]} — {n} из {total}")
+        try:
+            for offer in compare.compare_query(name, per_store=1):
+                if offer.found:
+                    found[(pid, offer.store_code)] = offer
+        except Exception as exc:  # noqa: BLE001 — один товар не должен ронять весь опрос
+            show_exception(exc, f"«{name}» спросить не удалось")
+    bar.empty()
+    st.session_state[_live_key(basket_id)] = found
+
+
+def _live_summary(items, stores, live: dict) -> None:
+    """Сколько позиций каждый магазин закрывает. Без этого цена магазина обманчива.
+
+    Магазин с самой низкой суммой может просто не иметь половины корзины: сумма
+    у него меньше, потому что в ней меньше товаров, а не потому что дешевле.
+    """
+    if not live:
+        return
+    rows = []
+    for store in stores:
+        covered = sum(1 for it in items
+                      if (int(it["product_id"]), store.code) in live
+                      and live[(int(it["product_id"]), store.code)].in_stock)
+        if covered:
+            rows.append((store, covered))
+    if not rows:
+        return
+    cells = " ".join(
+        f'<span style="display:inline-flex;align-items:center;gap:7px;margin-left:16px;">'
+        f'{theme.dot(s.code)}<span>{n} из {len(items)}</span></span>'
+        for s, n in rows
+    )
+    st.markdown(
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:16px;'
+        'flex-wrap:wrap;padding:11px 16px;border:1px solid var(--line);border-radius:11px;'
+        'margin-top:8px;font-size:13px;color:var(--ink2);">'
+        '<span style="font-weight:600;">Позиций в наличии</span>'
+        f'<span>{cells}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _ask_button(basket_id: int, items, live: dict) -> None:
+    """Кнопка живого опроса и честное предупреждение о его цене во времени."""
+    from app import location as client_place
+
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        if st.button("Узнать цены по магазинам", key=f"ask_{basket_id}",
+                     type="primary", use_container_width=True):
+            _ask_stores(basket_id, items)
+            st.rerun()
+    with col2:
+        addr = client_place.address()
+        if not addr:
+            st.caption("Адрес не указан — магазины ответят ценами не вашей точки. "
+                       "Укажите его в шапке, кнопкой с булавкой.")
+        elif live:
+            st.caption(f"Цены по адресу «{addr}». Ответы держатся 6 часов, "
+                       "повторный опрос мгновенный.")
+        else:
+            st.caption(f"Спросим все доставки по адресу «{addr}». "
+                       f"Позиций {len(items)}, это займёт около минуты.")
+
+
+def _live_totals(items, stores, live: dict, cell: dict, totals: dict) -> dict:
+    """Пересчёт сумм по магазинам с учётом живых цен.
+
+    В сумму идёт только то, что в магазине ЕСТЬ. Складывать цену отсутствующего
+    товара — значит обещать корзину, которую не соберут.
+    """
+    out = dict(totals)
+    for store in stores:
+        total = 0.0
+        for item in items:
+            pid = int(item["product_id"])
+            qty = float(item.get("qty") or 0)
+            is_kg = (item.get("unit") or "pcs") == "kg"
+            offer = live.get((pid, store.code))
+            if offer is not None:
+                if offer.price is None or not offer.in_stock:
+                    continue
+                base = offer.per_unit if (is_kg and offer.per_unit) else offer.price
+                total += round(float(base) * qty, 2)
+            elif (pid, store.code) in cell:
+                total += cell[(pid, store.code)]
+        out[store.code] = round(total, 2)
+    return out
 
 
 # ---------- добавление позиции ----------
@@ -148,6 +291,13 @@ def _items(basket_id: int, items) -> None:
 
     stores = repo.list_stores()
     cell, totals = _price_matrix(items, stores)
+    live = st.session_state.get(_live_key(basket_id)) or {}
+
+    # Кнопка вне формы: внутри формы она сработала бы только вместе с сохранением.
+    _ask_button(basket_id, items, live)
+    if live:
+        totals = _live_totals(items, stores, live, cell, totals)
+
     with st.form("basket_items_form"):
         head = st.columns([4, 2, 1, 3])
         head[0].markdown("**Товар**")
@@ -172,7 +322,7 @@ def _items(basket_id: int, items) -> None:
                 label_visibility="collapsed",
             )
             remove = cols[2].checkbox("x", key=f"del_{basket_id}_{pid}", label_visibility="collapsed")
-            cols[3].markdown(_price_html(pid, stores, cell), unsafe_allow_html=True)
+            cols[3].markdown(_price_html(pid, stores, cell, live), unsafe_allow_html=True)
             widgets.append((pid, qty, remove))
 
         priced = [s for s in stores if totals.get(s.code)]
@@ -189,6 +339,8 @@ def _items(basket_id: int, items) -> None:
                 f'<span>{cells}</span></div>',
                 unsafe_allow_html=True,
             )
+
+        _live_summary(items, stores, live)
 
         c1, c2 = st.columns(2)
         save = c1.form_submit_button("Сохранить изменения", type="primary")

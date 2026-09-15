@@ -89,6 +89,19 @@ h3{font-weight:600;font-size:1.2rem;}
 /* кружок радиокнопки — див прямо перед подписью; в навигации он лишний */
 .st-key-topbar [data-testid="stRadioOption"] div:has(+ [data-testid="stMarkdownContainer"]){display:none;}
 
+/* адрес доставки — сразу за маркой в верхнем ряду шапки, как в доставках.
+   flex:0 0 auto обязателен: без него контейнер Streamlit растягивается на всю
+   строку, и хотя кнопка выглядит на месте, любое выравнивание внутри перестаёт
+   работать — правило молча не применяется. */
+.st-key-topbrand{gap:14px;margin-bottom:9px;}
+.st-key-topbar .st-key-topaddr{flex:0 0 auto !important;width:auto !important;}
+.st-key-topaddr [data-testid="stPopover"] button{
+  border-radius:999px;border:1px solid var(--line2);background:var(--surface);
+  padding:7px 14px;white-space:nowrap;
+}
+.st-key-topaddr [data-testid="stPopover"] button p{font-size:0.88rem;color:var(--ink2);}
+.st-key-topaddr [data-testid="stPopover"] button:hover{background:var(--tint);}
+
 /* телефон: меню в одну прокручиваемую строку вместо трёх, экономим четверть экрана */
 @media (max-width:640px){
   .st-key-topbar{

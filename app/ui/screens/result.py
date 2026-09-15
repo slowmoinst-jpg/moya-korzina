@@ -8,7 +8,6 @@ from __future__ import annotations
 import streamlit as st
 
 from app import repo
-from app.ui import address as address_block
 from app.ui import theme
 from app.ui.helpers import goto, num, pct, rub, unit_label
 
@@ -27,7 +26,6 @@ def _refresh_units() -> None:
 
 
 def render() -> None:
-    address_block.banner()
     calc = st.session_state.get("calc")
     if not calc:
         st.info("Расчёта ещё не было. Соберите корзину и нажмите «Рассчитать».")

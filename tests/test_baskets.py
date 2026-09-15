@@ -144,3 +144,87 @@ def test_reference_warns_about_points_and_subscription():
 def test_reference_card_title_falls_back_to_program():
     assert bank_reference.card_title(bank_reference.find("ВТБ")) == "Мультибонус"
     assert bank_reference.card_title(bank_reference.find("Сбер")) == "СберСпасибо"
+
+
+# ---------- живые цены в корзине ----------
+class _Offer:
+    """Достаточная замена StoreOffer для проверки отрисовки и сумм."""
+
+    def __init__(self, price, in_stock=True, per_unit=None):
+        self.price = price
+        self.in_stock = in_stock
+        self.per_unit = per_unit
+
+
+def test_out_of_stock_never_wins_in_the_basket():
+    """Зелёным помечается самое дешёвое ИЗ ТОГО, ЧТО ЕСТЬ.
+
+    Иначе победителем станет магазин, в который человека посылать незачем: там
+    этого товара не продают, а цена показана справочная.
+    """
+    from app.ui.screens.basket import _price_html
+
+    class S:
+        def __init__(self, code):
+            self.code = code
+
+    stores = [S("lenta"), S("magnit")]
+    live = {(1, "lenta"): _Offer(50.0, in_stock=False), (1, "magnit"): _Offer(90.0)}
+    html = _price_html(1, stores, {}, live)
+
+    assert "line-through" in html, "отсутствующая цена должна быть зачёркнута"
+    assert "var(--green)" in html
+    # зелёным помечена именно девяностая, а не полусотня отсутствующего
+    assert html.index("var(--green)") > html.index("line-through")
+
+
+def test_missing_item_does_not_inflate_a_store_total():
+    """Сумма магазина складывается только из того, что в нём есть.
+
+    Магазин, где нет половины корзины, иначе выглядел бы самым дешёвым — просто
+    потому что в его сумме меньше товаров.
+    """
+    from app.ui.screens.basket import _live_totals
+
+    class S:
+        def __init__(self, code):
+            self.code = code
+
+    stores = [S("lenta")]
+    items = [{"product_id": 1, "qty": 2, "unit": "pcs"}, {"product_id": 2, "qty": 1, "unit": "pcs"}]
+    live = {(1, "lenta"): _Offer(100.0), (2, "lenta"): _Offer(999.0, in_stock=False)}
+
+    totals = _live_totals(items, stores, live, {}, {"lenta": 0.0})
+
+    assert totals["lenta"] == 200.0, "999 за отсутствующий товар не должны попасть в сумму"
+
+
+def test_live_price_replaces_the_stored_snapshot():
+    """Снимок может быть недельным и снятым по другому адресу — живая цена главнее."""
+    from app.ui.screens.basket import _price_html
+
+    class S:
+        def __init__(self, code):
+            self.code = code
+
+    stores = [S("lenta")]
+    html = _price_html(1, stores, {(1, "lenta"): 500.0}, {(1, "lenta"): _Offer(75.99)})
+
+    assert "75,99" in html.replace("&nbsp;", " ")
+    assert "500" not in html
+
+
+def test_address_is_part_of_the_live_cache_key(tmp_path, monkeypatch):
+    """Цены одного города не должны показаться под адресом другого."""
+    from app import config, location
+    from app.db import init_db
+    from app.ui.screens.basket import _live_key
+
+    monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "b.db"))
+    init_db()
+
+    location.save_address("Москва, Ходынский бульвар 4")
+    moscow = _live_key(7)
+    location.save_address("Екатеринбург, улица Щербакова 4")
+
+    assert moscow != _live_key(7)

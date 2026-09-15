@@ -132,15 +132,26 @@ def test_distance_reads_like_a_person_wrote_it():
     assert _distance_text({}) == ""
 
 
-def test_header_summary_does_not_break(db):
-    """Сводка в шапке обязана работать, а не молчать.
+def test_topbar_button_says_what_is_set(db):
+    """Надпись на кнопке адреса обязана работать, а не молчать.
 
-    main.py ловит любую ошибку из header_stats и показывает пустую строку — то есть
-    сломанная сводка выглядит как «адреса нет». Ровно так и случилось, когда из
+    main.py рисует шапку в общем try и на любой ошибке показывает пустоту — то есть
+    сломанная надпись выглядит как «адреса нет». Ровно так и вышло, когда из
     location убрали выбор точки, а обращение к нему в сводке осталось.
     """
-    from app.ui.address import summary
+    from app.ui.address import _button_label
 
-    assert summary() == "Адрес не указан"
+    assert _button_label() == "📍 Укажите адрес"
     location.save_address("Екатеринбург, улица Щербакова 4")
-    assert summary() == "Екатеринбург, улица Щербакова 4"
+    assert _button_label() == "📍 Екатеринбург, улица Щербакова 4"
+
+
+def test_long_address_is_trimmed_on_the_button(db):
+    """Шапка одна на все экраны — длинный адрес не должен её распирать."""
+    from app.ui.address import _button_label
+
+    location.save_address("Санкт-Петербург, Петергофское шоссе, дом 27 корпус 4, квартира 118")
+    label = _button_label()
+
+    assert label.endswith("…")
+    assert len(label) <= 36
