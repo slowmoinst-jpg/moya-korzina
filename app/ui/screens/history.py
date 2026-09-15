@@ -77,6 +77,7 @@ def _table(stores) -> None:
 
 def _import(stores) -> None:
     theme.heading("Загрузить покупки")
+    _paste_block(stores)
     theme.block(
         '<div class="mk-card" style="border-style:dashed;border-color:var(--line2);padding:18px 20px;'
         'display:flex;align-items:center;gap:14px;margin-bottom:10px;">'
@@ -86,13 +87,14 @@ def _import(stores) -> None:
         '<path d="M4.5 15.5v2.8a1.7 1.7 0 0 0 1.7 1.7h11.6a1.7 1.7 0 0 0 1.7-1.7v-2.8"></path></svg>'
         '<span style="font-size:13px;color:var(--ink2);line-height:1.45;">'
         '<b>Чек</b> — PDF от ОФД или текст. <b>JSON</b> — выгрузка из «Мои чеки онлайн» ФНС. '
-        '<b>Таблица</b> — CSV или XLSX с заказом из личного кабинета магазина.<br>'
+        '<b>Таблица</b> — CSV или XLSX с заказом из личного кабинета магазина. '
+        '<b>Письмо</b> — HTML или EML из доставки.<br>'
         'Позиции разбираются и связываются с товарами сами.</span></div>'
     )
     col1, col2 = st.columns([2, 1])
     with col1:
         uploaded = st.file_uploader("Чек, выгрузка или таблица",
-                                    type=["pdf", "txt", "json", "csv", "xlsx"],
+                                    type=["pdf", "txt", "json", "csv", "xlsx", "html", "htm", "eml"],
                                     key="hist_upload")
     with col2:
         store = store_selectbox(stores, "Магазин чека (необязательно)", key="hist_store_imp", with_all=True)
@@ -115,6 +117,67 @@ def _import(stores) -> None:
         finally:
             drop_file(path)
         _show_import_result(result)
+
+
+def _paste_block(stores) -> None:
+    """Вставить письмо из доставки или страницу заказа.
+
+    Файл с чеком есть не у всех. А письмо «Чек на ваш заказ» от Самоката или
+    страница заказа в Ленте есть у любого, кто этими доставками пользуется:
+    выделить, скопировать, вставить. Это единственный способ загрузить историю
+    сегодня, не дожидаясь ни выгрузок, ни договорённостей с ФНС.
+    """
+    with st.expander("Вставить письмо или страницу заказа"):
+        st.caption("Откройте письмо из доставки или страницу «Мои заказы», выделите всё "
+                   "(Ctrl+A), скопируйте и вставьте сюда. Разбор терпимый: поймёт и таблицу, "
+                   "и список в столбик, и HTML письма.")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            text = st.text_area("Текст заказа", height=180, key="hist_paste",
+                                placeholder="Молоко Простоквашино 930 мл   2 шт × 149,00 ₽ = 298,00 ₽")
+        with col2:
+            store = store_selectbox(stores, "Магазин", key="hist_paste_store", with_all=True)
+
+        if not (text or "").strip():
+            return
+
+        preview_fn, err = load("app.importers.text_import", "preview")
+        if err:
+            module_warning(err)
+            return
+        try:
+            seen = preview_fn(text, store.code if store else None)
+        except Exception as exc:  # noqa: BLE001
+            show_exception(exc, "Не удалось разобрать текст")
+            return
+
+        if not seen["rows"]:
+            st.warning("Ни одной строки с товаром и ценой не нашлось. "
+                       "Скопируйте вместе с ценами — без них позицию не отличить от заголовка.")
+            return
+
+        st.markdown(f"Понял **{len(seen['rows'])}** позиций на {rub(seen['total'])}"
+                    + (f", дата {seen['date']}" if seen.get("date") else ""))
+        st.dataframe([{"Товар": r["name"], "Кол-во": r["qty"], "Цена": r["price"], "Сумма": r["total"]}
+                      for r in seen["rows"]], hide_index=True, use_container_width=True)
+        if seen["skipped"]:
+            lines = "\n".join(f"- {line}" for line in seen["skipped"][:10])
+            st.info("Эти строки я не понял, они не попадут в историю:\n\n" + lines)
+
+        if st.button("Добавить в историю", type="primary", key="hist_paste_btn"):
+            fn, err = load("app.importers.text_import", "import_order_text")
+            if err:
+                module_warning(err)
+                return
+            try:
+                result = fn(text, store.code if store else None)
+            except Exception as exc:  # noqa: BLE001
+                show_exception(exc, "Не удалось сохранить заказ")
+                return
+            st.success(f"Добавлено {result['rows']} позиций"
+                       f" · новых товаров {result['products_created']}.")
+            st.session_state.pop("hist_paste", None)
+            st.rerun()
 
 
 def _show_import_result(result) -> None:

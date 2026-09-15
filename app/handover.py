@@ -42,6 +42,7 @@ KIND_BY_STORE = {
     "lenta": ITEMS,
     "pyaterochka": LIST,
     "dixy": LIST,
+    "samokat": LIST,
 }
 
 NOTE_BY_KIND = {

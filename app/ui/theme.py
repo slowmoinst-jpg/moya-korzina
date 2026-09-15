@@ -16,7 +16,8 @@ FONTS = ("https://fonts.googleapis.com/css2?"
 
 # store_code -> css-переменная с цветом магазина
 STORE_VAR = {"magnit": "--red", "vkusvill": "--green", "pyaterochka": "--amber",
-             "lenta": "--blue", "dixy": "--warm"}
+             "lenta": "--blue", "dixy": "--warm",
+             "samokat": "--ink2"}
 
 CSS = """
 <style>

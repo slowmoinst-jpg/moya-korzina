@@ -139,6 +139,7 @@ SEED_STORES: list[tuple] = [
     ("pyaterochka", "Пятёрочка", 199.0, 2500.0, 600.0, "pyaterochka"),
     ("lenta", "Лента", 199.0, 3000.0, 1000.0, "lenta"),
     ("dixy", "Дикси", 149.0, 2000.0, 500.0, "dixy"),
+    ("samokat", "Самокат", 0.0, 0.0, 0.0, "samokat"),
 ]
 
 

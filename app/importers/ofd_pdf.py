@@ -141,7 +141,7 @@ def _read_txt(path: str) -> str:
         return fh.read()
 
 
-SUPPORTED = (".pdf", ".txt", ".json", ".csv", ".xlsx", ".xlsm")
+SUPPORTED = (".pdf", ".txt", ".json", ".csv", ".xlsx", ".xlsm", ".html", ".htm", ".eml")
 
 
 def parse_receipt(path: str) -> Receipt:
@@ -151,6 +151,7 @@ def parse_receipt(path: str) -> Receipt:
     .txt  — тот же чек текстом
     .json — выгрузка чека из «Мои чеки онлайн» ФНС или от оператора данных
     .csv / .xlsx — таблица: выгрузка заказа из личного кабинета или свой список
+    .html / .eml — письмо из доставки или сохранённая страница заказа
     """
     if not os.path.exists(path):
         raise FileNotFoundError(path)
@@ -165,7 +166,19 @@ def parse_receipt(path: str) -> Receipt:
         return sources.parse_receipt_table(path)
 
     text = _read_pdf(path) if ext == ".pdf" else _read_txt(path)
-    return parse_receipt_text(text)
+    if ext in (".html", ".htm", ".eml"):
+        from app.importers.orders import parse_order
+
+        return parse_order(text)[0]
+    receipt = parse_receipt_text(text)
+    if not receipt.rows:
+        # строгий формат ОФД не подошёл — похоже, это письмо из доставки
+        from app.importers.orders import parse_order
+
+        loose = parse_order(text)[0]
+        if loose.rows:
+            return loose
+    return receipt
 
 
 # --- загрузка в базу -------------------------------------------------------

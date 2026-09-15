@@ -33,7 +33,7 @@ log = logging.getLogger(__name__)
 PREFIX = "hist-"
 
 # магазины, которые живут на прайсе и чеках, — интерфейс предлагает им загрузку прайса
-MANUAL_STORES = ("pyaterochka", "dixy")
+MANUAL_STORES = ("pyaterochka", "samokat", "dixy")
 
 
 def _product_id(sku: str) -> int | None:
@@ -149,4 +149,16 @@ class HistoryConnector(Connector):
 class PyaterochkaConnector(HistoryConnector):
     """Пятёрочка. 5ka.ru закрыт наглухо, MCP нет — живём на прайсе и чеках."""
     code = "pyaterochka"
+
+
+@register("samokat")
+class SamokatConnector(HistoryConnector):
+    """Самокат. Каталога у нас нет, зато письмо «Чек на ваш заказ» есть у каждого.
+
+    В apple-app-site-association у них объявлен путь /cart/sharing/* — то есть
+    механизм «поделиться корзиной» существует. Ссылку выдаёт их собственное
+    приложение, снаружи такую не собрать, так что пока это задел на будущее, а
+    не рабочий путь.
+    """
+    code = "samokat"
 

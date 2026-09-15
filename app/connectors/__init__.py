@@ -22,6 +22,7 @@ from app.connectors.dixy import DixyConnector  # noqa: F401
 from app.connectors.history import (  # noqa: F401
     HistoryConnector,
     PyaterochkaConnector,
+    SamokatConnector,
 )
 from app.connectors.lenta import LentaConnector  # noqa: F401
 from app.connectors.magnit import MagnitConnector  # noqa: F401
@@ -36,6 +37,7 @@ __all__ = [
     "HttpCatalogConnector",
     "LentaConnector",
     "PyaterochkaConnector",
+    "SamokatConnector",
     "MagnitConnector",
     "StubConnector",
     "VkusvillConnector",
