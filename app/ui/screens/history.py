@@ -26,6 +26,50 @@ def render() -> None:
     _import(stores)
 
 
+MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня",
+          "июля", "августа", "сентября", "октября", "ноября", "декабря")
+
+
+def _human_date(iso: str) -> str:
+    """«2026-08-16» -> «16 августа 2026». Дата чека читается глазами, а не машиной."""
+    try:
+        year, month, day = (int(x) for x in str(iso).split("-")[:3])
+        return f"{day} {MONTHS[month - 1]} {year}"
+    except (ValueError, IndexError):
+        return str(iso or "—")
+
+
+def _receipts(rows: list[dict]) -> list[dict]:
+    """Строки покупок -> чеки: дата плюс магазин, внутри состав.
+
+    ОГОВОРКА, КОТОРУЮ НАДО ЗНАТЬ: отдельной сущности «чек» в базе нет, строки
+    хранятся плоско (см. purchase_history). Поэтому чек здесь — это всё, что
+    куплено в один день в одном магазине. Два похода в одну сеть за день
+    склеятся в один чек, и развести их нечем: время покупки не хранится.
+    Появится номер чека из ФНС — группировать надо будет по нему.
+
+    Порядок сохраняется тот, в котором пришли строки: list_history отдаёт их
+    от свежих к старым, значит и чеки выйдут так же.
+    """
+    out: list[dict] = []
+    index: dict[tuple, int] = {}
+    for row in rows:
+        key = (row.get("date"), row.get("store_code"))
+        if key not in index:
+            index[key] = len(out)
+            out.append({
+                "date": row.get("date"),
+                "store_code": row.get("store_code"),
+                "store_name": row.get("store_name") or "—",
+                "lines": [],
+                "total": 0.0,
+            })
+        receipt = out[index[key]]
+        receipt["lines"].append(row)
+        receipt["total"] += float(row.get("total") or 0)
+    return out
+
+
 def _table(stores) -> None:
     theme.heading("Покупки")
     c1, c2, c3 = st.columns(3)
@@ -45,33 +89,58 @@ def _table(stores) -> None:
         st.info("Покупок пока нет. Загрузите чек ниже — позиции появятся в этой таблице.")
         return
 
+    receipts = _receipts(rows)
+    st.caption(f"Чеков: {len(receipts)} · позиций: {len(rows)}. "
+               "Раскройте чек, чтобы увидеть состав.")
+
+    # Один чек — открыт сразу: чаще всего смотрят последний, и лишний клик здесь лишний.
+    for n, receipt in enumerate(receipts):
+        with st.expander(_receipt_label(receipt), expanded=(len(receipts) == 1 or n == 0)):
+            _receipt_lines(receipt)
+
+
+def _receipt_label(receipt: dict) -> str:
+    """Строка свёрнутого чека. Только текст: заголовок раскрывающегося блока разметку не принимает."""
+    count = len(receipt["lines"])
+    return (f"{_human_date(receipt['date'])}  ·  {receipt['store_name']}  ·  "
+            f"{format_plural(count)}  ·  {rub(receipt['total'])}")
+
+
+def format_plural(count: int) -> str:
+    """«1 позиция», «2 позиции», «5 позиций» — иначе в заголовке видно машину."""
+    tail = count % 100
+    if 11 <= tail <= 14:
+        word = "позиций"
+    else:
+        last = count % 10
+        word = "позиция" if last == 1 else "позиции" if 2 <= last <= 4 else "позиций"
+    return f"{count} {word}"
+
+
+def _receipt_lines(receipt: dict) -> None:
     esc = theme.esc
     body = []
-    for r in rows:
+    for r in receipt["lines"]:
         name = r.get("product_name") or r.get("raw_name") or "—"
         raw = r.get("raw_name") or ""
-        hint = f' <span style="color:var(--ink3);font-size:12px;">{esc(raw)}</span>' if raw and raw != name else ""
+        hint = (f' <span style="color:var(--ink3);font-size:12px;">{esc(raw)}</span>'
+                if raw and raw != name else "")
         body.append([
-            f'<span style="color:var(--ink2);">{esc(r.get("date") or "")}</span>',
-            f'<span style="display:inline-flex;align-items:center;gap:7px;">'
-            f'{theme.dot(r.get("store_code"))}{esc(r.get("store_name") or "—")}</span>',
             f'{esc(name)}{hint}',
             f'<span style="color:var(--ink2);">{num(r.get("qty"))} {unit_label(r.get("unit"))}</span>',
             f'<span style="color:var(--ink2);">{rub(r.get("unit_price"))}</span>',
             f'<span style="font-weight:500;">{rub(r.get("total"))}</span>',
         ])
-
-    total = sum(float(r.get("total") or 0) for r in rows)
     theme.block(theme.table(
-        grid="92px 132px minmax(0,1fr) 96px 116px 116px",
-        header=["Дата", "Магазин", "Позиция", "Кол-во", "Цена", "Сумма"],
+        grid="minmax(0,1fr) 96px 116px 116px",
+        header=["Позиция", "Кол-во", "Цена", "Сумма"],
         rows=body,
         foot=[
-            f'<span style="font-weight:600;">Строк: {len(rows)}</span>', "", "", "",
+            f'<span style="font-weight:600;">{format_plural(len(receipt["lines"]))}</span>', "",
             '<span class="mk-eyebrow">Итого</span>',
-            f'<span class="mk-serif" style="font-size:19px;">{rub(total)}</span>',
+            f'<span class="mk-serif" style="font-size:19px;">{rub(receipt["total"])}</span>',
         ],
-        aligns=["left", "left", "left", "right", "right", "right"],
+        aligns=["left", "right", "right", "right"],
     ))
 
 

@@ -136,6 +136,7 @@ class Variant:
     total: float
     baseline: float
     penalty: float = 0.0
+    handover: float = 0.0      # во что обходится завести эту корзину в магазины руками
     missing_products: list[str] = field(default_factory=list)
 
     @property
@@ -149,6 +150,16 @@ class Variant:
     @property
     def title(self) -> str:
         return " + ".join(s.store_name for s in self.stores)
+
+    @property
+    def effort_total(self) -> float:
+        """Итог с учётом ручной работы — по нему варианты и сравниваются между собой.
+
+        Наружу как «сколько заплатить» НЕ показывается: рубли за перебивание корзины
+        человек никому не отдаёт. Но и не учитывать их нельзя — иначе расчёт бодро
+        отправит в третий магазин ради сорока рублей, где уйдёт четверть часа.
+        """
+        return round(self.total + self.handover, 2)
 
 
 @dataclass(frozen=True)

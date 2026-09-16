@@ -370,3 +370,93 @@ def test_min_check_boundary_is_inclusive(subtotal, expected):
 def test_free_delivery_boundary_is_inclusive(subtotal, expected_delivery):
     s = mk_store("m", 1, fee=199.0, free_from=2000.0)
     assert store_total(subtotal, s, None)[0] == expected_delivery
+
+
+# ---------- ручная работа влияет на выбор ----------
+def test_a_third_store_is_not_worth_retyping_the_basket():
+    """Магазин, куда корзину надо перебивать, не берётся ради копеечной выгоды.
+
+    Это и есть ответ на «система посчитает, а перебивать корзину полчаса»: дешевле
+    на 30 ₽, но завести туда корзину стоит 220 ₽ человеческой работы — значит не
+    дешевле. Без этого расчёт видел только деньги.
+    """
+    cheap = mk_store("list_store", 1, fee=0, free_from=0)      # дешевле, но только списком
+    easy = mk_store("link_store", 2, fee=0, free_from=0)       # дороже, но корзина уезжает ссылкой
+
+    lines = [
+        mk_line(1, "Молоко", {"list_store": 100.0, "link_store": 110.0}),
+        mk_line(2, "Хлеб", {"list_store": 100.0, "link_store": 110.0}),
+    ]
+
+    # без учёта ручной работы побеждает дешёвый
+    money_only = optimize(lines=lines, stores=[cheap, easy], offers={}, baseline=300.0,
+                          penalty=0.0, top_n=3, max_stores=2)
+    assert money_only[0].stores[0].store_code == "list_store"
+
+    # с учётом — выигрывает тот, куда корзина уезжает сама
+    with_effort = optimize(lines=lines, stores=[cheap, easy], offers={}, baseline=300.0,
+                           penalty=0.0, top_n=3, max_stores=2,
+                           handover={"list_store": 220.0, "link_store": 0.0})
+    assert with_effort[0].stores[0].store_code == "link_store"
+
+
+def test_effort_never_enters_the_price_the_person_pays():
+    """Рубли за перебивание — не деньги: в итог к оплате они попасть не должны."""
+    store = mk_store("list_store", 1, fee=0, free_from=0)
+    lines = [mk_line(1, "Молоко", {"list_store": 100.0})]
+
+    variants = optimize(lines=lines, stores=[store], offers={}, baseline=100.0,
+                        penalty=0.0, top_n=1, max_stores=1,
+                        handover={"list_store": 220.0})
+
+    assert variants[0].total == 100.0, "ручная работа не должна прибавляться к сумме заказа"
+    assert variants[0].handover == 220.0
+    assert variants[0].effort_total == 320.0
+
+
+def test_unknown_store_costs_no_invented_effort():
+    """Магазин, способ передачи которого не проверен, получает ноль, а не догадку."""
+    from app.handover import penalty_by_store
+
+    prices = penalty_by_store()
+
+    assert prices["lenta"] == 0, "корзина уезжает ссылкой — руками делать нечего"
+    assert prices["pyaterochka"] > prices["magnit"] > 0, \
+        "искать по названию тяжелее, чем нажать по готовым карточкам"
+    assert "неизвестный_магазин" not in prices
+
+
+def test_effortless_split_uses_only_stores_that_take_a_whole_basket(tmp_path, monkeypatch):
+    """«Без перебивания» — это раскладка только между сетями, принимающими корзину целиком.
+
+    Смысл отдельного расчёта: самый дешёвый вариант и самый удобный совпадают
+    редко, а разница между ними и есть цена перебивания. Показать её человеку —
+    значит дать выбрать; решить за него, что дешевле всегда лучше, — значит
+    отправить его класть шестнадцать позиций по одной ради трёхсот рублей.
+    """
+    from app import config, handover, repo, service
+    from app.db import init_db
+    from app.models import Product
+
+    monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "eff.db"))
+    init_db()
+
+    принимающие = {code for code, kind in handover.KIND_BY_STORE.items()
+                   if kind == handover.LINK}
+    assert принимающие, "должна быть хотя бы одна сеть, принимающая корзину целиком"
+
+    pid = repo.upsert_product(Product(id=None, name="Молоко", unit="pcs"))
+    bid = repo.create_basket("Проверка", source="manual")
+    repo.set_basket_item(bid, pid, 1.0)
+    for code in ("lenta", "magnit"):
+        store = repo.get_store(code)
+        sp = repo.upsert_store_product(store.id, f"{code}-1", "Молоко")
+        repo.confirm_mapping(pid, sp, confirmed=True)
+        repo.save_price(sp, 50.0 if code == "magnit" else 90.0)
+
+    удобные, _ = service.effortless_variants(bid)
+
+    assert удобные, "принимающая сеть покрывает корзину — вариант должен быть"
+    коды = {b.store_code for b in удобные[0].stores}
+    assert коды <= принимающие, f"в удобный вариант попал магазин с ручным вводом: {коды}"
+    assert "magnit" not in коды, "Магнит дешевле, но корзину целиком не принимает"

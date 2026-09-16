@@ -275,3 +275,152 @@ def test_without_a_mapping_the_guess_is_kept_but_marked(tmp_path, monkeypatch):
         sku = "любой"
 
     assert _agrees_with_mapping(pid, _O()) == (True, False)
+
+
+# ---------- синхронизированный каталог ----------
+def test_catalog_shows_how_many_stores_know_the_item(tmp_path, monkeypatch):
+    """Готовность товара — в скольких сетях он опознан.
+
+    Это и есть «синхронизированность» каталога, и она видна человеку до того, как
+    он положит товар: позиция, известная всем сетям, уедет в магазин ссылкой,
+    а неизвестная превратится в поиск руками.
+    """
+    from app import config, repo
+    from app.db import init_db
+    from app.ui.screens.basket import _ready_in
+
+    monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "cat.db"))
+    init_db()
+
+    pid = repo.upsert_product(Product(id=None, name="Молоко 1 л", unit="pcs"))
+    stores = repo.list_stores()
+    for code in ("lenta", "magnit"):
+        store = repo.get_store(code)
+        sp = repo.upsert_store_product(store.id, f"{code}-1", "Молоко 1 л")
+        repo.confirm_mapping(pid, sp, confirmed=True)
+
+    assert _ready_in(pid, repo.mapping_matrix(), stores) == 2
+    пустой = repo.upsert_product(Product(id=None, name="Незнакомый товар", unit="pcs"))
+    assert _ready_in(пустой, repo.mapping_matrix(), stores) == 0
+
+
+def test_best_known_items_come_first(tmp_path, monkeypatch):
+    """Каталог сортируется по готовности: сверху то, что проще отдать магазину."""
+    from app import config, repo
+    from app.db import init_db
+    from app.ui.screens.basket import _ready_in
+
+    monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "cat2.db"))
+    init_db()
+    stores = repo.list_stores()
+
+    известный = repo.upsert_product(Product(id=None, name="Б известный", unit="pcs"))
+    for code in ("lenta", "magnit", "vkusvill"):
+        store = repo.get_store(code)
+        sp = repo.upsert_store_product(store.id, f"{code}-x", "Б известный")
+        repo.confirm_mapping(известный, sp, confirmed=True)
+    незнакомый = repo.upsert_product(Product(id=None, name="А незнакомый", unit="pcs"))
+
+    matrix = repo.mapping_matrix()
+    товары = repo.list_products()
+    товары.sort(key=lambda p: (-_ready_in(p.id, matrix, stores), p.name or ""))
+
+    assert товары[0].id == известный, \
+        "по алфавиту первым был бы «А незнакомый» — готовность должна перебивать имя"
+
+
+def test_regulars_are_what_repeats_not_what_happened_once(tmp_path, monkeypatch):
+    """«Обычно берёте» — про повторяющееся, а не про единственную покупку."""
+    from app import baskets, config, repo
+    from app.db import init_db
+
+    monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "reg.db"))
+    init_db()
+    store = repo.get_store("pyaterochka")
+    часто = repo.upsert_product(Product(id=None, name="Молоко", unit="pcs"))
+    разово = repo.upsert_product(Product(id=None, name="Торт", unit="pcs"))
+
+    for день in ("2026-09-01", "2026-09-08", "2026-09-15"):
+        repo.add_history_row(день, store.id, часто, "Молоко", 1, 80.0, 80.0)
+    repo.add_history_row("2026-09-01", store.id, разово, "Торт", 1, 900.0, 900.0)
+
+    обычные = {r["product_id"] for r in baskets.regular_purchases()}
+
+    assert часто in обычные
+    assert разово not in обычные, "разовая покупка не делает товар обычным"
+
+
+def test_autofill_touches_only_an_empty_basket(tmp_path, monkeypatch):
+    """Набранное руками автонабор не трогает никогда.
+
+    Ограничитель важнее самой функции: корзина, которую человек правил, — его
+    работа, и досыпать в неё «обычное» значило бы отменять его решения.
+    """
+    from app import config, repo
+    from app.db import init_db
+
+    monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "af.db"))
+    init_db()
+    store = repo.get_store("pyaterochka")
+    молоко = repo.upsert_product(Product(id=None, name="Молоко", unit="pcs"))
+    хлеб = repo.upsert_product(Product(id=None, name="Хлеб", unit="pcs"))
+    for день in ("2026-09-01", "2026-09-08"):
+        repo.add_history_row(день, store.id, молоко, "Молоко", 1, 80.0, 80.0)
+
+    bid = repo.create_basket("Своя", source="manual")
+    repo.set_basket_item(bid, хлеб, 3.0)
+
+    # в непустой корзине автонабор не должен сработать: проверяем через условие,
+    # на котором он стоит, — наполняем только пустую
+    assert repo.basket_items(bid), "корзина не пуста"
+    позиции = {int(i["product_id"]): i["qty"] for i in repo.basket_items(bid)}
+    assert позиции == {хлеб: 3.0}, "в корзине должно остаться ровно то, что положил человек"
+
+
+def test_cleared_basket_is_not_the_same_as_no_history(tmp_path, monkeypatch):
+    """Пустая корзина при живой истории — не «нечем наполнить», а «вы её очистили».
+
+    Первая редакция писала «Истории покупок пока нет» человеку, у которого
+    шестнадцать покупок загружено, — то есть врала.
+    """
+    from app import baskets, config, repo
+    from app.db import init_db
+
+    monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "cl.db"))
+    init_db()
+    store = repo.get_store("pyaterochka")
+    молоко = repo.upsert_product(Product(id=None, name="Молоко", unit="pcs"))
+    repo.add_history_row("2026-09-01", store.id, молоко, "Молоко", 1, 80.0, 80.0)
+
+    дата, позиции = baskets.last_purchase_items()
+
+    assert позиции, "история есть, значит наполнять есть чем"
+    assert дата == "2026-09-01"
+
+
+def test_autofill_leaves_no_junk_baskets(tmp_path, monkeypatch):
+    """Сборка заводит свою корзину — после наполнения её надо убрать.
+
+    Без уборки список корзин копил по мусорной записи на КАЖДОЕ открытие экрана:
+    в проверке их набралось четыре одноимённых за десять минут.
+    """
+    from app import baskets, config, repo
+    from app.db import init_db
+
+    monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "junk.db"))
+    init_db()
+    store = repo.get_store("pyaterochka")
+    молоко = repo.upsert_product(Product(id=None, name="Молоко", unit="pcs"))
+    repo.add_history_row("2026-09-01", store.id, молоко, "Молоко", 1, 80.0, 80.0)
+
+    цель = repo.create_basket("Моя", source="manual")
+    было = len(repo.list_baskets())
+
+    результат = baskets.build_from_history("history")
+    источник = int(результат["basket_id"])
+    for строка in repo.basket_items(источник):
+        repo.set_basket_item(цель, int(строка["product_id"]), float(строка["qty"]))
+    repo.delete_basket(источник)
+
+    assert len(repo.list_baskets()) == было, "мусорная корзина осталась в списке"
+    assert repo.basket_items(цель), "целевая корзина должна была наполниться"

@@ -186,7 +186,12 @@ def confirmed_mapping(product_id: int, store_id: int) -> dict | None:
     with get_conn() as c:
         r = c.execute(
             "SELECT sp.* FROM product_mapping m JOIN store_products sp ON sp.id = m.store_product_id"
-            " WHERE m.product_id=? AND sp.store_id=? AND m.confirmed=1 LIMIT 1", (product_id, store_id)).fetchone()
+            " WHERE m.product_id=? AND sp.store_id=? AND m.confirmed=1"
+            # Подтверждений у товара в одном магазине может быть несколько: прежнее
+            # на артикул-заглушку из резервного CSV и новое на настоящий код сети.
+            # Без порядка побеждало произвольное — на деле старое, и ссылка на корзину
+            # не строилась, потому что сеть своего же товара по заглушке не узнаёт.
+            " ORDER BY m.confirmed_at DESC, sp.id DESC LIMIT 1", (product_id, store_id)).fetchone()
     return dict(r) if r else None
 
 
@@ -259,6 +264,19 @@ def basket_items(basket_id: int) -> list[dict]:
         return [dict(r) for r in c.execute(
             "SELECT bi.product_id, bi.qty, p.name, p.unit, p.weight_g, p.brand FROM basket_items bi"
             " JOIN products p ON p.id = bi.product_id WHERE bi.basket_id=? ORDER BY p.name", (basket_id,))]
+
+
+def delete_basket(basket_id: int) -> None:
+    """Удаляет корзину целиком вместе с позициями.
+
+    Нужна автонабору: сборка из истории заводит СВОЮ корзину, а наполняем мы
+    текущую — без уборки список корзин копил бы по мусорной записи на каждое
+    открытие экрана.
+    """
+    with get_conn() as c:
+        c.execute("DELETE FROM basket_items WHERE basket_id=?", (basket_id,))
+        c.execute("DELETE FROM baskets WHERE id=?", (basket_id,))
+        c.commit()
 
 
 def clear_basket(basket_id: int) -> None:

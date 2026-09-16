@@ -139,7 +139,9 @@ def test_samokat_is_a_store(db):
 
     assert repo.get_store("samokat") is not None
     assert get_connector("samokat").code == "samokat"
-    assert handover.KIND_BY_STORE["samokat"] == handover.LIST
+    # Самокат поднялся со списка до поиска 15.09.2026: карточки ему не построить
+    # (каталог закрыт, артикулов нет), а поиск по названию не требует ничего.
+    assert handover.KIND_BY_STORE["samokat"] == handover.SEARCH
 
 
 # ---------- настоящие чеки, а не только письма ----------

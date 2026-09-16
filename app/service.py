@@ -123,6 +123,7 @@ def calculate(basket_id: int, refresh: bool = True) -> tuple[list[Variant], floa
     lines = build_basket_lines(basket_id)
     baseline = baseline_total(basket_id)
 
+    from app import handover
     from app.optimizer import optimize
 
     variants: list[Variant] = optimize(
@@ -133,6 +134,51 @@ def calculate(basket_id: int, refresh: bool = True) -> tuple[list[Variant], floa
         penalty=float(config.get("extra_order_penalty_rub", 150.0)),
         top_n=int(config.get("optimizer.top_n", 3)),
         max_stores=int(config.get("optimizer.max_stores", 2)),
+        # Сколько стоит завести корзину в каждый магазин руками. Без этого расчёт
+        # видит только деньги и охотно дробит корзину на магазины, куда её потом
+        # придётся перебивать позиция за позицией.
+        handover=handover.penalty_by_store(),
+    )
+    _resolve_card_names(variants)
+    return variants, baseline
+
+
+def effortless_variants(basket_id: int) -> tuple[list[Variant], float]:
+    """Варианты, которые НЕ ПРИДЁТСЯ ПЕРЕБИВАТЬ РУКАМИ.
+
+    Зачем отдельный расчёт. Самый дешёвый вариант вообще и самый дешёвый из
+    удобных — разные вещи, и разница между ними есть цена перебивания. Одной
+    ссылкой корзину принимают только те сети, которые сами дали такой инструмент:
+    сегодня Лента и ВкусВилл. В остальных человек кладёт товары по одному, и на
+    шестнадцати позициях это уже не «чуть дольше», а отдельное занятие.
+
+    Поэтому мы считаем оба ответа и показываем оба: «вот дешевле всего» и «вот
+    дешевле всего без единого перебивания, разница такая-то». Выбор остаётся за
+    человеком, а не за нашим представлением о том, что ему дороже — деньги или
+    полчаса вечера.
+
+    Пустой список — не ошибка: он означает, что ни одна из принимающих сетей не
+    покрывает корзину, и честнее сказать это, чем подсунуть половину заказа.
+    """
+    from app import handover
+    from app.optimizer import optimize
+
+    принимающие = [s for s in repo.list_stores()
+                   if handover.KIND_BY_STORE.get(s.code) == handover.LINK]
+    if not принимающие:
+        return [], 0.0
+
+    lines = build_basket_lines(basket_id)
+    baseline = baseline_total(basket_id)
+    variants = optimize(
+        lines=lines,
+        stores=принимающие,
+        offers=offers_map(),
+        baseline=baseline,
+        penalty=float(config.get("extra_order_penalty_rub", 150.0)),
+        top_n=1,
+        max_stores=len(принимающие),
+        handover=handover.penalty_by_store(),
     )
     _resolve_card_names(variants)
     return variants, baseline

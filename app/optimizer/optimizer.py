@@ -36,10 +36,19 @@ def _available(line: BasketLine, store: Store) -> bool:
     return bool(line.in_stock.get(store.code, True))
 
 
-def _cost_fn(store: Store, offers: list[Offer]):
-    """Быстрая функция стоимости магазина в копейках: subtotal -> subtotal + delivery - discount."""
+def _cost_fn(store: Store, offers: list[Offer], handover: float = 0.0):
+    """Быстрая функция стоимости магазина в копейках: subtotal -> subtotal + delivery - discount.
+
+    handover — во что обходится ЗАВЕСТИ корзину в этот магазин. Не выдумка ради
+    красоты: у одних сетей корзина уезжает одной ссылкой, у других её надо
+    перебить руками по позициям, и без этого числа расчёт охотно отправляет
+    человека в третий магазин ради сорока рублей, где он потратит четверть часа.
+    Прибавляется к стоимости магазина, а не к подытогу, — на порог бесплатной
+    доставки и на минимальный чек оно влиять не должно, это не покупка.
+    """
     free_from = _cents(store.free_delivery_from)
     fee = _cents(store.delivery_fee)
+    handover_cents = _cents(handover)
     active = [(o.percent / 100.0, _cents(o.cap_left), _cents(o.min_check_rub))
               for o in (offers or ()) if o.is_valid_on()]
 
@@ -53,7 +62,7 @@ def _cost_fn(store: Store, offers: list[Offer]):
                     d = cap_left
                 if d > discount:
                     discount = d
-        return value - discount
+        return value - discount + handover_cents
 
     return cost
 
@@ -269,7 +278,8 @@ def _build_variant(lines: list[BasketLine], combo: tuple[Store, ...], assign: li
 
 
 def optimize(lines: list[BasketLine], stores: list[Store], offers: dict[int, list[Offer]],
-             baseline: float, penalty: float, top_n: int = 3, max_stores: int = 2) -> list[Variant]:
+             baseline: float, penalty: float, top_n: int = 3, max_stores: int = 2,
+             handover: dict[str, float] | None = None) -> list[Variant]:
     """Перебирает разбиения корзины на 1..max_stores магазинов, для каждого магазина подбирает
     лучшую карту, считает итог, возвращает top_n лучших вариантов, отсортированных по total.
 
@@ -283,7 +293,9 @@ def optimize(lines: list[BasketLine], stores: list[Store], offers: dict[int, lis
         return []
 
     offers = offers or {}
-    costs_by_store = {s.code: _cost_fn(s, offers.get(s.id, [])) for s in stores}
+    handover = handover or {}
+    costs_by_store = {s.code: _cost_fn(s, offers.get(s.id, []), handover.get(s.code, 0.0))
+                      for s in stores}
     penalty_cents = _cents(penalty)
     limit = max(1, min(int(max_stores or 1), len(stores)))
 
@@ -300,14 +312,15 @@ def optimize(lines: list[BasketLine], stores: list[Store], offers: dict[int, lis
                 continue
             # набор магазинов, реально задействованных в варианте (пара могла схлопнуться в один)
             key = tuple(sorted(b.store_code for b in variant.stores))
+            variant.handover = round(sum(handover.get(b.store_code, 0.0) for b in variant.stores), 2)
             current = best_by_key.get(key)
-            if current is None or variant.total < current.total:
+            if current is None or variant.effort_total < current.effort_total:
                 best_by_key[key] = variant
 
     variants = sorted(
         best_by_key.values(),
         key=lambda v: (len(v.missing_products),
                        sum(1 for b in v.stores if b.below_min_order),
-                       v.total),
+                       v.effort_total),
     )
     return variants[:max(0, int(top_n))]

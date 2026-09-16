@@ -28,13 +28,17 @@ from app.ui.screens import cards as cards_screen  # noqa: E402
 from app.ui.screens import compare as compare_screen  # noqa: E402
 from app.ui.screens import fns as fns_screen  # noqa: E402
 from app.ui.screens import history as history_screen  # noqa: E402
+from app.ui.screens import home as home_screen  # noqa: E402
 from app.ui.screens import prices as prices_screen  # noqa: E402
 from app.ui.screens import products as products_screen  # noqa: E402
 from app.ui.screens import result as result_screen  # noqa: E402
+from app.ui.screens import stores as stores_screen  # noqa: E402
 
 SCREENS = {
-    "История": history_screen.render,
+    "Главная": home_screen.render,
+    "Магазины": stores_screen.render,
     "Мои чеки": fns_screen.render,
+    "История": history_screen.render,
     "Товары": products_screen.render,
     "Корзина": basket_screen.render,
     "Результат": result_screen.render,
@@ -45,8 +49,10 @@ SCREENS = {
 }
 
 SCREEN_MODULES = {
-    "История": history_screen,
+    "Главная": home_screen,
+    "Магазины": stores_screen,
     "Мои чеки": fns_screen,
+    "История": history_screen,
     "Товары": products_screen,
     "Корзина": basket_screen,
     "Результат": result_screen,
@@ -58,8 +64,10 @@ SCREEN_MODULES = {
 
 # надзаголовок над названием экрана
 EYEBROWS = {
-    "История": "Покупки семьи",
+    "Главная": "Зачем это приложение и с чего начать",
+    "Магазины": "Откуда берутся цены",
     "Мои чеки": "Загрузка из сервиса ФНС",
+    "История": "Покупки семьи",
     "Товары": "Что покупаем и где это лежит",
     "Корзина": "Что покупаем",
     "Результат": "Разбиение и экономия",
@@ -126,7 +134,7 @@ def main() -> None:
     if pending in SCREENS:
         st.session_state["screen"] = pending
     if st.session_state.get("screen") not in SCREENS:
-        st.session_state["screen"] = "История"
+        st.session_state["screen"] = "Главная"
 
     # Шапка в два ряда. Верхний — марка и адрес, нижний — переходы по экранам.
     # Адрес стоит сразу за маркой, а не под меню: в нижнем ряду он прилипал к

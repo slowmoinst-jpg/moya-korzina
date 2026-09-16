@@ -9,7 +9,7 @@ import streamlit as st
 
 from app import repo
 from app.ui import theme
-from app.ui.helpers import goto, num, pct, rub, unit_label
+from app.ui.helpers import goto, load, num, pct, rub, unit_label
 
 esc = theme.esc
 
@@ -48,6 +48,8 @@ def render() -> None:
             "загляните на экран «Товары» и нажмите «Обновить цены»."
         )
         return
+
+    _effortless(calc, variants[0])
 
     for i, variant in enumerate(variants, start=1):
         if i == 1:
@@ -301,23 +303,78 @@ def _handover(code: str | None, lines) -> None:
         _handover_body(ho.for_store(code, lines))
 
 
+def _effortless(calc: dict, лучший) -> None:
+    """Сколько стоит заказать без единого перебивания — и стоит ли оно того.
+
+    Самый дешёвый вариант и самый удобный совпадают редко. Одной ссылкой корзину
+    принимают только сети, давшие такой инструмент; в остальных человек кладёт
+    товары по одному, и на шестнадцати позициях это отдельное занятие вечером.
+    Разница между двумя итогами и есть цена перебивания — её мы показываем прямо,
+    а решает человек: бывает, что полчаса дороже трёхсот рублей, а бывает наоборот.
+    """
+    fn, err = load("app.service", "effortless_variants")
+    if err:
+        return
+    try:
+        удобные, _ = fn(int(calc.get("basket_id")))
+    except Exception:  # noqa: BLE001 — сравнение не повод ронять экран
+        return
+    if not удобные:
+        return
+    удобный = удобные[0]
+
+    # Тот же набор магазинов — сравнивать не с чем, человек и так не перебивает
+    if {b.store_code for b in удобный.stores} == {b.store_code for b in лучший.stores}:
+        st.success("Этот вариант уезжает в магазины одной ссылкой — перебивать ничего не придётся.")
+        return
+
+    разница = round(удобный.total - лучший.total, 2)
+    не_хватает = len(удобный.missing_products)
+
+    st.markdown(
+        '<div class="mk-card" style="padding:16px 18px;margin:10px 0;">'
+        '<div class="mk-eyebrow" style="margin-bottom:7px;">Заказать без перебивания</div>'
+        f'<div style="font-size:14px;line-height:1.55;color:var(--ink2);">'
+        f'Корзину целиком принимают <b>{esc(удобный.title)}</b> — товары уедут туда одной '
+        f'ссылкой, останется подтвердить заказ. Выйдет <b>{rub(удобный.total)}</b>, '
+        f'это на <b>{rub(abs(разница))}</b> '
+        + ("дороже" if разница > 0 else "дешевле")
+        + f' варианта «{esc(лучший.title)}», где позиции придётся класть по одной.'
+        + (f' Учтите: {не_хватает} позиций там нет.' if не_хватает else '')
+        + '</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _handover_body(result) -> None:
     """Позиции заказа: со ссылками на карточки там, где они есть, и списком там, где нет."""
     from app import handover as ho
 
     st.caption(result.note)
-    if result.kind == ho.ITEMS and any(i.url for i in result.items):
+
+    # Кнопка у позиции есть почти всегда: карточка, если знаем товар, иначе поиск
+    # по названию. Поэтому смотрим не на ступень, а на то, есть ли адреса.
+    with_urls = [i for i in result.items if i.url]
+    if with_urls:
+        подпись = "открыть →" if result.kind == ho.ITEMS else "найти →"
         rows = "".join(
             f'<div class="mk-row"><span>{esc(i.name)} '
             f'<span style="color:var(--ink3);">{num(i.qty)}&nbsp;{unit_label(i.unit)}</span></span>'
             + (f'<a href="{esc(i.url)}" target="_blank" rel="noopener" '
-               'style="font-size:13px;font-weight:600;white-space:nowrap;">открыть →</a>'
+               f'style="font-size:13px;font-weight:600;white-space:nowrap;">{подпись}</a>'
                if i.url else '<span style="font-size:12px;color:var(--ink3);">нет ссылки</span>')
             + "</div>"
             for i in result.items
         )
         st.markdown(rows, unsafe_allow_html=True)
-        st.caption("Ссылки открываются в приложении магазина — но только на телефоне.")
+
+    # Список текстом — всегда, а не вместо ссылок. Это страховка: у поиска двух
+    # сетей адрес не проверен (они блокируют по географии), и если он откроется
+    # пустым, названия должны быть под рукой готовыми к вставке. У блока кода
+    # есть своя кнопка копирования.
+    if with_urls:
+        with st.expander(f"Список текстом ({len(result.items)})"):
+            st.code(ho.as_text(result), language=None)
     else:
         st.code(ho.as_text(result), language=None)
 
