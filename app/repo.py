@@ -269,10 +269,13 @@ def clear_basket(basket_id: int) -> None:
 
 # ---------- purchase history ----------
 def add_history_row(date: str, store_id: int | None, product_id: int | None, raw_name: str,
-                    qty: float, unit_price: float, total: float) -> int:
+                    qty: float, unit_price: float, total: float,
+                    receipt_key: str | None = None) -> int:
     with get_conn() as c:
-        cur = c.execute("INSERT INTO purchase_history (date, store_id, product_id, raw_name, qty, unit_price, total)"
-                        " VALUES (?,?,?,?,?,?,?)", (date, store_id, product_id, raw_name, qty, unit_price, total))
+        cur = c.execute("INSERT INTO purchase_history"
+                        " (date, store_id, product_id, raw_name, qty, unit_price, total, receipt_key)"
+                        " VALUES (?,?,?,?,?,?,?,?)",
+                        (date, store_id, product_id, raw_name, qty, unit_price, total, receipt_key))
         c.commit()
         return cur.lastrowid
 
@@ -335,4 +338,68 @@ def set_setting(key: str, value: str | None) -> None:
             c.execute("INSERT INTO settings (key, value) VALUES (?,?) "
                       "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                       (key, str(value).strip()))
+        c.commit()
+
+
+# ---------- учёт чеков ----------
+# Зачем отдельная таблица, когда есть purchase_history. История — это позиции, а
+# человеку нужно отвечать про ЧЕКИ: сколько загружено и сколько ещё лежит в кабинете
+# непрочитанным. Поэтому чек здесь заводится в двух состояниях: «виден» (ключ пришёл
+# из списка кабинета, позиций нет) и «загружен» (позиции легли в историю). Разница
+# между этими двумя множествами и есть ответ «что ещё можно загрузить».
+def note_receipt(key: str, date: str | None = None, store: str | None = None,
+                 total: float | None = None, source: str = "lkdr") -> None:
+    """Чек попался на глаза. Уже загруженный не трогаем: у него данные точнее."""
+    if not key:
+        return
+    with get_conn() as c:
+        c.execute(
+            "INSERT INTO receipts (key, date, store, total, rows, source, seen_at, imported_at)"
+            " VALUES (?,?,?,?,NULL,?,?,NULL)"
+            " ON CONFLICT(key) DO UPDATE SET"
+            "   date = COALESCE(receipts.date, excluded.date),"
+            "   store = COALESCE(receipts.store, excluded.store),"
+            "   total = COALESCE(receipts.total, excluded.total)",
+            (key, date, store, total, source, NOW()))
+        c.commit()
+
+
+def mark_receipt_imported(key: str, date: str | None, store: str | None,
+                          total: float | None, rows: int, source: str = "lkdr") -> None:
+    if not key:
+        return
+    with get_conn() as c:
+        c.execute(
+            "INSERT INTO receipts (key, date, store, total, rows, source, seen_at, imported_at)"
+            " VALUES (?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(key) DO UPDATE SET"
+            "   date = excluded.date, store = excluded.store, total = excluded.total,"
+            "   rows = excluded.rows, source = excluded.source, imported_at = excluded.imported_at",
+            (key, date, store, total, rows, source, NOW(), NOW()))
+        c.commit()
+
+
+def imported_receipt_keys() -> set[str]:
+    with get_conn() as c:
+        return {r["key"] for r in c.execute("SELECT key FROM receipts WHERE imported_at IS NOT NULL")}
+
+
+def pending_receipts() -> list[dict]:
+    """Чеки, которые в кабинете есть, а у нас ещё нет. Самые новые сверху."""
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM receipts WHERE imported_at IS NULL ORDER BY date DESC, key")]
+
+
+def imported_receipts() -> list[dict]:
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM receipts WHERE imported_at IS NOT NULL ORDER BY date DESC, key")]
+
+
+def forget_receipt(key: str) -> None:
+    """Убирает чек из учёта вместе с его позициями в истории."""
+    with get_conn() as c:
+        c.execute("DELETE FROM purchase_history WHERE receipt_key = ?", (key,))
+        c.execute("DELETE FROM receipts WHERE key = ?", (key,))
         c.commit()

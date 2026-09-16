@@ -23,6 +23,7 @@ import urllib.parse
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "docs", "grab.src.js")
 PAGE = os.path.join(ROOT, "docs", "grab.html")
+PLAIN = os.path.join(ROOT, "docs", "grab.min.txt")
 MARK_OPEN = "<!-- БУКМАРКЛЕТ:НАЧАЛО -->"
 MARK_CLOSE = "<!-- БУКМАРКЛЕТ:КОНЕЦ -->"
 
@@ -56,7 +57,7 @@ def put_into_page(href: str) -> int:
     head, _, rest = page.partition(MARK_OPEN)
     _, _, tail = rest.partition(MARK_CLOSE)
     link = (f'<a class="bm" href="{href}" onclick="return false;" '
-            'title="Перетащите эту ссылку на панель закладок">Забрать покупки</a>')
+            'title="Перетащите эту ссылку на панель закладок">Забрать чеки</a>')
     with open(PAGE, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(head + MARK_OPEN + link + MARK_CLOSE + tail)
     return len(href)
@@ -65,7 +66,12 @@ def put_into_page(href: str) -> int:
 def main() -> int:
     href = build()
     size = put_into_page(href)
-    print(f"собрано: {size} символов, вставлено в docs/grab.html")
+    # Тот же адрес отдельным файлом: его читает приложение, чтобы показать закладку
+    # прямо на экране «Мои чеки», и на него же ссылается grab.html для тех, кто
+    # заводит закладку руками. Забыть его — значит раздавать прошлую версию.
+    with open(PLAIN, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(href)
+    print(f"собрано: {size} символов, вставлено в docs/grab.html и docs/grab.min.txt")
     return 0
 
 

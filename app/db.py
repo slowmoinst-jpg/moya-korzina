@@ -126,6 +126,17 @@ CREATE TABLE IF NOT EXISTS variant_lines (
     discount REAL NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS receipts (
+    key TEXT PRIMARY KEY,           -- отпечаток чека; у ФНС это её собственный ключ
+    date TEXT,
+    store TEXT,
+    total REAL,
+    rows INTEGER,                   -- позиций загружено; NULL — чек только виден, но не загружен
+    source TEXT,                    -- lkdr | file | paste
+    seen_at TEXT,                   -- когда чек впервые попался на глаза
+    imported_at TEXT                -- когда позиции легли в историю; NULL — ещё не загружен
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -135,6 +146,7 @@ CREATE INDEX IF NOT EXISTS idx_prices_sp ON store_prices(store_product_id, fetch
 CREATE INDEX IF NOT EXISTS idx_sp_store ON store_products(store_id);
 CREATE INDEX IF NOT EXISTS idx_mapping_product ON product_mapping(product_id);
 CREATE INDEX IF NOT EXISTS idx_history_date ON purchase_history(date);
+CREATE INDEX IF NOT EXISTS idx_receipts_date ON receipts(date);
 """
 
 SEED_STORES: list[tuple] = [
@@ -163,6 +175,7 @@ LATE_COLUMNS: list[tuple[str, str, str]] = [
     # таблица, колонка, тип
     ("products", "barcode", "TEXT"),
     ("store_products", "ean", "TEXT"),
+    ("purchase_history", "receipt_key", "TEXT"),
 ]
 
 

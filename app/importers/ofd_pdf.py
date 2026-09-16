@@ -223,32 +223,23 @@ def _remember_barcode(product_id: int, barcode: str) -> None:
 
 
 def import_receipt(path: str, store_code: str | None = None) -> dict:
-    """Разбирает чек и пишет его в purchase_history, заводя недостающие эталоны.
+    """Разбирает файл и пишет покупку в purchase_history, заводя недостающие эталоны.
 
-    Повторный импорт того же чека не плодит дубли эталонов (поиск через
-    repo.find_product_by_name по нормализованному названию).
+    Любой файл проходит через общий учёт чеков (bundle.store_receipts), поэтому
+    один и тот же чек, загруженный дважды, второй раз только отметится
+    пропущенным — историю он не удвоит. Повторный импорт не плодит и дубли
+    эталонов: поиск идёт через repo.find_product_by_name по нормализованному
+    названию.
+
+    В .json может лежать не один чек, а пакет из кабинета ФНС — с описью того,
+    что в кабинете ещё осталось. Такой файл разбирается целиком.
     """
     init_db()
-    receipt = parse_receipt(path)
-    store_id, store_label = _resolve_store_id(receipt, store_code)
+    from app.importers.bundle import import_bundle, store_receipts
 
-    created = 0
-    for row in receipt.rows:
-        product_id, is_new = _ensure_product(row.raw_name)
-        created += int(is_new)
-        if row.barcode:
-            _remember_barcode(product_id, row.barcode)
-        repo.add_history_row(
-            date=receipt.date, store_id=store_id, product_id=product_id,
-            raw_name=row.raw_name, qty=row.qty, unit_price=row.unit_price, total=row.total,
-        )
-    return {
-        "rows": len(receipt.rows),
-        "products_created": created,
-        "total": receipt.total,
-        "date": receipt.date,
-        "store": store_label,
-    }
+    if os.path.splitext(path)[1].lower() == ".json":
+        return import_bundle(_read_txt(path), store_code)
+    return store_receipts([{"key": None, "receipt": parse_receipt(path)}], store_code, "file")
 
 
 __all__ = ["Receipt", "ReceiptRow", "parse_receipt", "parse_receipt_text",

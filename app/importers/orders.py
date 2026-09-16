@@ -49,7 +49,7 @@ from __future__ import annotations
 import html as html_mod
 import re
 
-from app.importers.ofd_pdf import Receipt, ReceiptRow, _extract_date
+from app.importers.ofd_pdf import Receipt, ReceiptRow, _extract_date, _extract_store
 
 # деньги: «1 234,56», «1234.56», «149», с неразрывными пробелами внутри
 _MONEY = r"\d[\d\s ]*(?:[.,]\d{1,2})?"
@@ -297,6 +297,11 @@ def parse_order(text: str, store_name: str = "") -> tuple[Receipt, list[str]]:
     total = _money(declared.group(1)) if declared else None
     if total is None:
         total = round(sum(r.total for r in rows), 2)
-    receipt = Receipt(date=_extract_date(plain), store_name=store_name or "—",
+    # Магазин узнаём по шапке — там он почти всегда написан («ООО "Агроторг"
+    # Пятёрочка», «Ваш заказ в Ленте»). Раньше при вставке магазин оставался
+    # прочерком, даже когда его имя стояло первой строкой, и человеку приходилось
+    # выбирать его руками — при пакетной загрузке это стало невозможным вовсе:
+    # у пятидесяти чеков магазины разные, а выпадающий список один.
+    receipt = Receipt(date=_extract_date(plain), store_name=store_name or _extract_store(plain),
                       rows=rows, total=total)
     return receipt, skipped

@@ -159,11 +159,14 @@ def parse_receipt_json(payload: str | dict) -> Receipt:
     if not rows:
         raise ValueError("В файле нет ни одной позиции с ценой")
 
-    store = (node.get("retailPlace") or node.get("user") or node.get("store")
-             or node.get("retailPlaceAddress") or "—")
+    # «Мои чеки онлайн» присылает сеть отдельным полем brand, и оно человечнее
+    # адреса торговой точки: «Пятёрочка» вместо «ООО "Агроторг", ул. Ленина, 1».
+    store = (node.get("brand") or node.get("retailPlace") or node.get("user")
+             or node.get("store") or node.get("retailPlaceAddress") or "—")
     total = _money(node.get("totalSum", node.get("total")))
     return Receipt(
-        date=_date(node.get("dateTime") or node.get("date")),
+        date=_date(node.get("dateTime") or node.get("date") or node.get("createdDate")
+                   or node.get("receiveDate") or node.get("buyDate")),
         store_name=str(store).strip() or "—",
         rows=rows,
         total=total if total is not None else round(sum(r.total for r in rows), 2),

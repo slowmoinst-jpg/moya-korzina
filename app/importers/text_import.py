@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from app import repo
 from app.db import init_db
-from app.importers.ofd_pdf import _ensure_product, _resolve_store_id
 from app.importers.orders import parse_order
 
 
@@ -42,19 +41,13 @@ def import_order_text(text: str, store_code: str | None = None) -> dict:
         return {"rows": 0, "products_created": 0, "skipped": skipped,
                 "date": receipt.date, "store": store_code or receipt.store_name, "total": 0.0}
 
-    store_id, store_label = _resolve_store_id(receipt, store_code)
-    created = 0
-    for row in receipt.rows:
-        product_id, is_new = _ensure_product(row.raw_name)
-        created += int(is_new)
-        repo.add_history_row(date=receipt.date, store_id=store_id, product_id=product_id,
-                             raw_name=row.raw_name, qty=row.qty,
-                             unit_price=row.unit_price, total=row.total)
-    return {
-        "rows": len(receipt.rows),
-        "products_created": created,
-        "skipped": skipped,
-        "date": receipt.date,
-        "store": store_label,
-        "total": receipt.total,
-    }
+    # Через общий учёт: вставленный дважды чек не должен удваивать историю —
+    # а вставляют повторно часто, потому что глазами чек от чека не отличить.
+    from app.importers.bundle import store_receipts
+
+    result = store_receipts([{"key": None, "receipt": receipt}], store_code, "paste")
+    # «skipped» здесь исторически означает непонятые СТРОКИ, и экраны читают именно
+    # их. Пропущенные чеки-дубли — другое число, и оно едет под своим именем.
+    result["skipped_receipts"] = result["skipped"]
+    result["skipped"] = skipped
+    return result
