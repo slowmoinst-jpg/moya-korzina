@@ -1,0 +1,166 @@
+{# Товары: список по категориям и карточка правки.
+
+   Поиск — форма method="get", а не поле, запоминающее себя: ответ формы уезжает в
+   адрес (?q=...), и на найденное можно дать ссылку. Ровно этого не умел прежний
+   экран, и ровно за этим затевался переезд.
+
+   Правка живёт на том же адресе (?edit=<id>), а не во второй вкладке: вкладка
+   прятала работу за переключателем, о котором надо помнить, и теряла поиск при
+   возврате. Здесь поиск переносится ссылками дальше и не пропадает.
+
+   Все цены товара раскрываются <details>, потому что это единственный способ
+   раскрыть их без строчки JavaScript, и на телефоне он не накрывает собой список,
+   из которого его открыли. #}
+{% extends "layout.html" %}
+{% block title %}Товары — Моя корзина{% endblock %}
+{% block body %}
+
+<div class="row" style="margin-bottom:12px">
+  {% for label, value in stats %}
+    <span class="pill" style="border-color:var(--line2);color:var(--ink2)">{{ label }}: {{ value }}</span>
+  {% endfor %}
+</div>
+
+{% if saved %}<div class="note ok">Товар сохранён.</div>{% endif %}
+{% if error %}<div class="note bad">{{ error }}</div>{% endif %}
+
+{% if total %}
+  <form class="row" method="get" action="{{ screen.path }}" style="margin-bottom:12px">
+    <span style="flex:1 1 220px;min-width:0">
+      <input name="q" type="search" value="{{ query }}"
+             placeholder="Поиск по {{ total }} товарам" aria-label="Поиск по каталогу">
+    </span>
+    <button class="btn" type="submit">Найти</button>
+    {% if query %}<a class="btn" href="{{ screen.path }}">Сбросить</a>{% endif %}
+    <a class="btn main" href="{{ screen.path }}?edit=new{% if query %}&q={{ query|urlencode }}{% endif %}">Новый товар</a>
+  </form>
+{% endif %}
+
+{% if editing %}
+  {# Карточка правки стоит выше списка нарочно: её открыли нажатием, и искать её
+     под сорока строками каталога человеку пришлось бы прокруткой. #}
+  <div class="card">
+    <h2>{{ 'Новый товар' if not edited else 'Товар № ' ~ edited.id }}</h2>
+    <form method="post" action="{{ screen.path }}{% if query %}?q={{ query|urlencode }}{% endif %}">
+      <input type="hidden" name="id" value="{{ edited.id if edited else '' }}">
+
+      <label class="dim" for="p-name">Название</label>
+      <input id="p-name" name="name" type="text" required
+             value="{{ (form.name if form else '') or (edited.name if edited else '') }}">
+
+      <div class="grid two" style="margin-top:10px">
+        <div>
+          <label class="dim" for="p-brand">Бренд</label>
+          <input id="p-brand" name="brand" type="text"
+                 value="{{ (form.brand if form else '') or (edited.brand if edited else '') or '' }}">
+        </div>
+        <div>
+          <label class="dim" for="p-category">Категория</label>
+          <input id="p-category" name="category" type="text"
+                 value="{{ (form.category if form else '') or (edited.category if edited else '') or '' }}">
+        </div>
+        <div>
+          <label class="dim" for="p-weight">Вес или объём, г</label>
+          <input id="p-weight" name="weight_g" type="text" inputmode="decimal"
+                 value="{{ (form.weight_g if form else '') or (edited.weight_g if edited and edited.weight_g else '') }}">
+        </div>
+        <div>
+          <label class="dim" for="p-unit">Единица</label>
+          <select id="p-unit" name="unit">
+            {% set chosen = (form.unit if form else '') or (edited.unit if edited else 'pcs') %}
+            {% for code, title in units.items() %}
+              <option value="{{ code }}" {{ 'selected' if code == chosen }}>{{ title }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <label class="dim" for="p-barcode" style="display:block;margin-top:10px">Штрихкод</label>
+      <input id="p-barcode" name="barcode" type="text" inputmode="numeric"
+             value="{{ (form.barcode if form else '') or (edited.barcode if edited and edited.barcode else '') }}">
+      <p class="dim">Самый надёжный способ связать товар с магазином: по названию
+        «Страчателла» находится и сыр, и мороженое, а по штрихкоду — только он сам.
+        Подставляется из чека, если оператор его передал.</p>
+
+      {% set is_active = (edited.active if edited else True) if not form else (form.active == 'on') %}
+      <label class="row" style="gap:8px">
+        <input type="checkbox" name="active" {{ 'checked' if is_active }}
+               style="width:auto"> <span>Активен</span>
+      </label>
+
+      <div class="row" style="margin-top:12px">
+        <button class="btn main" type="submit">Сохранить</button>
+        <a class="btn" href="{{ screen.path }}{% if query %}?q={{ query|urlencode }}{% endif %}">Закрыть</a>
+      </div>
+    </form>
+  </div>
+{% endif %}
+
+{% if not total %}
+  <div class="card">
+    <p class="muted">Товаров пока нет. Заведите первый кнопкой «Новый товар» — или
+      загрузите чек на экране «Мои чеки», и товары появятся сами.</p>
+  </div>
+{% elif not groups %}
+  <div class="card">
+    <p class="muted">По запросу «{{ query }}» ничего не нашлось. Попробуйте другое слово —
+      например, без граммовки.</p>
+    <a class="btn" href="{{ screen.path }}">Показать все {{ total }}</a>
+  </div>
+{% else %}
+  {% for group in groups %}
+    <div class="card">
+      <div class="row" style="align-items:baseline">
+        <div class="eyebrow" style="margin:0">{{ group.name }}</div>
+        <span class="spacer"></span>
+        <span class="dim">{{ group.count }}</span>
+      </div>
+
+      {% for item in group.goods %}
+        <div style="border-top:1px solid var(--line);padding:9px 0">
+          <div class="row">
+            <span style="flex:1 1 200px;min-width:0">
+              <span{% if not item.active %} class="dim"{% endif %}>{{ item.name }}</span>
+              {% if not item.active %}<span class="pill"
+                    style="border-color:var(--line2);color:var(--ink3)">выключен</span>{% endif %}
+              <br>
+              {% if item.best_code %}
+                <span class="chip"><span class="dot s-{{ item.best_code }}"></span>
+                  от <span class="sum">{{ rub(item.best_price) }}</span> за {{ item.unit }}</span>
+                <span class="dim" style="white-space:nowrap"> · {{ item.nets }}</span>
+              {% else %}
+                <span class="dim">цен нет — сопоставьте товар в разделе «Связи»</span>
+              {% endif %}
+            </span>
+            <a class="btn" href="{{ screen.path }}?edit={{ item.id }}{% if query %}&q={{ query|urlencode }}{% endif %}">Править</a>
+          </div>
+
+          <details style="margin-top:4px">
+            <summary class="dim" style="cursor:pointer">Все цены</summary>
+            {% if item.prices %}
+              {% for price in item.prices %}
+                <div class="row" style="padding:4px 0">
+                  <span class="chip"><span class="dot s-{{ price.code }}"></span>{{ price.name }}</span>
+                  <span class="spacer"></span>
+                  <span class="sum">{{ rub(price.value) }}</span>
+                </div>
+              {% endfor %}
+            {% else %}
+              <p class="dim">Ни одной цены. Товар не сопоставлен ни с одной сетью.</p>
+            {% endif %}
+            {% if item.missing %}
+              <p class="dim">Нет цены: {{ item.missing|join(', ') }}.</p>
+            {% endif %}
+          </details>
+        </div>
+      {% endfor %}
+    </div>
+  {% endfor %}
+
+  <p class="dim">
+    {% if query %}Найдено {{ shown }} из {{ total }} товаров{% else %}Товаров: {{ total }}{% endif %}
+    · цен по сетям: {{ pairs }}.
+    Цены здесь — последние снимки из базы; спросить магазины заново можно на экране «Цены».
+  </p>
+{% endif %}
+{% endblock %}

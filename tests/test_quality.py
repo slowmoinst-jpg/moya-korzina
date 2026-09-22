@@ -201,3 +201,34 @@ def test_transliteration_does_not_glue_different_brands():
 
     assert similarity("Дезодорант Axe Ice Chill 50 мл",
                       "Антиперспирант Рексона Сухость пудры 40 мл") < 0.5
+
+
+def test_the_deploy_packs_every_file_the_image_copies():
+    """Список упаковки в deploy.ps1 не отстаёт от COPY в Dockerfile.
+
+    ЭТО СЛУЧИЛОСЬ 19.09.2026 И СТОИЛО СОРВАННОЙ ВЫКЛАДКИ. В Dockerfile добавили
+    `COPY docs/grab-prices.min.txt`, а в `$files` у deploy.ps1 его не дописали:
+    архив уехал без файла, сборка упала на предпоследнем слое — и упала ПОСЛЕ
+    заливки, то есть уже на сервере, где разбираться дороже всего.
+
+    Ловушка тут в том, что расхождение не видно ни одному человеку: оба файла
+    правильные по отдельности, а неправильна ПАРА. Поэтому сторож смотрит на
+    пару, и смотрит только на docs — остальное образ берёт каталогами целиком
+    (app, tools), и они в списке есть всегда.
+    """
+    import re
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    docker = open(os.path.join(root, "Dockerfile"), encoding="utf-8").read()
+    deploy = open(os.path.join(root, "deploy.ps1"), encoding="utf-8").read()
+
+    # Только строки COPY. Первый вариант читал файл целиком и споткнулся о
+    # КОММЕНТАРИЙ: рядом с COPY написано «разбор — docs/grab-prices.src.js», и
+    # сторож потребовал упаковать исходник, которого в образе нет и не надо.
+    copies = [ln for ln in docker.splitlines() if ln.strip().upper().startswith("COPY ")]
+    needed = {p for ln in copies for p in re.findall(r"docs/[\w.\-]+", ln)}
+    assert needed, "в Dockerfile не нашлось ни одного COPY из docs — сторож ослеп"
+    for path in sorted(needed):
+        assert path in deploy, (
+            f"{path} копируется в образ, но не упаковывается выкладкой — "
+            "сборка упадёт на сервере")

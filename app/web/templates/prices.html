@@ -1,0 +1,205 @@
+{# Цены: выбор товара, график по сетям, карточки «сколько сейчас» и все снимки.
+
+   Опрос магазинов — форма POST, а не ссылка и не открытие страницы: на ссылку
+   нажимают случайно, страницу обновляют постоянно, а каждый такой раз — это шесть
+   походов в сети и минута ожидания.
+
+   Таблицы снимков здесь нет нарочно. Четыре колонки с датой и временем на телефоне
+   не помещаются и уводят страницу вбок; те же четыре значения строкой с переносом
+   читаются стоя у полки. #}
+{% extends "layout.html" %}
+{% block title %}Цены — Моя корзина{% endblock %}
+{% block body %}
+
+{% for kind, text in get_flashed_messages(with_categories=true) %}
+  <div class="note {{ kind }}">{{ text }}</div>
+{% endfor %}
+
+<div class="row" style="margin-bottom:12px">
+  {% for label, value in totals %}
+    <span class="pill" style="border-color:var(--line2);color:var(--ink2)">{{ label }}: {{ value }}</span>
+  {% endfor %}
+</div>
+
+{% if not products %}
+  <div class="card">
+    <p class="muted">Список товаров пуст. Заведите товары на экране «Товары» или
+      загрузите чек на экране «Мои чеки».</p>
+    <a class="btn main" href="{{ url_for('screen.products') }}">Открыть «Товары»</a>
+  </div>
+{% else %}
+
+<div class="card">
+  <form class="row" method="get" action="{{ screen.path }}">
+    <span style="flex:1 1 220px;min-width:0">
+      <label class="dim" for="pick">Товар</label>
+      <select id="pick" name="product">
+        {% for p in products %}
+          <option value="{{ p.id }}" {{ 'selected' if product and p.id == product.id }}>{{ p.name }}</option>
+        {% endfor %}
+      </select>
+    </span>
+    <button class="btn" type="submit" style="align-self:flex-end">Показать</button>
+  </form>
+
+  <p class="dim" style="margin:12px 0 0">Цены сохраняются снимками с отметкой времени.
+    Чем чаще обновляете — тем подробнее история. {{ safety }}</p>
+
+  {# Кнопка опроса стоит рядом с объяснением, а не в шапке: она ходит в сети, и
+     человек должен видеть, за что платит минутой ожидания. #}
+  <form method="post" action="{{ screen.path }}" style="margin-top:10px">
+    <input type="hidden" name="action" value="refresh">
+    <input type="hidden" name="product" value="{{ product.id if product else '' }}">
+    <input type="hidden" name="pl" value="{{ pl }}">
+    <button class="btn main" type="submit">Обновить цены у магазинов</button>
+  </form>
+</div>
+
+{% if product and not cards %}
+  <div class="card">
+    <p class="muted">По товару «{{ product.name }}» цен ещё нет. Свяжите его с магазином
+      в разделе «Связи» и нажмите «Обновить цены».</p>
+    <a class="btn" href="{{ url_for('screen.links') }}?product={{ product.id }}">Открыть «Связи»</a>
+  </div>
+{% endif %}
+
+{% if cards %}
+  <div class="grid two">
+    {% for card in cards %}
+      <div class="card" style="margin:0">
+        <span class="chip"><span class="dot s-{{ card.code }}"></span><strong>{{ card.name }}</strong></span>
+        <div style="margin:6px 0 2px">
+          <span class="sum" style="font-size:1.35rem">{{ rub(card.last) }}</span>
+          <span class="dim"> за {{ card.unit }}</span>
+        </div>
+        {% if card.delta is none %}
+          <span class="dim">без изменений</span>
+        {% elif card.delta > 0 %}
+          <span style="color:var(--red);font-weight:600">+{{ rub(card.delta) }} с первого снимка</span>
+        {% else %}
+          <span class="gain">−{{ rub(-card.delta) }} с первого снимка</span>
+        {% endif %}
+        <div class="dim">снимков: {{ card.count }}{% if not card.in_stock %} · в последнем снимке
+          товара не было в наличии{% endif %}</div>
+      </div>
+    {% endfor %}
+  </div>
+{% endif %}
+
+{% if single %}
+  <div class="note info">Пока это один снимок цены. График появится после второго
+    обновления — снимки не перезаписываются, история набирается сама.</div>
+{% endif %}
+
+{% if chart %}
+  <div class="card">
+    <h2>Как менялась цена</h2>
+    {# Картинка отдаётся шириной в 100% и высотой auto: на телефоне она просто
+       уменьшается целиком, поэтому горизонтальной прокрутки не появляется. #}
+    <svg viewBox="0 0 {{ chart.w }} {{ chart.h }}" style="width:100%;height:auto;display:block"
+         role="img" aria-label="График цен по магазинам">
+      <line x1="{{ chart.pad }}" y1="{{ chart.h - chart.pad }}"
+            x2="{{ chart.w - chart.pad }}" y2="{{ chart.h - chart.pad }}"
+            style="stroke:var(--line2);stroke-width:1"></line>
+      {% for line in chart.lines %}
+        <polyline points="{{ line.points }}" fill="none"
+                  style="stroke:var(--s-{{ line.code }});stroke-width:2;stroke-linejoin:round;stroke-linecap:round"></polyline>
+        {% for dot in line.dots %}
+          <circle cx="{{ dot.x }}" cy="{{ dot.y }}" r="3"
+                  style="fill:var(--s-{{ line.code }})"></circle>
+        {% endfor %}
+      {% endfor %}
+    </svg>
+    <div class="row" style="margin-top:8px">
+      <span class="dim">{{ chart.from }} — {{ chart.to }}</span>
+      <span class="spacer"></span>
+      <span class="dim">от {{ rub(chart.low) }} до {{ rub(chart.high) }}</span>
+    </div>
+    <div class="row" style="margin-top:6px">
+      {% for line in chart.lines %}
+        <span class="chip"><span class="dot s-{{ line.code }}"></span>{{ line.name }}</span>
+      {% endfor %}
+    </div>
+  </div>
+{% endif %}
+
+{% if snapshots %}
+  <details class="card">
+    <summary style="cursor:pointer">Все снимки ({{ snapshots|length }})</summary>
+    {% for row in snapshots %}
+      <div class="row" style="border-top:1px solid var(--line);padding:7px 0">
+        <span class="chip"><span class="dot s-{{ row.code }}"></span>{{ row.name }}</span>
+        <span class="dim">{{ row.label }}</span>
+        <span class="spacer"></span>
+        {% if not row.in_stock %}<span class="dim">нет в наличии</span>{% endif %}
+        <span class="sum">{{ rub(row.price) }}</span>
+      </div>
+    {% endfor %}
+  </details>
+{% endif %}
+
+{% if pricelist %}
+  {# Прайс вручную — единственный источник цен для сетей с закрытым каталогом.
+     Блок закрыт по умолчанию: он нужен редко, а места занимает много. #}
+  <details class="card">
+    <summary style="cursor:pointer">Прайс-листы вручную</summary>
+    <p class="dim">У этих сетей закрытый каталог: цены им неоткуда взять, кроме ваших
+      чеков. Файл с ценниками закрывает и то, чего вы ещё не покупали.</p>
+
+    <div class="row">
+      {% for store in pricelist.stores %}
+        <a class="btn" href="{{ screen.path }}?pl={{ store.code }}{% if product %}&product={{ product.id }}{% endif %}"
+           style="{{ 'border-color:var(--ink);font-weight:500' if store.code == pricelist.chosen.code }}">
+          {{ store.name }}{% if store.updated %} · {{ store.updated }}{% endif %}</a>
+      {% endfor %}
+    </div>
+
+    {% if pricelist.count %}
+      <p class="muted" style="margin-top:10px">Сейчас загружено <strong>{{ pricelist.count }}</strong>
+        позиций от {{ pricelist.updated }}.</p>
+      {% for row in pricelist.rows %}
+        <div class="row" style="border-top:1px solid var(--line);padding:5px 0">
+          <span style="flex:1 1 180px;min-width:0">{{ row.name }}</span>
+          <span class="dim">{{ 'кг' if row.unit == 'kg' else 'шт' }}</span>
+          <span class="sum">{{ rub(row.price) }}</span>
+        </div>
+      {% endfor %}
+      {% if pricelist.count > pricelist.rows|length %}
+        <p class="dim">Показаны первые {{ pricelist.rows|length }} строк из {{ pricelist.count }}.</p>
+      {% endif %}
+    {% else %}
+      <p class="muted" style="margin-top:10px">Прайса для «{{ pricelist.chosen.name }}» пока нет.</p>
+    {% endif %}
+
+    <p class="dim" style="margin-top:12px">Формат простой: название и цена. Единицу и
+      артикул можно не указывать.</p>
+    <p><code>Название;Цена;Единица</code><br><code>Молоко 1 л;79,90;шт</code><br>
+       <code>Яблоки;149;кг</code></p>
+
+    <form method="post" action="{{ screen.path }}" enctype="multipart/form-data">
+      <input type="hidden" name="action" value="pricelist_save">
+      <input type="hidden" name="store" value="{{ pricelist.chosen.code }}">
+      <input type="hidden" name="product" value="{{ product.id if product else '' }}">
+      <input type="hidden" name="pl" value="{{ pricelist.chosen.code }}">
+      <label class="dim" for="pl-file">Файл с ценами для «{{ pricelist.chosen.name }}»</label>
+      <input id="pl-file" name="file" type="file" accept=".csv,.txt">
+      <div class="row" style="margin-top:10px">
+        <button class="btn main" type="submit">Загрузить прайс</button>
+      </div>
+    </form>
+
+    {% if pricelist.count %}
+      <form method="post" action="{{ screen.path }}" style="margin-top:10px">
+        <input type="hidden" name="action" value="pricelist_drop">
+        <input type="hidden" name="store" value="{{ pricelist.chosen.code }}">
+        <input type="hidden" name="product" value="{{ product.id if product else '' }}">
+        <input type="hidden" name="pl" value="{{ pricelist.chosen.code }}">
+        <button class="btn" type="submit" style="color:var(--red);border-color:var(--red)">
+          Удалить прайс «{{ pricelist.chosen.name }}»</button>
+      </form>
+    {% endif %}
+  </details>
+{% endif %}
+
+{% endif %}
+{% endblock %}

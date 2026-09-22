@@ -1,0 +1,36 @@
+# Сборщик проверочного приложения. Живёт отдельным образом и на боевой сервер
+# ничего не добавляет: контейнер одноразовый, образ после сборки можно снести.
+#
+# ПОЧЕМУ СБОРКА ЗДЕСЬ, А НЕ НА МАШИНЕ ВЛАДЕЛЬЦА. Там нет ни JDK, ни Android SDK,
+# ни Gradle — это около двух гигабайт инструментов ради одного APK, который,
+# возможно, окажется не нужен. Сервер всё равно есть, на нём 60 ГБ свободно, и
+# после ответа на вопрос весь этот слой убирается одной командой.
+FROM eclipse-temurin:17-jdk
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends unzip curl \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV ANDROID_HOME=/sdk
+ENV ANDROID_SDK_ROOT=/sdk
+
+# Командные инструменты Android. Версия прибита гвоздём нарочно: «latest» однажды
+# уедет, и сборка сломается не в тот день.
+RUN mkdir -p /sdk/cmdline-tools \
+    && curl -sSLo /tmp/tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+    && unzip -q /tmp/tools.zip -d /sdk/cmdline-tools \
+    && mv /sdk/cmdline-tools/cmdline-tools /sdk/cmdline-tools/latest \
+    && rm /tmp/tools.zip
+
+ENV PATH="${PATH}:/sdk/cmdline-tools/latest/bin:/sdk/platform-tools"
+
+RUN yes | sdkmanager --licenses > /dev/null \
+    && sdkmanager --install "platforms;android-34" "build-tools;34.0.0" > /dev/null
+
+RUN curl -sSLo /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip \
+    && unzip -q /tmp/gradle.zip -d /opt \
+    && rm /tmp/gradle.zip
+ENV PATH="${PATH}:/opt/gradle-8.7/bin"
+
+WORKDIR /src
+CMD ["gradle", "--no-daemon", "assembleDebug"]

@@ -1,6 +1,7 @@
 """Загрузка конфигурации из config.yaml."""
 from __future__ import annotations
 
+import contextvars
 import os
 from functools import lru_cache
 from typing import Any
@@ -44,6 +45,26 @@ def get(path: str, default: Any = None) -> Any:
     return node
 
 
+# База текущего человека. Задаётся на каждом прогоне интерфейса (app.users.activate)
+# и живёт в контексте потока: репозиторий и экраны о людях не знают, они просто
+# открывают «базу», а какая это база — решено выше по стеку. Пусто — общая база из
+# config.yaml, как было до появления входа по телефону (так живут тесты и утилиты).
+_DB_OVERRIDE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "korzina_db_path", default=None)
+
+
+def set_db_override(path: str | None) -> None:
+    """Подменить базу для текущего контекста; None — вернуть общую."""
+    _DB_OVERRIDE.set(path)
+
+
+def db_override() -> str | None:
+    return _DB_OVERRIDE.get()
+
+
 def db_path() -> str:
+    override = _DB_OVERRIDE.get()
+    if override:
+        return override
     p = get("db_path", "data/basket.db")
     return p if os.path.isabs(p) else os.path.join(ROOT, p)

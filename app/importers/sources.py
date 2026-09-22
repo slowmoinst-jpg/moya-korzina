@@ -137,13 +137,24 @@ def parse_receipt_json(payload: str | dict) -> Receipt:
     if not node:
         raise ValueError("В файле не нашёлся список позиций (items)")
 
+    # «Мои чеки онлайн» присылает сеть отдельным полем brand, и оно человечнее
+    # адреса торговой точки: «Пятёрочка» вместо «ООО "Агроторг", ул. Ленина, 1».
+    store = str(node.get("brand") or node.get("retailPlace") or node.get("user")
+                or node.get("store") or node.get("retailPlaceAddress") or "—").strip() or "—"
+
     rows: list[ReceiptRow] = []
     for item in node["items"]:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or item.get("Name") or "").strip()
         if not name:
-            continue
+            # Позиция без названия — не порча данных, а обычный чек за услугу: связь,
+            # интернет, проезд. Живой кабинет 16.09.2026 отдал такие как
+            # {"sum":300,"quantity":1,"price":300} от ООО «СкайНэт», без единого имени.
+            # Пропускать их целиком значило бы терять чек: строк не остаётся, чек не
+            # грузится и навсегда висит в «не загружено». Подписываем продавцом —
+            # это сказано в самом чеке, и ничего не выдумано.
+            name = store if store != "—" else "Позиция без названия"
         qty = _number(item.get("quantity", item.get("Quantity", 1))) or 1.0
         price = _money(item.get("price", item.get("Price")))
         total = _money(item.get("sum", item.get("Sum")))
@@ -159,15 +170,11 @@ def parse_receipt_json(payload: str | dict) -> Receipt:
     if not rows:
         raise ValueError("В файле нет ни одной позиции с ценой")
 
-    # «Мои чеки онлайн» присылает сеть отдельным полем brand, и оно человечнее
-    # адреса торговой точки: «Пятёрочка» вместо «ООО "Агроторг", ул. Ленина, 1».
-    store = (node.get("brand") or node.get("retailPlace") or node.get("user")
-             or node.get("store") or node.get("retailPlaceAddress") or "—")
     total = _money(node.get("totalSum", node.get("total")))
     return Receipt(
         date=_date(node.get("dateTime") or node.get("date") or node.get("createdDate")
                    or node.get("receiveDate") or node.get("buyDate")),
-        store_name=str(store).strip() or "—",
+        store_name=store,
         rows=rows,
         total=total if total is not None else round(sum(r.total for r in rows), 2),
     )

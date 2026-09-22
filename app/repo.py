@@ -402,11 +402,51 @@ def imported_receipt_keys() -> set[str]:
         return {r["key"] for r in c.execute("SELECT key FROM receipts WHERE imported_at IS NOT NULL")}
 
 
+NO_DATA = -1   # в поле rows: состава этого чека у источника больше нет
+
+
+def mark_receipt_unavailable(key: str) -> None:
+    """Состав чека взять неоткуда, и уже не будет откуда.
+
+    ФНС хранит содержимое чека ограниченный срок: на чеках 2018 года кабинет
+    отвечает `receipt.fiscal.data.unavailable` — сам чек в ленте виден, а позиций
+    за ним уже нет. Такой чек не «ещё не загружен», а «загружен не будет»: спрашивать
+    его в каждую проверку значит зря дёргать ФНС и зря обещать человеку, что вот-вот
+    догрузится. Отмечаем rows = -1 — чек остаётся в описи и в счётчике «видно в
+    кабинете», но из очереди уходит.
+    """
+    if not key:
+        return
+    with get_conn() as c:
+        c.execute("UPDATE receipts SET rows = ? WHERE key = ? AND imported_at IS NULL",
+                  (NO_DATA, key))
+        c.commit()
+
+
+def unavailable_receipt_keys() -> set[str]:
+    """Чеки, по которым источник уже сказал «состава нет». Второй раз не спрашиваем."""
+    with get_conn() as c:
+        return {r["key"] for r in c.execute(
+            "SELECT key FROM receipts WHERE imported_at IS NULL AND rows = ?", (NO_DATA,))}
+
+
 def pending_receipts() -> list[dict]:
-    """Чеки, которые в кабинете есть, а у нас ещё нет. Самые новые сверху."""
+    """Чеки, которые в кабинете есть, у нас ещё нет и которые ещё можно взять.
+
+    Чеки с отметкой «состава нет» сюда не попадают: «не загружено» должно означать
+    «осталось работы», иначе счётчик навсегда замрёт на числе, которое не уменьшится.
+    """
     with get_conn() as c:
         return [dict(r) for r in c.execute(
-            "SELECT * FROM receipts WHERE imported_at IS NULL ORDER BY date DESC, key")]
+            "SELECT * FROM receipts WHERE imported_at IS NULL AND (rows IS NULL OR rows <> ?)"
+            " ORDER BY date DESC, key", (NO_DATA,))]
+
+
+def unavailable_receipts() -> list[dict]:
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM receipts WHERE imported_at IS NULL AND rows = ? ORDER BY date DESC, key",
+            (NO_DATA,))]
 
 
 def imported_receipts() -> list[dict]:

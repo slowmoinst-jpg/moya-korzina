@@ -34,12 +34,18 @@ data/fallback_prices.csv, то есть показать человеку не �
     connectors:
       smart_extract:
         enabled: true
-        model: openai/gpt-4o-mini     # или ollama/llama3.1 — тогда ключ не нужен
+        model: openrouter/deepseek/deepseek-v4-flash
         base_url:                     # для ollama: http://localhost:11434
         max_chars: 20000              # сколько разметки отдаём модели
 
-Ключ берётся из окружения: OPENAI_API_KEY, ANTHROPIC_API_KEY и так далее — в коде
-и в конфиге ему не место.
+Поставщик — первое слово до косой черты: openrouter, openai, anthropic, ollama.
+OpenRouter говорит на языке OpenAI, поэтому библиотеке он так и представляется,
+а меняются только адрес и ключ; всё, что идёт после «openrouter/», — название
+модели в его собственном перечне. Выбран deepseek-v4-flash: 0,04 $ за миллион
+входных токенов, то есть страница обходится примерно в две сотых цента.
+
+Ключ берётся из окружения: OPENROUTER_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY
+и так далее — в коде и в конфиге ему не место, иначе он уедет в git.
 """
 from __future__ import annotations
 
@@ -51,8 +57,9 @@ from app import config
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "openai/gpt-4o-mini"
+DEFAULT_MODEL = "openrouter/deepseek/deepseek-v4-flash"
 DEFAULT_MAX_CHARS = 20000
+OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 PROMPT = ("Со страницы товара интернет-магазина достань текущую цену за единицу — ту, "
           "которую покупатель заплатит сегодня. Если на странице есть и старая цена, и "
           "цена по акции, нужна та, по которой продают сейчас. Верни число в рублях, "
@@ -61,6 +68,14 @@ PROMPT = ("Со страницы товара интернет-магазина 
 
 # ключ окружения по названию поставщика в модели («openai/gpt-4o-mini» -> OPENAI_API_KEY)
 _ENV_KEYS = {
+    "openrouter": "OPENROUTER_API_KEY",
+    # Проверено с боевого сервера 19.09.2026: openrouter.ai, api.openai.com и
+    # api.anthropic.com отвечают ему 403 по адресу, а api.deepseek.com и
+    # api.mistral.ai — 401, то есть «нет ключа», и связь с ними есть. Поэтому
+    # эти двое здесь не для полноты списка: это единственные, до кого сервер
+    # сегодня дотягивается. Библиотека знает deepseek своим поставщиком, так что
+    # «deepseek/deepseek-chat» работает без всякой подмены адреса.
+    "deepseek": "DEEPSEEK_API_KEY",
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "mistralai": "MISTRAL_API_KEY",
@@ -120,12 +135,29 @@ def trim(page: str, max_chars: int | None = None) -> str:
 
 def _llm_config() -> dict:
     model = str(_cfg("model", DEFAULT_MODEL) or DEFAULT_MODEL)
-    provider = model.split("/", 1)[0]
+    provider, _, rest = model.partition("/")
+    base_url = _cfg("base_url")
     llm: dict = {"model": model}
+    if provider == "openrouter":
+        # Для библиотеки это обычный OpenAI, просто по другому адресу и с другим
+        # ключом: «openrouter/deepseek/deepseek-v4-flash» -> «openai/deepseek/
+        # deepseek-v4-flash», а название после первой косой черты OpenRouter
+        # разбирает сам.
+        llm["model"] = f"openai/{rest}"
+        base_url = base_url or OPENROUTER_BASE
+        # РАССУЖДЕНИЕ ВЫКЛЮЧАЕМ, и без этого канал молчит. deepseek-v4-flash —
+        # модель рассуждающая: на вопрос «найди цену» она тратит сотни токенов
+        # на размышление и упирается в потолок ответа РАНЬШЕ, чем скажет хоть
+        # слово. Замер 19.09.2026: max_tokens=400 -> reasoning_tokens=400,
+        # content пустой, finish_reason=length. С reasoning.enabled=false тот же
+        # вопрос стоит 0,00000449 $ вместо 0,00003526 $ и отвечает числом.
+        llm["extra_body"] = {"reasoning": {"enabled": False}}
+        # Иначе библиотека не найдёт модель в своей табличке, предупредит в
+        # журнал и молча обрежет страницу до 8192 токенов.
+        llm.setdefault("model_tokens", int(_cfg("model_tokens", 65536) or 65536))
     env_key = _ENV_KEYS.get(provider)
     if env_key and os.environ.get(env_key):
         llm["api_key"] = os.environ[env_key]
-    base_url = _cfg("base_url")
     if base_url:
         llm["base_url"] = str(base_url)
     if provider == "ollama":

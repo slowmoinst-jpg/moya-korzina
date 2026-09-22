@@ -19,7 +19,18 @@ from app.connectors import cache, get_connector, smart_extract, stub  # noqa: E4
 
 
 @pytest.fixture(autouse=True)
-def clean_state():
+def clean_state(monkeypatch):
+    """Чистое состояние и молчащий JSON-шлюз Магнита.
+
+    Шлюз здесь молчит нарочно: запасной разбор страницы моделью — это последняя
+    ступень, до которой очередь доходит, только когда шлюз не ответил. Не заглушить
+    его значило бы проверять живые цены Магнита вместо собственной обвязки — и тест
+    бесшумно ушёл бы в сеть.
+    """
+    from app.connectors.magnit import MagnitConnector
+
+    monkeypatch.setattr(MagnitConnector, "_gateway",
+                        lambda self, url, body=None, params=None: (None, 0))
     cache.cache_clear()
     cache.reset_throttle()
     stub.reload_rows()
@@ -82,6 +93,66 @@ def test_local_model_needs_no_key(monkeypatch):
 
 def test_silent_when_switched_off():
     assert smart_extract.price_from_html("magnit", "<div>420 ₽</div>") is None
+
+
+# ---------- OpenRouter ----------
+def _openrouter(monkeypatch, model="openrouter/deepseek/deepseek-v4-flash", base_url=None):
+    monkeypatch.setattr(config, "get", lambda key, default=None: {
+        "connectors.smart_extract.enabled": True,
+        "connectors.smart_extract.model": model,
+        "connectors.smart_extract.base_url": base_url,
+    }.get(key, default))
+    monkeypatch.setattr(smart_extract, "installed", lambda: True)
+
+
+def test_openrouter_asks_for_its_own_key(monkeypatch):
+    _openrouter(monkeypatch)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    ok, why = smart_extract.available()
+
+    assert ok is False and "OPENROUTER_API_KEY" in why
+
+
+def test_openrouter_speaks_to_the_library_as_openai(monkeypatch):
+    """Библиотека такого поставщика не знает, а OpenAI знает: меняются адрес и ключ."""
+    _openrouter(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "тестовый-ключ")
+    llm = smart_extract._llm_config()["llm"]
+
+    assert llm["model"] == "openai/deepseek/deepseek-v4-flash"
+    assert llm["base_url"] == smart_extract.OPENROUTER_BASE
+    assert llm["api_key"] == "тестовый-ключ"
+
+
+def test_reasoning_is_switched_off_or_the_answer_never_comes(monkeypatch):
+    """Без этого канал молчит, и молчит бесшумно.
+
+    Замер 19.09.2026 на живой модели: deepseek-v4-flash на вопрос «найди цену»
+    потратила все 400 токенов ответа на рассуждение и вернула ПУСТУЮ строку с
+    finish_reason=length. Для приложения это неотличимо от «цены на странице нет»:
+    price_from_html наружу не бросает никогда. Поэтому сторож смотрит именно сюда.
+    """
+    _openrouter(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "тестовый-ключ")
+    llm = smart_extract._llm_config()["llm"]
+
+    assert llm["extra_body"] == {"reasoning": {"enabled": False}}
+
+
+def test_window_is_named_or_the_page_is_silently_cut(monkeypatch):
+    """Своей таблички на эту модель у библиотеки нет — промолчит и обрежет до 8192."""
+    _openrouter(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "тестовый-ключ")
+
+    assert smart_extract._llm_config()["llm"]["model_tokens"] >= 20000
+
+
+def test_own_address_wins_over_the_default(monkeypatch):
+    """Прокси или другой шлюз задаётся в конфиге и не должен перебиваться умолчанием."""
+    _openrouter(monkeypatch, base_url="http://127.0.0.1:8080/v1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "тестовый-ключ")
+
+    assert smart_extract._llm_config()["llm"]["base_url"] == "http://127.0.0.1:8080/v1"
 
 
 # ---------- что отдаём модели ----------

@@ -162,20 +162,21 @@ def test_out_of_stock_never_wins_in_the_basket():
     Иначе победителем станет магазин, в который человека посылать незачем: там
     этого товара не продают, а цена показана справочная.
     """
-    from app.ui.screens.basket import _price_html
+    from app.web.screens.basket import _prices_of
 
     class S:
         def __init__(self, code):
-            self.code = code
+            self.code, self.name = code, code
 
     stores = [S("lenta"), S("magnit")]
-    live = {(1, "lenta"): _Offer(50.0, in_stock=False), (1, "magnit"): _Offer(90.0)}
-    html = _price_html(1, stores, {}, live)
+    cell = {(1, "lenta"): {"value": 50.0, "in_stock": False},
+            (1, "magnit"): {"value": 90.0, "in_stock": True}}
 
-    assert "line-through" in html, "отсутствующая цена должна быть зачёркнута"
-    assert "var(--green)" in html
-    # зелёным помечена именно девяностая, а не полусотня отсутствующего
-    assert html.index("var(--green)") > html.index("line-through")
+    prices = {p["code"]: p for p in _prices_of(1, stores, cell)}
+
+    assert prices["lenta"]["in_stock"] is False, "отсутствие обязано остаться видимым"
+    assert prices["lenta"]["best"] is False, "дешёвое, но отсутствующее — не победитель"
+    assert prices["magnit"]["best"] is True
 
 
 def test_missing_item_does_not_inflate_a_store_total():
@@ -184,50 +185,75 @@ def test_missing_item_does_not_inflate_a_store_total():
     Магазин, где нет половины корзины, иначе выглядел бы самым дешёвым — просто
     потому что в его сумме меньше товаров.
     """
-    from app.ui.screens.basket import _live_totals
+    from app.web.screens.basket import _price_matrix
 
     class S:
-        def __init__(self, code):
-            self.code = code
+        def __init__(self, code, sid):
+            self.code, self.name, self.id = code, code, sid
 
-    stores = [S("lenta")]
+    stores = [S("lenta", 1)]
     items = [{"product_id": 1, "qty": 2, "unit": "pcs"}, {"product_id": 2, "qty": 1, "unit": "pcs"}]
-    live = {(1, "lenta"): _Offer(100.0), (2, "lenta"): _Offer(999.0, in_stock=False)}
+    snapshots = {(1, 1): {"price": 100.0, "in_stock": 1},
+                 (2, 1): {"price": 999.0, "in_stock": 0}}
 
-    totals = _live_totals(items, stores, live, {}, {"lenta": 0.0})
+    import app.web.screens.basket as screen
+    old_lookup = screen.repo.latest_price_for
+    screen.repo.latest_price_for = lambda pid, sid: snapshots.get((pid, sid))
+    try:
+        _, totals = _price_matrix(items, stores)
+    finally:
+        screen.repo.latest_price_for = old_lookup
 
     assert totals["lenta"] == 200.0, "999 за отсутствующий товар не должны попасть в сумму"
 
 
-def test_live_price_replaces_the_stored_snapshot():
-    """Снимок может быть недельным и снятым по другому адресу — живая цена главнее."""
-    from app.ui.screens.basket import _price_html
+def test_the_freshest_snapshot_wins(tmp_path, monkeypatch):
+    """Из двух снимков цены в дело идёт последний, а не первый попавшийся.
 
-    class S:
-        def __init__(self, code):
-            self.code = code
+    Прежде эту роль играла «живая цена поверх снимка»: опрос магазинов жил в
+    сессии Streamlit и перекрывал сохранённое. С переездом на app/web опрос стал
+    фоновым и КЛАДЁТ снимок в базу, поэтому правило переехало на уровень ниже —
+    в выбор снимка. Смысл прежний: недельная цена не должна побеждать сегодняшнюю.
+    """
+    from app import config, repo
+    from app.db import init_db
+    from app.web.screens.basket import _price_matrix
 
-    stores = [S("lenta")]
-    html = _price_html(1, stores, {(1, "lenta"): 500.0}, {(1, "lenta"): _Offer(75.99)})
+    monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "fresh.db"))
+    init_db()
 
-    assert "75,99" in html.replace("&nbsp;", " ")
-    assert "500" not in html
+    store = repo.get_store("lenta")
+    pid = repo.upsert_product(Product(id=None, name="Молоко", unit="pcs"))
+    sp = repo.upsert_store_product(store.id, "lenta-1", "Молоко")
+    repo.confirm_mapping(pid, sp, confirmed=True)
+    repo.save_price(sp, 500.0, fetched_at="2026-09-10T10:00:00")
+    repo.save_price(sp, 75.99, fetched_at="2026-09-17T10:00:00")
+
+    cell, _ = _price_matrix([{"product_id": pid, "qty": 1, "unit": "pcs"}], [store])
+
+    assert cell[(pid, "lenta")]["value"] == 75.99
 
 
-def test_address_is_part_of_the_live_cache_key(tmp_path, monkeypatch):
-    """Цены одного города не должны показаться под адресом другого."""
+def test_address_is_part_of_the_calculation_key(tmp_path, monkeypatch):
+    """Расчёт одного города не должен показаться под адресом другого.
+
+    Свёрток расчёта лежит в памяти процесса десять минут. Адрес определяет цены,
+    а значит и ответ: сменил адрес — прежний ответ к нему не относится. Раньше
+    адрес входил в ключ кэша живых цен на экране Streamlit; с переездом кэш
+    переехал на «Результат», и адрес обязан был переехать вместе с ним.
+    """
     from app import config, location
     from app.db import init_db
-    from app.ui.screens.basket import _live_key
+    from app.web.screens.result import _key
 
     monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "b.db"))
     init_db()
 
     location.save_address("Москва, Ходынский бульвар 4")
-    moscow = _live_key(7)
+    moscow = _key(7)
     location.save_address("Екатеринбург, улица Щербакова 4")
 
-    assert moscow != _live_key(7)
+    assert moscow != _key(7)
 
 
 def test_search_guess_loses_to_a_confirmed_mapping(tmp_path, monkeypatch):
@@ -238,7 +264,7 @@ def test_search_guess_loses_to_a_confirmed_mapping(tmp_path, monkeypatch):
     """
     from app import config, repo
     from app.db import init_db
-    from app.ui.screens.basket import _agrees_with_mapping
+    from app.web.screens.basket import _agrees_with_mapping
 
     monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "m.db"))
     init_db()
@@ -253,18 +279,17 @@ def test_search_guess_loses_to_a_confirmed_mapping(tmp_path, monkeypatch):
             self.store_code = "magnit"
             self.sku = sku
 
-    keep, confirmed = _agrees_with_mapping(pid, _O("правильный-sku"))
-    assert (keep, confirmed) == (True, True)
-
-    keep, confirmed = _agrees_with_mapping(pid, _O("банка-за-2090"))
-    assert keep is False, "находка, спорящая с подтверждением, не должна попадать в сумму"
+    # Помощник отвечает одним словом «верить или нет»: пометку «это догадка»
+    # новый экран рисует не здесь, а в «Ценах по сетям», рядом с самой ценой.
+    assert _agrees_with_mapping(pid, _O("правильный-sku")) is True
+    assert _agrees_with_mapping(pid, _O("банка-за-2090")) is False,         "находка, спорящая с подтверждением, не должна попадать в сумму"
 
 
 def test_without_a_mapping_the_guess_is_kept_but_marked(tmp_path, monkeypatch):
     """У магазина без сопоставлений цена всё же нужна — но помеченной как догадка."""
     from app import config, repo
     from app.db import init_db
-    from app.ui.screens.basket import _agrees_with_mapping
+    from app.web.screens.basket import _agrees_with_mapping
 
     monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "m2.db"))
     init_db()
@@ -274,7 +299,7 @@ def test_without_a_mapping_the_guess_is_kept_but_marked(tmp_path, monkeypatch):
         store_code = "lenta"
         sku = "любой"
 
-    assert _agrees_with_mapping(pid, _O()) == (True, False)
+    assert _agrees_with_mapping(pid, _O()) is True
 
 
 # ---------- синхронизированный каталог ----------
@@ -287,7 +312,7 @@ def test_catalog_shows_how_many_stores_know_the_item(tmp_path, monkeypatch):
     """
     from app import config, repo
     from app.db import init_db
-    from app.ui.screens.basket import _ready_in
+    from app.web.screens.basket import _ready_in
 
     monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "cat.db"))
     init_db()
@@ -308,7 +333,7 @@ def test_best_known_items_come_first(tmp_path, monkeypatch):
     """Каталог сортируется по готовности: сверху то, что проще отдать магазину."""
     from app import config, repo
     from app.db import init_db
-    from app.ui.screens.basket import _ready_in
+    from app.web.screens.basket import _ready_in
 
     monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "cat2.db"))
     init_db()

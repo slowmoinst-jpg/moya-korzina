@@ -115,3 +115,72 @@ def test_parse_receipt_dispatches_by_extension(tmp_path):
     assert len(parse_receipt(str(json_path)).rows) == 3
     assert len(parse_receipt(csv_path).rows) == 2
     assert len(parse_receipt(os.path.join(ROOT, "data", "sample_receipt.txt")).rows) == 16
+
+
+def test_nameless_service_line_is_signed_by_the_seller():
+    """Чек за услугу приходит без названий позиций, и терять его нельзя.
+
+    Живой кабинет ФНС 16.09.2026 отдал такие чеки от ООО «СкайНэт»: items есть,
+    суммы есть, имени нет ни у одной строки. Прежде разбор выбрасывал такую строку,
+    в чеке не оставалось позиций, чек не грузился и навсегда висел в «не загружено» —
+    так повисли 33 чека. Подпись берём из самого чека, из поля продавца.
+    """
+    from app.importers.sources import parse_receipt_json
+
+    receipt = parse_receipt_json({
+        "user": 'ООО "СкайНэт"', "totalSum": 300, "dateTime": "2025-07-23T09:46:00",
+        "items": [{"sum": 300, "quantity": 1, "price": 300, "nds": 3}],
+    })
+    assert len(receipt.rows) == 1
+    assert receipt.rows[0].raw_name == 'ООО "СкайНэт"'
+    assert receipt.store_name == 'ООО "СкайНэт"'
+    # единицы этот разбор в одиночку не различает — целое считается копейками; сумму
+    # выправляет пакет, сверяясь с описью кабинета (см. тест про рубли вместо копеек)
+    assert receipt.rows[0].total == 3.0
+
+
+def test_named_lines_are_not_touched_by_the_fallback():
+    from app.importers.sources import parse_receipt_json
+
+    receipt = parse_receipt_json({
+        "brand": "Пятёрочка", "totalSum": 109.9, "dateTime": "2026-08-01T19:41:00",
+        "items": [{"name": "Молоко 3.2% 900 мл", "quantity": 1, "price": 109.9, "sum": 109.9}],
+    })
+    assert receipt.rows[0].raw_name == "Молоко 3.2% 900 мл"
+
+
+def test_rubles_sent_where_kopecks_expected_are_caught_by_the_catalogue():
+    """Чек на 1750 ₽ не должен лечь в историю как 17,50.
+
+    Живой кабинет ФНС 16.09.2026: у части чеков за услуги суммы приходят в рублях, а
+    не в копейках — {"sum": 1750, "ndsSum": 291.67}. Разбор по общему правилу «целое
+    это копейки» занизил бы их в сто раз. Спасает опись: в списке кабинета тот же чек
+    записан строкой «1750.00», и расхождение ровно в сто крат выдаёт единицы.
+    """
+    from app.importers.bundle import parse_bundle
+
+    got = parse_bundle({"source": "lkdr", "catalogue": [], "receipts": [{
+        "key": "k-usluga", "date": "2025-07-22", "store": 'ООО "СкайНэт"', "total": "1750.00",
+        "fiscalData": {"user": 'ООО "СкайНэт"', "totalSum": 1750,
+                       "dateTime": "2025-07-22T16:15:00",
+                       "items": [{"sum": 1750, "quantity": 1, "price": 1750, "ndsSum": 291.67}]},
+    }]})
+    receipt = got["receipts"][0]["receipt"]
+    assert receipt.total == 1750.0
+    assert receipt.rows[0].total == 1750.0
+    assert receipt.rows[0].raw_name == 'ООО "СкайНэт"'
+
+
+def test_kopecks_stay_kopecks_when_the_catalogue_agrees():
+    """Обычный чек трогать нельзя: опись и разбор сходятся, множителю тут делать нечего."""
+    from app.importers.bundle import parse_bundle
+
+    got = parse_bundle({"source": "lkdr", "catalogue": [], "receipts": [{
+        "key": "k-eda", "date": "2026-08-01", "store": "Пятёрочка", "total": "109.90",
+        "fiscalData": {"brand": "Пятёрочка", "totalSum": 10990, "dateTime": "2026-08-01T19:41:00",
+                       "items": [{"name": "Молоко 3.2% 900 мл", "quantity": 1,
+                                  "price": 10990, "sum": 10990}]},
+    }]})
+    receipt = got["receipts"][0]["receipt"]
+    assert receipt.total == 109.90
+    assert receipt.rows[0].total == 109.90

@@ -1,0 +1,344 @@
+{% extends "layout.html" %}
+{% block title %}Кабинеты магазинов — Моя корзина{% endblock %}
+{% block body %}
+
+{# Отчёт о передаче читают с телефона, стоя у полки: шестнадцать строк на экране
+   в 360 точек. Поэтому строка позиции — две строчки друг под другом (название и
+   причина), а не колонки: колонки на такой ширине схлопываются в кашу. Правила
+   живут здесь, а не в общем korzina.css, потому что больше нигде не нужны. #}
+<style>
+  .peredacha{margin-top:10px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;}
+  .peredacha .head{margin:0;font-size:0.92rem;line-height:1.4;}
+  .peredacha .head b{font-weight:600;}
+  .polozheno{list-style:none;margin:8px 0 0;padding:0;}
+  .polozheno li{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line);}
+  .polozheno li:first-child{border-top:0;}
+  .znak{flex:0 0 auto;width:1.1rem;text-align:center;font-weight:700;line-height:1.5;}
+  .znak.da{color:var(--green);}
+  .znak.net{color:var(--red);}
+  /* Третий знак — «не знаю»: браузер не ответил, а поручение могло доделать своё.
+     Красный крест здесь сказал бы «не легло» про то, что, возможно, лежит. */
+  .znak.nezn{color:var(--amber);}
+  .znak.bylo{opacity:0.5;}
+  .pos{flex:1 1 auto;min-width:0;}
+  .pos .chto{display:block;overflow-wrap:anywhere;line-height:1.35;}
+  .pos .pochemu{display:block;color:var(--ink3);font-size:0.82rem;line-height:1.35;
+                overflow-wrap:anywhere;}
+  .peredacha .snova{margin-top:10px;}
+  /* Нажатая кнопка передачи гаснет видом, а не disabled: см. почему — в script ниже. */
+  button[aria-disabled="true"]{opacity:0.5;cursor:default;}
+  @media (max-width:420px){
+    .peredacha{padding:9px 10px;}
+    .pos .chto{font-size:0.93rem;}
+  }
+</style>
+
+{# Первым делом — почему вход происходит не здесь. Человек пришёл на экран
+   «Кабинеты» и вправе ждать полей «телефон» и «код». Их нет не по забывчивости,
+   и сказать об этом надо до того, как он начнёт их искать. #}
+<p class="muted">Вход в каждую сеть происходит <b>прямо здесь</b>: приложение открывает её
+  настоящую страницу в окне «Кабинет» и показывает её вам. Вы нажимаете по ней как обычно,
+  сами проходите проверку «я не робот», если она появится, и сами вводите код из СМС.
+  Ни пароль, ни код к нам не попадают: сохраняется только сам вход, и только когда вы об этом попросите.
+  Зато вошедшему сеть сама показывает цену по карте, личные купоны и вашу корзину — и
+  именно в неё приложение складывает посчитанное.</p>
+
+{% if not have_browser %}
+  <div class="note warn" style="margin:12px 0">Браузер на сервере не установлен, и окно
+    магазина открыть нечем. Это не ваша настройка, а сборка приложения: нужен пакет
+    <code>playwright</code> и Chromium.</div>
+{% endif %}
+
+{% if sent %}
+  <div class="note ok" style="margin:12px 0">Передача пошла. Браузер на сервере открывает карточки
+    одну за другой и кладёт товары в вашу корзину — это занимает около минуты. Ход видно ниже,
+    страница обновляет его сама. Заказ оформляете вы сами.</div>
+{% endif %}
+{% if busy %}
+  <div class="note warn" style="margin:12px 0">В эту сеть уже идёт передача — вторую приложение
+    не пустит. Если пустить, всё лягло бы в вашу корзину второй раз. Дождитесь конца: ход
+    показан ниже и обновляется сам.</div>
+{% endif %}
+{% if gone %}
+  <div class="note warn" style="margin:12px 0">Повторять нечего: тех позиций, что не легли,
+    в сегодняшней корзине уже нет — она изменилась после передачи. Посчитайте корзину заново
+    и передайте её целиком.</div>
+{% endif %}
+{% if prices %}
+  <div class="note ok" style="margin:12px 0">Сбор цен пошёл. Приложение открывает карточки ваших
+    товаров в вашем кабинете этой сети и читает цены — те самые, что видите вы, с вашей картой.
+    Это занимает несколько минут.</div>
+{% endif %}
+{% if trouble %}
+  <div class="note warn" style="margin:12px 0">Передать корзину в эту сеть не вышло: в ней нет ни
+    одной позиции с подтверждённым артикулом, либо сеть не ответила. Загляните в «Связи» —
+    товар без связи со своим названием в сети передать некуда.</div>
+{% endif %}
+
+{# Одна позиция отчёта. Ровно эту же разметку строит опрос хода внизу страницы:
+   два вида одной строки разъехались бы в первый же день. #}
+{% macro pos(r) %}
+  <li>
+    {% set znak = 'da' if r.ok else ('nezn' if r.unknown else 'net') %}
+    <span class="znak {{ znak }}{{ ' bylo' if r.earlier }}">{{ '✓' if r.ok else ('?' if r.unknown else '✗') }}</span>
+    <span class="pos">
+      <span class="chto">{{ r.name }}{% if r.qty %} · {{ r.qty }}{% endif %}</span>
+      {# «Лежит с прошлого раза» говорится только про то, что ЛЕГЛО. Перенос метит
+         все строки, которых нет в наряде повтора, — в том числе те, что в прошлый
+         раз не легли и выпали из сегодняшней корзины. Такая строка рисовалась как
+         «✗ Сыр · лежит с прошлого раза · нет в наличии»: значок говорит «не
+         легло», текст — «лежит», а человек верит тексту и не покупает сыр. #}
+      {% set was = ('лежит с прошлого раза' if r.ok else 'с прошлого раза, в корзину не легло') if r.earlier else '' %}
+      {% set why = [was, r.why, r.note]|select|join(' · ') %}
+      {% if why %}<span class="pochemu">{{ why }}</span>{% endif %}
+    </span>
+  </li>
+{% endmacro %}
+
+{% for r in rows %}
+  <div class="card">
+    <div class="row">
+      <span class="dot s-{{ r.code }}"></span>
+      <strong>{{ r.name }}</strong>
+      {% if r.connected %}
+        <span class="pill" style="border-color:var(--green);color:var(--green)">вы вошли</span>
+      {% else %}
+        <span class="pill" style="border-color:var(--ink3);color:var(--ink3)">вход не подтверждён</span>
+      {% endif %}
+      <span class="spacer"></span>
+      {% if r.connected and r.account %}<span class="dim">{{ r.account }}</span>{% endif %}
+    </div>
+
+    {% if r.connected %}
+      <div class="row" style="margin-top:8px">
+        {% if r.points is not none %}<span class="chip">Баллы: <b>{{ '%.0f'|format(r.points) }}</b></span>{% endif %}
+        {% if r.coupons %}<span class="chip">Купонов: <b>{{ r.coupons|length }}</b></span>{% endif %}
+        <span class="dim">Даёт:
+          {% for g in r.gives %}{{ ability_names.get(g, g) }}{% if not loop.last %}, {% endif %}{% else %}пока ничего не прислано{% endfor %}</span>
+      </div>
+      <p class="dim" style="margin:6px 0 0">
+        {% if r.login %}Вход сохранён {{ r.login.saved_at }} — {{ r.login.cookies }} куки.{% endif %}
+        Чтобы отобрать доступ, выйдите из аккаунта в самом магазине: пока сеть помнит вход,
+        сохранённые куки действуют, и «забыть» здесь их только стирает у нас.</p>
+    {% else %}
+      <p class="muted" style="margin:8px 0 0">{{ r.promise }}</p>
+    {% endif %}
+
+    {# Что именно уедет в эту сеть. Показываем ДО нажатия: корзина, собранная
+       вслепую, — это чужие деньги, потраченные на догадку. #}
+    {% if r.by_link %}
+      <p class="dim" style="margin:8px 0 0">Корзина уезжает сюда одной ссылкой, и браузер для
+        этого не нужен. Вход добавляет к ней цену по карте.</p>
+    {% elif r.plan and r.plan.count %}
+      <p class="dim" style="margin:8px 0 0">Готово к передаче: <b>{{ r.plan.count }}</b> позиц.
+        на {{ '%.0f'|format(r.plan.total) }} ₽{% if r.plan.unknown %},
+        ещё {{ r.plan.unknown }} этой сети незнакомы и останутся вне корзины{% endif %}.
+        {% if not r.login %}<b>Нужен вход:</b> корзину кладёт браузер под вашим кабинетом.{% endif %}</p>
+      {# Дробный вес витрина нажатием не берёт. Сказать об этом надо ДО передачи:
+         человек поправит количество сам, а из чека он это уже не поправит. #}
+      {% if r.plan.rounded %}
+        <p class="dim" style="margin:4px 0 0">Витрина кладёт штуками, поэтому:
+          {% for line in r.plan.rounded %}{{ line }}{% if not loop.last %}; {% endif %}{% endfor %}.</p>
+      {% endif %}
+    {% else %}
+      <p class="dim" style="margin:8px 0 0">Передавать нечего: ни одна позиция корзины не связана
+        с артикулом этой сети.</p>
+    {% endif %}
+
+    {# Ход передачи и отчёт по позициям — одно место, а не два. Пока идёт, здесь
+       живая строка «кладу 7 из 16: творог»; кончилась — список с причинами и
+       кнопка «повторить только их». Причина нужна целиком: «легло 12 из 14» без
+       слов «творога не было в наличии» заставляет пересобирать корзину вслепую. #}
+    {% if r.going or r.report %}
+      <div class="peredacha" data-chain="{{ r.code }}" data-going="{{ '1' if r.going else '0' }}">
+        {% if r.going %}
+          <p class="head"><b>Кладу {{ r.going.at or 1 }} из {{ r.going.total }}{% if r.going.now %}:
+            {{ r.going.now }}{% endif %}</b> · начата {{ r.going.since }}.
+            Не нажимайте ещё раз — товары лягут дважды.</p>
+        {% elif r.report.rows %}
+          <p class="head"><b>Передача {{ r.report.at }}:</b> легло {{ r.report.ok }} из
+            {{ r.report.rows|length }}{% if r.report.failed %}, не легло {{ r.report.failed }}{% endif %}.
+            {% if r.report.note %}{{ r.report.note }}{% endif %}</p>
+        {% else %}
+          {# Ни одной позиции — значит передача кончилась, не начавшись: устарел
+             вход, встретила проверка, оборвался браузер. «Легло 0 из 0» тут было
+             бы отпиской; причина и следующий шаг живут в note, и они здесь и есть
+             весь ответ. #}
+          <p class="head"><b>Передача {{ r.report.at }} не состоялась.</b>
+            {{ r.report.note }}</p>
+        {% endif %}
+        <ul class="polozheno">
+          {% for line in (r.report.rows if r.report else []) %}{{ pos(line) }}{% endfor %}
+        </ul>
+        {% if r.retry and not r.going %}
+          <form method="post" class="snova" data-once>
+            <button class="btn" type="submit" name="do" value="retry:{{ r.code }}">
+              Повторить только их ({{ r.retry }})</button>
+          </form>
+        {% endif %}
+      </div>
+    {% elif r.last %}
+      {# Отчёт коллектора — запасной: он помнит событие, но знает одни артикулы.
+         Показываем его, только когда своего отчёта по позициям ещё нет. #}
+      <details style="margin-top:8px">
+        <summary class="dim" style="cursor:pointer">Прошлая передача {{ r.last.at }}:
+          легло {{ r.last.ok }}{% if r.last.failed %}, не легло {{ r.last.failed|length }}{% endif %}</summary>
+        {% for f in r.last.failed %}
+          <div class="row" style="justify-content:space-between;padding:4px 0;border-top:1px solid var(--line);font-size:0.88rem">
+            <span class="dim">{{ f.sku or '—' }}</span>
+            <span>{{ f.why or 'без причины' }}</span>
+          </div>
+        {% endfor %}
+      </details>
+    {% endif %}
+
+    <div class="row" style="margin-top:10px">
+      <a class="btn" href="{{ r.cabinet }}">
+        {% if r.login %}Открыть кабинет {{ r.name }}{% else %}Войти в {{ r.into }}{% endif %}</a>
+      {% if r.can_send %}
+        <form method="post" style="display:inline" data-once>
+          {# Два разных действия — две разные надписи. Ссылка уводит человека в
+             магазин прямо сейчас, передача идёт фоном и никуда не уводит;
+             одинаковая кнопка обещала бы одно, а делала разное. #}
+          <button class="btn main" type="submit" name="do" value="send:{{ r.code }}"
+                  {% if r.going %}disabled{% endif %}>
+            {% if r.going %}Передаю…
+            {% else %}{{ 'Собрать корзину в магазине →' if r.by_link else 'Передать корзину' }}{% endif %}</button>
+        </form>
+      {% endif %}
+      {% if r.can_collect %}
+        <form method="post" style="display:inline">
+          <button class="btn" type="submit" name="do" value="prices:{{ r.code }}"
+                  {% if r.collecting %}disabled{% endif %}>
+            {% if r.collecting %}Собираю цены: {{ r.collecting.done }} из {{ r.collecting.total }}
+            {% else %}Обновить цены{% endif %}</button>
+        </form>
+      {% endif %}
+      {% if r.connected %}
+        <form method="post" style="display:inline">
+          <button class="btn" type="submit" name="do" value="forget:{{ r.code }}">Забыть подключение</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+{% endfor %}
+
+<div class="card">
+  <h2>Как это работает</h2>
+  <ol class="muted" style="margin:6px 0 0;padding-left:20px">
+    <li>Нажмите «Войти» у нужной сети — откроется её настоящая страница внутри приложения.</li>
+    <li>Войдите в свой кабинет: телефон, код из СМС, проверка «я не робот», если она появится.
+      Всё это делаете вы — приложение только показывает страницу и передаёт ваши нажатия.</li>
+    <li>Нажмите «Запомнить вход». Куки этой сети лягут в ваше рабочее место — так же, как
+      лежит ключ кабинета ФНС.</li>
+    <li>Дальше «Передать корзину» кладёт посчитанное прямо в ваш кабинет, без вашего участия.
+      Пока идёт, здесь видно, что кладётся; что не легло — можно доложить одной кнопкой.
+      Кнопку «заказать» приложение не нажимает никогда: это ваши деньги.</li>
+  </ol>
+  <p class="dim" style="margin:10px 0 0">Никакого расширения ставить не нужно: всё происходит
+    в приложении.</p>
+</div>
+
+<script>
+(function () {
+  // ЗАЧЕМ ЭТОТ ОПРОС. Передача идёт минуту и больше. Без него страница стоит
+  // неподвижно, человек решает, что нажатие не сработало, и нажимает ещё раз —
+  // то есть кладёт всё в свою корзину дважды.
+  //
+  // ПОЧЕМУ НЕ ПЕРЕЧИТЫВАЕМ СТРАНИЦУ ЦЕЛИКОМ. Она собирает наряд по всем шести
+  // сетям и ходит в справочник товаров; раз в две секунды это положило бы сервер
+  // раньше, чем наполнилась бы корзина. Ответ «?going=сеть» — три числа и список.
+  //
+  // ПОЧЕМУ В КОНЦЕ ВСЁ-ТАКИ ПЕРЕЧИТЫВАЕМ. Итог, кнопка «повторить только их» и
+  // пересчитанный наряд рисуются на сервере. Собрать их ещё раз здесь значило бы
+  // завести второй источник правды, который разойдётся с первым в первый же день.
+  var PAUSE = 2500;
+
+  function make(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) { node.className = cls; }
+    if (text) { node.textContent = text; }   // именно textContent: имена товаров чужие
+    return node;
+  }
+
+  function line(r) {
+    var li = document.createElement('li');
+    var znak = r.ok ? 'da' : (r.unknown ? 'nezn' : 'net');
+    li.appendChild(make('span', 'znak ' + znak + (r.earlier ? ' bylo' : ''),
+                        r.ok ? '✓' : (r.unknown ? '?' : '✗')));
+    var body = make('span', 'pos');
+    body.appendChild(make('span', 'chto', r.name + (r.qty ? ' · ' + r.qty : '')));
+    // Та же оговорка, что и в разметке выше: «лежит» — только про то, что легло.
+    var was = r.earlier ? (r.ok ? 'лежит с прошлого раза' : 'с прошлого раза, в корзину не легло') : '';
+    var why = [was, r.why, r.note].filter(Boolean).join(' · ');
+    if (why) { body.appendChild(make('span', 'pochemu', why)); }
+    li.appendChild(body);
+    return li;
+  }
+
+  function watch(box) {
+    var chain = box.getAttribute('data-chain');
+    var head = box.querySelector('.head');
+    var list = box.querySelector('.polozheno');
+    var misses = 0;
+
+    function draw(d) {
+      if (head && d.going) {
+        head.textContent = 'Кладу ' + (d.at || 1) + ' из ' + (d.total || '?')
+          + (d.now ? ': ' + d.now : '') + ' · не нажимайте ещё раз — товары лягут дважды.';
+      }
+      if (!list) { return; }
+      list.textContent = '';
+      (d.rows || []).forEach(function (r) { list.appendChild(line(r)); });
+    }
+
+    function ask() {
+      fetch('{{ screen.path }}?going=' + encodeURIComponent(chain),
+            { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        .then(function (answer) { return answer.json(); })
+        .then(function (d) {
+          if (!d || !d.ok) { throw new Error('ход не пришёл'); }
+          misses = 0;
+          draw(d);
+          if (d.going) { setTimeout(ask, PAUSE); return; }
+          // replace, а не reload: перечитывать «?sent=магнит» значило бы снова
+          // показать «передача пошла» над отчётом о том, что она уже кончилась.
+          window.location.replace('{{ screen.path }}');
+        })
+        .catch(function () {
+          misses += 1;
+          // Сеть моргнула — это не повод объявлять передачу мёртвой: она идёт на
+          // сервере и нашего опроса не касается. Сдаёмся только после пяти подряд.
+          if (misses < 5) { setTimeout(ask, PAUSE * 2); return; }
+          if (head) {
+            head.textContent = 'Связь с приложением потерялась. Передача, скорее всего, идёт'
+              + ' на сервере — обновите страницу, чтобы увидеть, чем кончилось.';
+          }
+        });
+    }
+
+    setTimeout(ask, PAUSE);
+  }
+
+  Array.prototype.forEach.call(
+    document.querySelectorAll('.peredacha[data-going="1"]'), watch);
+
+  // Двойное нажатие «Передать» — это двойная корзина. Второе нажатие не пускаем,
+  // а кнопку гасим ВИДОМ, а не disabled: погашенная кнопка не отправляет своего
+  // имени, и сервер получил бы форму без слова «что делать» — то есть нажатие не
+  // сделало бы ничего. Настоящая проверка всё равно на сервере: эта страница могла
+  // быть открыта до нажатия или открыта сразу в двух вкладках.
+  Array.prototype.forEach.call(document.querySelectorAll('form[data-once]'), function (form) {
+    form.addEventListener('submit', function (event) {
+      if (form.getAttribute('data-pushed')) { event.preventDefault(); return; }
+      form.setAttribute('data-pushed', '1');
+      var button = form.querySelector('button');
+      if (button) {
+        button.setAttribute('aria-disabled', 'true');
+        button.textContent = 'Пускаю…';
+      }
+    });
+  });
+})();
+</script>
+{% endblock %}

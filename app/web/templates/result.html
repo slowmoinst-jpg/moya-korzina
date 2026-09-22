@@ -1,0 +1,344 @@
+{# Результат. Крупно — один ответ: где собирать и сколько это стоит. Всё остальное
+   ниже и свёрнуто, потому что смотрят на это редко, а мешает оно всегда.
+
+   Зелёный тут значит ровно одно — выгоду: полоса экономии, цифра сбережённого,
+   бесплатная доставка. Цвет сети живёт отдельно — точкой у названия магазина и
+   полосой слева у его карточки, чтобы «зелёный ВкусВилл» и «зелёная выгода» не
+   оказались одним цветом. #}
+{% extends "layout.html" %}
+{% block title %}Результат — Моя корзина{% endblock %}
+{% block body %}
+
+{# Округление стоит у САМОЙ позиции и отдельной строчкой: на телефоне в 360 точек
+   приписка в конце строки уезжает за край и её не видит никто. Правила живут
+   здесь, а не в общем korzina.css: больше нигде они не нужны. #}
+<style>
+  .okrug{display:block;color:var(--amber);font-size:0.8rem;line-height:1.3;
+         overflow-wrap:anywhere;}
+</style>
+
+{% if not basket %}
+  <div class="card">
+    <div class="eyebrow">Считать пока нечего</div>
+    <h2>Сначала корзина</h2>
+    <p class="muted">Результат — это ответ на вопрос «где брать эту корзину». Соберите
+      её, и ответ появится здесь: мы сравним сети по вашим ценам, учтём доставку,
+      минимальный заказ и скидки ваших карт.</p>
+    <a class="btn main" href="{{ basket_path }}">К корзине</a>
+  </div>
+{% elif not variants %}
+  <div class="card">
+    <div class="row">
+      <strong>{{ basket.name }}</strong><span class="dim">#{{ basket.id }}</span>
+    </div>
+    <div class="note warn" style="margin-top:12px">Ни одного варианта не вышло.</div>
+    <p class="muted">Почти всегда это значит, что у позиций нет цен: сравнивать нечего.
+      Спросите магазины на экране «Корзина» — кнопка «Узнать цены по магазинам», — или
+      подтвердите сопоставления на экране «Товары».</p>
+    <div class="row">
+      <a class="btn main" href="{{ basket_path }}?id={{ basket.id }}">К корзине</a>
+      <a class="btn" href="{{ products_path }}">К товарам</a>
+    </div>
+  </div>
+{% else %}
+
+<div class="card">
+  <div class="row">
+    <strong>{{ basket.name }}</strong>
+    <span class="dim">#{{ basket.id }} · {{ plural_items(bundle.positions) }} ·
+      базовая сумма {{ rub(bundle.baseline) }}</span>
+    <span class="spacer"></span>
+    <span class="dim">посчитано в {{ bundle.when }}</span>
+    {# Расчёт лежит в памяти сервера, пока корзина не изменилась. «Пересчитать» —
+       для случая, когда изменилась не корзина, а цены. #}
+    <form method="post" action="{{ screen.path }}" style="display:inline">
+      <input type="hidden" name="basket" value="{{ basket.id }}">
+      <input type="hidden" name="mode" value="{{ mode or '' }}">
+      <button class="btn" type="submit" name="do" value="again">Пересчитать</button>
+    </form>
+  </div>
+</div>
+
+{% if effortless %}
+  {% if effortless.same %}
+    <div class="note ok">Этот вариант уезжает в магазины одной ссылкой — перебивать
+      ничего не придётся.</div>
+  {% else %}
+    <div class="card">
+      <div class="eyebrow">Заказать без перебивания</div>
+      <p class="muted" style="margin:6px 0 0">Корзину целиком принимают
+        <b>{{ effortless.title }}</b> — товары уедут туда одной ссылкой, останется
+        подтвердить заказ. Выйдет <b class="sum">{{ rub(effortless.total) }}</b>, это на
+        <b>{{ rub(effortless.diff) }}</b> {{ 'дороже' if effortless.dearer else 'дешевле' }}
+        варианта «{{ effortless.best_title }}», где позиции придётся класть по одной.
+        {% if effortless.missing %}Учтите: {{ effortless.missing }} позиций там нет.{% endif %}</p>
+    </div>
+  {% endif %}
+{% endif %}
+
+{% if switch %}
+  {# Способ сборки — ссылки, а не переключатель: их сравнивают, открыв рядом, и
+     «назад» обязано возвращать к предыдущему сравнению. #}
+  <div class="row" style="margin-bottom:12px">
+    <a class="btn {{ 'main' if switch.split.on }}"
+       href="{{ screen.path }}?basket={{ basket.id }}&mode=split">{{ switch.split.label }}</a>
+    <a class="btn {{ 'main' if switch.single.on }}"
+       href="{{ screen.path }}?basket={{ basket.id }}&mode=single">{{ switch.single.label }}</a>
+  </div>
+{% endif %}
+
+{# ---------- лучший вариант ---------- #}
+<div class="card">
+  <div class="eyebrow" style="color:var(--green)">Лучший вариант</div>
+  <div class="row" style="margin:6px 0 2px">
+    {% for s in best.stores %}
+      <span class="chip" style="font-size:1.15rem;font-weight:600">
+        <span class="dot s-{{ s.code }}"></span>{{ s.name }}</span>
+      {% if not loop.last %}<span class="dim">+</span>{% endif %}
+    {% endfor %}
+  </div>
+  <p class="dim" style="margin:0 0 14px">
+    {% if best.penalty %}{{ best.stores|length }} заказа · включён штраф {{ rub(best.penalty) }}
+    {% else %}Один заказ, без штрафа{% endif %}</p>
+
+  <div class="row" style="gap:28px;align-items:flex-end">
+    <div>
+      <div class="eyebrow">К оплате</div>
+      <div class="sum" style="font-size:2.1rem;line-height:1.05">{{ rub(best.figures.total) }}</div>
+    </div>
+    <div>
+      <div class="eyebrow" style="color:var(--green)">Экономия</div>
+      <div class="sum" style="font-size:2.1rem;line-height:1.05;color:var(--green)">
+        {{ rub(best.figures.saved) }}</div>
+      <div class="gain">{{ pct(best.figures.pct) }}</div>
+    </div>
+  </div>
+
+  <div style="display:flex;height:14px;border-radius:7px;overflow:hidden;background:var(--tint);margin-top:16px">
+    <div style="width:{{ best.figures.paid_width }}%;background:var(--ink)"></div>
+    <div style="width:{{ best.figures.saved_width }}%;background:var(--green)"></div>
+  </div>
+  <div class="row" style="justify-content:space-between;margin-top:7px">
+    <span class="dim">Заплатим — {{ rub(best.figures.total) }}</span>
+    <span class="dim">Было бы в одном магазине — {{ rub(best.figures.base) }}</span>
+  </div>
+</div>
+
+{% if best.missing %}
+  <div class="note warn">Не нашли цену для: {{ best.missing|join(', ') }}</div>
+{% endif %}
+
+{% if doubts and doubts.products %}
+  <details class="card">
+    <summary><strong>Проверьте {{ doubts.products }} из {{ doubts.total }} позиций —
+      сопоставление неуверенное</strong></summary>
+    <p class="dim" style="margin-top:8px">Цена берётся у того товара, который мы нашли в
+      магазине. Если нашли не тот, экономия посчитана неверно, и узнать об этом лучше
+      до поездки. Поправить связь можно на экране «Товары».</p>
+    {% for r in doubts.rows %}
+      <div class="row" style="padding:7px 0;border-top:1px solid var(--line)">
+        <span style="flex:1;min-width:0">{{ r.product }}
+          <span class="dim">→ {{ r.matched }}</span></span>
+        <span class="chip dim"><span class="dot s-{{ r.store_code }}"></span>{{ r.flags|join(', ') }}</span>
+      </div>
+    {% endfor %}
+  </details>
+{% endif %}
+
+{# ---------- карточки магазинов ---------- #}
+{% macro store_card(s, basket_id, mode, with_actions) %}
+  <div class="card" style="border-left:3px solid var(--s-{{ s.code }})">
+    <div class="row">
+      <span class="chip" style="font-weight:600;font-size:1.05rem">
+        <span class="dot s-{{ s.code }}"></span>{{ s.name }}</span>
+      <span class="dim">{{ s.lines|length }} поз.</span>
+      <span class="spacer"></span>
+      <span class="pill" style="border-color:var(--line2);color:var(--ink3)">
+        {{ s.card_name or 'без карты' }}</span>
+    </div>
+
+    <div style="margin:12px 0 10px">
+      <div class="row" style="justify-content:space-between">
+        <span class="dim">Товары</span><span>{{ rub(s.subtotal) }}</span></div>
+      <div class="row" style="justify-content:space-between">
+        <span class="dim">Доставка</span>
+        <span style="{{ 'color:var(--green)' if not s.delivery }}">{{ rub(s.delivery) }}</span></div>
+      <div class="row" style="justify-content:space-between">
+        <span class="dim">Скидка и кэшбэк</span>
+        <span class="gain">−{{ rub(s.discount) }}</span></div>
+      <div class="row" style="justify-content:space-between;padding-top:9px;margin-top:6px;
+                  border-top:1px solid var(--line)">
+        <strong>Итого по магазину</strong><span class="sum" style="font-size:1.25rem">{{ rub(s.total) }}</span></div>
+    </div>
+
+    {% if s.below_min %}
+      <div class="note warn">Заказ меньше минимальной суммы магазина — его могут не принять.</div>
+    {% endif %}
+
+    <details>
+      <summary class="dim" style="cursor:pointer">Что берём здесь</summary>
+      {% for ln in s.lines %}
+        <div class="row" style="justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)">
+          <span style="flex:1;min-width:0">{{ ln.name }}
+            <span class="dim">{{ num(ln.qty) }} {{ ln.unit }}</span></span>
+          <span>{{ rub(ln.price) }}</span>
+        </div>
+      {% endfor %}
+    </details>
+
+    {% if with_actions and s.lines %}
+      {% if s.going %}
+        {# Передача в эту сеть уже идёт. Вторая кнопка положила бы всё в корзину
+           человека повторно, поэтому вместо неё — где смотреть за первой. #}
+        <div class="note ok" style="margin-top:12px">Корзина уже уезжает в {{ s.name }}:
+          кладу {{ s.going.at }} из {{ s.going.total }}{% if s.going.now %} ·
+          {{ s.going.now }}{% endif %}. Ход видно на экране
+          <a href="/accounts" style="font-weight:600">Кабинеты</a> — там же он обновляется сам.
+          Второй раз нажимать не нужно: товары легли бы дважды.</div>
+      {% elif s.asks_link and not s.trouble %}
+        {# ГЛАВНАЯ КНОПКА — ТОЛЬКО У СЕТЕЙ, КОТОРЫЕ САМИ ДАЛИ ССЫЛКУ НА КОРЗИНУ.
+           Раньше сюда же попадала фоновая передача нашим браузером
+           (s.can_auto_cart), и тогда ветка ниже НЕ ВЫПОЛНЯЛАСЬ ВОВСЕ: способ
+           собрать заказ у Магнита, Дикси, Пятёрочки и Самоката был построен,
+           лежал в s.handover — и человек его не видел ни разу. Проверено
+           18.09.2026 чтением этого самого условия.
+           Теперь наверху стоит только то, что делает сеть сама: открыл ссылку —
+           товары в корзине, вход при этом не нужен (проверено гостем: ВкусВилл
+           отдал позиции с ценами, Лента спросила «Добавить в корзину?»).
+           Передача нашим браузером не исчезла — она ниже, отдельным блоком,
+           после способа, который не требует ни входа, ни доверия к серверу. #}
+        <form method="post" action="{{ screen.path }}" style="margin-top:12px" target="_blank">
+          <input type="hidden" name="basket" value="{{ basket_id }}">
+          <input type="hidden" name="mode" value="{{ mode or '' }}">
+          <button class="btn main wide" type="submit" name="do" value="link:{{ s.code }}">
+            Собрать корзину в {{ s.name }} →</button>
+        </form>
+        <p class="dim" style="margin:8px 0 0">{{ s.note }}</p>
+      {% else %}
+        {% if s.trouble %}
+          <div class="note warn" style="margin-top:12px">Магазин не отдал ссылку на корзину.
+            Он это умеет — сейчас просто не вышло. Ниже позиции, соберите их сами.</div>
+        {% endif %}
+        {% if s.handover %}
+          <details style="margin-top:10px" {{ 'open' if s.trouble }}>
+            <summary class="dim" style="cursor:pointer">Как собрать этот заказ</summary>
+            <p class="dim" style="margin:8px 0">{{ s.note }}</p>
+            {% for i in s.handover %}
+              <div class="row" style="justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)">
+                <span style="flex:1;min-width:0">{{ i.name }}
+                  <span class="dim">{{ num(i.qty) }} {{ i.unit }}</span></span>
+                {% if i.url %}
+                  <a href="{{ i.url }}" target="_blank" rel="noopener"
+                     style="font-weight:600;white-space:nowrap">{{ s.open_label or 'открыть →' }}</a>
+                {% else %}
+                  <span class="dim">нет ссылки</span>
+                {% endif %}
+              </div>
+            {% endfor %}
+            {# Список текстом — всегда, а не вместо ссылок: у поиска двух сетей адрес
+               не проверен (они блокируют по географии), и если он откроется пустым,
+               названия должны быть под рукой готовыми к вставке. #}
+            <p class="dim" style="margin:10px 0 4px">Список текстом — чтобы переслать себе
+              или прочитать у полки:</p>
+            <textarea rows="{{ [s.handover|length + 1, 12]|min }}" readonly
+                      style="font-size:0.86rem">{{ s.text }}</textarea>
+          </details>
+        {% endif %}
+      {% endif %}
+
+      {% if s.plan %}
+        {# Последняя ступень, доступная только подключённой сети: браузер на нашем
+           сервере кладёт это под сохранённым входом в ТУ САМУЮ корзину, которую
+           человек видит, войдя в магазин. Кнопки «заказать» здесь нет и не будет —
+           передача кончается наполненной корзиной, заказ оформляет он сам, своим
+           аккаунтом и своей картой. #}
+        <details style="margin-top:10px">
+          <summary class="dim" style="cursor:pointer">Что уедет в корзину
+            ({{ s.plan.lines|length }} поз. на {{ rub(s.plan.total) }})</summary>
+          <p class="dim" style="margin:8px 0">Вы вошли в эту сеть, поэтому корзину можно
+            наполнить прямо в ней: приложение откроет карточки в своём браузере и положит
+            позиции в вашу корзину. Что легло, а что нет и почему, будет видно на
+            «Кабинетах» по ходу дела.
+            Заказ вы подтвердите сами: ни оплаты, ни оформления приложение не делает.</p>
+          {# ЭТА КНОПКА СТОИТ ПОСЛЕ СПОСОБА, КОТОРОМУ ВХОД НЕ НУЖЕН, и это порядок
+             по существу, а не по вёрстке. Передача под сохранённым входом требует
+             доверить нашему серверу ключи от магазинного кабинета; способ выше
+             не требует ничего (проверено гостем 18.09.2026). Что не нужно —
+             предлагаем первым. #}
+          {% if s.plan.can_fill %}
+            <form method="post" action="{{ screen.path }}" style="margin-top:10px">
+              <input type="hidden" name="basket" value="{{ basket_id }}">
+              <input type="hidden" name="mode" value="{{ mode or '' }}">
+              <button class="btn wide" type="submit" name="do" value="link:{{ s.code }}">
+                Передать корзину в {{ s.name }} под моим входом</button>
+            </form>
+            <p class="dim" style="margin:8px 0 0">Передача пойдёт фоном, ход и итог — на экране
+              «Кабинеты», туда же приложение вас и отправит. Второй раз нажимать не нужно:
+              товары легли бы дважды.</p>
+          {% else %}
+            {# КНОПКИ ЗДЕСЬ НЕТ НАРОЧНО, И ЭТО НЕ ПОЛОМКА. Наряд собрался — список
+               ниже настоящий, — но наполнить корзину этой сети приложение сегодня
+               не может, и причина названа. Кнопка, которая способна только не
+               сработать, хуже её отсутствия: человек нажимает, ждёт и остаётся с
+               пустой корзиной, вместо того чтобы собрать её самому. #}
+            <p class="note info" style="margin:8px 0 0">{{ s.plan.why_not }}</p>
+            <p class="dim" style="margin:8px 0 0">Список ниже всё равно полезен: по нему
+              видно, что именно и по какой цене вошло бы в эту корзину.</p>
+          {% endif %}
+          {% for ln in s.plan.lines %}
+            <div class="row" style="justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)">
+              <span style="flex:1;min-width:0">{{ ln.name }}
+                <span class="dim">{{ num(ln.qty) }} {{ ln.unit }}</span>
+                {# Витрина кладёт штуками: 0,7 кг превратятся в упаковку. Сказать
+                   это надо ДО передачи — из чека человек уже не поправит. #}
+                {% if ln.rounded %}<span class="okrug">{{ ln.rounded }}</span>{% endif %}</span>
+              <span>{{ rub(ln.price) }}</span>
+            </div>
+          {% endfor %}
+          {% if s.plan.unknown %}
+            <p class="dim" style="margin-top:8px">Этой сети незнакомы и в корзину не лягут:
+              {{ s.plan.unknown|join(', ') }}.</p>
+          {% endif %}
+          {% if s.plan.note %}<p class="dim">{{ s.plan.note }}</p>{% endif %}
+        </details>
+      {% endif %}
+    {% endif %}
+  </div>
+{% endmacro %}
+
+<div class="grid {{ 'two' if best.stores|length > 1 }}">
+  {% for s in best.stores %}{{ store_card(s, basket.id, mode, True) }}{% endfor %}
+</div>
+
+{# ---------- остальные варианты ---------- #}
+{% if others %}
+  <h2 style="margin-top:22px">Другие варианты</h2>
+  {% for o in others %}
+    <details class="card">
+      <summary>
+        <span class="dim">{{ o.n }}</span>
+        {% for s in o.stores %}<span class="dot s-{{ s.code }}" style="margin-left:4px"></span>{% endfor %}
+        <strong style="margin-left:8px">{{ o.variant.title }}</strong>
+        <span class="sum" style="margin-left:10px">{{ rub(o.figures.total) }}</span>
+        <span class="gain" style="margin-left:8px">−{{ rub(o.figures.saved) }} · {{ pct(o.figures.pct) }}</span>
+      </summary>
+      <div style="display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--tint);margin:12px 0">
+        <div style="width:{{ o.figures.paid_width }}%;background:var(--ink)"></div>
+        <div style="width:{{ o.figures.saved_width }}%;background:var(--green)"></div>
+      </div>
+      {% if o.missing %}
+        <div class="note warn">Не нашли цену для: {{ o.missing|join(', ') }}</div>
+      {% endif %}
+      <div class="grid {{ 'two' if o.stores|length > 1 }}">
+        {% for s in o.stores %}{{ store_card(s, basket.id, mode, False) }}{% endfor %}
+      </div>
+    </details>
+  {% endfor %}
+{% endif %}
+
+<div class="row" style="margin-top:18px">
+  <a class="btn" href="{{ basket_path }}?id={{ basket.id }}">← К корзине</a>
+</div>
+
+{% endif %}
+{% endblock %}

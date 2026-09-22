@@ -1,0 +1,304 @@
+{% extends "layout.html" %}
+{% block title %}Карты и акции — Моя корзина{% endblock %}
+
+{# Четыре части экрана идут одной страницей, а не вкладками, как было в Streamlit.
+   Вкладки на телефоне прячут половину экрана за нажатием, а здесь части связаны:
+   карта заводится в первой, условия ей вписываются во второй, и ходить между ними
+   приходится постоянно. Наверху — переходы якорями, они работают и без сценариев.
+
+   Акции нарисованы плитками, а не таблицей: в таблице из шести колонок телефон
+   уезжает вбок, и условие, из-за которого акция не сработала, оказывается за краем
+   экрана. #}
+
+{% block body %}
+
+{% macro money(name, field, value, hint) %}
+  {# Поле для денег и процентов. type=text, а не number, нарочно: браузер отдаёт
+     полю типа number ПУСТУЮ строку, если в нём «2,5» с запятой, и человек теряет
+     число, видя его на экране. inputmode даёт цифровую клавиатуру на телефоне. #}
+  <label style="display:block;margin-bottom:10px">
+    <span class="dim">{{ name }}</span>
+    <input type="text" inputmode="decimal" name="{{ field }}" value="{{ value }}"
+           placeholder="{{ hint }}" autocomplete="off">
+  </label>
+{% endmacro %}
+
+{% for kind, text in get_flashed_messages(with_categories=true) %}
+  <div class="note {{ kind }}">{{ text }}</div>
+{% endfor %}
+
+<p class="muted">Здесь живут условия, по которым считается выгода: процент, потолок
+  кэшбэка за период, минимальный чек и срок. Расчёт берёт их как есть: неверное условие
+  ничего не сломает — оно просто тихо изменит ответ. Поэтому поля тут проверяются
+  придирчиво, а каждое условие объяснено словами, а не оставлено на догадку.</p>
+
+<div class="card">
+  <div class="row">
+    <span class="chip sum">{{ how_many_cards }}</span>
+    <span class="chip sum">{{ how_many_offers }}</span>
+    <span class="spacer"></span>
+    <span class="dim">потолок кэшбэка за период <strong class="sum">{{ total_cap }}</strong>,
+      использовано <strong class="sum">{{ total_used }}</strong></span>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <a class="btn" href="#cards">Карты</a>
+    <a class="btn" href="#offers">Акции</a>
+    <a class="btn" href="#csv">Загрузка файлом</a>
+    <a class="btn" href="#banks">Справочник банков</a>
+  </div>
+</div>
+
+{# ---------- карты ---------- #}
+<h2 id="cards">Карты</h2>
+
+{% if cards %}
+  <div class="grid two">
+    {% for c in cards %}
+      <div class="card">
+        <div class="eyebrow">{{ c.bank }}</div>
+        <div class="row">
+          <strong>{{ c.name }}</strong>
+          <span class="spacer"></span>
+          <span class="dim">{{ counts.get(c.id, 'без акций') }}</span>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <a class="btn" href="{{ url_for('screen.cards') }}?card={{ c.id }}#card-form">Изменить</a>
+          <a class="btn" href="{{ url_for('screen.cards') }}?for={{ c.id }}#offer-form">Добавить акцию</a>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="note info">Карт пока нет. Заведите первую ниже — или возьмите её из
+    справочника банков в конце страницы.</div>
+{% endif %}
+
+<div class="card" id="card-form">
+  <h3>{{ 'Правка карты' if card_draft.id else 'Новая карта' }}</h3>
+  <p class="dim">Карта — это только имя, по которому вы её узнаёте. Проценты и потолки
+    у неё свои в каждой сети, поэтому они вписываются отдельно, в «Акциях».</p>
+
+  {% if scope == 'card' and complaints %}
+    <div class="note bad">
+      {% for text in complaints %}<div>{{ text }}</div>{% endfor %}
+    </div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('screen.cards') }}#card-form">
+    <input type="hidden" name="action" value="card_save">
+    <input type="hidden" name="card_id" value="{{ card_draft.id }}">
+    <div class="grid two">
+      <label><span class="dim">Банк</span>
+        <input type="text" name="bank" value="{{ card_draft.bank }}"
+               placeholder="Альфа-Банк" autocomplete="off"></label>
+      <label><span class="dim">Название карты</span>
+        <input type="text" name="name" value="{{ card_draft.name }}"
+               placeholder="Альфа-Карта" autocomplete="off"></label>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn main" type="submit">Сохранить карту</button>
+      {% if card_draft.id %}
+        <a class="btn" href="{{ url_for('screen.cards') }}#card-form">Отменить правку</a>
+      {% endif %}
+    </div>
+  </form>
+
+  {% if card_draft.id %}
+    {# Удаление уносит и акции карты: они без неё бессмысленны. Об этом сказано до
+       нажатия, а подтверждение — единственное место на экране, где нужен сценарий. #}
+    <form method="post" action="{{ url_for('screen.cards') }}" style="margin-top:12px"
+          onsubmit="return confirm('Удалить карту вместе с её акциями?')">
+      <input type="hidden" name="action" value="card_delete">
+      <input type="hidden" name="card_id" value="{{ card_draft.id }}">
+      <button class="btn" type="submit">Удалить карту</button>
+      <span class="dim">вместе с её акциями</span>
+    </form>
+  {% endif %}
+</div>
+
+{# ---------- акции ---------- #}
+<h2 id="offers">Акции</h2>
+
+{% if offers %}
+  <div class="grid two">
+    {% for o in offers %}
+      <div class="card">
+        <div class="row">
+          <span class="dot s-{{ o.code }}"></span>
+          <strong>{{ o.store }}</strong>
+          <span class="spacer"></span>
+          <span class="pill" style="border-color:{{ o.colour }};color:{{ o.colour }}">{{ o.label }}</span>
+        </div>
+        <p class="dim" style="margin:6px 0 10px">{{ o.card }}</p>
+
+        <div class="row" style="justify-content:space-between">
+          <span class="dim">{{ o.percent }} % · использовано {{ o.used }}</span>
+          <span class="sum">из {{ o.cap }}</span>
+        </div>
+        {# Полоска показывает выбранный кэшбэк — это уже полученная выгода, отсюда
+           зелёный. Заполнилась целиком — акция до конца периода ничего не добавит. #}
+        <div style="height:6px;border-radius:999px;background:var(--tint);margin:7px 0 10px;overflow:hidden">
+          <div style="height:100%;width:{{ o.share }}%;background:var(--green)"></div>
+        </div>
+
+        <p class="dim" style="margin:0">
+          {% if o.min_check %}Кэшбэк с чека от {{ o.min_check }}{% else %}Без минимального чека{% endif %}
+          · {% if o.since %}с {{ o.since }}, {% endif %}{{ 'до ' ~ o.until if o.until != 'бессрочно' else 'бессрочно' }}
+          {% if o.needs_activation %} · требует активации{% endif %}
+        </p>
+
+        <div class="row" style="margin-top:12px">
+          <a class="btn" href="{{ url_for('screen.cards') }}?offer={{ o.id }}#offer-form">Изменить</a>
+          <form method="post" action="{{ url_for('screen.cards') }}" style="display:inline"
+                onsubmit="return confirm('Удалить эту акцию?')">
+            <input type="hidden" name="action" value="offer_delete">
+            <input type="hidden" name="offer_id" value="{{ o.id }}">
+            <button class="btn" type="submit">Удалить</button>
+          </form>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="note info">Акций пока нет. Впишите первую ниже или загрузите файлом —
+    до этого расчёт считает без кэшбэка, по одним ценам и доставке.</div>
+{% endif %}
+
+<div class="card" id="offer-form">
+  <h3>{{ 'Правка акции' if offer_draft.id else 'Новая акция' }}</h3>
+
+  {% if not cards %}
+    <p class="muted">Сначала заведите карту выше: акция — это условие конкретной карты.</p>
+  {% elif not stores %}
+    <p class="muted">Магазинов в базе нет, привязывать акцию не к чему.</p>
+  {% else %}
+
+    {% if scope == 'offer' and complaints %}
+      <div class="note bad">
+        {% for text in complaints %}<div style="margin-bottom:4px">{{ text }}</div>{% endfor %}
+      </div>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('screen.cards') }}#offer-form">
+      <input type="hidden" name="action" value="offer_save">
+      <input type="hidden" name="offer_id" value="{{ offer_draft.id }}">
+
+      <div class="grid two">
+        <label style="display:block"><span class="dim">Карта</span>
+          <select name="card_id">
+            {% for c in cards %}
+              <option value="{{ c.id }}" {{ 'selected' if offer_draft.card_id == c.id|string }}>
+                {{ c.bank }} · {{ c.name }}</option>
+            {% endfor %}
+          </select></label>
+        <label style="display:block"><span class="dim">Магазин</span>
+          <select name="store_id">
+            {% for s in stores %}
+              <option value="{{ s.id }}" {{ 'selected' if offer_draft.store_id == s.id|string }}>
+                {{ s.name }}</option>
+            {% endfor %}
+          </select></label>
+      </div>
+
+      <div class="grid two" style="margin-top:12px">
+        {{ money('Процент кэшбэка', 'percent', offer_draft.percent, '5 или 2,5') }}
+        {{ money('Потолок кэшбэка за период, ₽', 'cap_rub', offer_draft.cap_rub, '3000') }}
+        {{ money('Уже использовано, ₽', 'cap_used', offer_draft.cap_used, '0') }}
+        {{ money('Минимальный чек, ₽', 'min_check_rub', offer_draft.min_check_rub, '0') }}
+      </div>
+
+      <div class="grid two">
+        <label style="display:block;margin-bottom:10px"><span class="dim">Действует с</span>
+          <input type="date" name="valid_from" value="{{ offer_draft.valid_from }}"></label>
+        <label style="display:block;margin-bottom:10px"><span class="dim">Действует по</span>
+          <input type="date" name="valid_to" value="{{ offer_draft.valid_to }}"></label>
+      </div>
+
+      <div class="row">
+        <label class="chip"><input type="checkbox" name="requires_activation" style="width:auto"
+               {{ 'checked' if offer_draft.requires_activation }}> требует активации</label>
+        <label class="chip"><input type="checkbox" name="activated" style="width:auto"
+               {{ 'checked' if offer_draft.activated }}> активирована</label>
+      </div>
+      <p class="dim" style="margin:8px 0 0">Потолок — это сколько кэшбэка банк отдаёт
+        за период целиком, а не «без ограничения»: при нуле расчёт не начислит ничего.
+        Минимальный чек — сумма, ниже которой кэшбэка нет вовсе, и ровно из-за неё
+        иногда выгоднее взять дороже.</p>
+
+      <div class="row" style="margin-top:12px">
+        <button class="btn main" type="submit">Сохранить акцию</button>
+        {% if offer_draft.id %}
+          <a class="btn" href="{{ url_for('screen.cards') }}#offer-form">Отменить правку</a>
+        {% endif %}
+      </div>
+    </form>
+  {% endif %}
+</div>
+
+{# ---------- загрузка файлом ---------- #}
+<div class="card" id="csv">
+  <h2>Загрузка акций файлом</h2>
+  <p class="dim">Колонки: <code>{{ csv_required }}</code> — обязательные,
+    <code>{{ csv_optional }}</code> — по желанию. Разделитель и точка с запятой, и
+    запятая; кодировка utf-8 или windows-1251 — файл из русского Excel читается как есть.
+    Повторная загрузка того же файла обновляет условия, а не добавляет их копии.</p>
+
+  {% if scope == 'csv' and complaints %}
+    <div class="note bad">
+      {% for text in complaints %}<div style="margin-bottom:4px">{{ text }}</div>{% endfor %}
+    </div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('screen.cards') }}#csv" enctype="multipart/form-data">
+    <input type="hidden" name="action" value="csv">
+    <input type="file" name="offers_csv" accept=".csv,text/csv,text/plain">
+    <div class="row" style="margin-top:10px">
+      <button class="btn main" type="submit">Загрузить акции</button>
+    </div>
+  </form>
+</div>
+
+{# ---------- справочник банков ---------- #}
+<h2 id="banks">Справочник банков</h2>
+
+{% if banks %}
+  <p class="muted">Как устроен кэшбэк у разных банков. Процентов и потолков здесь нет
+    намеренно: они меняются каждый месяц и у каждого свои — их вписываете вы, выше.</p>
+  <div class="grid two">
+    {% for b in banks %}
+      <div class="card">
+        <div class="row">
+          <strong>{{ b.bank }}</strong>
+          <span class="dim">{{ b.title }}</span>
+          <span class="spacer"></span>
+          {# Зелёный только на выгоде: рубли складываются с ценой, баллы — нет. #}
+          <span class="pill" style="border-color:{{ 'var(--green)' if b.money else 'var(--amber)' }};
+                color:{{ 'var(--green)' if b.money else 'var(--amber)' }}">{{ b.currency }}</span>
+        </div>
+        <p class="muted" style="margin:8px 0 4px">{{ b.how }}</p>
+        <p class="dim" style="margin:0">Категории: {{ b.categories }}</p>
+        {% for text in b.warnings %}
+          <div class="note warn" style="margin:10px 0 0">{{ text }}</div>
+        {% endfor %}
+        {% if b.note %}<p class="dim" style="margin:8px 0 0">{{ b.note }}</p>{% endif %}
+        <div class="row" style="margin-top:12px">
+          {% if b.already %}
+            <span class="dim">Карта заведена — условия вписываются выше, в «Акциях».</span>
+          {% else %}
+            <form method="post" action="{{ url_for('screen.cards') }}#card-form">
+              <input type="hidden" name="action" value="bank_add">
+              <input type="hidden" name="bank" value="{{ b.bank }}">
+              <input type="hidden" name="title" value="{{ b.title }}">
+              <button class="btn" type="submit">Завести карту</button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="note info">Справочник не найден: ожидается файл <code>data/bank_reference.csv</code>.
+    Без него карты заводятся руками — на работу расчёта это не влияет.</div>
+{% endif %}
+
+{% endblock %}

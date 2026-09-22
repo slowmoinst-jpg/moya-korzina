@@ -2,19 +2,25 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "korzina",
+      "name": "web",
       "runtimeExecutable": "F:\\AI\\МояКорзина\\.venv\\Scripts\\python.exe",
       "runtimeArgs": [
         "-m",
-        "streamlit",
-        "run",
-        "app/ui/main.py",
-        "--server.port",
-        "8501",
-        "--server.headless",
-        "true"
+        "app.web.server"
       ],
-      "port": 8501
+      "autoPort": true
+    },
+    {
+      "name": "mockups",
+      "runtimeExecutable": "F:\\AI\\МояКорзина\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8781",
+        "--directory",
+        "design/mobile"
+      ],
+      "port": 8781
     }
   ]
 }

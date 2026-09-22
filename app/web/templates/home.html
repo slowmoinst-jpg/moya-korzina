@@ -1,0 +1,208 @@
+{% extends "layout.html" %}
+{% block title %}Моя корзина{% endblock %}
+{% block body %}
+
+{% if saved %}<div class="note ok">Адрес сохранён. Цены по нему поедут в фоне.</div>{% endif %}
+{% if note %}<div class="note {{ note.kind }}">{{ note.text }}</div>{% endif %}
+
+<div class="card">
+  <h2>Те же продукты, меньше денег</h2>
+  <p class="muted">Читаем ваши чеки, находим эти же товары в сетях с доставкой и собираем
+    корзину там, где дешевле. В расчёт идут платная доставка и скидки ваших карт.</p>
+</div>
+
+{# Адрес — первый шаг, и он же единственный, который меняется прямо здесь:
+   остальные уводят на свои экраны.
+
+   ПОДСКАЗКИ ПРИШЛИ СЮДА 17.09.2026 по словам владельца: «адрес при вводе должен
+   подсказываться и дописываться, как это во всех приложениях есть». Раньше здесь
+   стояло, что подсказки тянут сеть и потому их тут нет, — но тянут они её только
+   когда человек печатает, а не при открытии главной, и уходят отдельным
+   маршрутом /address/suggest. Цена ошибки в этом поле выше: опечатка не видна,
+   сеть просто не разберёт адрес, цены придут пустыми, и человек решит, что
+   сломано приложение. #}
+<div class="card" id="address">
+  <div class="row">
+    <span class="pill" style="border-color:var(--line2);color:var(--ink3)">Шаг 1</span>
+    <h3 style="margin:0">Куда везём</h3>
+  </div>
+  <p class="dim">Адрес задаёт цены и наличие во всех сетях. Сменили адрес — цифры
+    пересчитаются по нему, а загрузка пойдёт в фоне.</p>
+  <form method="post" action="{{ url_for('screen_home_address') }}" autocomplete="off">
+    <div class="sugg-wrap">
+      <input id="addr-input" name="address" type="text" value="{{ address or '' }}"
+             placeholder="Москва, Ходынский бульвар 4" autocomplete="off"
+             autocapitalize="off" spellcheck="false"
+             role="combobox" aria-autocomplete="list" aria-expanded="false"
+             aria-controls="addr-list">
+      <ul id="addr-list" class="sugg" role="listbox" hidden></ul>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn main" type="submit">Сохранить адрес</button>
+      {% if address %}<a class="btn" href="/?check=1#address">Проверить адрес</a>{% endif %}
+    </div>
+  </form>
+
+  {# Проверка нажимается, а не идёт сама: она ходит в сети, и делать это на
+     каждом открытии главной значило бы тратить секунды впустую. Зато опечатку
+     в адресе иначе не увидеть — сеть просто не разберёт его, цены придут
+     пустыми, и человек решит, что сломано приложение. #}
+  {% if checked %}
+    {% set found = checked | selectattr('shop') | list %}
+    {% if found %}
+      <div class="note ok" style="margin-top:12px">Адрес понят.
+        {% for c in checked %}{% if c.shop %}{{ c.chain }} — {{ c.shop }}{% if c.far %} · {{ c.far }}{% endif %}{% else %}{{ c.chain }} своих магазинов рядом не нашёл{% endif %}{% if not loop.last %}; {% endif %}{% endfor %}.</div>
+      <p class="dim">Точку для цен каждая сеть выбирает по-своему: Лента подбирает свой хаб
+        доставки, и он не всегда ближайший магазин, а у Магнита цены считаются по
+        ближайшему магазину из найденных.</p>
+    {% else %}
+      <div class="note warn" style="margin-top:12px">Ни одна сеть не нашла рядом с этим
+        адресом своих магазинов. Скорее всего, опечатка — или сети не работают в этом
+        городе. Их цены, скорее всего, окажутся пустыми.</div>
+    {% endif %}
+  {% endif %}
+</div>
+
+<div class="grid two">
+  {% for s in steps if s.n > 1 %}
+    <div class="card">
+      <div class="row">
+        <span class="pill" style="border-color:{{ 'var(--green)' if s.done else 'var(--line2)' }};
+              color:{{ 'var(--green)' if s.done else 'var(--ink3)' }}">Шаг {{ s.n }}</span>
+        <h3 style="margin:0">{{ s.title }}</h3>
+      </div>
+      <p class="muted" style="margin:6px 0 4px">{{ s.now }}</p>
+      <p class="dim">{{ s.why }}</p>
+      <a class="btn" href="{{ s.href }}">Открыть</a>
+    </div>
+  {% endfor %}
+</div>
+
+{% if ready %}
+  <div class="note ok">Всё настроено — можно собирать корзину и считать.</div>
+{% endif %}
+
+<style>
+/* Список подсказок. Лежит НАД страницей (position:absolute), а не раздвигает её:
+   раздвигающийся список на телефоне уводит кнопку «Сохранить адрес» под клавиатуру
+   ровно в тот миг, когда человек до неё тянется. */
+.sugg-wrap{position:relative;}
+.sugg{
+  position:absolute; left:0; right:0; top:100%; z-index:30; margin:4px 0 0; padding:4px;
+  list-style:none; max-height:52vh; overflow-y:auto;
+  background:var(--bg1,#fff); border:1px solid var(--line2,#ddd); border-radius:12px;
+  box-shadow:0 12px 28px rgba(0,0,0,.14);
+}
+/* Строка подсказки — не меньше 44 точек: пальцем в мельче не попасть. */
+.sugg li{padding:12px 12px; min-height:44px; display:flex; align-items:center;
+         border-radius:8px; cursor:pointer;}
+.sugg li[aria-selected="true"], .sugg li:hover{background:var(--line1,#f2f2f2);}
+.sugg .dim{font-size:13px;}
+</style>
+
+<script>
+/* ПОДСКАЗКИ АДРЕСА. Человек печатает «лен просп 42» — выбирает готовую строку.
+   Опечатка в адресе ничем себя не выдаёт: сеть не разберёт его, цены придут
+   пустыми, и виноватым окажется приложение.
+
+   ЗАПРОС УХОДИТ НЕ НА КАЖДУЮ БУКВУ. Между нажатием и запросом четверть секунды
+   тишины: печатая адрес, человек делает два десятка нажатий, и слать два десятка
+   запросов в чужую службу — это и медленно, и невежливо. Прошлый запрос при этом
+   отменяется: иначе ответ на «лен» мог прийти ПОСЛЕ ответа на «ленинский» и
+   затереть его — список мигал бы назад.
+
+   ПОДСКАЗКА НИЧЕГО НЕ РЕШАЕТ ЗА ЧЕЛОВЕКА: пока он не выбрал строку, в поле
+   остаётся ровно то, что он набрал. Дописывать за него молча нельзя — он не
+   заметит подмены и уедет по чужому адресу. */
+(function () {
+  "use strict";
+  const field = document.getElementById("addr-input");
+  const list = document.getElementById("addr-list");
+  if (!field || !list) return;
+
+  let timer = null;
+  let cancel = null;
+  let picked = -1;
+
+  function hide() {
+    list.hidden = true;
+    list.innerHTML = "";
+    picked = -1;
+    field.setAttribute("aria-expanded", "false");
+  }
+
+  function choose(text) {
+    field.value = text;
+    hide();
+    field.focus();
+  }
+
+  function show(items) {
+    list.innerHTML = "";
+    if (!items.length) { hide(); return; }
+    items.forEach(function (text, i) {
+      const row = document.createElement("li");
+      row.textContent = text;
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", "false");
+      /* mousedown, а не click: click приходит уже после blur поля, и список
+         успевает спрятаться раньше, чем нажатие до него дойдёт. */
+      row.addEventListener("mousedown", function (e) { e.preventDefault(); choose(text); });
+      row.addEventListener("touchstart", function (e) { e.preventDefault(); choose(text); },
+                           {passive: false});
+      list.appendChild(row);
+    });
+    list.hidden = false;
+    field.setAttribute("aria-expanded", "true");
+    picked = -1;
+  }
+
+  function mark() {
+    const rows = list.children;
+    for (let i = 0; i < rows.length; i++) {
+      rows[i].setAttribute("aria-selected", i === picked ? "true" : "false");
+    }
+    if (picked >= 0 && rows[picked]) rows[picked].scrollIntoView({block: "nearest"});
+  }
+
+  async function ask() {
+    const text = field.value.trim();
+    if (text.length < 3) { hide(); return; }
+    if (cancel) cancel.abort();
+    cancel = new AbortController();
+    try {
+      const res = await fetch("/address/suggest?q=" + encodeURIComponent(text),
+                              {signal: cancel.signal});
+      const data = await res.json();
+      show((data && data.items) || []);
+    } catch (err) {
+      /* Молча: подсказка — помощь, а не шаг. Не пришла — человек допишет сам. */
+      hide();
+    }
+  }
+
+  field.addEventListener("input", function () {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(ask, 250);
+  });
+
+  field.addEventListener("keydown", function (event) {
+    if (list.hidden) return;
+    const rows = list.children;
+    if (event.key === "ArrowDown") {
+      event.preventDefault(); picked = Math.min(rows.length - 1, picked + 1); mark();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault(); picked = Math.max(0, picked - 1); mark();
+    } else if (event.key === "Enter" && picked >= 0) {
+      /* Ввод выбирает подсказку и НЕ отправляет форму: иначе человек, метивший в
+         подсказку, сохранил бы недописанный адрес. */
+      event.preventDefault(); choose(rows[picked].textContent);
+    } else if (event.key === "Escape") {
+      hide();
+    }
+  });
+
+  field.addEventListener("blur", function () { setTimeout(hide, 150); });
+})();
+</script>
+{% endblock %}

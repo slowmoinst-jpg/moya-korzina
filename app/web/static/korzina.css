@@ -1,0 +1,347 @@
+/* Оформление «Моей корзины»: направление «Цвет магазина».
+ *
+ * Выбрано владельцем 16.09.2026 по канве из десяти мобильных направлений: цвет
+ * СЕТИ ведёт интерфейс, белая база, почти чёрный акцент действия, зелёный только
+ * на выгоде, Rubik в тексте и Unbounded на заголовках и суммах.
+ *
+ * Это тот же набор токенов, что был в app/ui/theme.py, — но без половины файла:
+ * там две трети правил боролись с собственной разметкой Streamlit через
+ * data-testid и ломались с каждым его обновлением. Здесь разметка своя, и
+ * бороться не с чем.
+ *
+ * Цвета сетей живут в отдельных переменных --s-<код> и с смысловыми (выгода,
+ * ошибка) не смешиваются: иначе «зелёный ВкусВилл» и «зелёная выгода» — один
+ * цвет, и по цвету уже не понять, о чём речь.
+ *
+ * Сначала телефон, потом широкий экран: приложением пользуются стоя у полки.
+ */
+
+:root{
+  --paper:#FFFFFF; --surface:#FFFFFF; --tint:#F4F5F7;
+  --ink:#14161A; --ink2:#565C66; --ink3:#8B929C;
+  --line:#E7E9ED; --line2:#D2D6DD;
+  --green:#1E7A4B; --green-soft:#E6F3EC;      /* зелёный — только выгода */
+  --warm:#14161A;  --warm-soft:#F1F2F4;       /* действие: почти чёрное */
+  --red:#C0392B;   --red-soft:#FBEAE7;
+  --amber:#B8730E; --amber-soft:#FBF0DF;
+  --blue:#2F5FB8;  --blue-soft:#E8EEF9;
+  --s-magnit:#D8452B; --s-vkusvill:#2E9E5B; --s-pyaterochka:#E2A32B;
+  --s-lenta:#3B6FD4; --s-dixy:#C8562F; --s-samokat:#7A5CD0;
+  --radius:14px;
+  --bottom-bar:64px;                          /* высота нижней панели на телефоне */
+}
+
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:"Rubik","Segoe UI",system-ui,sans-serif;
+  font-feature-settings:"tnum" 1,"lnum" 1;
+  font-size:15px; line-height:1.5;
+  -webkit-text-size-adjust:100%;
+}
+h1,h2,h3{font-family:"Unbounded",system-ui,sans-serif;letter-spacing:-0.01em;margin:0 0 10px;}
+h1{font-weight:700;font-size:1.7rem;line-height:1.14;}
+h2{font-weight:600;font-size:1.2rem;}
+h3{font-weight:600;font-size:1rem;}
+a{color:inherit;}
+.eyebrow{font-size:0.72rem;letter-spacing:0.09em;text-transform:uppercase;color:var(--ink3);margin-bottom:4px;}
+.muted{color:var(--ink2);}
+.dim{color:var(--ink3);font-size:0.87rem;}
+
+/* ---------- шапка ---------- */
+.top{
+  position:sticky;top:0;z-index:50;background:var(--surface);
+  border-bottom:1px solid var(--line);
+  box-shadow:0 1px 2px rgba(20,22,26,0.04);
+}
+.top-row{
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:11px 16px;max-width:1280px;margin:0 auto;
+}
+.brand{display:flex;align-items:center;gap:8px;font-weight:600;text-decoration:none;white-space:nowrap;}
+.brand .mark{font-size:1.1rem;}
+.spacer{margin-left:auto;}
+
+/* Адрес стоит сразу за маркой, а не под меню: он определяет все цены на
+   странице, и внизу читался бы как часть содержимого, а не как настройка. */
+.addr{
+  border:1px solid var(--line2);background:var(--surface);color:var(--ink2);
+  border-radius:999px;padding:6px 13px;font-size:0.86rem;cursor:pointer;
+  max-width:52vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.addr:hover{background:var(--tint);}
+
+/* разделы — пилюли; на телефоне они уезжают в нижнюю панель */
+.sections{display:flex;gap:4px;padding:0 16px 10px;max-width:1280px;margin:0 auto;flex-wrap:wrap;}
+.sections a{
+  padding:7px 14px;border-radius:999px;text-decoration:none;
+  color:var(--ink2);font-size:0.9rem;white-space:nowrap;
+}
+.sections a:hover{background:var(--tint);}
+.sections a.on{background:var(--warm-soft);color:var(--ink);font-weight:600;}
+
+/* второй ряд — экраны выбранного раздела */
+.tabs{display:flex;gap:2px;padding:0 16px 9px;max-width:1280px;margin:0 auto;overflow-x:auto;}
+.tabs a{
+  padding:5px 11px;border-radius:8px;text-decoration:none;color:var(--ink3);
+  font-size:0.85rem;white-space:nowrap;
+}
+.tabs a.on{color:var(--ink);background:var(--tint);font-weight:500;}
+
+/* ---------- страница ---------- */
+/* Нижний отступ страницы — высота нижней панели плюс вырез телефона: тем же
+   слагаемым, что и подъём прилипшей строки (--cart-lift ниже). Разойдутся эти
+   два числа — и последняя строка любого экрана уедет под панель разделов. */
+main{max-width:1280px;margin:0 auto;
+     padding:18px 16px calc(var(--bottom-bar) + env(safe-area-inset-bottom) + 26px);}
+.card{
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  padding:16px 18px;margin-bottom:12px;
+}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.grid{display:grid;gap:12px;}
+@media (min-width:760px){ .grid.two{grid-template-columns:1fr 1fr;} }
+
+/* ---------- кнопки ---------- */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  border:1px solid var(--line2);background:var(--surface);color:var(--ink);
+  border-radius:10px;padding:10px 16px;font:inherit;font-size:0.92rem;
+  cursor:pointer;text-decoration:none;
+}
+.btn:hover{background:var(--tint);}
+.btn.main{background:var(--warm);border-color:var(--warm);color:#fff;font-weight:500;}
+.btn.main:hover{filter:brightness(1.15);}
+.btn.wide{width:100%;}
+.btn[disabled]{opacity:0.5;cursor:default;}
+
+/* ---------- метки и сообщения ---------- */
+.pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:0.76rem;border:1px solid;}
+.note{border-radius:10px;padding:11px 14px;margin-bottom:12px;font-size:0.9rem;}
+.note.ok{background:var(--green-soft);color:var(--green);}
+.note.warn{background:var(--amber-soft);color:var(--amber);}
+.note.bad{background:var(--red-soft);color:var(--red);}
+.note.info{background:var(--blue-soft);color:var(--blue);}
+.gain{color:var(--green);font-weight:600;}
+
+/* Цвет сети: квадрат в плитке, точка у цены, метка у корзины. Одно правило на
+   все три места — иначе они разъедутся, а это и есть всё направление. */
+.dot{display:inline-block;width:9px;height:9px;border-radius:3px;vertical-align:middle;}
+.chip{display:inline-flex;align-items:center;gap:7px;font-size:0.88rem;}
+.s-magnit{background:var(--s-magnit);} .s-vkusvill{background:var(--s-vkusvill);}
+.s-pyaterochka{background:var(--s-pyaterochka);} .s-lenta{background:var(--s-lenta);}
+.s-dixy{background:var(--s-dixy);} .s-samokat{background:var(--s-samokat);}
+
+.sum{font-family:"Unbounded",system-ui,sans-serif;font-weight:600;}
+
+/* ---------- нижняя панель телефона ---------- */
+.bottom{display:none;}
+@media (max-width:760px){
+  .sections{display:none;}                   /* разделы уехали вниз, под палец */
+  .tabs{padding-bottom:8px;}
+  h1{font-size:1.42rem;}
+  .bottom{
+    display:flex;position:fixed;left:0;right:0;bottom:0;z-index:60;
+    background:var(--surface);border-top:1px solid var(--line);
+    padding:6px 4px calc(6px + env(safe-area-inset-bottom));
+  }
+  /* Ростом в 48 точек, а не в высоту буквы. Было padding:6px — то есть мишень
+     около 29 точек, вдвое меньше пальца, и мимо «Корзины» попадали в «Каталог».
+     Панель одна на все экраны, поэтому правка здесь чинит их все разом; заявленные
+     выше --bottom-bar:64px наконец совпали с тем, что на экране. */
+  .bottom a{
+    flex:1;display:flex;align-items:center;justify-content:center;
+    min-height:48px;text-align:center;text-decoration:none;color:var(--ink3);
+    font-size:0.72rem;padding:6px 2px;border-radius:10px;
+  }
+  .bottom a.on{color:var(--ink);background:var(--tint);font-weight:600;}
+  .addr{max-width:64vw;}
+}
+
+/* ---------- мелочи ---------- */
+table{width:100%;border-collapse:collapse;font-size:0.9rem;}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);}
+th{color:var(--ink3);font-weight:500;font-size:0.8rem;text-transform:uppercase;letter-spacing:0.05em;}
+input,select,textarea{
+  font:inherit;border:1px solid var(--line2);border-radius:10px;padding:10px 12px;
+  background:var(--surface);color:var(--ink);width:100%;
+}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--warm-soft);border-color:var(--ink3);}
+code{background:var(--tint);border-radius:6px;padding:2px 6px;font-size:0.86em;}
+
+/* ==========================================================================
+   КОРЗИНА НА ТЕЛЕФОНЕ: сборка одной рукой
+   ==========================================================================
+
+   Это главный экран ежедневного пользования: человек стоит у полки и добавляет
+   товары той же рукой, которой держит телефон. Всё ниже — про это, и ничего
+   отсюда не переопределяет чужие классы: только свои, с приставкой cart-. Общий
+   korzina.css правит одна ветка, и «поправил корзину — поехал Результат» не
+   должно случиться ни разу.
+
+   ПОЧЕМУ 48, А НЕ 44. Сорок четыре — нижняя граница, при которой по кнопке ещё
+   попадают; на ней промахиваются те, кто держит телефон одной рукой и метит
+   большим пальцем сбоку. Сорок восемь даёт запас именно на такой промах и на
+   ширине 360 всё ещё оставляет место строке из «−», числа и «＋».
+
+   ПОЧЕМУ ШРИФТ В ПОЛЯХ РОВНО 16 ПИКСЕЛЕЙ. Safari на iPhone приближает страницу,
+   когда фокус уходит в поле со шрифтом меньше шестнадцати, и обратно сам не
+   отдаляет. Выглядит это как «экран прыгнул и разъехался» — ровно то, чего
+   нижняя строка итога делать не должна. Лечится только размером шрифта.        */
+
+:root{
+  --tap:48px;              /* меньше нельзя: см. выше */
+  --cart-lift:0px;         /* на сколько поднять прилипшую строку над нижней панелью */
+}
+
+/* ---------- шапка корзины: какая открыта ---------- */
+/* Одна строка, а не карточка: название корзины человек и так помнит, а место на
+   телефоне стоит дороже. Всё лишнее уехало под «Другая корзина». */
+.cart-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 12px;}
+.cart-head-name{font-weight:600;font-size:1.02rem;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.cart-more{margin:0 0 12px;}
+.cart-more summary{cursor:pointer;color:var(--ink3);font-size:0.86rem;
+  padding:10px 0;min-height:44px;}
+.cart-more select{width:auto;max-width:56vw;min-height:44px;font-size:16px;}
+.cart-more .btn,.cart-more input{min-height:44px;font-size:16px;}
+
+/* ---------- добор: поиск и частое ---------- */
+/* Блок стоит ВЫШЕ списка нарочно. Пока он был внизу, положить второй товар
+   значило прокрутить мимо первого, а на сороковой позиции — уехать на экран от
+   начала. Список никуда не делся: сколько в нём позиций и почём, видно в
+   прилипшей строке итога, которая держится у нижнего края. */
+.cart-add{padding:14px;}
+.cart-find{display:flex;gap:8px;align-items:stretch;}
+.cart-q{flex:1;min-width:0;min-height:var(--tap);font-size:16px;}
+.cart-find .btn{min-height:var(--tap);white-space:nowrap;}
+
+/* Подсказка по мере набора. Рисует её скрипт (basket.html); пока он молчит,
+   здесь пусто, а поиск работает кнопкой «Найти». */
+.cart-hints{display:flex;flex-direction:column;gap:6px;margin-top:10px;}
+.cart-hints:empty{display:none;}
+.cart-hit,.cart-row{
+  display:flex;align-items:center;gap:10px;width:100%;
+  min-height:52px;padding:8px 12px;text-align:left;
+  border:1px solid var(--line);border-radius:12px;
+  background:var(--surface);color:var(--ink);font:inherit;cursor:pointer;
+}
+.cart-hit:hover,.cart-row:hover{background:var(--tint);}
+.cart-hit-text{display:flex;flex-direction:column;min-width:0;flex:1;}
+.cart-hit-name{font-weight:500;line-height:1.2;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.cart-hit-small{color:var(--ink3);font-size:0.8rem;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+/* Плюс — квадрат внутри кнопки, а не отдельная мишень: нажимается вся строка, а
+   плюс лишь говорит, что случится. Две мишени в одной строке на телефоне
+   означают промах через раз. */
+.cart-hit-plus{
+  flex:none;display:flex;align-items:center;justify-content:center;
+  width:40px;height:40px;border-radius:10px;
+  background:var(--warm);color:#fff;font-size:1.25rem;line-height:1;
+}
+
+/* Частое. Первое, что видно на экране: человек покупает одно и то же, и пустое
+   поле поиска — это вопрос там, где у нас уже есть ответ. */
+.cart-often-title{font-size:0.72rem;letter-spacing:0.09em;text-transform:uppercase;
+  color:var(--ink3);margin:16px 0 8px;}
+.cart-often{display:flex;flex-wrap:wrap;gap:8px;}
+.cart-often button{
+  display:inline-flex;align-items:center;gap:7px;max-width:100%;
+  min-height:44px;padding:8px 14px;border-radius:999px;
+  border:1px solid var(--line2);background:var(--surface);color:var(--ink);
+  font:inherit;font-size:0.9rem;cursor:pointer;
+}
+.cart-often button:hover{background:var(--tint);}
+.cart-often-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.cart-often-plus{color:var(--ink3);font-size:1.1rem;line-height:1;flex:none;}
+
+/* ---------- позиции ---------- */
+.cart-count{display:flex;align-items:baseline;gap:10px;margin:18px 0 8px;}
+.cart-count h2{margin:0;}
+.cart-line{
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  padding:12px;margin-bottom:8px;
+}
+.cart-line-top{display:flex;align-items:flex-start;gap:12px;}
+.cart-line-name{flex:1;min-width:0;font-weight:500;line-height:1.25;}
+.cart-line-sum{white-space:nowrap;}
+.cart-line-where{margin-top:3px;}
+
+/* Количество: две крупные кнопки и число между ними.
+   ЧЕГО ЗДЕСЬ НЕТ — мелкого поля ввода, в которое на телефоне не попасть. Поле
+   осталось, но оно ростом с кнопку и крупнее текста: без него нельзя было бы
+   задать вес («0,7 кг» — это семь нажатий по «＋»), а с ним никто не обязан в
+   него целиться. */
+.cart-step{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:10px;}
+.cart-pm{
+  flex:none;display:flex;align-items:center;justify-content:center;
+  width:var(--tap);height:var(--tap);border-radius:12px;
+  border:1px solid var(--line2);background:var(--surface);color:var(--ink);
+  font:inherit;font-size:1.3rem;line-height:1;cursor:pointer;
+}
+.cart-pm:hover{background:var(--tint);}
+.cart-qty{width:64px;flex:none;text-align:center;
+  min-height:var(--tap);font-size:16px;font-weight:600;padding:8px 4px;}
+.cart-unit{flex:none;}
+.cart-off{
+  margin-left:auto;min-height:44px;padding:10px 14px;border-radius:10px;
+  border:1px solid var(--line2);background:var(--surface);color:var(--ink2);
+  font:inherit;font-size:0.9rem;cursor:pointer;white-space:nowrap;
+}
+.cart-off:hover{background:var(--red-soft);color:var(--red);border-color:var(--red-soft);}
+.cart-prices{margin-top:10px;}
+/* Ростом 44, как и всё остальное: замер на живой странице в 360 точек показал 37 —
+   мимо такой строки палец соскальзывает на «Убрать» этажом выше. */
+.cart-prices summary{cursor:pointer;padding:12px 0;min-height:44px;}
+
+/* ---------- прилипшая строка итога ---------- */
+/* ПОЧЕМУ sticky, А НЕ fixed. У прилипшей есть СВОЁ место в конце страницы:
+   докрутил до низа — строка встала на него, и под ней ничего нет. Прибитая
+   закрывала бы низ экрана всегда, и до последней позиции корзины пришлось бы
+   доскребаться прокруткой. Это и есть вся причина.
+
+   ЧЕГО ЗДЕСЬ НЕ ОБЕЩАНО. Что от клавиатуры телефона она не поедет: живой
+   клавиатуры никто не видел, а рассуждение тут ненадёжно. На Android окно при
+   клавиатуре ужимается, на iOS — нет, и в обоих случаях прилипшая ведёт себя не
+   лучше прибитой. Проверять это надо пальцем на настоящем телефоне. */
+.cart-bar{
+  position:sticky;bottom:var(--cart-lift);z-index:40;
+  display:flex;align-items:center;gap:12px;
+  margin-top:16px;padding:10px 12px;
+  background:var(--surface);border:1px solid var(--line2);border-radius:var(--radius);
+  box-shadow:0 -6px 18px rgba(20,22,26,0.10);
+}
+.cart-bar-num{flex:1;min-width:0;}
+.cart-bar-sum{font-size:1.18rem;line-height:1.15;}
+.cart-bar-small{font-size:0.78rem;color:var(--ink3);margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.cart-go{flex:none;min-height:var(--tap);min-width:128px;font-size:1rem;}
+
+/* ---------- то же самое на телефоне ---------- */
+@media (max-width:760px){
+  /* Нижняя панель разделов прибита к окну, и прилипшую строку надо поднять ровно
+     на её высоту — иначе они лягут друг на друга.
+     ВЫРЕЗ ТЕЛЕФОНА СЧИТАЕТСЯ ЗДЕСЬ ЖЕ, И БЕЗ НЕГО ЭТО НЕ РАБОТАЕТ. Сама панель
+     растёт на env(safe-area-inset-bottom) (см. .bottom выше), а страница стоит с
+     viewport-fit=cover — значит на iPhone X и новее вырез не ноль, а 34 точки.
+     Плоские 64 поднимали строку итога ровно на высоту панели БЕЗ выреза, и панель
+     накрывала нижнюю половину кнопки «Посчитать»: человек метил в неё, а попадал
+     в «Каталог». На настольном экране вырез равен нулю, и число то же самое. */
+  :root{--cart-lift:calc(var(--bottom-bar) + env(safe-area-inset-bottom));}
+  /* Мишени самой рамы — второй ряд меню и адрес в шапке. Ростом они были около
+     тридцати точек: на экране корзины всё нажимается пальцем, а шапка над ней —
+     нет, и это выглядит как «приложение иногда не слушается». Трогаем только
+     высоту и только на телефоне: вид, цвета и порядок остаются чужими. */
+  .tabs a{display:inline-flex;align-items:center;min-height:44px;}
+  /* Высоту адресу добавляют поля, а не display:inline-flex. Разница не в
+     красоте: в flex-контейнере text-overflow не работает вовсе — длинный адрес
+     обрезался бы насухо, без многоточия, и человек читал бы «Москва, Ленински»
+     как опечатку, а не как сокращение. */
+  .addr{padding-top:12px;padding-bottom:12px;}
+  .cart-more select{max-width:100%;flex:1;}
+  .cart-add{padding:12px;}
+  .cart-bar-sum{font-size:1.1rem;}
+  .cart-go{min-width:112px;}
+}

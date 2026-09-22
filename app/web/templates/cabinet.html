@@ -1,0 +1,617 @@
+{% extends "layout.html" %}
+{% block title %}{{ chain_name or 'Кабинет' }} — Моя корзина{% endblock %}
+{% block body %}
+
+{% if not chain %}
+  <p class="muted">Выберите сеть — её страница откроется прямо здесь, и вы войдёте в свой
+    кабинет, не выходя из приложения.</p>
+  <div class="card">
+    <div class="row">
+      {% for s in stores %}
+        <a class="btn" href="/cabinet?store={{ s.code }}">{{ s.name }}{% if s.saved %} ✓{% endif %}</a>
+      {% endfor %}
+    </div>
+  </div>
+
+{% elif not have_browser %}
+  <div class="note warn" style="margin:12px 0">Браузер на сервере не установлен, и показать
+    страницу магазина нечем. Это не ваша настройка, а сборка приложения: нужен пакет
+    <code>playwright</code> и Chromium (см. Dockerfile).</div>
+
+{% else %}
+<style>
+/* ОФОРМЛЕНИЕ ЭКРАНА КАБИНЕТА ЖИВЁТ ЗДЕСЬ, А НЕ В ОБЩЕМ korzina.css.
+ *
+ * Здесь единственное место приложения, где на странице стоит ЧУЖАЯ страница:
+ * снимок 820×1000 точек, по которому человек нажимает пальцем. Правила ниже
+ * существуют ради этого снимка и больше нигде не нужны, а в общем файле они
+ * мешали бы остальным экранам и разъезжались бы с ними.
+ *
+ * Имена классов начинаются на cab-, чтобы ни одно из них случайно не совпало с
+ * общим: общий файл ведёт другая работа, и молчаливое переопределение её правил
+ * было бы худшим видом поломки — чинили бы там, где не ломали.
+ *
+ * СНАЧАЛА ТЕЛЕФОН. Входят в магазин чаще всего с телефона, стоя. Значит панель
+ * действий — под большим пальцем (внизу и липкая), поле ввода — шрифтом не мельче
+ * 16 точек, снимок — во всю ширину экрана и с возможностью показать его в
+ * натуральную величину: вписанный в 360 точек, он нечитаем.
+ */
+
+/* Рамка вокруг чужой страницы: по ней видно, где кончается наше и начинается их. */
+.cab-frame{
+  margin:10px 0 0; border:1px solid var(--line); border-radius:10px;
+  overflow:hidden; background:#fff; position:relative;
+}
+
+/* ПОЧЕМУ ЗДЕСЬ НЕТ object-fit И max-height У КАРТИНКИ ВМЕСТЕ С width:100%.
+   Нажатие пересчитывается из точек экрана в точки снимка по размеру самой
+   картинки (box.width, box.height в скрипте ниже). Пересчёт верен ровно до тех
+   пор, пока картинка показана ЦЕЛИКОМ и без искажения пропорций: object-fit
+   обрезал бы её или дорисовал поля, размер элемента перестал бы совпадать с
+   видимым снимком — и палец попадал бы мимо, причём тем сильнее, чем дальше от
+   центра. Поэтому пропорции держит сам браузер: max-width и max-height при
+   width:auto. */
+.cab-shot{
+  display:block; margin:0 auto; max-width:100%; max-height:78vh; width:auto; height:auto;
+  cursor:crosshair; touch-action:manipulation;  /* без задержки на двойное нажатие */
+}
+
+/* «Крупнее»: снимок в натуральную величину, окно листается пальцем внутри рамки.
+   Вписанный в ширину телефона, он уменьшен вдвое с лишним — буквы магазина
+   становятся ростом в три точки, и попасть в поле ввода нельзя даже мимо. */
+.cab-frame.cab-big{overflow:auto; max-height:78vh; -webkit-overflow-scrolling:touch;}
+/* margin:0 вместо auto нарочно: у картинки шире рамки автоматические поля
+   съедают левый край, и до него не долистать ни пальцем, ни мышью. */
+.cab-frame.cab-big .cab-shot{margin:0; max-width:none; max-height:none; width:{{ width }}px;}
+
+.cab-veil{
+  position:absolute; inset:0; background:rgba(255,255,255,0.55);
+  display:none; align-items:center; justify-content:center; font-weight:600;
+}
+.cab-veil.on{display:flex;}
+
+.cab-steps{margin:10px 0 0;}
+.cab-steps summary{cursor:pointer; font-weight:600;}
+.cab-steps ol{margin:10px 0 0; padding-left:22px;}
+.cab-steps li{margin-bottom:6px;}
+
+/* На широком экране панель — такая же карточка, как соседние: она стоит своим
+   блоком (см. разметку), и без этих правил выглядела бы голым рядом кнопок. */
+.cab-bar{
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+  padding:14px 18px; margin:0 0 12px;
+}
+.cab-bar .row{gap:6px;}
+.cab-bar .btn{padding:10px 12px;}
+/* Предохранитель: сообщение живёт в панели под пальцем, и очень длинное вырастило
+   бы её до половины экрана, накрыв собою снимок. Дальше — прокруткой внутри. */
+.cab-bar #status{max-height:7em; overflow:auto;}
+.cab-icon{min-width:46px;}                 /* палец меньше сорока точек не попадает */
+
+/* НЕВИДИМОЕ ПОЛЕ, ЧЕРЕЗ КОТОРОЕ ИДЁТ НАБОР.
+   Оно обязано быть настоящим и по-настоящему получать фокус: клавиатуру на
+   телефоне поднимает только фокус в поле, а display:none, visibility:hidden и
+   нулевой размер фокус не принимают вовсе. Отсюда и приёмы: точка на точку,
+   полная прозрачность и запрет ловить нажатия — они должны доставаться снимку.
+
+   Шрифт ровно 16 точек, и это не про красоту: Safari на телефоне ЗУМИТ всю
+   страницу, когда фокус приходит в поле со шрифтом мельче шестнадцати, — человек
+   набирает код из СМС, а окно магазина уезжает из-под пальца. */
+.cab-keeper{
+  position:absolute; left:50%; top:50%; width:1px; height:1px; padding:0; margin:0;
+  border:0; opacity:0; pointer-events:none; font-size:16px; background:transparent;
+}
+
+/* Строка «принимает ли окно набор» занимает своё место всегда, даже пустая:
+   иначе панель прыгала бы на высоту строки при каждом нажатии. */
+.cab-armed{flex:1; min-width:140px; min-height:1.3em;}
+
+.cab-save-row{display:none; margin-top:6px;}
+.cab-save-row.on{display:flex;}
+
+@media (max-width:760px){
+  /* Снимок во всю ширину карточки: на 360 точках каждая отнятая заметна.
+     Ровно −18 точек — это её боковые поля, и ни точкой больше: лишнее вылезет за
+     край окна, появится боковая прокрутка всей страницы, а это на телефоне
+     выглядит как сломанная вёрстка. */
+  .cab-frame{margin-left:-18px; margin-right:-18px; border-radius:0; border-left:0; border-right:0;}
+
+  /* ПАНЕЛЬ ДЕЙСТВИЙ ПОД БОЛЬШИМ ПАЛЬЦЕМ — липкая, а не приклеенная намертво.
+     position:fixed здесь как раз и даёт то самое «прыгает»: клавиатура телефона
+     меняет видимую часть окна, а приклеенная панель считает её прежней и уезжает
+     под клавиатуру или поверх неё. Липкая живёт в потоке страницы: браузер сам
+     подтягивает поле ввода к клавиатуре и ничего не рвёт.
+     Отступ снизу — высота нижней панели приложения плюс безопасная зона телефона:
+     иначе панель легла бы поверх разделов. */
+  .cab-bar{
+    position:sticky; z-index:40;
+    bottom:calc(var(--bottom-bar) + env(safe-area-inset-bottom));
+    border:0; border-top:1px solid var(--line); border-radius:0;
+    margin:0 -16px 12px; padding:8px 16px;
+    box-shadow:0 -2px 8px rgba(20,22,26,0.06);
+  }
+  .cab-shot{max-height:62vh;}
+  .cab-frame.cab-big{max-height:62vh;}
+}
+</style>
+
+  {# Про то, что здесь происходит, сказано до того, как человек начнёт вводить телефон:
+     он пускает чужую страницу в наше приложение и вправе знать, кто что видит.
+
+     Коротко нарочно. Прежний абзац был вдвое длиннее и на телефоне занимал целый
+     экран: до окна магазина человек добирался, пролистав две страницы объяснений,
+     а до шагов — три. Сказано то же самое, только без повторов. #}
+  <p class="muted">Ниже — настоящая страница сети <b>{{ chain_name }}</b>, открытая браузером на
+    нашем сервере: нажимайте по ней как обычно. Проверку «я не робот» и код из СМС вводите вы сами.
+    Набранное уходит прямо в страницу магазина;
+    у нас остаётся только сам вход, и только когда вы нажмёте «Запомнить вход».</p>
+
+  {% if saved %}
+    <div class="note ok" style="margin:10px 0">Вход в эту сеть уже сохранён
+      {% if saved.saved_at %}({{ saved.saved_at }}){% endif %}. Он подставлен в окно ниже —
+      если сеть его ещё помнит, вы уже внутри.</div>
+  {% endif %}
+
+  {% if entrance %}
+    {# Шаги приходят данными из app/shopbrowser/signals.py — это знание о чужой
+       странице, и живёт оно рядом с признаками входа, а не здесь. Шаблон только
+       раскладывает их по строчкам и ничего не знает про то, где у какой сети
+       кнопка: иначе правка вёрстки сети требовала бы правки в двух местах, и
+       второе однажды забыли бы. #}
+    <div class="card">
+      {# «Где искать вход» стоит СНАРУЖИ складки: на телефоне шаги свёрнуты, чтобы
+         окно магазина было видно сразу, — а эта строка отвечает на первый вопрос
+         человека и свёрнутой быть не должна. #}
+      <p class="cab-where muted" style="margin:0">{{ entrance.where }}</p>
+      <details class="cab-steps" id="steps" open>
+        {# Имя сети стоит ПЕРЕД двоеточием, а не после предлога, и числа шагов здесь
+           нет вовсе. «Войти в Пятёрочка» и «5 шага» — те самые мелочи, по которым
+           видно, что текст собран из кусков машиной: имена сетей не склоняются
+           подстановкой, а числительные не согласуются сами. #}
+        <summary>{{ chain_name }}: как войти, по шагам</summary>
+        <ol>
+          {% for step in entrance.steps %}<li>{{ step }}</li>{% endfor %}
+        </ol>
+        <p class="dim" style="margin:8px 0 0">{{ entrance.sign }}</p>
+        {% if entrance.trouble %}
+          <p class="note info" style="margin:10px 0 0">{{ entrance.trouble }}</p>
+        {% endif %}
+        <p class="dim" style="margin:8px 0 0">Кнопки ▲ и ▼ листают саму страницу магазина,
+          «Крупнее» — показывает снимок в натуральную величину, когда буквы мелкие.</p>
+      </details>
+    </div>
+  {% endif %}
+
+  <div class="card">
+    {# НАД СНИМКОМ НЕТ НИЧЕГО МЕНЯЮЩЕГОСЯ, И ЭТО НЕ СЛУЧАЙНОСТЬ.
+       Строка состояния стояла здесь — и каждый её ответ съезжал на строку короче
+       или длиннее прежнего, сдвигая снимок вверх-вниз на десяток точек. Человек
+       метит пальцем туда, где картинка была секунду назад, а она уже уехала.
+       Теперь всё изменчивое — ниже снимка, в панели под пальцем, и место снимка
+       не зависит от длины сообщения. #}
+    <div id="frame" class="cab-frame">
+      <img id="screen" class="cab-shot" alt="Страница магазина"
+           width="{{ width }}" height="{{ height }}">
+      <div id="veil" class="cab-veil">работаю…</div>
+      {# НЕВИДИМОЕ ПОЛЕ — ЕДИНСТВЕННЫЙ СПОСОБ ПОДНЯТЬ КЛАВИАТУРУ НА ТЕЛЕФОНЕ.
+         Телефон показывает клавиатуру только тому, у кого фокус, а фокус бывает
+         лишь у поля; картинка его принять не может. Поле живёт ПРЯМО В РАМКЕ со
+         снимком нарочно: телефон подкручивает страницу к тому, что получило
+         фокус, и поле, стоящее где-то ещё, уволокло бы человека от окна магазина
+         ровно в тот миг, когда он собрался печатать.
+         pointer-events:none — чтобы оно не перехватывало нажатия по снимку:
+         фокус ему даём мы сами, в обработчике нажатия. #}
+      <input id="keeper" class="cab-keeper" type="text" autocomplete="one-time-code"
+             inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false"
+             aria-label="Набранное уходит прямо в страницу магазина">
+    </div>
+    <p class="dim" id="where" style="margin:8px 0 0;word-break:break-all"></p>
+  </div>
+
+  {# ПАНЕЛЬ СТОИТ ОТДЕЛЬНО ОТ КАРТОЧКИ СО СНИМКОМ, И ЭТО ЕДИНСТВЕННОЕ, ЧТО ЕЙ
+     ПОЗВОЛЯЕТ ДЕРЖАТЬСЯ ВНИЗУ ЭКРАНА. Липкий край действует только внутри своего
+     родителя: сидя в карточке со снимком, панель упиралась в её верх и повисала
+     ПОВЕРХ снимка, пока человек не пролистает до самой карточки, — то есть
+     закрывала собою ровно то, ради чего экран и сделан. Родителем стал весь
+     разворот страницы, и теперь панель стоит там, где ей положено: у нижнего
+     края, над разделами приложения. #}
+  <div class="cab-bar">
+    <p class="dim" id="status" style="margin:0 0 8px">Открываю страницу магазина…</p>
+
+    <div class="row">
+      <button class="btn cab-icon" data-scroll="-500" title="Пролистать страницу магазина вверх">▲</button>
+      <button class="btn cab-icon" data-scroll="500" title="Пролистать страницу магазина вниз">▼</button>
+      <button class="btn" id="zoom" title="Показать снимок в натуральную величину">Крупнее</button>
+      <button class="btn cab-icon" data-do="reload" title="Обновить страницу магазина">⟳</button>
+      <button class="btn cab-icon" data-key="backspace" title="Стереть знак в поле магазина">⌫</button>
+    </div>
+
+    {# ОТДЕЛЬНОГО ПОЛЯ ЗДЕСЬ БОЛЬШЕ НЕТ, И УБРАНО ОНО ПО СЛОВАМ ВЛАДЕЛЬЦА:
+       «такой вариант с полем отдельным очень неудобный». Он был прав. Набрать в
+       одном месте, нажать «Набрать», чтобы уехало в другое, посмотреть, доехало
+       ли, — это три действия там, где в обычном окне ноль. Теперь окно магазина
+       принимает набор само: нажали по снимку — печатаете прямо в страницу.
+       Строка ниже говорит, принимает ли оно набор прямо сейчас: без неё человек
+       печатал бы в пустоту, не понимая, почему буквы не появляются. #}
+    <div class="row" style="margin-top:6px">
+      <p class="dim cab-armed" id="armed" style="margin:0">
+        Нажмите по снимку — и печатайте прямо в страницу магазина.</p>
+      <button class="btn js-keep cab-icon" data-key="enter" title="Нажать «Ввод» в странице магазина">⏎</button>
+    </div>
+
+    {# КНОПКА «ЗАПОМНИТЬ ВХОД» НА ЭКРАНЕ ОДНА, И ЭТО НЕ ПРИДИРКА К ПОРЯДКУ.
+       Их было две: эта, спрятанная до появления признаков входа, и вторая — в
+       карточке ниже, видимая всегда. Вторая сводила первую на нет: гость нажимал
+       её, сеть отдавала свои гостевые куки (у Магнита это mg_udi и shopCode),
+       кабинет помечался подключённым, на «Кабинетах» вставало ✓ — и наряд корзины
+       уезжал в сеанс, где никто не входил. Сторож, который можно обойти соседней
+       кнопкой, — это не сторож. #}
+    <div class="row cab-save-row" id="saverow">
+      <button class="btn main wide js-save">Запомнить вход</button>
+    </div>
+  </div>
+
+  {# ВТОРАЯ ДОРОГА, И НУЖНА ОНА ТАМ, ГДЕ ПЕРВАЯ УПЁРЛАСЬ.
+     Окно выше входит в магазин НАШИМ сервером, и по его адресу сети пускают
+     не всех: 20.09.2026 Магнит встретил вход проверкой «я не робот», а после
+     неё ответил «Аккаунт заблокирован». Тот же аккаунт с телефона человека
+     открывается как обычно. Значит вход надо не добывать здесь, а перенести
+     оттуда — закладкой «Передать вход» (docs/hand.html). #}
+  <div class="card">
+    <p style="margin:0 0 8px"><b>Вход с телефона</b></p>
+    <p class="dim" style="margin:0 0 10px">Если сеть не пускает наш сервер, войдите в неё
+      на телефоне, нажмите там закладку <b>«Передать вход»</b> и вставьте сюда то, что она
+      скопировала. Пароль и код из СМС при этом остаются у сети — в буфер они не попадают.</p>
+    {% if bookmarklet %}
+      <p style="margin:0 0 10px"><a class="btn" href="{{ bookmarklet }}" draggable="true"
+         onclick="return false;" title="Перетащите на панель закладок">Передать вход</a>
+        <span class="dim">— перетащите на панель закладок браузера.</span></p>
+      <details style="margin:0 0 10px">
+        <summary class="dim" style="cursor:pointer">На телефоне перетащить некуда — взять строкой</summary>
+        <p class="dim" style="margin:8px 0">Заведите любую закладку, откройте её правку и
+          вставьте в адрес эту строку:</p>
+        <textarea readonly rows="3" onclick="this.select()"
+                  style="width:100%;box-sizing:border-box;font:11px/1.35 monospace;padding:8px"
+        >{{ bookmarklet }}</textarea>
+      </details>
+    {% else %}
+      <div class="note bad">Закладка не собрана — выполните
+        <code>python tools/build_bookmarklet.py vhod</code></div>
+    {% endif %}
+    <textarea id="pasted" rows="3" placeholder="Вставьте сюда то, что скопировала закладка"
+              style="width:100%;box-sizing:border-box;font:12px/1.4 monospace;padding:8px"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="btn main wide js-paste">Вставить вход с телефона</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="gap:6px">
+      <button class="btn" data-do="back">← Назад</button>
+      <button class="btn" id="close">Закрыть окно</button>
+    </div>
+    <p class="dim" style="margin:10px 0 0">Когда в окне выше вы окажетесь в своём кабинете, нажмите
+      <b>«Запомнить вход»</b>. Приложение сохранит куки этой сети в вашем рабочем месте — так же,
+      как хранит ключ кабинета ФНС, — и дальше сможет класть посчитанную корзину в этот магазин
+      без вашего участия. Кнопку «заказать» приложение не нажимает никогда.</p>
+    <p class="dim" style="margin:8px 0 0">Чтобы отобрать доступ, выйдите из аккаунта в самом
+      магазине и нажмите «Забыть» на экране «Кабинеты»: пока сеть помнит вход, сохранённые куки
+      действуют.</p>
+  </div>
+
+<script>
+/* Окно магазина. Ни своего состояния, ни памяти: всё живёт на сервере, здесь
+   только рисование снимка и пересылка нажатий.
+
+   СЛОВА ПРО ВХОД СЮДА ПРИЕЗЖАЮТ ГОТОВЫМИ (data.says). Написанные здесь, они
+   разъехались бы с разбором признаков: признак поправили бы в signals.py, а фраза
+   осталась бы вчерашней — и человек читал бы «вы не вошли» там, где приложение
+   уже говорит «не разобрал». Разница между этими двумя ответами стоит человеку
+   живого подключения, поэтому считается она в одном месте и проверяется тестами. */
+(function () {
+  "use strict";
+  const CHAIN = {{ chain|tojson }};
+  const W = {{ width }}, H = {{ height }};
+  const frame = document.getElementById("frame");
+  const screenEl = document.getElementById("screen");
+  const veil = document.getElementById("veil");
+  const status = document.getElementById("status");
+  const where = document.getElementById("where");
+  const keeper = document.getElementById("keeper");
+  const armedEl = document.getElementById("armed");
+  const saverow = document.getElementById("saverow");
+  let busy = false;
+  let hasShot = false;     /* пока снимка нет, нажимать некуда — см. ниже */
+
+  function say(text, kind) {
+    status.textContent = text || "";
+    status.className = kind === "bad" ? "note bad"
+                     : kind === "ok" ? "note ok"
+                     : kind === "info" ? "note info"
+                     : kind === "warn" ? "note warn" : "dim";
+  }
+
+  function draw(data) {
+    if (!data || data.ok === false) {
+      say((data && data.error)
+          || "Приложение ответило непонятным — похоже, оно как раз перезапускается."
+             + " Нажмите «Обновить» через несколько секунд.", "bad");
+      return;
+    }
+    if (data.shot) { screenEl.src = data.shot; hasShot = true; }
+    /* Короткий ответ на набор трогает только кадр и слова про набранное. Адрес,
+       вердикт про вход и кнопку «Запомнить вход» он не приносит — и не должен их
+       стирать: они не меняются от набранной буквы. */
+    if (data.partial) {
+      say(data.note || "", data.note_kind || "");
+      armedWords();
+      return;
+    }
+    where.textContent = data.url || "";
+    const note = data.note ? data.note + " " : "";
+    const says = data.says || "";
+    /* ЦВЕТ БЕРЁТ ВЕРДИКТ, А НЕ НАША ХОРОШАЯ ВЕСТЬ. Зелёным красилось всё, у чего
+       была своя note, — и «Прежний вход подставлен… Вы пока не вошли» приезжало
+       зелёной плашкой, споря с собственным текстом. Вердикт про вход главнее:
+       есть у него тон — берём его; нет тона, но есть слова («не вошли», «не
+       разобрал») — не красим вовсе; и только когда про вход не сказано ничего,
+       зелёным светится сама весть. */
+    /* Отказ по ПОСЛЕДНЕМУ ДЕЙСТВИЮ главнее стоящего вердикта про вход: человек
+       только что нажал «Набрать», и ему нужно узнать, что набирать было некуда, а
+       не перечитывать «вы пока не вошли». */
+    const kind = data.note_kind || data.says_kind || (says ? "" : (data.note ? "ok" : ""));
+    say(note + says, kind);
+    /* Кнопка «Запомнить вход» прячется только от того, про кого страница прямо
+       говорит «вы не вошли». «Не разобрал» её не прячет: у пяти сетей из шести
+       подписи входа мы не знаем вовсе, и спрятанная кнопка означала бы «сохранить
+       вход нельзя почти нигде». Решает человек — он видит ту же страницу. */
+    saverow.classList.toggle("on", data.logged_in !== false);
+    armedWords();
+  }
+
+  /* ПЕЛЕНА «РАБОТАЮ…» ПОДНИМАЕТСЯ НЕ НА ВСЁ.
+     На набор она не поднимается вовсе: буква уходит и возвращается за доли
+     секунды, и закрывать ради этого окно серым — значит превратить печать в
+     «постоянную загрузку», о чём владелец и сказал. Пелена нужна там, где
+     страница действительно уезжает: нажатие, «Назад», «Обновить». */
+  async function act(body, quiet) {
+    if (busy) return null;
+    busy = true;
+    if (!quiet) veil.classList.add("on");
+    try {
+      const res = await fetch("/cabinet/act?store=" + encodeURIComponent(CHAIN), {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (err) {
+        /* Сюда попадают ответы, которые вообще не разобрались: чаще всего это
+           страница входа — рабочее место закрылось, пока человек читал шаги. */
+        data = {ok: false, error: "Приложение ответило не снимком, а чем-то другим."
+                + " Похоже, рабочее место закрылось: откройте приложение заново по номеру телефона."};
+      }
+      draw(data);
+      return data;
+    } catch (err) {
+      /* Чужой английский текст ошибки к русской фразе не подклеиваем: человеку он
+         не объясняет ничего, а место занимает вместо следующего шага. */
+      say("До приложения не достучаться — похоже, пропала связь."
+          + " Проверьте интернет и нажмите «Обновить».", "bad");
+      return null;
+    } finally {
+      busy = false;
+      veil.classList.remove("on");
+    }
+  }
+
+  /* НАЖАТИЕ ПЕРЕВОДИТСЯ В ТОЧКИ СНИМКА, А НЕ ЭКРАНА.
+     На телефоне снимок показан уменьшенным (820 точек в 328), а с «Крупнее» —
+     в натуральную величину внутри прокручиваемой рамки. Обе величины берутся из
+     getBoundingClientRect самой картинки: он уже учитывает и масштаб, и то, на
+     сколько рамку пролистали, — поэтому формула одна на оба случая и врать ей
+     негде. Единственное, что её ломает, — картинка, показанная не целиком
+     (object-fit, жёсткая высота); поэтому их нет в стилях выше.
+     Пока снимка нет (окно закрыто, первый заход), нажатие не шлётся вовсе: у
+     пустой картинки размеры по тексту подписи, и попало бы оно наугад. */
+  /* ПРОТЯЖКА, И ПОЧЕМУ ОНА ЖИВЁТ РЯДОМ С НАЖАТИЕМ, А НЕ ВМЕСТО НЕГО.
+     Часть проверок «я не робот» нажатием не проходится: Перекрёсток просит
+     развернуть картинку ПОЛЗУНКОМ. Ползунок слушает движение мыши, и одного
+     нажатия ему мало.
+     Начало движения запоминаем на pointerdown, конец — на pointerup. Если между
+     ними палец прошёл меньше DRAG_MIN точек, это не протяжка, а обычное нажатие
+     с дрожанием руки: на телефоне идеально неподвижных касаний не бывает, и без
+     этого порога каждое нажатие уезжало бы протяжкой в никуда. */
+  const DRAG_MIN = 8;
+  let dragFrom = null;
+  let dragged = false;
+
+  function shotPoint(event) {
+    const box = screenEl.getBoundingClientRect();
+    if (!box.width || !box.height) return null;
+    return {x: Math.min(W - 1, Math.max(0, Math.round((event.clientX - box.left) / box.width * W))),
+            y: Math.min(H - 1, Math.max(0, Math.round((event.clientY - box.top) / box.height * H)))};
+  }
+
+  screenEl.addEventListener("pointerdown", function (event) {
+    dragFrom = hasShot ? shotPoint(event) : null;
+  });
+
+  screenEl.addEventListener("pointerup", function (event) {
+    const from = dragFrom;
+    dragFrom = null;
+    if (!from || !hasShot) return;
+    const to = shotPoint(event);
+    if (!to) return;
+    if (Math.abs(to.x - from.x) < DRAG_MIN && Math.abs(to.y - from.y) < DRAG_MIN) return;
+    /* Ушло протяжкой — нажатие по этому же движению не шлём: страница получила бы
+       и то и другое, а ползунок от лишнего нажатия прыгает обратно. */
+    event.preventDefault();
+    dragged = true;
+    act({do: "drag", x1: from.x, y1: from.y, x2: to.x, y2: to.y});
+  });
+
+  screenEl.addEventListener("click", function (event) {
+    if (dragged) { dragged = false; return; }
+    if (!hasShot) return;
+    const box = screenEl.getBoundingClientRect();
+    if (!box.width || !box.height) return;
+    const x = (event.clientX - box.left) / box.width * W;
+    const y = (event.clientY - box.top) / box.height * H;
+    /* Фокус берём ДО отправки нажатия: телефон поднимает клавиатуру только в
+       ответ на прикосновение человека, и сделай мы это после ответа сервера —
+       прикосновение уже «остыло», клавиатура не появится вовсе. */
+    keeper.focus({preventScroll: true});
+    act({do: "click",
+         x: Math.min(W - 1, Math.max(0, Math.round(x))),
+         y: Math.min(H - 1, Math.max(0, Math.round(y)))})
+      .then(() => flush());   /* нажали в поле — досылаем то, что не ушло раньше */
+  });
+
+  for (const button of document.querySelectorAll("[data-do]")) {
+    button.addEventListener("click", () => act({do: button.getAttribute("data-do")}));
+  }
+  for (const button of document.querySelectorAll("[data-key]")) {
+    button.addEventListener("click", () => act({do: "key", key: button.getAttribute("data-key")}));
+  }
+  for (const button of document.querySelectorAll("[data-scroll]")) {
+    button.addEventListener("click", () =>
+      act({do: "scroll", dy: parseInt(button.getAttribute("data-scroll"), 10)}));
+  }
+
+  /* НИ ОДНА КНОПКА ПАНЕЛИ НЕ ЗАБИРАЕТ ФОКУС У ОКНА. Забери — и клавиатура
+     телефона закроется на каждом ⌫ или ⟳, экран прыгнет, а следующую цифру кода
+     человек будет вводить уже в никуда. Раньше это относилось только к кнопкам
+     рядом с полем; теперь набор идёт в само окно, и беречь фокус надо от всей
+     панели. */
+  for (const button of document.querySelectorAll(".cab-bar button, .js-keep")) {
+    button.addEventListener("mousedown", (e) => e.preventDefault());
+  }
+
+  /* На телефоне шаги свёрнуты, а на широком экране развёрнуты. Разница не в
+     красоте: на 375 точках развёрнутый список отодвигает окно магазина на целый
+     экран вниз — человек листает подсказку вместо того, чтобы входить. Строка
+     «где искать вход» остаётся видна и свёрнутой, так что первый вопрос закрыт и
+     без разворачивания. */
+  const steps = document.getElementById("steps");
+  if (steps && window.matchMedia("(max-width:760px)").matches) {
+    steps.removeAttribute("open");
+  }
+
+  const zoom = document.getElementById("zoom");
+  zoom.addEventListener("click", function () {
+    const big = frame.classList.toggle("cab-big");
+    zoom.textContent = big ? "Вписать" : "Крупнее";
+  });
+
+  /* НАБОР УХОДИТ В ОКНО САМ, БЕЗ КНОПКИ «НАБРАТЬ».
+     Знаки копятся пятую долю секунды и уезжают пачкой. Пачка нужна не для
+     красоты: каждый знак — это запрос к серверу и ответ снимком в сотню
+     килобайт, и на телефонной связи посылать их по одному значило бы печатать
+     по букве в секунду. Пятая доля — это быстрее, чем человек успевает набрать
+     следующую цифру, и в десять раз меньше запросов.
+
+     НАБРАННОЕ НЕ ТЕРЯЕТСЯ, ЕСЛИ ЕМУ БЫЛО НЕКУДА ЛЕЧЬ. Сервер отвечает, дошло ли
+     (typed): не дошло — знаки возвращаются в запас и ждут, пока человек нажмёт в
+     нужное поле на снимке. Тогда они уедут туда же, куда он нажал. Код из СМС
+     живёт минуту, и набирать его заново вслепую — худшее, что можно предложить. */
+  let pending = "";      /* набрано, но ещё не отправлено */
+  let held = false;      /* последняя отправка не дошла: набирать было некуда */
+  let timer = null;
+
+  function armedWords() {
+    if (!hasShot) { armedEl.textContent = "Окно магазина ещё не открыто."; return; }
+    if (held) {
+      armedEl.textContent = "Набранное ждёт: нажмите в нужное поле на снимке — и оно уйдёт туда.";
+      return;
+    }
+    armedEl.textContent = (document.activeElement === keeper)
+      ? "Окно принимает набор — печатайте."
+      : "Нажмите по снимку — и печатайте прямо в страницу магазина.";
+  }
+
+  async function flush() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (!pending) return;
+    const text = pending;
+    pending = "";
+    const data = await act({do: "type", text: text}, true);
+    if (data === null) {
+      /* Окно было занято другим действием. Набранное НЕ ТЕРЯЕМ — возвращаем в
+         запас и пробуем ещё раз: без этого буквы пропадали бы ровно тогда, когда
+         человек печатает быстро, то есть всегда, когда он вводит код из СМС. */
+      pending = text + pending;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(flush, 120);
+      return;
+    }
+    if (data.typed === false) {
+      pending = text + pending;   /* порядок знаков важнее: набранное раньше — впереди */
+      held = true;
+    } else {
+      held = false;
+    }
+    armedWords();
+  }
+
+  function schedule() {
+    /* Пока набирать некуда, не долбим сервер на каждый знак: знаки копятся и
+       уедут одной пачкой, когда человек нажмёт в поле. */
+    if (held) { armedWords(); return; }
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(flush, 200);
+  }
+
+  /* Ловим НАБРАННОЕ, а не нажатые клавиши: телефонные клавиатуры (подсказки слов,
+     вставка кода из СМС, диктовка) дают готовый текст и keydown по знакам не шлют
+     вовсе — по клавишам мы потеряли бы ровно тот случай, ради которого всё это. */
+  keeper.addEventListener("input", function () {
+    pending += keeper.value;
+    keeper.value = "";
+    schedule();
+  });
+
+  const NAMED = {Enter: "enter", Backspace: "backspace", Tab: "tab",
+                 Escape: "escape", Delete: "delete"};
+  keeper.addEventListener("keydown", async function (event) {
+    const named = NAMED[event.key];
+    if (!named) return;
+    event.preventDefault();
+    await flush();                /* сначала буквы, потом «Ввод» — иначе порядок собьётся */
+    await act({do: "key", key: named});
+  });
+  keeper.addEventListener("focus", armedWords);
+  keeper.addEventListener("blur", armedWords);
+
+  for (const button of document.querySelectorAll(".js-paste")) {
+    button.addEventListener("click", async () => {
+      const area = document.getElementById("pasted");
+      const text = (area.value || "").trim();
+      if (!text) { say("Сначала вставьте то, что скопировала закладка.", "bad"); return; }
+      const data = await act({ do: "paste", text });
+      /* Поле чистим ТОЛЬКО когда вход принят: иначе человек теряет вставленное
+         и идёт на телефон копировать заново из-за нашей же ошибки. */
+      if (data && data.ok) area.value = "";
+    });
+  }
+
+  for (const button of document.querySelectorAll(".js-save")) {
+    button.addEventListener("click", () => act({do: "save"}));
+  }
+  document.getElementById("close").addEventListener("click", async () => {
+    const data = await act({do: "close"});
+    if (data && data.ok) {
+      screenEl.removeAttribute("src");
+      hasShot = false;
+      saverow.classList.remove("on");
+      say(data.note || "окно закрыто");
+    }
+  });
+
+  act({do: "ensure"});
+})();
+</script>
+{% endif %}
+{% endblock %}

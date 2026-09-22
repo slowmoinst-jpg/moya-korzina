@@ -111,6 +111,24 @@ def _receipt_entries(data: Any) -> list[tuple[str | None, Any, dict]]:
     return [(None, data, {})]
 
 
+def _off_by_hundred(parsed: float | None, listed: float | None) -> bool:
+    """Разбор и опись говорят об одном чеке, но разошлись ровно в сто раз.
+
+    Совпадения тут не бывает: сто крат — это всегда рубли против копеек, а не два
+    разных чека. Допуск — копейка или тысячная доля суммы, что больше: опись округляет.
+    """
+    if not parsed or not listed:
+        return False
+    return abs(parsed * 100 - listed) <= max(0.02, abs(listed) * 0.001)
+
+
+def _scale(receipt: Receipt, factor: int) -> None:
+    for row in receipt.rows:
+        row.unit_price = round(row.unit_price * factor, 2)
+        row.total = round(row.total * factor, 2)
+    receipt.total = round(receipt.total * factor, 2)
+
+
 def parse_bundle(payload: str | bytes | dict | list) -> dict:
     """Разбирает пакет, ничего не записывая.
 
@@ -144,6 +162,13 @@ def parse_bundle(payload: str | bytes | dict | list) -> dict:
         # а чек трёхлетней давности, помеченный сегодняшним числом, испортит историю.
         if hint.get("date") and not _has_own_date(body):
             receipt.date = hint["date"]
+        # Сумма из описи — вторая, независимая запись того же чека, и она ловит единицы.
+        # Целое число ФНС обычно шлёт в копейках, но не всякий ОФД это соблюдает: живой
+        # кабинет 16.09.2026 отдал чек на 1750 ₽ как {"sum": 1750, "ndsSum": 291.67} —
+        # рубли там, где ждали копейки. Разошлись ровно в сто раз — верим описи, иначе
+        # в историю ляжет 17,50 вместо 1750.
+        if _off_by_hundred(receipt.total, hint.get("total")):
+            _scale(receipt, 100)
         parsed.append({"key": key or fingerprint(receipt), "receipt": receipt})
 
     return {"receipts": parsed, "catalogue": catalogue, "failed": failed,

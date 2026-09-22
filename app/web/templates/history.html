@@ -1,0 +1,198 @@
+{# История. Отбор — обычная форма GET, поэтому он оказывается в адресе: «наши
+   покупки в Ленте за август» становится ссылкой, которой можно поделиться и к
+   которой можно вернуться кнопкой «назад».
+
+   Чеки раскрываются тегом <details>, а не памятью сервера: что открыто — дело
+   браузера. Иначе вкладка, открытая рядом, схлопывала бы чек в соседней. #}
+{% extends "layout.html" %}
+{% block title %}История — Моя корзина{% endblock %}
+{% block body %}
+
+{# Ноль загруженных строк — это не успех с числом ноль, а отдельный ответ: файл
+   прочитался, а товаров в нём не нашлось. Сказать «загружено 0 позиций, они уже в
+   списке ниже» значило бы отправить человека искать то, чего там нет. #}
+{% if loaded %}
+  <div class="note ok">Загружено {{ plural_items(loaded) }}{% if created %},
+    новых товаров {{ created }}{% endif %}. Они уже в списке ниже.</div>
+{% elif loaded is not none %}
+  <div class="note warn">Файл прочитался, но ни одной строки с товаром и ценой в нём не
+    нашлось. Чаще всего это чек-картинка: в нём нет текста, разбирать нечего.</div>
+{% endif %}
+{% if trouble %}
+  <div class="note bad">{{ trouble }}</div>
+{% endif %}
+
+<div class="card">
+  <form method="get" action="{{ screen.path }}">
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+      <label class="dim">Дата с
+        <input type="date" name="from" value="{{ filters.date_from or '' }}"></label>
+      <label class="dim">Дата по
+        <input type="date" name="to" value="{{ filters.date_to or '' }}"></label>
+      <label class="dim">Магазин
+        <select name="store">
+          <option value="">Все магазины</option>
+          {% for s in stores %}
+            <option value="{{ s.code }}"
+              {{ 'selected' if filters.store and filters.store.code == s.code }}>{{ s.name }}</option>
+          {% endfor %}
+        </select></label>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn main" type="submit">Показать</button>
+      {% if filtered %}<a class="btn" href="{{ screen.path }}">Все покупки</a>{% endif %}
+    </div>
+  </form>
+</div>
+
+{% if not receipts %}
+  <div class="card">
+    <div class="eyebrow">Покупок нет</div>
+    {% if filtered %}
+      <h2>По этому отбору ничего</h2>
+      <p class="muted">Покупки есть, но не в этих датах или не в этом магазине.
+        Снимите отбор — и станет видно всё.</p>
+      <a class="btn main" href="{{ screen.path }}">Показать все покупки</a>
+    {% else %}
+      <h2>Отсюда начинается всё остальное</h2>
+      <p class="muted">История покупок — это не архив, а исходные данные приложения.
+        По ней корзина собирается сама, по ней видно, что вы берёте обычно, и по ней
+        считается, сколько вы переплачиваете. Один чек — и экраны оживают.</p>
+      <p class="muted">Три способа, от быстрого к самому полному: вставить письмо из
+        доставки прямо ниже, загрузить файл чека, или подключить кабинет ФНС — тогда
+        чеки будут приходить сами.</p>
+      <div class="row">
+        <a class="btn main" href="{{ receipts_path }}">Подключить кабинет ФНС</a>
+      </div>
+    {% endif %}
+  </div>
+{% else %}
+  <p class="dim">Чеков: {{ receipts|length }} · позиций: {{ rows_n }}. Чек здесь — всё,
+    что куплено в один день в одном магазине: отдельного номера чека в данных пока нет,
+    и два похода в одну сеть за день склеиваются в один.</p>
+
+  {% for r in receipts %}
+    <details class="card" style="border-left:3px solid var(--s-{{ r.store_code }})"
+             {{ 'open' if loop.first }}>
+      <summary>
+        <span class="chip" style="font-weight:600"><span class="dot s-{{ r.store_code }}"></span>
+          {{ r.store_name }}</span>
+        <span class="dim" style="margin-left:8px">{{ r.day }}</span>
+        <span class="dim" style="margin-left:8px">{{ plural_items(r.lines|length) }}</span>
+        <span class="sum" style="margin-left:10px">{{ rub(r.total) }}</span>
+      </summary>
+
+      <div style="margin-top:10px">
+        {# Количество и цена стоят ВТОРОЙ строкой под названием, а не колонками справа.
+           Четыре колонки в строке чека — это привычно по бумаге, но на телефоне
+           длинное название сжимается до двух букв или выталкивает страницу вбок.
+           Здесь справа только то, ради чего в чек и смотрят, — сумма позиции. #}
+        {% for ln in r.lines %}
+          <div class="row" style="padding:7px 0;border-top:1px solid var(--line);
+               flex-wrap:nowrap;justify-content:space-between;align-items:flex-start;gap:12px">
+            <span style="flex:1;min-width:0">
+              {{ ln.name }}{% if ln.raw %} <span class="dim">{{ ln.raw }}</span>{% endif %}
+              <div class="dim">{{ num(ln.qty) }} {{ ln.unit }} × {{ rub(ln.unit_price) }}</div>
+            </span>
+            <span style="white-space:nowrap;font-weight:500">{{ rub(ln.total) }}</span>
+          </div>
+        {% endfor %}
+        <div class="row" style="justify-content:space-between;padding-top:9px;margin-top:6px;
+                    border-top:1px solid var(--line)">
+          <strong>{{ plural_items(r.lines|length) }}</strong>
+          <span class="sum" style="font-size:1.15rem">{{ rub(r.total) }}</span>
+        </div>
+      </div>
+    </details>
+  {% endfor %}
+{% endif %}
+
+{# ---------- вставить письмо или страницу заказа ---------- #}
+<div class="card">
+  <h2>Вставить письмо или страницу заказа</h2>
+  <p class="dim">Файл с чеком есть не у всех, а письмо «Чек на ваш заказ» от Самоката или
+    страница «Мои заказы» в Ленте — у любого, кто этими доставками пользуется. Откройте,
+    выделите всё (Ctrl+A), скопируйте и вставьте сюда. Разбор терпимый: поймёт и таблицу,
+    и список в столбик, и HTML письма.</p>
+
+  <form method="post" action="{{ screen.path }}">
+    <textarea name="text" rows="7"
+              placeholder="Молоко Простоквашино 930 мл   2 шт × 149,00 ₽ = 298,00 ₽">{{ typed }}</textarea>
+    <div class="row" style="margin-top:10px">
+      <select name="store" style="width:auto;max-width:60vw">
+        <option value="">Магазин определить самим</option>
+        {% for s in stores %}
+          <option value="{{ s.code }}" {{ 'selected' if chosen == s.code }}>{{ s.name }}</option>
+        {% endfor %}
+      </select>
+      <span class="spacer"></span>
+      <button class="btn" type="submit" name="do" value="preview">Проверить разбор</button>
+      <button class="btn main" type="submit" name="do" value="paste"
+              {{ 'disabled' if not preview }}>Добавить в историю</button>
+    </div>
+    {% if not preview %}
+      <p class="dim" style="margin:10px 0 0">Сначала проверьте разбор: чужое письмо
+        разбирается негарантированно, и ошибку лучше увидеть до того, как она попадёт
+        в покупки — оттуда она уедет в корзину, в расчёт и в экономию.</p>
+    {% endif %}
+
+    {% if preview %}
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+        {% if not preview.rows %}
+          <div class="note warn">Ни одной строки с товаром и ценой не нашлось.
+            Скопируйте вместе с ценами — без них позицию не отличить от заголовка.</div>
+        {% else %}
+          <p class="muted">Понял <b>{{ preview.rows|length }}</b> позиций на
+            <b class="sum">{{ rub(preview.total) }}</b>{% if preview.date %}, дата
+            {{ human_date(preview.date) }}{% endif %}{% if preview.store %},
+            магазин {{ preview.store }}{% endif %}.</p>
+          {# Таблица разбора — единственное место экрана, где колонки уместны: их
+             сверяют глазами с письмом. Чтобы она не выталкивала страницу вбок на
+             телефоне, прокручивается она сама, а не страница. #}
+          <div style="overflow-x:auto">
+            <table>
+              <tr><th>Товар</th><th>Кол-во</th><th>Цена</th><th>Сумма</th></tr>
+              {% for r in preview.rows %}
+                <tr><td>{{ r.name }}</td><td>{{ num(r.qty) }}</td>
+                    <td>{{ rub(r.price) }}</td><td>{{ rub(r.total) }}</td></tr>
+              {% endfor %}
+            </table>
+          </div>
+        {% endif %}
+        {% if preview.skipped %}
+          <div class="note info" style="margin-top:12px">Эти строки я не понял, в историю
+            они не попадут:<br>
+            {% for line in preview.skipped[:10] %}· {{ line }}<br>{% endfor %}</div>
+        {% endif %}
+      </div>
+    {% endif %}
+  </form>
+</div>
+
+{# ---------- файл чека ---------- #}
+<div class="card">
+  <h2>Загрузить файл</h2>
+  <p class="dim"><b>Чек</b> — PDF от ОФД или текст. <b>JSON</b> — выгрузка из «Мои чеки
+    онлайн» ФНС. <b>Таблица</b> — CSV или XLSX с заказом из личного кабинета магазина.
+    <b>Письмо</b> — HTML или EML из доставки. Позиции разбираются и связываются с
+    товарами сами.</p>
+  <form method="post" action="{{ screen.path }}" enctype="multipart/form-data">
+    <input type="file" name="file" accept="{{ accept }}">
+    <div class="row" style="margin-top:10px">
+      <select name="store" style="width:auto;max-width:60vw">
+        <option value="">Магазин чека определить самим</option>
+        {% for s in stores %}
+          <option value="{{ s.code }}" {{ 'selected' if chosen == s.code }}>{{ s.name }}</option>
+        {% endfor %}
+      </select>
+      <span class="spacer"></span>
+      <button class="btn main" type="submit" name="do" value="upload">Загрузить</button>
+    </div>
+  </form>
+</div>
+
+<div class="row" style="margin-top:6px">
+  <a class="btn" href="{{ basket_path }}">Собрать из этого корзину →</a>
+</div>
+
+{% endblock %}

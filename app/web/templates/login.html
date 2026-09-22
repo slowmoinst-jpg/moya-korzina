@@ -1,0 +1,33 @@
+{% extends "layout.html" %}
+{% block title %}Вход — Моя корзина{% endblock %}
+{% block body %}
+<div class="card" style="max-width:520px;margin:6vh auto;">
+  <div class="eyebrow">Вход</div>
+  <h1>Ваши чеки, корзина и карты — под вашим номером</h1>
+  <p class="muted">Введите телефон — откроется ваше рабочее место. Всё, что вы загрузите,
+    останется только в нём.</p>
+
+  {% if error %}<div class="note bad">{{ error }}</div>{% endif %}
+
+  <form method="post" action="{{ url_for('auth.enter') }}">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label class="dim" for="phone">Номер телефона</label>
+    <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel"
+           placeholder="+7 999 123-45-67" value="{{ typed }}" autofocus>
+    <div class="row" style="margin-top:12px">
+      <button class="btn main" type="submit">Войти</button>
+    </div>
+  </form>
+
+  <form method="post" action="{{ url_for('auth.demo') }}" style="margin-top:10px">
+    <button class="btn wide" type="submit">Посмотреть демо</button>
+  </form>
+
+  {# Сказано словами нарочно: вход без подтверждения — осознанная временная мера
+     (решение владельца 16.09.2026), а не забытая защита. Молчание об этом
+     превратило бы меру в дыру. #}
+  <p class="dim" style="margin-top:14px">Пока вход без пароля и без кода: кто знает номер,
+    тот и войдёт. Подтверждение по СМС появится вместе с загрузкой чеков из кабинета ФНС.
+    Не вводите здесь чужие номера.</p>
+</div>
+{% endblock %}

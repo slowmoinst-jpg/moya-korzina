@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 
-from app import config, repo
+from app import config, location, repo
 from app.models import BasketLine, Offer, Store, Variant
 
 log = logging.getLogger(__name__)
@@ -248,17 +248,25 @@ def cart_link(store_code: str, lines) -> str | None:
     store = repo.get_store(store_code)
     if not store:
         return None
-    items: list[tuple[int, float]] = []
+    # ЕДИНИЦА ЕДЕТ ВМЕСТЕ С КОЛИЧЕСТВОМ, И ЭТО НЕ УКРАШЕНИЕ. У Ленты развесной
+    # товар считается в ГРАММАХ (её собственное описание storefront_cart_link_create),
+    # и без единицы 0,7 кг сыра уезжали как «1» — то есть один грамм. Корзина
+    # выглядела собранной, а сумма не сходилась с расчётом.
+    items: list[tuple[int, float, str | None]] = []
     for line in lines or []:
         mapping = repo.confirmed_mapping(getattr(line, "product_id", 0), store.id)
         sku = (mapping or {}).get("sku")
         if not sku or not str(sku).isdigit():
             continue
-        items.append((int(sku), float(getattr(line, "qty", 1) or 1)))
+        items.append((int(sku), float(getattr(line, "qty", 1) or 1),
+                      (mapping or {}).get("unit")))
     if not items:
         return None
     try:
-        return build(items)
+        # Адрес нужен Ленте, чтобы спросить у себя размер фасовки развесного товара
+        # (её карточка отвечает только по точке). Без него количество считается
+        # по-старому, одной фасовкой на килограмм, — работает, но грубее.
+        return build(items, location.for_store(store_code))
     except Exception as exc:  # noqa: BLE001  — магазин недоступен, это не повод ронять экран
         log.warning("Ссылку на корзину %s получить не удалось: %s", store_code, exc)
         return None

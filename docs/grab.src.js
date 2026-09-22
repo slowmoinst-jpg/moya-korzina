@@ -53,6 +53,10 @@
   var PAUSE = 160;
   var PAGE = 100;
   var MAX_PAGES = 300;
+  /* Адрес приложения с номером человека. Подставляется экраном «Мои чеки» при показе
+   * закладки (см. app/ui/screens/fns.py); в готовом файле остаётся заглушка, и тогда
+   * ключ копируется в буфер, а не открывает приложение. */
+  var APP = "__APP_URL__";
 
   var stopped = false;
   var caught = "";
@@ -212,6 +216,58 @@
       for (j = 0; j < box.length; j++) {
         value = box.getItem(box.key(j));
         if (value && JWT.test(value) && !/refresh/i.test(box.key(j))) return value;
+      }
+    }
+    return "";
+  }
+
+  /* Refresh-токен и идентификатор устройства — то, что нужно приложению, чтобы ходить
+   * в кабинет самому: ключ доступа живёт недолго, refresh-токен обновляет его без
+   * человека, а устройство кабинет помнит и по нему выдаёт новые ключи. Зачем это
+   * вообще: на отправку кода по СМС кабинет требует капчу (проверено 16.09.2026),
+   * и с сервера её не пройти — зато здесь, в браузере, человек уже вошёл сам. */
+  var REFRESH_KEYS = ["refresh.token", "refreshToken", "refresh"];
+
+  function storages() {
+    var boxes = [];
+    try { boxes.push(localStorage); } catch (e) { /* закрыто настройками */ }
+    try { boxes.push(sessionStorage); } catch (e) { /* закрыто настройками */ }
+    return boxes;
+  }
+
+  function unquote(value) {
+    return String(value || "").replace(/^"+|"+$/g, "");
+  }
+
+  function refreshToken() {
+    var boxes = storages(), i, j, box, value;
+    for (i = 0; i < boxes.length; i++) {
+      for (j = 0; j < REFRESH_KEYS.length; j++) {
+        value = unquote(boxes[i].getItem(REFRESH_KEYS[j]));
+        if (value.length > 16) return value;
+      }
+    }
+    for (i = 0; i < boxes.length; i++) {
+      box = boxes[i];
+      for (j = 0; j < box.length; j++) {
+        if (/refresh/i.test(box.key(j))) {
+          value = unquote(box.getItem(box.key(j)));
+          if (value.length > 16) return value;
+        }
+      }
+    }
+    return "";
+  }
+
+  function deviceId() {
+    var boxes = storages(), i, j, box, value;
+    for (i = 0; i < boxes.length; i++) {
+      box = boxes[i];
+      for (j = 0; j < box.length; j++) {
+        if (/deviceid/i.test(box.key(j))) {
+          value = unquote(box.getItem(box.key(j)));
+          if (value.length >= 8) return value;
+        }
       }
     }
     return "";
@@ -377,6 +433,7 @@
 
   var here = FNS.test(location.hostname);
   var takeAuto = button("Забрать все чеки", "main");
+  var connect = button("Подключить к приложению");
   var again = button("Заново", "ghost");
   var stop = button("Стоп", "ghost");
   var add = button("Добавить эту страницу", here ? "" : "main");
@@ -390,6 +447,7 @@
     takeAll.style.display = n ? "" : "none";
     clearBtn.style.display = n ? "" : "none";
     takeAuto.style.display = here && !busy ? "" : "none";
+    connect.style.display = here && !busy ? "" : "none";
     again.style.display = here && !busy && Object.keys(taken()).length ? "" : "none";
     stop.style.display = busy ? "" : "none";
     add.style.display = busy ? "none" : "";
@@ -445,6 +503,45 @@
   }
 
   takeAuto.onclick = function () { run(false); };
+
+  /* Ключ — в адрес приложения, без пробелов и плюсов, чтобы доехал целым. */
+  function pack(text) {
+    return btoa(unescape(encodeURIComponent(text)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  /* Ключ доступа — в приложение. Дальше оно забирает чеки само при каждом входе,
+   * и капча ему не нужна: вход уже сделан здесь, человеком.
+   * С телефона копировать и вставлять неудобно, поэтому, если приложение назвало
+   * свой адрес, просто открываем его с ключом в адресе: приложение ключ заберёт и
+   * адрес почистит. location.replace — чтобы страница кабинета с нашим адресом не
+   * осталась в истории браузера. */
+  connect.onclick = function () {
+    var pass = token();
+    if (!pass) {
+      status.textContent = "кабинет не узнал вход — обновите страницу кабинета и попробуйте снова";
+      return;
+    }
+    var keys = JSON.stringify({
+      source: "lkdr-keys",
+      takenAt: new Date().toISOString(),
+      token: pass.replace(/^Bearer /i, ""),
+      refresh: refreshToken(),
+      deviceId: deviceId()
+    });
+    if (APP.indexOf("http") === 0) {
+      status.textContent = "открываю приложение…";
+      location.replace(APP + (APP.indexOf("?") < 0 ? "?" : "&") + "keys=" + encodeURIComponent(pack(keys)));
+      return;
+    }
+    copy(keys).then(function () {
+      status.textContent = "ключ скопирован — вставьте его в приложении на экране «Мои чеки»";
+    }).catch(function () {
+      showText(keys);
+      status.textContent = "браузер не дал скопировать — текст выделен, нажмите Ctrl+C";
+    });
+  };
+
   again.onclick = function () { forget(); run(true); };
   stop.onclick = function () { stopped = true; status.textContent = "останавливаюсь…"; };
 
@@ -478,7 +575,7 @@
   clearBtn.onclick = function () { setBuffer(""); refresh(); };
   close.onclick = function () { panel.remove(); };
 
-  [takeAuto, again, stop, add, takeAll, clearBtn, status, close].forEach(function (el) {
+  [takeAuto, connect, again, stop, add, takeAll, clearBtn, status, close].forEach(function (el) {
     panel.appendChild(el);
   });
   document.body.appendChild(panel);

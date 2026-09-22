@@ -1,0 +1,149 @@
+{% extends "layout.html" %}
+{% block title %}О продукте — Моя корзина{% endblock %}
+
+{# Экран читают сверху вниз и обычно один раз, поэтому порядок здесь — это порядок
+   доверия: сначала зачем это нужно, потом почему расчёт устроен именно так, потом
+   откуда берётся каждая цифра, и только в конце — чего приложение не умеет и что в
+   нём не проверено. Последнее внизу не потому, что оно менее важно, а потому, что
+   без первых трёх разделов его не с чем сопоставить.
+
+   Зелёный тут работает по общему правилу направления «Цвет магазина»: он означает
+   выгоду и готовое. Всё, что сделано, но не проверено живьём, — жёлтое, и это
+   ровно та разница, ради которой экран и существует. #}
+
+{% block body %}
+
+{% macro mark(colour, label) %}
+  <span class="pill" style="border-color:{{ colour }};color:{{ colour }}">{{ label }}</span>
+{% endmacro %}
+
+<div class="card">
+  <h2>Те же продукты, меньше денег</h2>
+  <p class="muted" style="max-width:62ch">Вы покупаете то же, что и всегда, а платите меньше.
+    Приложение читает ваши чеки, находит эти же товары в сетях с доставкой по вашему адресу,
+    накладывает условия ваших карт и говорит, что где брать, чтобы недельная закупка обошлась
+    дешевле. Ниже — из чего складывается это «дешевле» и где у него предел.</p>
+  <div class="row">
+    <a class="btn" href="{{ page_url }}" target="_blank" rel="noopener">Страница о продукте</a>
+    <a class="btn" href="{{ repo_url }}" target="_blank" rel="noopener">Исходный код</a>
+  </div>
+</div>
+
+{# ---------- почему не «где дешевле» ---------- #}
+<h2>Дешевле по строке ≠ выгоднее итогом</h2>
+<div class="card">
+  <p class="muted" style="max-width:62ch">Перебор ищет не самую низкую цену на каждую
+    позицию, а самый низкий итог. Поэтому в разбиении попадаются строки, которые на первый
+    взгляд стоят не в том магазине: переплата в несколько рублей держит чек выше порога, за
+    которым включается кэшбэк или пропадает доставка. Разбиение и близость чеков к порогам
+    показывает <a href="{{ result_path }}">«Результат»</a>.</p>
+
+  <pre style="overflow-x:auto;background:var(--tint);border-radius:12px;padding:16px 18px;
+       font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:0.8rem;
+       line-height:1.65;margin:0">{{ formula }}</pre>
+</div>
+
+<h3>Ваши пороги</h3>
+<p class="dim">Это те самые числа, из-за которых иногда выгоднее взять дороже. Взяты из
+  магазинов и из акций, которые вы завели на экране
+  <a href="{{ cards_path }}">«Карты и акции»</a>, а не придуманы для примера.</p>
+<div class="grid two">
+  {% for t in thresholds %}
+    <div class="card">
+      <div class="row">
+        <span class="dot s-{{ t.code }}"></span><strong>{{ t.name }}</strong>
+      </div>
+      <p class="dim" style="margin:8px 0 0">{{ t.delivery }}</p>
+      <p class="dim" style="margin:2px 0 0">{{ t.cashback }}</p>
+    </div>
+  {% endfor %}
+</div>
+
+{# ---------- четыре шага ---------- #}
+<h2>Четыре шага от чека до разбиения</h2>
+<div class="grid two">
+  {% for title, text in steps %}
+    <div class="card">
+      <div class="eyebrow">Шаг {{ loop.index }}</div>
+      <strong>{{ title }}</strong>
+      <p class="muted" style="margin:6px 0 0">{{ text }}</p>
+    </div>
+  {% endfor %}
+</div>
+
+{# ---------- откуда берутся данные ---------- #}
+<h2>Откуда берутся данные</h2>
+<p class="muted" style="max-width:62ch">Чтобы расчёт был честным, нужны три вещи: что семья
+  обычно покупает, сколько это стоит сегодня в каждой сети и какие условия дают карты.
+  Каждая приходит своим путём, и пути эти очень разной прочности.</p>
+
+<div class="card">
+  <h3>Покупки</h3>
+  {% for text, state, label in purchases %}
+    <div class="row" style="padding:9px 0;border-top:1px solid var(--line)">
+      <span class="muted">{{ text }}</span>
+      <span class="spacer"></span>
+      {{ mark(tone[state], label) }}
+    </div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <h3>Цены сетей</h3>
+  <p class="dim">Сети не обязаны отдавать цены машинам: разметка меняется без
+    предупреждения, часть витрин закрыта намеренно. Поэтому источники разведены — упавший
+    не мешает остальным. Подробности по каждой сети —
+    на экране <a href="{{ stores_path }}">«Магазины»</a>, вход в сеть —
+    на <a href="{{ accounts_path }}">«Кабинетах»</a>.</p>
+  {% for p in prices %}
+    <div style="padding:9px 0;border-top:1px solid var(--line)">
+      <div class="row">
+        <span class="dot s-{{ p.code }}"></span><strong>{{ p.name }}</strong>
+        <span class="spacer"></span>
+        <span class="pill" style="border-color:{{ p.colour }};color:{{ p.colour }}">{{ p.label }}</span>
+      </div>
+      <p class="dim" style="margin:5px 0 0">{{ p.what }}</p>
+    </div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <h3>Условия карт</h3>
+  <p class="dim">Единственный контур, который приложение целиком берёт с ваших слов: ни один
+    банк не отдаёт свои проценты машине. Поэтому ошибка в условиях — это ошибка в итоге, и
+    поля на экране «Карты и акции» проверяются строже всего остального.</p>
+  {% for text, state, label in cards %}
+    <div class="row" style="padding:9px 0;border-top:1px solid var(--line)">
+      <span class="muted">{{ text }}</span>
+      <span class="spacer"></span>
+      {{ mark(tone[state], label) }}
+    </div>
+  {% endfor %}
+</div>
+
+{# ---------- что работает, а что нет ---------- #}
+<h2>Что работает, а что нет</h2>
+{% for part, state, label, detail in status %}
+  <div class="card">
+    <div class="row">
+      <strong>{{ part }}</strong>
+      <span class="spacer"></span>
+      {{ mark(tone[state], label) }}
+    </div>
+    <p class="muted" style="margin:8px 0 0">{{ detail }}</p>
+  </div>
+{% endfor %}
+
+{# ---------- что появилось и чего в нём ещё нет ---------- #}
+<h2>Что появилось за сентябрь</h2>
+<p class="muted" style="max-width:62ch">И чего в этом ещё нет. Без второй половины первая
+  читалась бы как список готового, а готовым здесь пока не всё.</p>
+{% for title, what, unfinished in new %}
+  <div class="card">
+    <strong>{{ title }}</strong>
+    <p class="muted" style="margin:7px 0 0">{{ what }}</p>
+    <div class="note warn" style="margin:10px 0 0">{{ unfinished }}</div>
+  </div>
+{% endfor %}
+
+{% endblock %}

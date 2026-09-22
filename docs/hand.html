@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Передать вход — закладка для телефона</title>
+<style>
+  :root { --ink:#16181d; --ink2:#5b6270; --line:#e6e8ec; --bg:#fff; --accent:#1f9d55; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --ink:#eef0f4; --ink2:#a4acbb; --line:#2a2f3a; --bg:#14161a; }
+  }
+  :root[data-theme="dark"] { --ink:#eef0f4; --ink2:#a4acbb; --line:#2a2f3a; --bg:#14161a; }
+  body { background:var(--bg); color:var(--ink); margin:0;
+         font:16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width:720px; margin:0 auto; padding:32px 16px 64px; }
+  h1 { font-size:27px; line-height:1.25; margin:0 0 6px; }
+  h2 { font-size:19px; margin:30px 0 8px; }
+  p, li { color:var(--ink); }
+  .lead { color:var(--ink2); margin:0 0 22px; }
+  .bm { display:inline-block; background:var(--accent); color:#fff; text-decoration:none;
+        padding:11px 18px; border-radius:10px; font-weight:600; cursor:grab; }
+  .card { border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin:18px 0; }
+  .muted { color:var(--ink2); font-size:14px; }
+  code { background:rgba(127,127,127,.14); padding:1px 5px; border-radius:5px; font-size:14px; }
+  ol, ul { padding-left:22px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Передать вход</h1>
+<p class="lead">Закладка переносит ваш вход в магазин с телефона в «Мою корзину».
+Нужна там, где наш сервер войти не может: сети пускают не всякий адрес, а ваш
+телефон они пускают как обычно.</p>
+
+<div class="card">
+  <p><strong>Перетащите эту ссылку на панель закладок:</strong></p>
+  <p><!-- БУКМАРКЛЕТ:НАЧАЛО --><a class="bm" href="javascript:%28function%20%28%29%20%7B%20var%20SITES%20%3D%20%5B%20%5B%22magnit.ru%22%2C%20%22magnit%22%5D%2C%20%5B%225ka.ru%22%2C%20%22pyaterochka%22%5D%2C%20%5B%22samokat.ru%22%2C%20%22samokat%22%5D%2C%20%5B%22lenta.com%22%2C%20%22lenta%22%5D%2C%20%5B%22vkusvill.ru%22%2C%20%22vkusvill%22%5D%2C%20%5B%22dixy.ru%22%2C%20%22dixy%22%5D%2C%20%5B%22metro-cc.ru%22%2C%20%22metro%22%5D%2C%20%5B%22perekrestok.ru%22%2C%20%22perekrestok%22%5D%20%5D%3B%20function%20chainOf%28host%29%20%7B%20host%20%3D%20%28host%20%7C%7C%20%22%22%29.toLowerCase%28%29%3B%20for%20%28var%20i%20%3D%200%3B%20i%20%3C%20SITES.length%3B%20i%2B%2B%29%20%7B%20var%20home%20%3D%20SITES%5Bi%5D%5B0%5D%3B%20if%20%28host%20%3D%3D%3D%20home%20%7C%7C%20host.slice%28-%28home.length%20%2B%201%29%29%20%3D%3D%3D%20%22.%22%20%2B%20home%29%20return%20SITES%5Bi%5D%5B1%5D%3B%20%7D%20return%20%22%22%3B%20%7D%20function%20jar%28%29%20%7B%20var%20out%20%3D%20%5B%5D%3B%20var%20raw%20%3D%20document.cookie%20%7C%7C%20%22%22%3B%20var%20parts%20%3D%20raw.split%28%22%3B%22%29%3B%20for%20%28var%20i%20%3D%200%3B%20i%20%3C%20parts.length%3B%20i%2B%2B%29%20%7B%20var%20piece%20%3D%20parts%5Bi%5D.trim%28%29%3B%20if%20%28%21piece%29%20continue%3B%20var%20at%20%3D%20piece.indexOf%28%22%3D%22%29%3B%20if%20%28at%20%3C%201%29%20continue%3B%20out.push%28%7B%20name%3A%20piece.slice%280%2C%20at%29.trim%28%29%2C%20value%3A%20piece.slice%28at%20%2B%201%29%20%7D%29%3B%20%7D%20return%20out%3B%20%7D%20function%20say%28text%2C%20bad%29%20%7B%20var%20box%20%3D%20document.createElement%28%22div%22%29%3B%20box.textContent%20%3D%20text%3B%20box.style.cssText%20%3D%20%22position%3Afixed%3Bleft%3A12px%3Bright%3A12px%3Bbottom%3A16px%3Bz-index%3A2147483647%3B%22%20%2B%20%22padding%3A14px%2016px%3Bborder-radius%3A12px%3Bfont%3A15px%2F1.4%20-apple-system%2Csystem-ui%2Csans-serif%3B%22%20%2B%20%22color%3A%23fff%3Bbox-shadow%3A0%206px%2024px%20rgba%280%2C0%2C0%2C.35%29%3Bbackground%3A%22%20%2B%20%28bad%20%3F%20%22%23b3261e%22%20%3A%20%22%231b5e20%22%29%3B%20document.body.appendChild%28box%29%3B%20setTimeout%28function%20%28%29%20%7B%20box.remove%28%29%3B%20%7D%2C%209000%29%3B%20%7D%20var%20chain%20%3D%20chainOf%28location.hostname%29%3B%20if%20%28%21chain%29%20%7B%20say%28%22%D0%AD%D1%82%D0%BE%20%D0%BD%D0%B5%20%D0%BC%D0%B0%D0%B3%D0%B0%D0%B7%D0%B8%D0%BD%20%D0%B8%D0%B7%20%C2%AB%D0%9C%D0%BE%D0%B5%D0%B9%20%D0%BA%D0%BE%D1%80%D0%B7%D0%B8%D0%BD%D1%8B%C2%BB.%20%D0%9E%D1%82%D0%BA%D1%80%D0%BE%D0%B9%D1%82%D0%B5%20%D1%81%D0%B0%D0%B9%D1%82%20%D1%81%D0%B5%D1%82%D0%B8%20%D0%B8%20%D0%BD%D0%B0%D0%B6%D0%BC%D0%B8%D1%82%D0%B5%20%D0%B7%D0%B0%D0%BA%D0%BB%D0%B0%D0%B4%D0%BA%D1%83%20%D1%82%D0%B0%D0%BC.%22%2C%20true%29%3B%20return%3B%20%7D%20var%20cookies%20%3D%20jar%28%29%3B%20if%20%28%21cookies.length%29%20%7B%20say%28%22%D0%A1%D1%82%D1%80%D0%B0%D0%BD%D0%B8%D1%86%D0%B0%20%D0%BD%D0%B5%20%D0%BE%D1%82%D0%B4%D0%B0%D0%BB%D0%B0%20%D0%BD%D0%B8%20%D0%BE%D0%B4%D0%BD%D0%BE%D0%B9%20%D0%BA%D1%83%D0%BA%D0%B8%20%E2%80%94%20%D0%BF%D0%BE%D1%85%D0%BE%D0%B6%D0%B5%2C%20%D0%B2%D1%8B%20%D0%B7%D0%B4%D0%B5%D1%81%D1%8C%20%D0%BD%D0%B5%20%D0%B2%D0%BE%D1%88%D0%BB%D0%B8.%22%2C%20true%29%3B%20return%3B%20%7D%20var%20text%20%3D%20JSON.stringify%28%7B%20store%3A%20chain%2C%20host%3A%20location.hostname%2C%20at%3A%20new%20Date%28%29.toISOString%28%29.slice%280%2C%2019%29%2C%20cookies%3A%20cookies%20%7D%29%3B%20function%20fallback%28%29%20%7B%20var%20area%20%3D%20document.createElement%28%22textarea%22%29%3B%20area.value%20%3D%20text%3B%20area.style.cssText%20%3D%20%22position%3Afixed%3Bleft%3A5%25%3Btop%3A10%25%3Bwidth%3A90%25%3Bheight%3A50%25%3Bz-index%3A2147483647%3B%22%20%2B%20%22font%3A12px%20monospace%3Bpadding%3A8px%3Bborder%3A2px%20solid%20%231b5e20%3Bborder-radius%3A8px%3Bbackground%3A%23fff%3B%22%3B%20document.body.appendChild%28area%29%3B%20area.focus%28%29%3B%20area.select%28%29%3B%20say%28%22%D0%A1%D0%BA%D0%BE%D0%BF%D0%B8%D1%80%D1%83%D0%B9%D1%82%D0%B5%20%D0%B2%D1%8B%D0%B4%D0%B5%D0%BB%D0%B5%D0%BD%D0%BD%D1%8B%D0%B9%20%D1%82%D0%B5%D0%BA%D1%81%D1%82%20%D0%B8%20%D0%B2%D1%81%D1%82%D0%B0%D0%B2%D1%8C%D1%82%D0%B5%20%D0%B5%D0%B3%D0%BE%20%D0%B2%20%C2%AB%D0%9C%D0%BE%D0%B5%D0%B9%20%D0%BA%D0%BE%D1%80%D0%B7%D0%B8%D0%BD%D0%B5%C2%BB%2C%20%D0%B2%20%D0%BA%D0%B0%D0%B1%D0%B8%D0%BD%D0%B5%D1%82%D0%B5%20%D1%8D%D1%82%D0%BE%D0%B9%20%D1%81%D0%B5%D1%82%D0%B8.%22%29%3B%20%7D%20if%20%28navigator.clipboard%20%26%26%20navigator.clipboard.writeText%29%20%7B%20navigator.clipboard.writeText%28text%29.then%28function%20%28%29%20%7B%20say%28%22%D0%92%D1%85%D0%BE%D0%B4%20%D1%81%D0%BA%D0%BE%D0%BF%D0%B8%D1%80%D0%BE%D0%B2%D0%B0%D0%BD%20%28%22%20%2B%20cookies.length%20%2B%20%22%20%D0%BA%D1%83%D0%BA%29.%20%D0%9E%D1%82%D0%BA%D1%80%D0%BE%D0%B9%D1%82%D0%B5%20%C2%AB%D0%9C%D0%BE%D1%8E%20%D0%BA%D0%BE%D1%80%D0%B7%D0%B8%D0%BD%D1%83%C2%BB%2C%20%22%20%2B%20%22%D1%8D%D0%BA%D1%80%D0%B0%D0%BD%20%C2%AB%D0%9A%D0%B0%D0%B1%D0%B8%D0%BD%D0%B5%D1%82%D1%8B%C2%BB%20%E2%86%92%20%D1%8D%D1%82%D0%B0%20%D1%81%D0%B5%D1%82%D1%8C%2C%20%D0%B8%20%D0%B2%D1%81%D1%82%D0%B0%D0%B2%D1%8C%D1%82%D0%B5.%22%29%3B%20%7D%2C%20fallback%29%3B%20%7D%20else%20%7B%20fallback%28%29%3B%20%7D%20%7D%29%28%29%3B" onclick="return false;" title="Перетащите эту ссылку на панель закладок">Передать вход</a><!-- БУКМАРКЛЕТ:КОНЕЦ --></p>
+  <p class="muted">На телефоне перетащить некуда: заведите любую закладку, откройте её
+  правку и вставьте в адрес строку из <code>docs/hand.min.txt</code>. Имя дайте
+  короткое — по нему вы будете её искать.</p>
+</div>
+
+<h2>Как пользоваться</h2>
+<ol>
+  <li>Откройте сайт магазина на телефоне и <strong>войдите там как обычно</strong> —
+      своим номером, своим кодом из СМС.</li>
+  <li>Нажмите закладку. Внизу появится зелёная полоска: «Вход скопирован».</li>
+  <li>Откройте «Мою корзину» → <strong>Кабинеты</strong> → эта сеть →
+      <strong>«Вставить вход с телефона»</strong> и вставьте.</li>
+</ol>
+
+<h2>Что уезжает, а что нет</h2>
+<p>Уезжают куки этого сайта — то, чем браузер доказывает магазину, что он это вы.
+<strong>Пароля и кода из СМС среди них нет</strong>: их вы набрали в самой сети, и
+страница их не хранит.</p>
+<p>Закладка <strong>никуда ничего не отправляет</strong>. Она только кладёт текст в
+буфер обмена, а дальше вы сами решаете, вставлять его или нет.</p>
+
+<h2>Почему через буфер, а не сразу в приложение</h2>
+<p>Закладка работает на странице магазина, то есть на чужом сайте по <code>https</code>.
+Постучаться оттуда в приложение мешают сразу две вещи: браузер запрещает смешанное
+содержимое (<code>https</code> → <code>http</code>) и требует разрешения CORS. Обходить
+их пришлось бы ослаблением приёмной двери. Буфер обмена их просто не касается.</p>
+
+<h2>Как отобрать доступ</h2>
+<p>Выйдите из аккаунта в самом магазине и нажмите <strong>«Забыть»</strong> на экране
+«Кабинеты». Пока сеть помнит вход, сохранённые куки действуют.</p>
+
+<p class="muted">Собирается из читаемого исходника <code>docs/hand.src.js</code>:<br>
+<code>python tools/build_bookmarklet.py vhod</code></p>
+
+</div>
+</body>
+</html>

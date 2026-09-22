@@ -141,7 +141,7 @@ def lenta_address(monkeypatch):
 
 
 def _details(price, stock, name="Молоко пастеризованное 2,5%, 930мл"):
-    return {"ok": True, "data": {"storeId": 62, "item": {
+    return {"ok": True, "data": {"storeId": 291, "item": {
         "id": 80424, "name": name, "price": price, "priceRegular": 124.99, "stock": stock}}}
 
 
@@ -189,15 +189,70 @@ def test_lenta_without_address_does_not_ask_for_prices(monkeypatch):
     assert snaps == [] or all(s.store_code == "lenta" for s in snaps)
 
 
-def test_lenta_search_returns_ids_even_without_prices(monkeypatch, lenta_address):
-    """Поиск Ленты цен не отдаёт — это ожидаемо, кандидаты всё равно нужны."""
-    answer = {"ok": True, "data": {"storeId": 62, "items": [
+def test_lenta_search_takes_prices_from_the_search_itself(monkeypatch, lenta_address):
+    """Поиск Ленты отдаёт цену сразу — запись «price всегда 0» устарела 16.09.2026.
+
+    Ответ по «молоко» на Ходынском бульваре: те же поля, что у карточки, и у всех
+    десяти позиций цена больше нуля. Значит кандидату цена достаётся без второго
+    хода за карточкой.
+    """
+    answer = {"ok": True, "data": {"storeId": 291, "channel": "lo", "page": 1, "items": [
+        {"id": 671969, "name": "Молоко пастеризованное ЛЕНТА 2,5%, без змж, 900мл", "price": 91.99,
+         "priceRegular": 106.99, "discountPercent": 14, "stock": 64, "package": "900мл",
+         "slug": "moloko-pasterizovannoe-25-pet-bez-zmzh-rossiya-900ml",
+         "url": "https://lenta.com/product/moloko-pasterizovannoe-25-pet-bez-zmzh-rossiya-900ml-671969/"},
+    ]}}
+    monkeypatch.setattr(mcp_client, "call_tool", fake_tool({"storefront_products_search": answer}))
+    found = get_connector("lenta").search("молоко", limit=3)
+
+    assert found[0].sku == "671969" and found[0].price == 91.99 and found[0].unit == "pcs"
+    assert found[0].url == "https://lenta.com/product/moloko-pasterizovannoe-25-pet-bez-zmzh-rossiya-900ml-671969/"
+
+
+def test_lenta_zero_price_in_search_is_no_price_but_candidate_stays(monkeypatch, lenta_address):
+    """Ноль в цене поиска значит «в этой точке не продаётся»: цены нет, кандидат остаётся.
+
+    Кандидат нужен ради id и единицы («весовые» значит килограммы): по нему потом
+    спросят карточку в другой точке или найдут товар в резервном CSV.
+    """
+    answer = {"ok": True, "data": {"storeId": 291, "items": [
         {"id": 11993, "name": "Огурцы короткоплодные грунтовые, весовые", "price": 0, "stock": 0},
     ]}}
     monkeypatch.setattr(mcp_client, "call_tool", fake_tool({"storefront_products_search": answer}))
     found = get_connector("lenta").search("огурцы", limit=3)
 
     assert found[0].sku == "11993" and found[0].price is None and found[0].unit == "kg"
+
+
+def test_lenta_resolves_address_once_and_asks_by_hub_code(monkeypatch, lenta_address):
+    """Адрес разрешается в хаб доставки, а поиск и его кэш живут по коду хаба.
+
+    Проверено 16.09.2026: по адресу «Москва, Ходынский бульвар 4» resolve_store
+    называет хабом доставки ТК291 (aliasId 291), и поиск по storeId 291 отвечает
+    тем же, что по адресу. Ключ кэша поиска строится по коду: два написания одного
+    адреса и два соседа с одним хабом делят один кэш.
+    """
+    seen: list = []
+
+    def call(url, store_code, tool, arguments, cache_key=None):
+        seen.append((tool, arguments, cache_key))
+        if tool == "storefront_resolve_store":
+            return {"ok": True, "data": {
+                "suggested": {"delivery": {"id": 62, "aliasId": 291, "name": "ТК291", "shopType": "HM"}},
+                "hubs": [{"id": 3272, "aliasId": 1537, "name": "ТК1537", "shopType": "DY", "distance": 194}]}}
+        if tool == "storefront_products_search":
+            return {"ok": True, "data": {"storeId": 291, "items": [
+                {"id": 671969, "name": "Молоко пастеризованное ЛЕНТА 2,5%, 900мл", "price": 91.99, "stock": 64}]}}
+        return None
+
+    monkeypatch.setattr(mcp_client, "call_tool", call)
+    get_connector("lenta").search("молоко", limit=3)
+
+    resolve, search = seen
+    assert resolve[0] == "storefront_resolve_store" and resolve[1] == {"address": "Москва, Ходынский бульвар 4"}
+    assert search[0] == "storefront_products_search"
+    assert search[1] == {"query": "молоко", "page": 1, "storeId": 291, "channel": "lo"}
+    assert "291" in search[2] and "Ходынский" not in search[2], "кэш поиска должен строиться по коду хаба"
 
 
 def test_lenta_cart_link_sends_items_in_lentas_own_shape(monkeypatch):
@@ -264,8 +319,11 @@ def test_service_builds_lenta_link_through_lentas_own_connector(monkeypatch):
 
     called = {}
 
-    def fake_link(items):
+    def fake_link(items, location=None):
+        # Вторым аргументом едет точка человека: без неё Лента не отдаёт карточку,
+        # а без карточки неизвестен размер фасовки развесного товара.
         called["items"] = items
+        called["location"] = location
         return "https://lenta.com/x"
 
     monkeypatch.setattr(repo, "confirmed_mapping", lambda product_id, store_id: {"sku": "80424"})
@@ -275,7 +333,10 @@ def test_service_builds_lenta_link_through_lentas_own_connector(monkeypatch):
         product_id, qty = 1, 2
 
     assert service.cart_link("lenta", [Line()]) == "https://lenta.com/x"
-    assert called["items"] == [(80424, 2.0)]
+    # Третьим элементом едет единица измерения из сопоставления. Без неё Лента
+    # читала бы развесное количество как ГРАММЫ: 0,7 кг сыра уезжали как «1»,
+    # то есть один грамм (описание storefront_cart_link_create, 19.09.2026).
+    assert called["items"] == [(80424, 2.0, None)]
 
 
 # ---------- магазины без каталога: цены из чеков ----------
@@ -322,3 +383,156 @@ def test_history_connector_without_receipts_falls_back(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "empty.db"))
     init_db()
     assert get_connector("dixy").get_prices(["hist-404"]) == []
+
+
+# ---------- развесное у Ленты считается фасовками ----------
+#
+# САМАЯ ДОРОГАЯ ИЗ ТИХИХ ОШИБОК, НАЙДЕННЫХ 19.09.2026, И ПОЧИНЕНА ОНА НЕ С ПЕРВОГО
+# РАЗА. Описание инструмента у Ленты говорит «для развесных quantity — целые
+# граммы»; по нему и была написана первая правка. Замер на семи настоящих товарах
+# показал обратное: saleLimit у картофеля {min 1, max 15, step 1} при weightGrams
+# 1000 — в граммах это «не больше пятнадцати граммов картофеля», бессмыслица, а в
+# фасовках всё сходится. Значит quantity — число фасовок по weightGrams, и первая
+# правка отправила бы 0,7 кг картофеля как СЕМЬСОТ фасовок.
+#
+# Исходная же ошибка была в другую сторону: округление до единицы отдавало одну
+# фасовку независимо от её размера — 0,7 кг сыра превращались в 500 г.
+
+def test_lenta_counts_weighted_goods_in_packs_of_its_own_size(monkeypatch):
+    """0,7 кг сыра при фасовке 500 г — это две фасовки, а не одна и не 700."""
+    sent = {}
+
+    def tool(url, code, name, args, **kw):
+        if name == "storefront_product_details":
+            return {"item": {"isWeight": True, "weightGrams": 500,
+                             "saleLimit": {"minGrams": 1, "maxGrams": 10, "stepGrams": 1}}}
+        sent["items"] = args["items"]
+        return {"link": "https://lenta.com/x"}
+
+    monkeypatch.setattr(mcp_client, "call_tool", tool)
+    monkeypatch.setattr(mcp_client, "ok_payload", lambda a: a)
+    monkeypatch.setattr(lenta, "_where", lambda loc=None: {"storeId": 291})
+
+    lenta.cart_link([(600223, 0.7, "kg")])
+
+    assert sent["items"] == [{"id": 600223, "quantity": 2}]
+
+
+def test_a_kilogram_pack_takes_one_pack_per_kilogram(monkeypatch):
+    """Картофель фасуется по килограмму: 2 кг — две фасовки, а не две тысячи."""
+    sent = {}
+
+    def tool(url, code, name, args, **kw):
+        if name == "storefront_product_details":
+            return {"item": {"isWeight": True, "weightGrams": 1000,
+                             "saleLimit": {"minGrams": 1, "maxGrams": 15, "stepGrams": 1}}}
+        sent["items"] = args["items"]
+        return {"link": "https://lenta.com/x"}
+
+    monkeypatch.setattr(mcp_client, "call_tool", tool)
+    monkeypatch.setattr(mcp_client, "ok_payload", lambda a: a)
+    monkeypatch.setattr(lenta, "_where", lambda loc=None: {"storeId": 291})
+
+    lenta.cart_link([(300886, 2.0, "kg")])
+
+    assert sent["items"] == [{"id": 300886, "quantity": 2}]
+
+
+def test_the_ceiling_of_the_network_is_respected(monkeypatch):
+    """Выше потолка сети не просим: она всё равно не примет."""
+    sent = {}
+
+    def tool(url, code, name, args, **kw):
+        if name == "storefront_product_details":
+            return {"item": {"isWeight": True, "weightGrams": 300,
+                             "saleLimit": {"minGrams": 1, "maxGrams": 1, "stepGrams": 1}}}
+        sent["items"] = args["items"]
+        return {"link": "https://lenta.com/x"}
+
+    monkeypatch.setattr(mcp_client, "call_tool", tool)
+    monkeypatch.setattr(mcp_client, "ok_payload", lambda a: a)
+    monkeypatch.setattr(lenta, "_where", lambda loc=None: {"storeId": 291})
+
+    lenta.cart_link([(720097, 2.0, "kg")])
+
+    assert sent["items"] == [{"id": 720097, "quantity": 1}], "просили 7 фасовок, потолок 1"
+
+
+def test_a_piece_good_is_still_counted_in_pieces(monkeypatch):
+    """Штучное осталось штучным: правило про фасовки не должно расползтись на всё."""
+    sent = {}
+
+    def tool(url, code, name, args, **kw):
+        if name == "storefront_product_details":
+            raise AssertionError("у штучного товара карточку не спрашивают")
+        sent["items"] = args["items"]
+        return {"link": "https://lenta.com/x"}
+
+    monkeypatch.setattr(mcp_client, "call_tool", tool)
+    monkeypatch.setattr(mcp_client, "ok_payload", lambda a: a)
+
+    lenta.cart_link([(80424, 2, "pcs")])
+
+    assert sent["items"] == [{"id": 80424, "quantity": 2}]
+
+
+def test_a_good_the_network_calls_piecewise_is_not_repacked(monkeypatch):
+    """Наша единица сказала «кг», а сеть говорит isWeight:false — верим СЕТИ.
+
+    Наш `_unit` выводит вес из слова «весов» в названии, и это догадка.
+    """
+    sent = {}
+
+    def tool(url, code, name, args, **kw):
+        if name == "storefront_product_details":
+            return {"item": {"isWeight": False}}
+        sent["items"] = args["items"]
+        return {"link": "https://lenta.com/x"}
+
+    monkeypatch.setattr(mcp_client, "call_tool", tool)
+    monkeypatch.setattr(mcp_client, "ok_payload", lambda a: a)
+    monkeypatch.setattr(lenta, "_where", lambda loc=None: {"storeId": 291})
+
+    lenta.cart_link([(1, 0.7, "kg")])
+
+    assert sent["items"] == [{"id": 1, "quantity": 1}]
+
+
+def test_when_the_card_does_not_come_nothing_is_invented(monkeypatch):
+    """Карточка не пришла — считаем как раньше, по одной фасовке на килограмм.
+
+    Выдумать размер фасовки нельзя: у картофеля он 1000 г, у сыра 300. Ошибиться
+    в НЁМ — значит ошибиться в количестве в разы, а прежнее поведение хотя бы
+    предсказуемо и уже знакомо человеку.
+    """
+    sent = {}
+
+    def tool(url, code, name, args, **kw):
+        if name == "storefront_product_details":
+            raise RuntimeError("сеть не ответила")
+        sent["items"] = args["items"]
+        return {"link": "https://lenta.com/x"}
+
+    monkeypatch.setattr(mcp_client, "call_tool", tool)
+    monkeypatch.setattr(mcp_client, "ok_payload", lambda a: a)
+    monkeypatch.setattr(lenta, "_where", lambda loc=None: {"storeId": 291})
+
+    lenta.cart_link([(1, 0.7, "kg")])
+
+    assert sent["items"] == [{"id": 1, "quantity": 1}]
+
+
+def test_vkusvill_takes_the_unit_without_choking_on_it(monkeypatch):
+    """ВкусВиллу единица не нужна, но принять её он обязан — иначе ссылки не будет."""
+    sent = {}
+
+    def tool(url, code, name, args, **kw):
+        sent["products"] = args["products"]
+        return {"link": "https://vkusvill.ru/x"}
+
+    monkeypatch.setattr(mcp_client, "call_tool", tool)
+    monkeypatch.setattr(mcp_client, "ok_payload", lambda a: a)
+
+    vkusvill.cart_link([(52, 0.7, "kg")])
+
+    assert sent["products"] == [{"xml_id": 52, "q": 0.7}], "дробное ВкусВилл берёт как есть"

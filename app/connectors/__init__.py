@@ -26,6 +26,7 @@ from app.connectors.history import (  # noqa: F401
 )
 from app.connectors.lenta import LentaConnector  # noqa: F401
 from app.connectors.magnit import MagnitConnector  # noqa: F401
+from app.connectors.metro import MetroConnector  # noqa: F401
 from app.connectors.stub import StubConnector  # noqa: F401
 from app.connectors.vkusvill import VkusvillConnector  # noqa: F401
 
@@ -39,6 +40,7 @@ __all__ = [
     "PyaterochkaConnector",
     "SamokatConnector",
     "MagnitConnector",
+    "MetroConnector",
     "StubConnector",
     "VkusvillConnector",
     "available_codes",

@@ -1,7 +1,8 @@
 """Наполнение базы демо-данными: эталоны, карты и акции, тестовый чек, тестовая корзина.
 
 Запуск из корня проекта:
-    .venv\\Scripts\\python.exe tools/seed.py
+    .venv\\Scripts\\python.exe tools/seed.py          — в общую базу из config.yaml
+    .venv\\Scripts\\python.exe tools/seed.py demo     — в рабочее место demo (data/users/demo)
 Идемпотентен: повторный запуск не плодит дубли.
 """
 from __future__ import annotations
@@ -102,7 +103,12 @@ def seed_basket(product_ids: dict[str, int]) -> int:
     return basket_id
 
 
-def main() -> None:
+def main(phone: str | None = None) -> None:
+    if phone:
+        # рабочее место конкретного человека, а не общая база
+        from app import users
+
+        users.open_workspace(users.normalize_phone(phone) or phone)
     init_db()
     product_ids = seed_products()
     seed_cards_and_offers()
@@ -116,4 +122,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else None)

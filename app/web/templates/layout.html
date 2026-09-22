@@ -1,0 +1,82 @@
+{# Общая рама всех страниц: шапка, разделы, экраны раздела, нижняя панель телефона.
+
+   Разделов четыре, как в выбранном направлении «Цвет магазина». На широком экране
+   они стоят пилюлями в шапке, на телефоне уезжают вниз под палец — приложением
+   пользуются стоя у полки, и верхний ряд там не достать большим пальцем.
+
+   Адрес доставки стоит сразу за маркой, а не под меню: он определяет все цены на
+   странице, и внизу читался бы как часть содержимого, а не как настройка. #}
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  {# Строка состояния телефона красится в базу направления «Цвет магазина». Без
+     этого браузер докрашивает её серым по своему усмотрению, и белая база
+     обрывается полосой чужого цвета там, где её никто не рисовал. #}
+  <meta name="theme-color" content="#FFFFFF">
+  <title>{% block title %}Моя корзина{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Unbounded:wght@500;600;700&display=swap">
+  <link rel="stylesheet" href="{{ url_for('static', filename='korzina.css') }}">
+</head>
+<body>
+<header class="top">
+  <div class="top-row">
+    <a class="brand" href="/"><span class="mark">🛒</span> Моя корзина</a>
+    {% if phone %}
+      <a class="addr" href="{{ url_for('screen.home') }}#address"
+         title="Адрес определяет цены и наличие во всех сетях">
+        {{ address or 'Укажите адрес' }}
+      </a>
+      <span class="spacer"></span>
+      <span class="dim">{{ 'Демо' if is_demo else phone_label }}</span>
+      <form method="post" action="{{ url_for('auth.logout') }}" style="display:inline">
+        <button class="btn" type="submit">Выйти</button>
+      </form>
+    {% endif %}
+  </div>
+
+  {% if phone %}
+    <nav class="sections">
+      {% for name in SECTIONS %}
+        {% set first = screens_of(name)[0] %}
+        <a href="{{ first.path }}" class="{{ 'on' if screen and screen.section == name }}">{{ name }}</a>
+      {% endfor %}
+    </nav>
+    {% if screen %}
+      <nav class="tabs">
+        {% for s in screens_of(screen.section) %}
+          <a href="{{ s.path }}" class="{{ 'on' if s.key == screen.key }}">{{ s.title }}</a>
+        {% endfor %}
+      </nav>
+    {% endif %}
+  {% endif %}
+</header>
+
+<main>
+  {% if screen %}
+    <div class="eyebrow">{{ screen.eyebrow }}</div>
+    <h1>{{ screen.title }}</h1>
+  {% endif %}
+  {% block body %}{% endblock %}
+</main>
+
+{# Нижняя панель разделов. Она прибита к окну, и над ней встают прилипшие строки
+   других экранов: итог корзины и панель действий в окне магазина. Подняты они на
+   высоту панели ПЛЮС вырез телефона (--bottom-bar и env(safe-area-inset-bottom) в
+   korzina.css) — панель на вырез растёт, и слагаемое это не украшение: без него
+   панель накрывала нижнюю половину кнопки «Посчитать», и человек метил в неё, а
+   попадал в «Каталог». На настольном экране вырез равен нулю. #}
+{% if phone %}
+  <nav class="bottom" aria-label="Разделы">
+    {% for name in SECTIONS %}
+      {% set first = screens_of(name)[0] %}
+      <a href="{{ first.path }}" class="{{ 'on' if screen and screen.section == name }}">{{ name }}</a>
+    {% endfor %}
+  </nav>
+{% endif %}
+</body>
+</html>

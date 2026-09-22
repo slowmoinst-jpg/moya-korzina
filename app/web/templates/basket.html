@@ -1,0 +1,441 @@
+{# Корзина. Главный экран ежедневного пользования, и собран он под телефон: человек
+   стоит у полки и добавляет товары одной рукой.
+
+   ВСЁ, ЧТО МЕНЯЕТ КОРЗИНУ, ЛЕЖИТ В ОДНОЙ ФОРМЕ — cart-items. Кнопки, стоящие вне
+   её (частое, подсказка поиска, «Посчитать» в прилипшей строке), названы её именем
+   через form="cart-items" и шлют её же. Так набранные количества доезжают до
+   сервера при ЛЮБОМ нажатии, где бы кнопка ни стояла: человек правит корзину по
+   строке, и потерять его ввод из-за порядка нажатий — худшее, что может сделать
+   экран. Вкладывать форму в форму нельзя, и атрибут form — единственный способ
+   держать всё в одной, не выстраивая экран вокруг разметки.
+
+   ПОРЯДОК БЛОКОВ ПЕРЕВЁРНУТ ПРОТИВ ПРЕЖНЕГО, И ЭТО НАРОЧНО. Было «сначала то, что
+   уже в корзине, потом добор» — и на телефоне это значило: чтобы положить второй
+   товар, прокрути мимо первого. Теперь сверху то, чем работают каждую минуту:
+   частое и поиск. Список от этого не пропал — сколько в нём позиций и почём,
+   держится в прилипшей строке итога у нижнего края, и «Посчитать» там же. #}
+{% extends "layout.html" %}
+{% block title %}Корзина — Моя корзина{% endblock %}
+{% block body %}
+
+{% if missing %}
+  <div class="note warn">Корзины №{{ missing }} нет — возможно, её удалили.
+    {% if baskets %}Ниже открыта последняя.{% endif %}</div>
+{% endif %}
+
+{# ---------- нет ни одной корзины ---------- #}
+{% if not basket %}
+  <div class="card">
+    <div class="eyebrow">Корзина пуста</div>
+    <h2>Собрать не из чего — пока</h2>
+    {% if usual.count %}
+      <p class="muted">У вас есть покупки: в последней, от {{ usual.date }}, было
+        {{ plural_items(usual.count) }}. Самая частая работа — купить примерно то же,
+        поэтому корзину не надо набивать руками: нажмите, и она соберётся.</p>
+      <form method="post" action="{{ screen.path }}">
+        <div class="grid two">
+          <button class="btn main wide cart-go" type="submit" name="do" value="new:history">Как в прошлый раз</button>
+          <button class="btn wide cart-go" type="submit" name="do" value="new:average">По среднему за месяц</button>
+        </div>
+        <div class="cart-find" style="margin-top:12px">
+          <input class="cart-q" name="name" placeholder="Или своя: Неделя 38">
+          <button class="btn" type="submit" name="do" value="new">Создать</button>
+        </div>
+      </form>
+    {% else %}
+      <p class="muted">Корзина собирается сама по вашим чекам — а чеков пока нет.
+        Загрузите хотя бы один на экране «Мои чеки», и дальше останется только
+        поправить количества.</p>
+      <a class="btn main wide cart-go" href="{{ receipts_path }}">К моим чекам</a>
+      <form method="post" action="{{ screen.path }}" class="cart-find" style="margin-top:14px">
+        <input class="cart-q" name="name" placeholder="Или заведите пустую: Неделя 38">
+        <button class="btn" type="submit" name="do" value="new">Создать</button>
+      </form>
+    {% endif %}
+  </div>
+{% else %}
+
+{# ---------- какая корзина открыта ----------
+   Одна строка вместо карточки: название человек и так помнит, а место на телефоне
+   стоит дороже. Переключение корзин и создание новой уехали под «Другая корзина» —
+   это работа раз в неделю, и держать её на виду каждый день незачем. #}
+<div class="cart-head">
+  <span class="cart-head-name">{{ basket.name }}</span>
+  <span class="dim">#{{ basket.id }}</span>
+</div>
+
+<details class="cart-more">
+  <summary>Другая корзина · создана {{ basket.created_at }}</summary>
+  {% if baskets|length > 1 %}
+    {# Обычная форма GET: выбранная корзина оказывается в адресе, и на неё можно
+       дать ссылку. Ради этого весь переезд и затевался. #}
+    <form method="get" action="{{ screen.path }}" class="cart-find" style="margin-top:10px">
+      <select name="id">
+        {% for b in baskets %}
+          <option value="{{ b.id }}" {{ 'selected' if b.id == basket.id }}>{{ b.name }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn" type="submit">Открыть</button>
+    </form>
+  {% endif %}
+  <form method="post" action="{{ screen.path }}" class="cart-find" style="margin-top:10px">
+    <input name="name" placeholder="Новая корзина — например, Неделя 38">
+    <button class="btn" type="submit" name="do" value="new">Создать</button>
+  </form>
+</details>
+
+{# ---------- что делается прямо сейчас ---------- #}
+{% if job %}
+  {% if job.status == 'running' %}
+    <div class="note info">
+      {% if job.kind == 'ask' %}Спрашиваем магазины{% else %}Обновляем цены{% endif %}:
+      {{ job.done }} из {{ job.total }}{% if job.what %} · {{ job.what[:44] }}{% endif %}.
+      Это несколько минут — страницу можно закрыть, работа не прервётся.
+    </div>
+    {# Показать, что счётчик движется: сервер сам себя обновить не может, а
+       неподвижная строка неотличима от зависания. #}
+    <script>setTimeout(function () { location.reload(); }, 4000);</script>
+  {% elif job.status == 'ok' %}
+    <div class="note ok">{{ job.note }}
+      {% if job.kind != 'ask' %}<a href="{{ result_path }}?basket={{ basket.id }}">Открыть результат →</a>{% endif %}
+    </div>
+  {% else %}
+    <div class="note bad">Опрос не удался: {{ job.note }}. Цены остались прежними.</div>
+  {% endif %}
+{% endif %}
+
+{% if not address %}
+  <div class="note warn">Адрес не указан — магазины ответят ценами не вашей точки.
+    Укажите его в шапке.</div>
+{% endif %}
+
+{# ---------- добор: поиск и частое ----------
+   Стоит выше списка: это то, ради чего экран открывают каждый день. #}
+<div class="card cart-add">
+  <form method="get" action="{{ screen.path }}" class="cart-find">
+    <input type="hidden" name="id" value="{{ basket.id }}">
+    <input class="cart-q" id="cart-q" name="q" value="{{ query }}" autocomplete="off"
+           data-served="{{ query }}" aria-label="Найти товар"
+           placeholder="молоко · хлеб · огурцы">
+    <button class="btn" type="submit">Найти</button>
+  </form>
+
+  {# Сюда скрипт кладёт подсказку по мере набора. Пока он молчит — здесь пусто, а
+     поиск работает кнопкой «Найти»: подсказка надстройка, а не дорога. #}
+  <div class="cart-hints" id="cart-hints"></div>
+
+  <div id="cart-found">
+    {% if regulars %}
+      {# ЧАСТОЕ ДО ВСЯКОГО ПОИСКА. Человек покупает одно и то же, и пустое поле —
+         это вопрос там, где ответ уже есть: история покупок лежит в базе. #}
+      <div class="cart-often-title">Часто берёте</div>
+      <div class="cart-often">
+        {% for r in regulars %}
+          <button type="submit" form="cart-items" name="do" value="add:{{ r.product_id }}"
+                  title="Встречался в {{ r.times }} покупках">
+            <span class="cart-often-plus">＋</span>
+            <span class="cart-often-name">{{ r.name[:26] }}</span>
+          </button>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% if suggestions %}
+      <div class="cart-often-title">Ваши товары{% if query %} · «{{ query }}»{% endif %}</div>
+      {% for p in suggestions %}
+        <button class="cart-row" type="submit" form="cart-items" name="do" value="add:{{ p.id }}"
+                style="margin-bottom:6px">
+          <span class="cart-hit-text">
+            <span class="cart-hit-name">{{ p.name }}</span>
+            <span class="cart-hit-small">{{ p.unit }}{% if p.brand %} · {{ p.brand }}{% endif %}
+              · в {{ p.ready }} из {{ stores_n }} сетей</span>
+          </span>
+          <span class="cart-hit-plus">＋</span>
+        </button>
+      {% endfor %}
+      {% if suggestions_n > suggestions|length %}
+        <p class="dim" style="margin:6px 0 0">Показано {{ suggestions|length }} из {{ suggestions_n }} —
+          наберите точнее, и список сузится.</p>
+      {% endif %}
+    {% elif query %}
+      <p class="dim" style="margin-top:12px">Среди ваших товаров «{{ query }}» не нашлось.</p>
+    {% endif %}
+
+    {% if catalog %}
+      {# Товар из единого каталога уже сопоставлен между сетями: положить его значит
+         сразу получить артикулы везде, где он есть, — без поиска по каждой сети. #}
+      <div class="cart-often-title">Из единого каталога сетей</div>
+      {% for it in catalog %}
+        <button class="cart-row" type="submit" form="cart-items" name="do" value="catalog:{{ it.id }}"
+                style="margin-bottom:6px">
+          <span class="cart-hit-text">
+            <span class="cart-hit-name">{{ it.name }}</span>
+            <span class="cart-hit-small">{% if it.small %}{{ it.small }} · {% endif %}в {{ it.chains_n }}
+              из {{ it.stores_n }} сетей{% if it.chains %} · {{ it.chains }}{% endif %}</span>
+          </span>
+          <span class="cart-hit-plus">＋</span>
+        </button>
+      {% endfor %}
+    {% elif query %}
+      <p class="dim">В едином каталоге сетей «{{ query }}» пока нет.</p>
+    {% endif %}
+  </div>
+</div>
+
+{# ---------- позиции ----------
+   Одна форма на весь экран. Всё, что её шлёт, везёт с собой набранные количества. #}
+<form method="post" action="{{ screen.path }}" id="cart-items">
+  <input type="hidden" name="basket" value="{{ basket.id }}">
+  <input type="hidden" name="q" id="cart-q-sent" value="{{ query }}">
+
+  {% if not items %}
+    <div class="card">
+      <div class="eyebrow">Корзина пуста</div>
+      {% if usual.count %}
+        <h2>Пока ничего не набрано</h2>
+        <p class="muted">Можно собрать заново по покупке от {{ usual.date }} — там было
+          {{ plural_items(usual.count) }}, — или добрать товары поиском выше.</p>
+        <div class="grid two">
+          <button class="btn main wide cart-go" type="submit" name="do" value="fill:history">Собрать заново</button>
+          <button class="btn wide cart-go" type="submit" name="do" value="fill:average">По среднему за месяц</button>
+        </div>
+      {% else %}
+        <h2>Наполнить нечем</h2>
+        <p class="muted">Истории покупок пока нет — загрузите чеки на экране «Мои чеки»,
+          и корзина будет собираться из них одним нажатием. А пока её можно набрать
+          поиском выше.</p>
+        <a class="btn main wide cart-go" href="{{ receipts_path }}">К моим чекам</a>
+      {% endif %}
+    </div>
+  {% else %}
+    <div class="cart-count">
+      <h2>В корзине</h2>
+      <span class="dim">{{ plural_items(items|length) }}</span>
+    </div>
+
+    {% for it in items %}
+      <div class="cart-line">
+        <div class="cart-line-top">
+          <div class="cart-line-name">{{ it.name }}</div>
+          <div class="cart-line-sum sum">{{ rub(it.best.value) if it.best else '—' }}</div>
+        </div>
+        <div class="cart-line-where dim">
+          {% if it.best %}
+            <span class="chip"><span class="dot s-{{ it.best.code }}"></span>{{ it.best.store }}</span>
+            {% if it.best.diff >= 0.5 %}
+              <span class="gain">дешевле на {{ rub(it.best.diff) }}</span>
+            {% else %}
+              цена одна на {{ it.best.count }} сети
+            {% endif %}
+          {% else %}
+            цен нет — нажмите «Узнать цены по магазинам»
+          {% endif %}
+        </div>
+
+        {# Количество — крупными кнопками. Поле между ними ростом с кнопку и
+           крупнее текста: целиться в него никто не обязан, но без него нельзя
+           было бы задать вес — «0,7 кг» это семь нажатий по «＋». #}
+        <div class="cart-step">
+          <button class="cart-pm" type="submit" name="do" value="minus:{{ it.pid }}"
+                  aria-label="Убавить {{ it.name }}" title="Убавить">−</button>
+          <input class="cart-qty" name="qty:{{ it.pid }}" value="{{ num(it.qty) }}"
+                 inputmode="decimal" aria-label="Сколько: {{ it.name }}">
+          <span class="cart-unit dim">{{ unit_label(it.unit) }}</span>
+          <button class="cart-pm" type="submit" name="do" value="plus:{{ it.pid }}"
+                  aria-label="Добавить {{ it.name }}" title="Добавить">＋</button>
+          <button class="cart-off" type="submit" name="do" value="drop:{{ it.pid }}"
+                  aria-label="Убрать {{ it.name }} из корзины">Убрать</button>
+        </div>
+
+        {% if it.prices %}
+          <details class="cart-prices">
+            <summary class="dim">Цены по сетям</summary>
+            <div class="row" style="gap:14px;margin-top:8px">
+              {% for p in it.prices %}
+                <span class="chip" style="{% if not p.in_stock %}color:var(--ink3);text-decoration:line-through{% elif p.best %}color:var(--green);font-weight:600{% else %}color:var(--ink3){% endif %}"
+                      title="{{ p.name }}{% if not p.in_stock %} — сейчас нет в наличии{% endif %}">
+                  <span class="dot s-{{ p.code }}"></span>{{ rub(p.value) }}
+                </span>
+              {% endfor %}
+            </div>
+            <p class="dim" style="margin:8px 0 0">Перечёркнутая цена значит «спросили, и товара
+              там сейчас нет» — это не то же самое, что «цену не знаем».</p>
+          </details>
+        {% endif %}
+      </div>
+    {% endfor %}
+
+    {# «Сохранить» здесь не главная кнопка и быть ею не должна: количества
+       сохраняет ЛЮБОЕ нажатие на экране. Она для одного случая — человек набрал
+       число в поле и больше ничего нажимать не собирается. #}
+    <div class="row" style="margin:12px 0 14px;gap:8px">
+      <button class="btn cart-go" type="submit" name="do" value="save">Сохранить</button>
+      <button class="btn cart-go" type="submit" name="do" value="ask"
+              {{ 'disabled' if job and job.status == 'running' }}>Узнать цены по магазинам</button>
+      <span class="spacer"></span>
+      <button class="btn cart-off" type="submit" name="do" value="clear"
+              style="margin-left:0">Очистить</button>
+    </div>
+  {% endif %}
+</form>
+
+{% if totals %}
+  <div class="card" style="background:var(--tint)">
+    <div class="row">
+      <strong>Вся корзина в одном магазине</strong>
+      <span class="spacer"></span>
+      {% for t in totals %}
+        <span class="chip" style="margin-left:10px" title="{{ t.name }}">
+          <span class="dot s-{{ t.code }}"></span><span class="sum">{{ rub(t.value) }}</span>
+        </span>
+      {% endfor %}
+    </div>
+    <p class="dim" style="margin:8px 0 0">В сумму сети идёт только то, что в ней есть:
+      магазин без половины корзины иначе выглядел бы самым дешёвым.</p>
+  </div>
+{% endif %}
+
+{# ---------- расчёт со свежими ценами ----------
+   Быстрый расчёт живёт в прилипшей строке внизу, одним нажатием. Здесь остаётся
+   то, что стоит минуты и потому не должно попадаться под палец случайно. #}
+{% if items %}
+  <div class="card">
+    <h2>Посчитать по свежим ценам</h2>
+    {# ДВЕ КНОПКИ ВМЕСТО ОТМЕТКИ «сначала обновить». Отметка жила бы в той же форме,
+       что и «Посчитать» внизу, и забытая галочка превращала бы мгновенный расчёт в
+       ожидание на несколько минут — причём человек не понял бы, почему. Два разных
+       нажатия говорят, что будет, ещё до того, как их нажали. #}
+    <p class="dim">«Посчитать» внизу считает по ценам последнего опроса — это мгновенно.
+      Если цены собирались давно, обновите их: опрос уйдёт в фон и займёт минуты,
+      а корзина останется открытой.</p>
+    <button class="btn main wide cart-go" type="submit" form="cart-items" name="do" value="fresh"
+            {{ 'disabled' if job and job.status == 'running' }}>Обновить цены и рассчитать</button>
+  </div>
+
+  {% if saved %}
+    <details class="card">
+      <summary><strong>Сохранённые расчёты ({{ saved|length }})</strong></summary>
+      {# Прокручивается таблица, а не страница: горизонтальная прокрутка всего
+         экрана на телефоне выглядит как поломка вёрстки, и из неё трудно выбраться. #}
+      <div style="overflow-x:auto;margin-top:10px">
+        <table>
+          <tr><th>Когда</th><th>Итого</th><th>Было бы</th><th>Экономия</th></tr>
+          {% for v in saved %}
+            <tr>
+              <td class="dim">{{ v.created_at }}</td>
+              <td class="sum">{{ rub(v.total) }}</td>
+              <td class="dim">{{ rub(v.baseline) }}</td>
+              <td class="gain">{{ rub(v.savings_rub) }} · {{ pct(v.savings_pct) }}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      </div>
+    </details>
+  {% endif %}
+{% endif %}
+
+{# ---------- итог всегда виден ----------
+   Прилипшая, а не прибитая: прибитая прыгает от клавиатуры и закрывает последнюю
+   строку списка. Стоит последней на странице — значит у неё есть своё место, и,
+   докрутив до низа, человек видит под ней пустоту, а не спрятанную позицию. #}
+<div class="cart-bar">
+  <div class="cart-bar-num">
+    <div class="cart-bar-sum sum">{% if approx.priced %}≈ {{ rub(approx.total) }}{% else %}—{% endif %}</div>
+    <div class="cart-bar-small">
+      {%- if approx.count -%}
+        {{ plural_items(approx.count) }}{% if approx.blind %} · {{ approx.blind }} без цены{% endif %}
+      {%- else -%}
+        Пусто — добавьте первое сверху
+      {%- endif -%}
+    </div>
+  </div>
+  {# ГАСНЕТ ТОЛЬКО ПУСТАЯ КОРЗИНА, А НЕ ИДУЩИЙ ОПРОС ЦЕН.
+     Кнопка гасла на всё время фонового опроса — то есть на минуты, — хотя абзац
+     двумя сантиметрами выше обещает обратное: «Посчитать» считает по ценам
+     последнего опроса, и это мгновенно. Расчёт от идущего опроса не зависит
+     вовсе: он уводит на «Результат» по уже снятым ценам. Человек в это время
+     смотрел на серую кнопку и перечитывал обещание, а страница сама
+     перезагружалась каждые четыре секунды. #}
+  <button class="btn main cart-go" type="submit" form="cart-items" name="do" value="calc"
+          {{ 'disabled' if not items }}>Посчитать</button>
+</div>
+
+{# Подсказка по мере набора — единственное место экрана, где нужен скрипт.
+   Без него остаётся обычный поиск кнопкой «Найти», и ничего больше не меняется:
+   всё, что кладёт товар в корзину, — это кнопки формы, а не скрипт. #}
+<script>
+(function () {
+  var field = document.getElementById('cart-q');
+  var box = document.getElementById('cart-hints');
+  var found = document.getElementById('cart-found');
+  var sent = document.getElementById('cart-q-sent');
+  if (!field || !box || !window.fetch) { return; }
+
+  var where = {{ (screen.path ~ '/suggest')|tojson }};
+  var basket = {{ basket.id|tojson }};
+  var served = field.getAttribute('data-served') || '';
+  var timer = null;
+  var asked = null;
+
+  function clear() { while (box.firstChild) { box.removeChild(box.firstChild); } }
+
+  function span(cls, text) {
+    var el = document.createElement('span');
+    el.className = cls;
+    el.textContent = text;              /* textContent, а не разметкой: название
+                                           товара приходит из базы и в разметке ему
+                                           делать нечего */
+    return el;
+  }
+
+  function draw(items) {
+    clear();
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      var button = document.createElement('button');
+      button.className = 'cart-hit';
+      button.type = 'submit';
+      button.name = 'do';
+      button.value = String(it['do'] || '');
+      /* Кнопка стоит вне формы, а шлёт её: количества позиций едут вместе с
+         добавлением, и набранное не пропадает. */
+      button.setAttribute('form', 'cart-items');
+      var text = document.createElement('span');
+      text.className = 'cart-hit-text';
+      text.appendChild(span('cart-hit-name', it.name || ''));
+      var small = [it.small, it.where].filter(Boolean).join(' · ');
+      if (small) { text.appendChild(span('cart-hit-small', small)); }
+      button.appendChild(text);
+      button.appendChild(span('cart-hit-plus', '＋'));
+      box.appendChild(button);
+    }
+  }
+
+  function ask() {
+    var q = field.value.trim();
+    if (sent) { sent.value = q; }       /* добавили из подсказки — вернулись к тому
+                                           же слову, а не к пустому поиску */
+    if (found) { found.style.display = (q === served) ? '' : 'none'; }
+    if (q === asked) { return; }
+    asked = q;
+    if (q.length < 2) { clear(); return; }
+    fetch(where + '?q=' + encodeURIComponent(q) + '&id=' + encodeURIComponent(basket),
+          {headers: {'Accept': 'application/json'}, credentials: 'same-origin'})
+      .then(function (answer) { return answer.ok ? answer.json() : null; })
+      .then(function (data) {
+        /* Ответы приходят не в том порядке, в котором их спросили: опоздавший
+           ответ на «мол» нарисовал бы подсказку к уже набранному «молоко». */
+        if (data && data.q === field.value.trim()) { draw(data.items || []); }
+      })
+      .catch(function () { /* сеть отвалилась — остаётся поиск кнопкой «Найти» */ });
+  }
+
+  field.addEventListener('input', function () {
+    clearTimeout(timer);
+    timer = setTimeout(ask, 200);
+  });
+})();
+</script>
+
+{% endif %}
+{% endblock %}

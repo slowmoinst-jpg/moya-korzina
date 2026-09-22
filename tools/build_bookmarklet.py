@@ -41,37 +41,70 @@ def minify(source: str) -> str:
     return re.sub(r"\s{2,}", " ", joined).strip()
 
 
-def build() -> str:
-    with open(SRC, encoding="utf-8") as fh:
+# Закладок стало две, и обе собираются одним и тем же способом.
+#
+# «Забрать чеки» — кабинет ФНС, история покупок. «Забрать цены» — витрина
+# Пятёрочки и Самоката: их цены видит только браузер человека (разбор —
+# в шапке docs/grab-prices.src.js), и пакет уезжает в дверь POST /api/prices.
+#
+# Отдельного сборщика второй закладке не завели нарочно: правила сборки у них
+# общие — снять комментарии, склеить в одну строку, проверить, что переводов
+# строки не осталось. Два сборщика разошлись бы в первый же месяц.
+BOOKMARKLETS = {
+    "cheki": {"src": SRC, "page": PAGE, "plain": PLAIN, "title": "Забрать чеки"},
+    "tseny": {"src": os.path.join(ROOT, "docs", "grab-prices.src.js"),
+              "page": os.path.join(ROOT, "docs", "grab-prices.html"),
+              "plain": os.path.join(ROOT, "docs", "grab-prices.min.txt"),
+              "title": "Забрать цены"},
+    # «Передать вход» — третья, и появилась она из стены, а не из удобства:
+    # 20.09.2026 сервер не смог войти в Магнит (капча, потом «Аккаунт
+    # заблокирован»), а телефон владельца входит как обычно. Разбор того, что
+    # она кладёт в буфер, — app/shopbrowser/handoff.py.
+    "vhod": {"src": os.path.join(ROOT, "docs", "hand.src.js"),
+             "page": os.path.join(ROOT, "docs", "hand.html"),
+             "plain": os.path.join(ROOT, "docs", "hand.min.txt"),
+             "title": "Передать вход"},
+}
+
+
+def build(src: str = SRC) -> str:
+    with open(src, encoding="utf-8") as fh:
         code = minify(fh.read())
     if "\n" in code:
         raise SystemExit("в собранном коде остался перевод строки — адрес закладки должен быть одной строкой")
     return "javascript:" + urllib.parse.quote(code, safe="")
 
 
-def put_into_page(href: str) -> int:
-    with open(PAGE, encoding="utf-8") as fh:
+def put_into_page(href: str, page_path: str = PAGE, title: str = "Забрать чеки") -> int:
+    with open(page_path, encoding="utf-8") as fh:
         page = fh.read()
     if MARK_OPEN not in page or MARK_CLOSE not in page:
-        raise SystemExit(f"в {PAGE} нет меток {MARK_OPEN} / {MARK_CLOSE}")
+        raise SystemExit(f"в {page_path} нет меток {MARK_OPEN} / {MARK_CLOSE}")
     head, _, rest = page.partition(MARK_OPEN)
     _, _, tail = rest.partition(MARK_CLOSE)
     link = (f'<a class="bm" href="{href}" onclick="return false;" '
-            'title="Перетащите эту ссылку на панель закладок">Забрать чеки</a>')
-    with open(PAGE, "w", encoding="utf-8", newline="\n") as fh:
+            f'title="Перетащите эту ссылку на панель закладок">{title}</a>')
+    with open(page_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(head + MARK_OPEN + link + MARK_CLOSE + tail)
     return len(href)
 
 
-def main() -> int:
-    href = build()
-    size = put_into_page(href)
-    # Тот же адрес отдельным файлом: его читает приложение, чтобы показать закладку
-    # прямо на экране «Мои чеки», и на него же ссылается grab.html для тех, кто
-    # заводит закладку руками. Забыть его — значит раздавать прошлую версию.
-    with open(PLAIN, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(href)
-    print(f"собрано: {size} символов, вставлено в docs/grab.html и docs/grab.min.txt")
+def main(argv: list[str] | None = None) -> int:
+    names = [a for a in (argv if argv is not None else sys.argv[1:]) if not a.startswith("-")]
+    chosen = names or list(BOOKMARKLETS)
+    for name in chosen:
+        spec = BOOKMARKLETS.get(name)
+        if not spec:
+            raise SystemExit(f"закладки «{name}» нет; есть: {', '.join(BOOKMARKLETS)}")
+        href = build(spec["src"])
+        size = put_into_page(href, spec["page"], spec["title"])
+        # Тот же адрес отдельным файлом: его читает приложение, чтобы показать
+        # закладку прямо на экране, и на него же ссылается страница для тех, кто
+        # заводит закладку руками. Забыть его — значит раздавать прошлую версию.
+        with open(spec["plain"], "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(href)
+        print(f"{name}: собрано {size} символов -> "
+              f"{os.path.relpath(spec['page'], ROOT)}, {os.path.relpath(spec['plain'], ROOT)}")
     return 0
 
 

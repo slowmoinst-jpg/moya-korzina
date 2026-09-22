@@ -31,4 +31,4 @@ if ($Seed) {
 }
 
 Write-Host "UI: http://localhost:$Port" -ForegroundColor Green
-& $py -m streamlit run app/ui/main.py --server.port $Port
+& $py -m app.web.server --port $Port

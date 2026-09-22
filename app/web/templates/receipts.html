@@ -1,0 +1,297 @@
+{# Экран «Мои чеки». Порядок блоков — порядок разговора с человеком:
+   сколько у него уже есть → чем подключён кабинет → как его подключить →
+   что делать, если не вышло. Запасные пути стоят НИЖЕ главного, но не спрятаны:
+   живой вход с сервера ни разу не проверен, и человеку может понадобиться любой.
+
+   Всё делается обычными формами POST с переводом обратно. Ни код из СМС, ни ключ
+   проверки, ни ключ доступа не уходят в адрес страницы — только телом запроса. #}
+{% extends "layout.html" %}
+{% block title %}Мои чеки — Моя корзина{% endblock %}
+{% block body %}
+
+{% for kind, text in get_flashed_messages(with_categories=true) %}
+  <div class="note {{ kind }}">{{ text }}</div>
+{% endfor %}
+
+{# ---------- сколько уже загружено ---------- #}
+<div class="card">
+  <div class="eyebrow">Ваша история</div>
+  <p class="muted" style="margin:6px 0 12px">{{ data.headline }}</p>
+  <div class="row">
+    {% for name, value in chips %}
+      <span class="chip"><span class="dim">{{ name }}</span> <b class="sum">{{ value }}</b></span>
+    {% endfor %}
+  </div>
+  {% if loose %}<p class="dim" style="margin:12px 0 0">{{ loose }}</p>{% endif %}
+</div>
+
+{% if data.next %}
+  <details class="card" {% if data.pending.receipts %}open{% endif %}>
+    <summary style="cursor:pointer">Что можно загрузить ещё · {{ data.next|length }}</summary>
+    {% for step in data.next[:5] %}
+      <div class="row" style="border-top:1px solid var(--line);padding:10px 0 0;margin-top:10px">
+        <span><b>{{ step.name }}</b><br><span class="dim">{{ step.gives }}</span></span>
+        <span class="spacer"></span>
+        <span class="dim" style="text-align:right;max-width:46%">{{ step.how }}</span>
+      </div>
+    {% endfor %}
+  </details>
+{% endif %}
+
+{# ---------- кабинет ФНС ---------- #}
+<div class="card">
+  <div class="row">
+    <h2 style="margin:0">Кабинет ФНС</h2>
+    {% if state.connected %}
+      <span class="pill" style="border-color:var(--green);color:var(--green)">подключён</span>
+    {% else %}
+      <span class="pill" style="border-color:var(--line2);color:var(--ink3)">не подключён</span>
+    {% endif %}
+  </div>
+
+  {# Долгая загрузка на виду. Пока она идёт, страница возвращается с заголовком
+     Refresh и сама перезапрашивает себя — поэтому числа ниже живые, а не застывшие
+     на том, что было в момент нажатия. #}
+  {% if job and job.running %}
+    <div class="note info" style="margin-top:12px">
+      <b>{{ job.saying }}</b>
+      <progress {% if job.stage != 'list' and job.total %}value="{{ job.done }}" max="{{ job.total }}"{% endif %}
+                style="width:100%;height:10px;margin:8px 0 4px"></progress>
+      <span class="dim">Идёт {{ job.elapsed }}. Страница обновляется сама каждые {{ refresh }} с.
+        Её можно закрыть — загрузка не оборвётся и допишет чеки до конца.
+        {% if job.silent > 60 %}<br>Кабинет молчит уже {{ job.silent }} с. Обычно это его
+        медленный ответ, а не обрыв: взятые чеки уже в истории, и загрузка продолжится
+        с того же места.{% endif %}</span>
+    </div>
+  {% elif report %}
+    {% for line in report %}<div class="note {{ line.kind }}" style="margin-top:12px">{{ line.text }}</div>{% endfor %}
+    <a class="btn" href="{{ history_path }}">Посмотреть историю</a>
+  {% elif job and job.error %}
+    <div class="note bad" style="margin-top:12px">Кабинет ответил: {{ job.error }}</div>
+  {% endif %}
+
+  {% if is_demo %}
+    <p class="muted" style="margin-top:12px">Демо — общая витрина: её открывает любой, кто нажал
+      «Посмотреть демо». Ключ от настоящего кабинета ФНС сюда класть нельзя — его увидят все.
+      Войдите по своему номеру, и кабинет появится.</p>
+
+  {% elif state.connected %}
+    <p class="muted" style="margin:12px 0 4px">Подключён кабинет <b>{{ connected_phone }}</b>.
+      Новые чеки берутся сами при каждом входе.</p>
+    <p class="dim" style="margin:0 0 12px">
+      {% if synced %}Последняя проверка {{ synced }}{% if last %}: {{ last }}{% endif %}.
+      {% else %}Проверка ещё не запускалась.{% endif %}
+    </p>
+    <div class="row">
+      <form method="post" action="{{ screen.path }}">
+        <input type="hidden" name="do" value="sync">
+        <button class="btn main" type="submit" {{ 'disabled' if job and job.running }}>
+          Проверить новые чеки</button>
+      </form>
+      <form method="post" action="{{ screen.path }}">
+        <input type="hidden" name="do" value="disconnect">
+        <button class="btn" type="submit">Отключить кабинет</button>
+      </form>
+    </div>
+
+  {% else %}
+    {# Главный путь — ключ из закладки. На отправку кода кабинет требует капчу
+       (живая проверка 16.09.2026: {"code": "empty.captcha"}), а капчу с сервера не
+       пройти: она рассчитана на человека. Зато в своём браузере человек уже вошёл
+       сам, и закладка отдаёт нам его ключ. #}
+    <p class="muted" style="margin:12px 0">Кабинет пускает программы только через капчу, поэтому
+      код по СМС из приложения он не даёт. Работает так: <b>1.</b> откройте кабинет и войдите в
+      него сами; <b>2.</b> нажмите закладку «Забрать все чеки» и в её панели кнопку
+      <b>«Подключить к приложению»</b> — приложение откроется уже подключённым и сразу начнёт
+      загрузку. Если браузер запретит переход, ключ ляжет в буфер обмена, и тогда
+      <b>3.</b> вставьте его сюда.</p>
+    <p class="dim" style="margin:0 0 10px">Нажимать закладку нужно в том же браузере, где вы вошли
+      в приложение: если оно попросит войти, ключ до него не доедет — вставьте его из буфера.</p>
+    <form method="post" action="{{ screen.path }}">
+      <input type="hidden" name="do" value="keys">
+      <textarea name="keys" rows="3" placeholder='{"source": "lkdr-keys", "token": "…", "refresh": "…"}'
+                autocomplete="off" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="btn main" type="submit">Подключить кабинет</button>
+      </div>
+    </form>
+
+    {# Ключ проверки из кабинета живёт в скрытом поле этой формы и нигде больше:
+       ни в куке, ни в адресе. Поэтому шаг «получить код» отвечает страницей, а не
+       переводом на неё. #}
+    <details class="card" style="margin:14px 0 0" {{ 'open' if challenge }}>
+      <summary style="cursor:pointer">Код по СМС из приложения</summary>
+      <p class="dim" style="margin:10px 0">Проверено 16.09.2026: на этом шаге кабинет требует
+        капчу, и с сервера её не пройти. Форма оставлена на случай, если капчу снимут, — и любой
+        ответ кабинета она показывает дословно.</p>
+
+      {% if challenge %}
+        <form method="post" action="{{ screen.path }}">
+          <input type="hidden" name="do" value="confirm">
+          <input type="hidden" name="challenge" value="{{ challenge.token }}">
+          <input type="hidden" name="phone" value="{{ challenge.phone }}">
+          <label class="dim" for="fns-code">Код из СМС</label>
+          <input id="fns-code" name="code" type="text" inputmode="numeric" pattern="[0-9]*"
+                 maxlength="6" autocomplete="one-time-code" placeholder="123456"
+                 autofocus style="margin-top:6px">
+          {% if challenge.expires_in %}
+            <p class="dim" style="margin:6px 0 0">Ключ проверки действует
+              {{ challenge.expires_in }} с — если не успели, запросите код заново.</p>
+          {% endif %}
+          <div class="row" style="margin-top:10px">
+            <button class="btn main" type="submit">Подтвердить и загрузить чеки</button>
+          </div>
+        </form>
+      {% else %}
+        <form method="post" action="{{ screen.path }}">
+          <input type="hidden" name="do" value="code">
+          <label class="dim" for="fns-phone">Телефон кабинета</label>
+          <input id="fns-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel"
+                 value="{{ own_phone }}" placeholder="+7 999 123-45-67" style="margin-top:6px">
+          <div class="row" style="margin-top:10px">
+            <button class="btn" type="submit">Получить код</button>
+          </div>
+        </form>
+      {% endif %}
+      <p class="dim" style="margin:12px 0 0">Код из СМС не хранится нигде. Ключ доступа к кабинету
+        лежит в вашем рабочем месте на сервере — иначе чеки не подтянутся без вас.</p>
+    </details>
+  {% endif %}
+</div>
+
+{# ---------- закладка ---------- #}
+<div class="card">
+  <h2>Закладка «Забрать все чеки»</h2>
+  <p class="muted">Перетащите ссылку ниже на панель закладок браузера — это делается один раз.
+    Дальше: откройте кабинет ФНС, войдите в него и нажмите там эту закладку. В её панели нажмите
+    <b>«Подключить к приложению»</b> — приложение откроется уже подключённым и само заберёт все чеки.<br>
+    <b>Больше к закладке возвращаться не нужно:</b> дальше приложение ходит в кабинет само при
+    каждом входе и обновляет ключ без вас. Кнопка «Забрать все чеки» в той же панели — запасной
+    путь: она сохраняет файл, который можно загрузить ниже.</p>
+
+  {% if bookmarklet %}
+    <a class="btn main" href="{{ bookmarklet }}" draggable="true" onclick="return false;"
+       title="Перетащите эту ссылку на панель закладок">⬆ Забрать все чеки</a>
+    <span class="dim">← потяните мышью на панель закладок</span>
+    <details style="margin-top:12px">
+      <summary style="cursor:pointer">Ссылка не перетаскивается — завести закладку руками</summary>
+      <p class="dim">Создайте любую закладку, откройте её свойства и вставьте в адрес этот текст
+        целиком. Имя — любое.</p>
+      <textarea rows="3" readonly onclick="this.select()"
+                style="font-size:0.75rem">{{ bookmarklet }}</textarea>
+    </details>
+  {% else %}
+    <div class="note bad">Закладка не собрана — выполните <code>python tools/build_bookmarklet.py</code></div>
+  {% endif %}
+</div>
+
+{# ---------- файл ---------- #}
+<div class="card">
+  <h2>Запасной путь: файл</h2>
+  <p class="muted"><b>JSON</b> — сохранённый закладкой пакет чеков из кабинета, с описью.
+    <b>PDF</b> или <b>TXT</b> — чек от ОФД. <b>CSV</b> или <b>XLSX</b> — таблица заказов из
+    личного кабинета магазина. <b>HTML</b> или <b>EML</b> — письмо из доставки. Что именно
+    прислали, приложение разберёт само, и позиции с товарами свяжет тоже само.</p>
+  <form method="post" action="{{ screen.path }}" enctype="multipart/form-data">
+    <input type="hidden" name="do" value="file">
+    <input type="file" name="file" accept=".pdf,.txt,.json,.csv,.xlsx,.xlsm,.html,.htm,.eml">
+    <div class="grid two" style="margin-top:10px">
+      <select name="store" aria-label="Магазин этих чеков">
+        <option value="">Магазин не указан — обычно так и нужно</option>
+        {% for s in stores %}<option value="{{ s.code }}">{{ s.name }}</option>{% endfor %}
+      </select>
+      <button class="btn main" type="submit">Загрузить чеки</button>
+    </div>
+  </form>
+  <p class="dim" style="margin:10px 0 0">Один и тот же чек, загруженный дважды, историю не удвоит:
+    второй раз он просто отметится пропущенным.</p>
+</div>
+
+{# ---------- кабинет окном ----------
+   Окно открывается — проверено в живом приложении. Прочитать его приложение не
+   может ни при каком браузере, поэтому оно нужно ровно для двух вещей: войти не
+   уходя со страницы и нажать здесь же закладку. Внутри <details> и с loading="lazy"
+   нарочно: закрытое окно чужой сайт не грузит, а во время загрузки чеков страница
+   обновляется каждые несколько секунд. #}
+<details class="card">
+  <summary style="cursor:pointer"><b>Кабинет ФНС прямо здесь</b></summary>
+  <p class="dim" style="margin:10px 0">Войдите по номеру телефона — код из СМС вы вводите на сайте
+    налоговой, мы его не видим. После входа нажмите здесь же закладку и в её панели
+    <b>«Подключить к приложению»</b>. Кнопки «загрузить само» на этой странице нет намеренно:
+    браузер не даёт странице читать содержимое чужого сайта, и такая кнопка была бы обманом.</p>
+  <iframe src="{{ cabinet_url }}" loading="lazy" title="Кабинет ФНС «Мои чеки онлайн»"
+          style="width:100%;height:760px;border:1px solid var(--line);border-radius:10px"></iframe>
+  <div class="row" style="margin-top:10px">
+    <a class="btn" href="{{ cabinet_url }}" target="_blank" rel="noopener">Открыть кабинет отдельной вкладкой →</a>
+  </div>
+  <p class="dim">Если окно осталось пустым — ваш браузер запрещает сторонние окна. Это его
+    настройка, не наша: откройте кабинет соседней вкладкой, закладка и там работает одинаково.</p>
+</details>
+
+<details class="card">
+  <summary style="cursor:pointer">Почему нельзя совсем без закладки</summary>
+  <p class="muted" style="margin-top:10px">Прочитать окно кабинета из нашей страницы нельзя:
+    браузер запрещает странице доступ к содержимому чужого сайта. Это его правило безопасности,
+    а не наша недоработка.</p>
+  <p class="muted">Остаётся два пути. Первый — пропускать сайт налоговой через наш сервер: тогда
+    через нас пойдут и код из СМС, и ваш вход в налоговую. Он нужен вам, а не нам, и лежать
+    у нас не должен — поэтому путь второй.</p>
+  <p class="muted">Второй — тот, что здесь: маленький скрипт работает <b>внутри</b> страницы
+    кабинета, в вашем браузере. Ключ доступа остаётся там же, наружу выходит только файл с чеками
+    или сам ключ — и только когда вы нажмёте кнопку.</p>
+  <p class="muted">Ручным остаётся одно нажатие. Оно исчезнет в мобильном приложении и совсем —
+    когда заработает партнёрство с ФНС.</p>
+</details>
+
+{# ---------- вставить чек текстом ---------- #}
+<div class="card">
+  <h2>Запасной путь: вставить чек текстом</h2>
+  <p class="muted">Если закладка почему-то не сработала — откройте чек, выделите (Ctrl+A),
+    скопируйте (Ctrl+C) и вставьте сюда. Этот путь понимает и письма из доставок, и текст,
+    распознанный с фотографии чека. Сначала покажем, что поняли, и только потом сохраним.</p>
+  {# Одна форма на оба шага, и это не экономия разметки. Текст чека — многострочный,
+     и второй формой его пришлось бы нести скрытым полем, где переводы строк живут
+     по своим правилам и чек приезжает слипшимся. Здесь «Разобрать» и «Добавить»
+     отправляют ровно то, что человек видит в поле. #}
+  <form method="post" action="{{ screen.path }}">
+    <textarea name="text" rows="7"
+              placeholder="Ctrl+V — сюда. Понимает и чек из кабинета, и письмо из доставки, и текст с фото."
+              >{{ typed }}</textarea>
+
+    {% if preview %}
+      <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px">
+        <p class="muted" style="margin:0 0 8px">Понял <b>{{ preview_said }}</b>
+          на {{ ('%.2f'|format(preview.total or 0))|replace('.', ',') }} ₽{% if preview.store %},
+          {{ preview.store }}{% endif %}{% if preview.date %}, {{ preview.date }}{% endif %}</p>
+        <table>
+          <tr><th>Товар</th><th>Кол-во</th><th>Цена</th><th>Сумма</th></tr>
+          {% for r in preview.rows %}
+            <tr><td>{{ r.name }}</td>
+                <td>{{ '%g'|format(r.qty or 0) }}</td>
+                <td>{{ ('%.2f'|format(r.price or 0))|replace('.', ',') }}</td>
+                <td>{{ ('%.2f'|format(r.total or 0))|replace('.', ',') }}</td></tr>
+          {% endfor %}
+        </table>
+        {% if preview.skipped %}
+          <div class="note warn" style="margin-top:10px">Эти строки я не понял, они не попадут
+            в историю:{% for line in preview.skipped[:8] %}<br>— {{ line }}{% endfor %}</div>
+        {% endif %}
+      </div>
+    {% endif %}
+
+    <div class="grid two" style="margin-top:10px">
+      <select name="store" aria-label="Магазин этого чека">
+        <option value="">Магазин не указан</option>
+        {% for s in stores %}<option value="{{ s.code }}" {{ 'selected' if s.code == store }}>{{ s.name }}</option>{% endfor %}
+      </select>
+      <div class="row">
+        <button class="btn" type="submit" name="do" value="preview">Разобрать</button>
+        {% if preview %}
+          <button class="btn main" type="submit" name="do" value="save">Добавить в историю</button>
+        {% endif %}
+      </div>
+    </div>
+  </form>
+</div>
+
+{% endblock %}

@@ -1,0 +1,220 @@
+{# Связи: очередь сопоставлений и работа над одной парой «товар — сеть».
+
+   Порядок блоков — порядок работы, а не порядок важности: сначала пара, над которой
+   человек сейчас стоит, потом товар целиком, потом очередь, куда он вернётся. Очередь
+   внизу нарочно — открыв пару, к списку не возвращаются, пока не закончат.
+
+   Подтверждение и отмена нарочно несимметричны. Подтвердить можно нажатием, но рядом
+   написано, ЧТО подтверждается: название сети целиком, артикул, цена, похожесть и
+   возражения матчера. Убрать связь — только раскрыв блок с объяснением: снятая связь
+   тихо выкидывает товар из расчёта, и заметить это можно лишь по подешевевшей корзине. #}
+{% extends "layout.html" %}
+{% block title %}Связи — Моя корзина{% endblock %}
+{% block body %}
+
+{% macro mark(code, state) -%}
+  {%- if state == 'done' -%}
+    <span class="dot s-{{ code }}"></span>
+  {%- elif state == 'seen' -%}
+    <span class="dot" style="background:transparent;box-shadow:inset 0 0 0 1.5px var(--amber)"></span>
+  {%- else -%}
+    <span class="dot" style="background:transparent;box-shadow:inset 0 0 0 1.5px var(--line2)"></span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% set words = {'done': 'подтверждено', 'seen': 'кандидаты есть, не выбрано', 'new': 'не искали'} %}
+
+{% for kind, text in get_flashed_messages(with_categories=true) %}
+  <div class="note {{ kind }}">{{ text }}</div>
+{% endfor %}
+
+<div class="row" style="margin-bottom:12px">
+  {% for label, value in stats %}
+    <span class="pill" style="border-color:var(--line2);color:var(--ink2)">{{ label }}: {{ value }}</span>
+  {% endfor %}
+</div>
+
+{% if pair %}
+  {# Работа над парой. Всё, что нужно для решения, — на одном экране без прокрутки:
+     что за товар, что предлагает сеть, чем это подозрительно. #}
+  <div class="card">
+    <div class="row">
+      <span class="chip"><span class="dot s-{{ pair.store.code }}"></span>
+        <strong>{{ pair.store.name }}</strong></span>
+      <span class="dim">·</span>
+      <strong>{{ chosen.product.name }}</strong>
+      <span class="spacer"></span>
+      <a class="btn" href="{{ screen.path }}?product={{ chosen.product.id }}{% if query %}&q={{ query|urlencode }}{% endif %}">
+        Все сети товара</a>
+    </div>
+
+    {% if pair.confirmed %}
+      <p class="muted" style="margin:12px 0 4px">Подтверждено:
+        <strong>{{ pair.confirmed.raw_name }}</strong>, артикул <code>{{ pair.confirmed.sku }}</code>.</p>
+
+      {% if pair.doubts %}
+        <div class="note warn">Стоит проверить: {{ pair.doubts|join(', ') }}.</div>
+      {% endif %}
+
+      {% if pair.price %}
+        <p class="dim">Последняя цена: {{ rub(pair.price.price) }}{% if pair.price.price_per_kg %}
+          · за кг {{ rub(pair.price.price_per_kg) }}{% endif %}
+          · снято {{ pair.price.fetched_at }}{% if not pair.price.in_stock %} · нет в наличии{% endif %}.</p>
+      {% else %}
+        <p class="dim">Цена ещё не загружена — нажмите «Обновить цены».</p>
+      {% endif %}
+
+      <details style="margin-top:10px">
+        <summary class="dim" style="cursor:pointer">Связь неверная — убрать её</summary>
+        <p class="muted" style="margin:8px 0">Подтверждение снимется, и «{{ chosen.product.name }}»
+          перестанет участвовать в расчёте по сети «{{ pair.store.name }}»: в корзине он
+          просто не появится оттуда, без отдельного сообщения. Снятую связь можно завести
+          заново — накопленные снимки цен при этом не пропадают.</p>
+        <form method="post" action="{{ screen.path }}">
+          <input type="hidden" name="action" value="drop">
+          <input type="hidden" name="product" value="{{ chosen.product.id }}">
+          <input type="hidden" name="store" value="{{ pair.store.code }}">
+          <input type="hidden" name="q" value="{{ query }}">
+          <button class="btn" type="submit" style="color:var(--red);border-color:var(--red)">
+            Убрать связь «{{ chosen.product.name }}» — «{{ pair.store.name }}»</button>
+        </form>
+      </details>
+
+    {% else %}
+      <p class="muted" style="margin:12px 0 4px">Связи с этой сетью нет. Найдите кандидатов
+        и подтвердите тот, который действительно тот же товар.</p>
+      <form method="post" action="{{ screen.path }}">
+        <input type="hidden" name="action" value="find">
+        <input type="hidden" name="product" value="{{ chosen.product.id }}">
+        <input type="hidden" name="store" value="{{ pair.store.code }}">
+        <input type="hidden" name="q" value="{{ query }}">
+        <button class="btn main" type="submit">Найти кандидатов в «{{ pair.store.name }}»</button>
+      </form>
+
+      {% if pair.candidates %}
+        <p class="dim" style="margin-top:14px">Что нашлось в магазине. Подтвердить —
+          значит сказать «это тот же товар»: дальше по нему пойдут цены и он попадёт
+          человеку в корзину.</p>
+        {% for candidate in pair.candidates %}
+          <div style="border-top:1px solid var(--line);padding:10px 0">
+            <div class="row" style="align-items:flex-start">
+              <span style="flex:1 1 200px;min-width:0">
+                <strong>{{ candidate.name or '—' }}</strong><br>
+                <span class="dim">артикул <code>{{ candidate.sku or '—' }}</code>
+                  · похожесть {{ num(candidate.score) }}</span>
+              </span>
+              <span style="text-align:right;white-space:nowrap">
+                <span class="sum">{{ rub(candidate.price) }}</span>
+              </span>
+            </div>
+            {% if candidate.doubts %}
+              <div class="note warn" style="margin:8px 0 0">Матчер возражает:
+                {{ candidate.doubts|join(', ') }}. Если это всё-таки тот же товар —
+                подтверждайте, возражение не запрет.</div>
+            {% endif %}
+            <form method="post" action="{{ screen.path }}" style="margin-top:8px">
+              <input type="hidden" name="action" value="confirm">
+              <input type="hidden" name="product" value="{{ chosen.product.id }}">
+              <input type="hidden" name="store" value="{{ pair.store.code }}">
+              <input type="hidden" name="sku" value="{{ candidate.sku }}">
+              <input type="hidden" name="q" value="{{ query }}">
+              <button class="btn main" type="submit">
+                «{{ chosen.product.name }}» — это {{ candidate.name or 'он' }}. Подтвердить</button>
+            </form>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endif %}
+  </div>
+{% endif %}
+
+{% if chosen %}
+  <div class="card">
+    <div class="row">
+      <h2 style="margin:0">{{ chosen.product.name }}</h2>
+      <span class="spacer"></span>
+      <a class="btn" href="{{ screen.path }}{% if query %}?q={{ query|urlencode }}{% endif %}">Ко всей очереди</a>
+    </div>
+    <p class="dim">Одна строка — одна сеть. Цвет квадрата означает подтверждённую связь,
+      пустой квадрат — что выбирать ещё нечего или не из чего.</p>
+    {% for item in chosen.stores %}
+      <div class="row" style="border-top:1px solid var(--line);padding:8px 0">
+        <span class="chip">{{ mark(item.code, item.state) }}{{ item.name }}</span>
+        <span class="dim">{{ words[item.state] }}</span>
+        <span class="spacer"></span>
+        <a class="btn" href="{{ screen.path }}?product={{ chosen.product.id }}&store={{ item.code }}{% if query %}&q={{ query|urlencode }}{% endif %}">
+          {{ 'Проверить' if item.state == 'done' else 'Заняться' }}</a>
+      </div>
+    {% endfor %}
+  </div>
+{% endif %}
+
+{# Три действия на весь список. Каждое ходит в сети или в общий каталог, поэтому у
+   каждого написано, чего оно стоит по времени и что делает. #}
+<div class="card">
+  <h2>Разом по всему списку</h2>
+  <div class="grid two">
+    <div>
+      <form method="post" action="{{ screen.path }}">
+        <input type="hidden" name="action" value="link_catalog">
+        <input type="hidden" name="q" value="{{ query }}">
+        <button class="btn main wide" type="submit">Опознать в едином каталоге</button>
+      </form>
+      <p class="dim">Единый каталог сетей знает товары уже сопоставленными между собой:
+        одно попадание даёт артикулы всех сетей разом. В сети не ходит — читает
+        собранный сервером каталог.</p>
+    </div>
+    <div>
+      <form method="post" action="{{ screen.path }}">
+        <input type="hidden" name="action" value="auto_match">
+        <input type="hidden" name="q" value="{{ query }}">
+        <button class="btn wide" type="submit">Подобрать всё</button>
+      </form>
+      <p class="dim">Живой поиск по каждой сети. Уверенные совпадения подтверждаются
+        сами, спорные остаются в очереди. Идёт минутами и спрашивает магазины.</p>
+    </div>
+    <div>
+      <form method="post" action="{{ screen.path }}">
+        <input type="hidden" name="action" value="refresh_prices">
+        <input type="hidden" name="q" value="{{ query }}">
+        <button class="btn wide" type="submit">Обновить цены</button>
+      </form>
+      <p class="dim">Спрашивает цены только по подтверждённым связям. Неопознанный товар
+        цены не получит — сначала связь, потом цена.</p>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <h2 style="margin:0">Очередь</h2>
+    <span class="spacer"></span>
+    <form class="row" method="get" action="{{ screen.path }}">
+      <input name="q" type="search" value="{{ query }}" placeholder="Поиск по товарам"
+             aria-label="Поиск по товарам" style="width:auto;flex:1 1 140px">
+      <button class="btn" type="submit">Найти</button>
+      {% if query %}<a class="btn" href="{{ screen.path }}">Сбросить</a>{% endif %}
+    </form>
+  </div>
+
+  {% if not queue %}
+    <p class="muted">{% if query %}По запросу «{{ query }}» товаров не нашлось.
+      {% else %}Товаров пока нет. Заведите их на экране «Товары» или загрузите чек.{% endif %}</p>
+  {% else %}
+    {% for row in queue %}
+      <div class="row" style="border-top:1px solid var(--line);padding:8px 0">
+        <span style="flex:1 1 180px;min-width:0">
+          <a href="{{ screen.path }}?product={{ row.id }}{% if query %}&q={{ query|urlencode }}{% endif %}">{{ row.name }}</a>
+          <br>
+          <span title="{% for m in row.marks %}{{ m.name }} — {{ words[m.state] }}{% if not loop.last %}, {% endif %}{% endfor %}">
+            {% for m in row.marks %}{{ mark(m.code, m.state) }} {% endfor %}
+          </span>
+        </span>
+        <span class="dim">{{ row.done }} из {{ row.total }}</span>
+        <a class="btn" href="{{ screen.path }}?product={{ row.id }}{% if query %}&q={{ query|urlencode }}{% endif %}">
+          {{ 'Готово' if row.left == 0 else 'Заняться' }}</a>
+      </div>
+    {% endfor %}
+  {% endif %}
+</div>
+{% endblock %}

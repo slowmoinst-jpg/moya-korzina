@@ -16,7 +16,7 @@ from app.connectors import (
     get_connector,
 )
 from app.connectors import cache, stub
-from app.models import Candidate, PriceSnapshot
+from app.models import Candidate, Location, PriceSnapshot
 
 
 @pytest.fixture(autouse=True)
@@ -33,11 +33,15 @@ def clean_state():
 def offline(monkeypatch):
     """Магазин «не отвечает» — коннектор обязан уйти в fallback.
 
-    У Магнита это разбор HTML, у ВкусВилла и Ленты — вызов MCP: глушим оба пути.
+    У Магнита путей к сети два: JSON-шлюз magnit.ru/webgate и разбор страницы,
+    оставшийся запасным. Глушить надо оба, иначе тест «сети нет» пойдёт в сеть.
+    У ВкусВилла и Ленты путь один — вызов MCP.
     """
     from app.connectors import mcp_client
 
     monkeypatch.setattr(MagnitConnector, "_api_get", lambda self, params: None)
+    monkeypatch.setattr(MagnitConnector, "_gateway",
+                        lambda self, url, body=None, params=None: (None, 0))
     monkeypatch.setattr(MagnitConnector, "_get_html", lambda self, url, params=None: (None, 0))
     monkeypatch.setattr(mcp_client, "call_tool", lambda *a, **k: None)
 
@@ -111,9 +115,10 @@ def test_unknown_sku_is_skipped_not_raised():
 
 # ---------- падение сети ----------
 def test_network_failure_falls_back_to_csv(monkeypatch):
-    def boom(self, url, params=None):
+    def boom(self, url, params=None, body=None):
         raise RuntimeError("сайт магазина отвалился")
 
+    monkeypatch.setattr(MagnitConnector, "_gateway", boom)
     monkeypatch.setattr(MagnitConnector, "_get_html", boom)
     conn = get_connector("magnit")
     found = conn.search("страчателла")
@@ -124,18 +129,14 @@ def test_network_failure_falls_back_to_csv(monkeypatch):
 
 # ---------- кэш ----------
 def test_cache_prevents_second_network_call(monkeypatch):
-    calls: list[dict] = []
+    calls: list[str] = []
 
-    def fake_page(self, url, params=None):
-        calls.append(params or {})
-        return (
-            '<article class="unit-catalog-product-preview">'
-            '<a title="Сыр Страчателла 200 г" href="/product/42-syr-strachatella">'
-            '<span class="pl-text unit-catalog-product-preview-prices__regular">'
-            '<span>199&#8202;₽</span></span></a></article></main>'
-        )
+    def fake_gateway(self, url, body=None, params=None):
+        calls.append(url)
+        return {"items": [{"id": "42", "name": "Сыр Страчателла 200 г", "price": 19900,
+                           "seoCode": "syr-strachatella"}]}, 200
 
-    monkeypatch.setattr(MagnitConnector, "_get_html", fake_page)
+    monkeypatch.setattr(MagnitConnector, "_gateway", fake_gateway)
     conn = get_connector("magnit")
     first = conn.search("страчателла")
     second = conn.search("страчателла")
@@ -143,6 +144,30 @@ def test_cache_prevents_second_network_call(monkeypatch):
     assert len(calls) == 1, "второй поиск обязан прийти из файлового кэша"
     assert first[0].sku == second[0].sku == "42"
     assert first[0].price == 199.0
+
+
+def test_cache_key_separates_stores(monkeypatch):
+    """Цены соседнего города не должны прийти из кэша под видом своих.
+
+    Ловушка тихая: чужая цена ничем не отличается от настоящей, и заметить подмену
+    в интерфейсе нельзя. Поэтому магазин обязан входить в ключ кэша.
+    """
+    seen: list[str] = []
+
+    def fake_gateway(self, url, body=None, params=None):
+        store = (body or {}).get("storeCode")
+        seen.append(store)
+        price = 8499 if store == "992301" else 8999
+        return {"items": [{"id": "1899800733", "name": "Молоко Простоквашино 930мл",
+                           "price": price}]}, 200
+
+    monkeypatch.setattr(MagnitConnector, "_gateway", fake_gateway)
+    krasnodar = get_connector("magnit", Location(store_id="992301")).search("молоко")
+    moscow = get_connector("magnit", Location(store_id="264856")).search("молоко")
+
+    assert seen == ["992301", "264856"], "второй магазин обязан сходить за своей ценой"
+    assert krasnodar[0].price == 84.99
+    assert moscow[0].price == 89.99
 
 
 def test_cache_get_set_roundtrip():
@@ -172,17 +197,70 @@ def test_throttle_pauses_but_does_not_break_call():
 
 # ---------- магазин, регион и наличие ----------
 def test_magnit_marks_absent_product_instead_of_substituting_price(monkeypatch):
-    """404 от Магнита — это «в этом магазине такого не продают», а не сбой разбора.
+    """404 от страницы Магнита — «в этом магазине такого не продают», а не сбой разбора.
 
     Раньше на это место молча подставлялась цена из data/fallback_prices.csv, и человек
     получал корзину, которую не смог бы заказать. Теперь позиция помечается отсутствующей.
     """
+    monkeypatch.setattr(MagnitConnector, "_gateway",
+                        lambda self, url, body=None, params=None: (None, 0))
     monkeypatch.setattr(MagnitConnector, "_get_html", lambda self, url, params=None: (None, 404))
     conn = get_connector("magnit")
     snaps = conn.get_prices(["1000013732"])
 
     assert len(snaps) == 1
     assert snaps[0].in_stock is False, "товар, которого нет в магазине, обязан быть помечен"
+
+
+def test_magnit_gateway_reads_price_and_stock(monkeypatch):
+    """Шлюз отдаёт и цену, и остаток: наличие больше не додумывается."""
+    card = {"id": "1899800733", "name": "Молоко Простоквашино 2.5% 930мл",
+            "price": 8999, "quantity": 2}
+    monkeypatch.setattr(MagnitConnector, "_gateway",
+                        lambda self, url, body=None, params=None: (card, 200))
+    snap = get_connector("magnit").get_prices(["1899800733"])[0]
+
+    assert snap.price == 89.99
+    assert snap.in_stock is True
+    assert snap.name == "Молоко Простоквашино 2.5% 930мл"
+
+
+def test_magnit_zero_price_and_stock_means_not_sold_here(monkeypatch):
+    """Цена 0 при остатке 0 — «товар в сети есть, а в этой точке не продаётся».
+
+    Так шлюз отвечает про молоко «Кубанский молочник» в московском магазине, тогда
+    как в краснодарском оно стоит 159 ₽. Принять этот ноль за цену значило бы
+    положить в корзину бесплатное молоко, которого человеку не дадут.
+    """
+    card = {"id": "1000169025", "name": "Молоко Кубанский молочник 1.4кг",
+            "price": 0, "quantity": 0}
+    monkeypatch.setattr(MagnitConnector, "_gateway",
+                        lambda self, url, body=None, params=None: (card, 200))
+    snaps = get_connector("magnit").get_prices(["1000169025"])
+
+    assert len(snaps) == 1
+    assert snaps[0].in_stock is False, "ноль шлюза не цена, а «здесь не продаётся»"
+    assert snaps[0].name is None, "имя из такой карточки не берём — брать нечего"
+
+
+def test_magnit_out_of_stock_keeps_its_price(monkeypatch):
+    """Остаток 0 при живой цене — товар в магазине есть, просто кончился."""
+    card = {"id": "1899800733", "name": "Молоко", "price": 8999, "quantity": 0}
+    monkeypatch.setattr(MagnitConnector, "_gateway",
+                        lambda self, url, body=None, params=None: (card, 200))
+    snap = get_connector("magnit").get_prices(["1899800733"])[0]
+
+    assert snap.price == 89.99
+    assert snap.in_stock is False
+
+
+def test_magnit_unknown_sku_answers_not_found(monkeypatch):
+    """422 goods_not_found — ответ шлюза, а не обрыв связи: позиция помечается."""
+    monkeypatch.setattr(MagnitConnector, "_gateway",
+                        lambda self, url, body=None, params=None: (None, 422))
+    snaps = get_connector("magnit").get_prices(["9999999999"])
+
+    assert len(snaps) == 1 and snaps[0].in_stock is False
 
 
 def test_magnit_absent_product_is_not_offered_by_optimizer():

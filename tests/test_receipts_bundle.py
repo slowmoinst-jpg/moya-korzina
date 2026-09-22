@@ -260,3 +260,18 @@ def test_same_file_loaded_twice_does_not_double_history(db, tmp_path):
     assert first["receipts"] == 1 and second["receipts"] == 0
     assert second["skipped"] == 1
     assert len(repo.list_history()) == 2
+
+
+def test_database_writes_are_not_paying_for_a_disk_flush_on_every_row(db):
+    """WAL и synchronous NORMAL — не украшение, а половина времени загрузки чеков.
+
+    История пишется по строке за раз, с commit на каждую. В обычном режиме каждый
+    такой commit это сброс на диск: замерено 16.09.2026, 4500 строк — 21 секунда
+    против 2 с этими настройками, то есть дороже, чем весь поход в ФНС. Убрать их
+    можно только вместе с этой проверкой.
+    """
+    from app.db import get_conn
+
+    with get_conn() as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1   # NORMAL

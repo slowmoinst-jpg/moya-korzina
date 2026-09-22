@@ -35,17 +35,45 @@ data/fallback_prices.csv. Расчёт по остальным магазина�
 адрес стал приходить от клиента, тот же ключ начал бы отдавать зеленоградцу цены
 Краснодара — и это не выглядело бы поломкой, потому что чужая цена ничем не
 отличается от своей. Поэтому в ключ идёт Location.key.
+
+JSON-ШЛЮЗ ВМЕСТО ВЁРСТКИ, 16.09.2026. Разбор страниц остался, но ушёл на второй
+план: цены и остатки приходят из того же шлюза magnit.ru/webgate, которым уже
+собирается общий каталог (app/catalog/crawlers/magnit.py). Он лучше вёрстки всем:
+магазин задаётся ТЕЛОМ запроса, а не куками, в ответе есть остаток (quantity), и
+менять его сеть будет реже, чем разметку. Адреса взяты из кода самого сайта
+(magnit.ru/_nuxt/*.js) и проверены живыми запросами 16.09.2026:
+
+    POST /webgate/v2/goods/search            {term, storeCode, storeType, catalogType,
+                                              pagination, sort} -> {items: [...]}
+    GET  /webgate/v2/goods/{sku}/stores/{код}?storetype=dostavka&catalogtype=3
+                                             -> карточка: price (копейки), quantity, name
+    POST /webgate/v1/stores-facade/search/detail  {filters: {geo: {typeName: "box", ...}},
+                                              pagination} -> {totalCount, data: [магазины]}
+
+Два ответа шлюза значат «в этом магазине не продаётся», и путать их с поломкой
+нельзя: 422 goods_not_found — такого артикула нет вовсе, а price 0 при quantity 0 —
+товар есть в сети, но не в этой точке. Проверено на молоке «Кубанский молочник»:
+в Краснодаре 159 ₽, в московском магазине 0 и 0 — ровно там же, где страница
+отвечала 404.
+
+МАГАЗИН ПОДБИРАЕТСЯ К АДРЕСУ, а не настраивается руками. Раньше код магазина был
+настройкой установки (connectors.magnit_shop_code), одной на всех: человек из
+Москвы видел цены Краснодара и не мог об этом узнать. Теперь адрес переводится в
+точку (app/geo.py, coords) и по точке спрашивается справочник магазинов — см.
+stores_near и nearest_store ниже. Настройка осталась запасным значением.
 """
 from __future__ import annotations
 
 import html
 import logging
+import math
 import re
 from typing import Any
 
-from app import config
+from app import config, geo
 from app.connectors.base import (
     HttpCatalogConnector,
+    USER_AGENT,
     api_disabled,
     note_failure,
     note_success,
@@ -60,6 +88,32 @@ log = logging.getLogger(__name__)
 
 SEARCH_URL = "https://magnit.ru/search/"
 PRODUCT_URL = "https://magnit.ru/product/{sku}"
+
+GATEWAY = "https://magnit.ru/webgate"
+GOODS_SEARCH_URL = f"{GATEWAY}/v2/goods/search"
+GOODS_CARD_URL = GATEWAY + "/v2/goods/{sku}/stores/{store}"
+STORES_URL = f"{GATEWAY}/v1/stores-facade/search/detail"
+
+# Пара «каталог + формат», которой шлюз отвечает по коду ЛЮБОГО магазина. Другие
+# пары он встречает ошибкой invalid_service_pair, так что подбирать их не нужно.
+STORE_TYPE = "dostavka"
+CATALOG_TYPE = "3"
+
+# Магазин, чьи цены показываем, когда адреса нет и в config.yaml пусто. Тот же
+# краснодарский магазин, на котором стоит общий каталог: у него самая широкая полка.
+DEFAULT_STORE = "992301"
+
+# Форматы Магнита с продуктовой полкой. Аптеки (MA), «Заряд», маркетплейс
+# (MAGNIT_MARKET) и рестораны-партнёры (RTE_*) сюда не входят: шлюз по их коду
+# отвечает, но не тем, за чем к нему идут.
+SHELF_FORMATS = ("MM", "ME", "GM", "MK", "MM_MINI")
+# Склад доставки. Полка у него уже, чем у магазина (проверено: по «молоко
+# простоквашино» даркстор на Хорошёвском отдал один творог, а магазин на Микояна —
+# три вида молока), поэтому он идёт после магазинов, но лучше, чем ничего.
+HUB_FORMATS = ("DARKSTORE",)
+STORE_FORMATS = SHELF_FORMATS + HUB_FORMATS
+
+SEARCH_RADIUS_KM = 5.0     # дальше пяти километров «ближайший магазин» уже не ближайший
 
 # карточка товара в выдаче поиска
 _ARTICLE = re.compile(
@@ -115,6 +169,137 @@ def _weight_of(name: str) -> tuple[float | None, str]:
     return value, "pcs"
 
 
+# ---------- справочник магазинов ----------
+def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Расстояние по земле между двумя точками, в метрах."""
+    radius = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = (math.sin((p2 - p1) / 2) ** 2
+         + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2)
+    return 2 * radius * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _fetch_stores(lat: float, lon: float, radius_km: float) -> list[dict] | None:
+    """Магазины в квадрате вокруг точки, как их отдаёт шлюз. None — шлюз не ответил.
+
+    Квадрат, а не круг: круга справочник не понимает, он принимает две угловые точки.
+    Градус широты — это примерно 111 км везде, градус долготы — те же 111 км на экваторе и
+    вдвое меньше на широте Москвы, поэтому долгота делится на косинус широты. Иначе
+    у северного города квадрат вытянулся бы вдвое, и «ближайший магазин» нашёлся бы
+    в соседнем районе.
+    """
+    try:
+        import requests
+    except ImportError:  # pragma: no cover
+        return None
+    dlat = radius_km / 111.0
+    dlon = radius_km / max(0.01, 111.0 * math.cos(math.radians(lat)))
+    body = {"filters": {"geo": {"typeName": "box",
+                                "leftTopPoint": {"latitude": lat + dlat, "longitude": lon - dlon},
+                                "rightBottomPoint": {"latitude": lat - dlat, "longitude": lon + dlon}}},
+            "pagination": {"offset": 0, "size": 100}}
+    timeout = float(config.get("connectors.timeout_sec", 10) or 10)
+    try:
+        resp = requests.post(STORES_URL, json=body, timeout=timeout,
+                             headers={"User-Agent": USER_AGENT, "Accept": "application/json",
+                                      "Content-Type": "application/json"})
+        if resp.status_code != 200 or "json" not in (resp.headers.get("Content-Type") or ""):
+            log.warning("магнит: справочник магазинов ответил %s", resp.status_code)
+            return None
+        return (resp.json() or {}).get("data") or []
+    except Exception as exc:  # noqa: BLE001
+        log.warning("магнит: справочник магазинов не ответил (%s)", exc)
+        return None
+
+
+def stores_near(lat: float, lon: float, radius_km: float = SEARCH_RADIUS_KM,
+                limit: int = 20) -> list[dict]:
+    """Магазины Магнита вокруг точки: code, format, address, distance (метры), delivery.
+
+    Порядок не только по расстоянию. Сначала идут магазины с продуктовой полкой, и
+    только потом склад доставки: склад бывает ближе, но в нём меньше товаров, и
+    молча считать корзину по его узкой полке значило бы показать человеку, что
+    половины его покупок у Магнита «нет».
+
+    В ответе справочника лежат и аптеки, и рестораны-партнёры, и маркетплейс — всё,
+    что Магнит показывает на своей карте. Продуктовые форматы отбираются здесь.
+    """
+    key = f"stores:{lat:.4f},{lon:.4f}:{radius_km}"
+    raw = cached_call("magnit", key, lambda: _fetch_stores(lat, lon, radius_km))
+    out: list[dict] = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        external = item.get("externalId") or {}
+        code = str(external.get("storeCode") or "")
+        fmt = str(item.get("storeTypeV2") or "")
+        if external.get("owner") != "OWNER_MAGNIT" or fmt not in STORE_FORMATS or not code:
+            continue
+        if item.get("status") not in (None, "STATUS_ACTIVE"):
+            continue
+        point = item.get("coordinates") or {}
+        try:
+            distance = _distance_m(lat, lon, float(point["latitude"]), float(point["longitude"]))
+        except (KeyError, TypeError, ValueError):
+            distance = float("inf")
+        out.append({
+            "code": code,
+            "format": fmt,
+            "address": (item.get("address") or "").strip(),
+            "distance": distance,
+            "delivery": "DELIVERY_TYPE_DELIVERY" in (item.get("deliveryTypeList") or []),
+        })
+    out.sort(key=lambda s: (0 if s["format"] in SHELF_FORMATS else 1, s["distance"]))
+    return out[:limit]
+
+
+def nearest_store(address: str) -> dict | None:
+    """Магазин, чьи цены Магнит покажет человеку по его адресу. None — не подобран.
+
+    None здесь не поломка, а обычный ответ: адрес не разобран, город без Магнита,
+    шлюз молчит. Место клиента тогда остаётся пустым, и коннектор берёт запасное
+    значение из config.yaml — ровно так же, как до появления адресов.
+    """
+    point = geo.coords(address)
+    if not point:
+        log.info("магнит: адрес «%s» не переведён в точку — магазин не подобран", address)
+        return None
+    found = stores_near(*point)
+    if not found:
+        log.info("магнит: рядом с адресом «%s» магазинов не нашлось", address)
+        return None
+    return found[0]
+
+
+def _money(value: Any) -> float | None:
+    """Копейки шлюза в рубли. Не число — None, и решать будет вызывающий."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return round(value / 100.0, 2)
+
+
+def _to_candidate(store_code: str, item: dict) -> Candidate | None:
+    """Позиция выдачи шлюза. Ни артикула, ни названия — позиции нет."""
+    if not isinstance(item, dict):
+        return None
+    sku = item.get("id") or item.get("productId")
+    name = (item.get("name") or "").strip()
+    if not sku or not name:
+        return None
+    weight_g, unit = _weight_of(name)
+    seo = item.get("seoCode")
+    weighted = (item.get("weighted") or {}) if isinstance(item.get("weighted"), dict) else {}
+    return Candidate(
+        store_code=store_code,
+        sku=str(sku),
+        name=name,
+        price=_money(item.get("price")),
+        weight_g=weight_g,
+        unit="kg" if weighted.get("isWeighted") else unit,
+        url=f"https://magnit.ru/product/{sku}-{seo}" if seo else f"https://magnit.ru/product/{sku}",
+    )
+
+
 @register("magnit")
 class MagnitConnector(HttpCatalogConnector):
     code = "magnit"
@@ -138,6 +323,104 @@ class MagnitConnector(HttpCatalogConnector):
             "x_shop_type": str(self.location.shop_type or "ME"),
             "nmg_dt": "DELIVERY_TYPE_DELIVERY" if self.location.delivery else "DELIVERY_TYPE_PICKUP",
         }
+
+    def _store_code(self) -> str | None:
+        """Код магазина, за чьи цены отвечаем. None — «здесь Магнита нет».
+
+        Три ответа, и средний важнее всех:
+
+            код из места клиента  — магазин подобран по его адресу;
+            None                  — адрес известен, а магазина рядом с ним нет;
+            запасной код          — адреса нет вовсе (установка «для себя»,
+                                    разработка), берём config.yaml или Краснодар.
+
+        Без среднего получалась бы тихая ошибка: человек в городе без Магнита
+        видел бы краснодарские цены и заказал бы по ним корзину, которую никто
+        не соберёт. Пустой ответ честнее выдуманного.
+        """
+        if self.location.store_id:
+            return str(self.location.store_id)
+        if self.location.address:
+            return None
+        return DEFAULT_STORE
+
+    def _gateway(self, url: str, *, body: dict[str, Any] | None = None,
+                 params: dict[str, Any] | None = None) -> tuple[Any | None, int]:
+        """Ответ JSON-шлюза и код ответа.
+
+        Код нужен вызывающему ровно по той же причине, что и у страниц: 422
+        goods_not_found — это осмысленный ответ «такого товара нет», а не обрыв
+        связи, и предохранитель на него реагировать не должен.
+        """
+        if api_disabled(self.code):
+            return None, 0
+        try:
+            import requests
+        except ImportError:  # pragma: no cover
+            return None, 0
+        timeout = float(config.get("connectors.timeout_sec", 10) or 10)
+        headers = {**self._headers(), "Accept": "application/json"}
+        try:
+            if body is None:
+                resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+            else:
+                resp = requests.post(url, json=body, timeout=timeout,
+                                     headers={**headers, "Content-Type": "application/json"})
+            if resp.status_code in (404, 422):
+                note_success(self.code)          # шлюз ответил, просто товара у него нет
+                return None, resp.status_code
+            if resp.status_code != 200:
+                log.warning("%s: шлюз %s ответил %s", self.code, url, resp.status_code)
+                note_failure(self.code)
+                return None, resp.status_code
+            if "json" not in (resp.headers.get("Content-Type") or ""):
+                log.warning("%s: шлюз %s ответил не JSON — похоже на страницу защиты",
+                            self.code, url)
+                note_failure(self.code)
+                return None, resp.status_code
+            note_success(self.code)
+            return resp.json(), 200
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s: запрос к шлюзу %s не удался (%s)", self.code, url, exc)
+            note_failure(self.code)
+            return None, 0
+
+    def _gateway_search(self, query: str, limit: int) -> list[Candidate] | None:
+        """Выдача поиска шлюза. None — шлюз не ответил, пустой список — ничего не нашлось."""
+        store = self._store_code()
+        if store is None:
+            return []
+        body = {"term": query, "storeCode": store, "storeType": STORE_TYPE,
+                "catalogType": CATALOG_TYPE, "includeAdultGoods": True,
+                "pagination": {"offset": 0, "limit": max(limit, 10)},
+                "sort": {"order": "desc", "type": "popularity"}}
+        payload = cached_call(
+            self.code, f"gw-search:{query}:{limit}:{self.location.key}",
+            lambda: self._gateway(GOODS_SEARCH_URL, body=body)[0])
+        if payload is None:
+            return None
+        found: list[Candidate] = []
+        for item in (payload or {}).get("items") or []:
+            candidate = _to_candidate(self.code, item)
+            if candidate:
+                found.append(candidate)
+        return found
+
+    def _gateway_card(self, sku: str) -> dict | None:
+        """Карточка товара в нашем магазине. {} — товара здесь нет, None — шлюз молчит."""
+        store = self._store_code()
+        if store is None:
+            return {}                          # Магнита в этом городе нет — товара тем более
+        url = GOODS_CARD_URL.format(sku=sku, store=store)
+        params = {"storetype": STORE_TYPE, "catalogtype": CATALOG_TYPE}
+
+        def ask() -> dict | None:
+            payload, status = self._gateway(url, params=params)
+            if status in (404, 422):
+                return {}                      # «goods not found» — ответ, а не поломка
+            return payload if isinstance(payload, dict) else None
+
+        return cached_call(self.code, f"gw-card:{sku}:{self.location.key}", ask)
 
     def _get_html(self, url: str, params: dict[str, Any] | None = None) -> tuple[str | None, int]:
         """Страница магазина и код ответа.
@@ -194,10 +477,12 @@ class MagnitConnector(HttpCatalogConnector):
 
     # --- контракт ---
     def _search(self, query: str, limit: int) -> list[Candidate]:
-        params = {"term": query, **self._shop_params()}
-        page, _ = _unpack(cached_call(self.code, f"search:{query}:{limit}:{self.location.key}",
-                                      lambda: self._get_html(SEARCH_URL, params)))
-        found = self._cards(page) if page else []
+        if self._store_code() is None:
+            log.info("%s: рядом с адресом клиента магазинов нет — цен не будет", self.code)
+            return []                     # выдумывать цены чужого города не станем
+        found = self._gateway_search(query, limit)
+        if found is None:                 # шлюз молчит — пробуем прежний путь по вёрстке
+            found = self._html_search(query, limit)
         if not found:
             log.warning("%s: по «%s» ничего не разобрано — беру data/fallback_prices.csv",
                         self.code, query)
@@ -206,6 +491,13 @@ class MagnitConnector(HttpCatalogConnector):
             candidate.score = similarity(query, candidate.name)
         found.sort(key=lambda c: c.score, reverse=True)
         return found[:limit]
+
+    def _html_search(self, query: str, limit: int) -> list[Candidate]:
+        """Прежний путь: страница поиска и разбор вёрстки. Остался запасным для шлюза."""
+        params = {"term": query, **self._shop_params()}
+        page, _ = _unpack(cached_call(self.code, f"search:{query}:{limit}:{self.location.key}",
+                                      lambda: self._get_html(SEARCH_URL, params)))
+        return self._cards(page) if page else []
 
     def _out_of_stock(self, skus: list[str]) -> list[PriceSnapshot]:
         """Товары, которых в выбранном магазине нет.
@@ -217,6 +509,31 @@ class MagnitConnector(HttpCatalogConnector):
         return [PriceSnapshot(store_code=self.code, sku=sku,
                               price=known.get(sku, 0.0), in_stock=False) for sku in skus]
 
+    def _from_card(self, sku: str, card: dict) -> PriceSnapshot | None:
+        """Карточка шлюза в снимок цены. None — в этом магазине товар не продаётся.
+
+        Два способа сказать «не продаётся», и оба встречаются живьём:
+        пустая карточка (шлюз ответил 422 goods_not_found — такого артикула нет в
+        сети вовсе) и карточка с ценой 0 при остатке 0 — товар в сети есть, но не в
+        этой точке. Молоко «Кубанский молочник» в московском магазине отвечает
+        именно так, а в краснодарском стоит 159 ₽.
+
+        Нулевой остаток при НЕнулевой цене — другое дело: товар в магазине есть,
+        просто сейчас кончился. Цену показываем, а отсутствие помечаем — оптимизатор
+        такую позицию в этот магазин не положит.
+        """
+        price = _money(card.get("price")) if card else None
+        quantity = card.get("quantity") if card else None
+        if price is None or (not price and not quantity):
+            return None
+        return PriceSnapshot(
+            store_code=self.code,
+            sku=sku,
+            price=price,
+            in_stock=bool(quantity) if isinstance(quantity, (int, float)) else True,
+            name=(card.get("name") or "").strip() or None,
+        )
+
     def _get_prices(self, skus: list[str]) -> list[PriceSnapshot]:
         out: list[PriceSnapshot] = []
         missing: list[str] = []        # не дозвонились или не разобрали — берём справочник
@@ -224,6 +541,14 @@ class MagnitConnector(HttpCatalogConnector):
         for sku in skus:
             if sku.startswith(self.fallback_sku_prefix):  # синтетический артикул из CSV
                 missing.append(sku)
+                continue
+            card = self._gateway_card(sku)
+            if card is not None:
+                snapshot = self._from_card(sku, card)
+                if snapshot is None:
+                    absent.append(sku)
+                else:
+                    out.append(snapshot)
                 continue
             page, status = _unpack(cached_call(
                 self.code, f"product:{sku}:{self.location.key}",

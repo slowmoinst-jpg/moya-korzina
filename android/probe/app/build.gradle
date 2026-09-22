@@ -1,0 +1,27 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'ru.moyakorzina.probe'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "ru.moyakorzina.probe"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// Зависимостей нет нарочно: ни androidx, ни библиотек. Проверке нужен один экран
+// и один WebView, а каждая лишняя зависимость — это лишняя причина, по которой
+// сборка не соберётся на чужой машине.
+dependencies {
+}

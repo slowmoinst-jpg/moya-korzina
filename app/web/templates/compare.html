@@ -1,0 +1,108 @@
+{# Сравнение: один товар во всех доставках.
+
+   Форма — method="get", поэтому запрос уезжает в адрес и ссылку на сравнение можно
+   переслать. Ради этого переезд и затевался: «смотри, в Ленте дешевле на сорок
+   процентов» раньше пересылать было нечем.
+
+   Главное число в каждой строке — приведённая цена (за кг или за литр), а цена за
+   упаковку стоит под ней мелким. Наоборот было бы честно по форме и ложно по сути:
+   930 мл за 149 ₽ дороже литра за 155 ₽, и видно это только в приведённой цене. #}
+{% extends "layout.html" %}
+{% block title %}Сравнение — Моя корзина{% endblock %}
+{% block body %}
+
+<div class="card">
+  <form method="get" action="{{ screen.path }}">
+    <label class="dim" for="cmp-q">Что ищем</label>
+    <input id="cmp-q" name="q" type="search" value="{{ query }}"
+           placeholder="молоко 2,5% · огурцы · хлеб бородинский">
+    <div class="row" style="margin-top:10px">
+      <span>
+        <label class="dim" for="cmp-per">Позиций от магазина</label>
+        <select id="cmp-per" name="per">
+          {% for option in per_options %}
+            <option value="{{ option }}" {{ 'selected' if option == per_store }}>{{ option }}</option>
+          {% endfor %}
+        </select>
+      </span>
+      <button class="btn main" type="submit" style="align-self:flex-end">Сравнить</button>
+    </div>
+  </form>
+  <p class="dim" style="margin:10px 0 0">Спрашиваем все доставки разом. Ответы
+    запоминаются на шесть часов, поэтому повторный поиск и возврат «назад» мгновенные
+    и сети от них не страдают.</p>
+</div>
+
+{% if error %}<div class="note bad">{{ error }}</div>{% endif %}
+
+{% if not query %}
+  <div class="note info">Введите название товара — покажу, где он есть, почём и во что
+    обходится килограмм или литр в каждой доставке.</div>
+{% elif not rows and not error %}
+  <div class="note warn">Ни в одной доставке ничего похожего не нашлось. Попробуйте
+    назвать товар проще — «молоко» вместо «молоко пастеризованное 2,5%».</div>
+{% endif %}
+
+{% if summary %}
+  <div class="grid two">
+    <div class="card" style="margin:0">
+      <div class="eyebrow">Дешевле всего</div>
+      <span class="chip"><span class="dot s-{{ summary.code }}"></span>
+        <strong>{{ summary.store }}</strong></span>
+      <div style="margin-top:4px">
+        <span class="sum gain" style="font-size:1.35rem">{{ rub(summary.per_unit) }}</span>
+        <span class="dim"> {{ summary.per_unit_label }}</span>
+      </div>
+    </div>
+    {% if summary.diff %}
+      <div class="card" style="margin:0">
+        <div class="eyebrow">Разброс</div>
+        <div><span class="sum" style="font-size:1.35rem">{{ rub(summary.diff) }}</span>
+          <span class="dim"> — это {{ num(summary.pct) }}%</span></div>
+        <p class="dim" style="margin:6px 0 0">
+          {% if (summary.pct or 0) >= worth_looking %}
+            Смотреть по сторонам стоит: разница заметная.
+          {% else %}
+            Смотреть по сторонам почти не за чем: доставки сошлись в цене.
+          {% endif %}
+        </p>
+      </div>
+    {% endif %}
+  </div>
+{% endif %}
+
+{% if rows %}
+  <div class="card">
+    {% for row in rows %}
+      {# Выигравшую строку подсвечиваем зелёным — в этом интерфейсе зелёный означает
+         выгоду и больше ничего, поэтому спутать его с цветом сети нельзя. #}
+      <div class="row" style="align-items:flex-start;border-top:1px solid var(--line);
+           padding:9px 10px;margin:0 -10px;{{ 'background:var(--green-soft)' if row.win }}">
+        <span style="flex:1 1 200px;min-width:0">
+          <span class="chip"><span class="dot s-{{ row.code }}"></span>
+            <strong>{{ row.store }}</strong></span>
+          <br>
+          <span class="muted">{{ row.name }}</span>
+          {% if not row.in_stock %}
+            <span class="pill" style="border-color:var(--red);color:var(--red)">нет в наличии</span>
+          {% endif %}
+          {% if row.url %}
+            <br><a class="dim" href="{{ row.url }}" target="_blank" rel="noopener">карточка в магазине →</a>
+          {% endif %}
+        </span>
+        <span style="text-align:right;white-space:nowrap">
+          <span class="sum{{ ' gain' if row.win }}" style="font-size:1.1rem">{{ rub(row.per_unit) }}</span>
+          <span class="dim"> {{ row.per_unit_label }}</span>
+          <br><span class="dim">за упаковку {{ rub(row.price) }}</span>
+        </span>
+      </div>
+    {% endfor %}
+  </div>
+{% endif %}
+
+{% if misses %}
+  <p class="dim">Не показали:
+    {% for miss in misses %}{{ miss.store }} — {{ miss.note }}{% if not loop.last %} · {% endif %}{% endfor %}.
+  </p>
+{% endif %}
+{% endblock %}
