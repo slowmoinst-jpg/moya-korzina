@@ -100,7 +100,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from app import cartplan, collector, config, repo, users
+from app import cartplan, collector, config, freshness, repo, users
 from app.models import BasketLine
 
 log = logging.getLogger(__name__)
@@ -295,7 +295,7 @@ def _priced(lines: list[BasketLine], store_code: str) -> list[BasketLine]:
     for line in lines:
         if not line.product_id:
             continue
-        price = repo.latest_price_for(line.product_id, store.id)
+        price = freshness.price_for(line.product_id, store.id)
         if price and price.get("price") is not None:
             line.prices[store_code] = round(float(price["price"]) * line.qty, 2)
     return lines
@@ -381,7 +381,7 @@ def take_cartplan(body: dict) -> dict:
                 "note": "Отложенного наряда нет: нажмите «Передать корзину» в приложении."}
 
     lines, empty_note = _plan_lines(body, store_code)
-    plan = cartplan.build(store_code, lines)
+    plan = cartplan.build(store_code, lines, verify_prices=True)
     if not plan.lines and not plan.note:
         plan.note = empty_note
     answer = plan.as_dict()

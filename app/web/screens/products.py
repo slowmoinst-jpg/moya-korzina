@@ -34,7 +34,7 @@ from urllib.parse import urlencode
 
 from flask import redirect, render_template, request
 
-from app import repo
+from app import freshness, repo
 from app.models import Product
 from app.web.views import SCREEN_BY_KEY
 
@@ -97,7 +97,7 @@ def nets(count: int) -> str:
 
 # ---------- данные экрана ----------
 def catalog_prices(products, stores) -> dict[int, dict[str, float]]:
-    """product_id -> {код сети: цена за единицу}. Последний снимок, без похода в сеть.
+    """product_id -> {код сети: цена за единицу}. Последний свежий снимок (app/freshness.py), без похода в сеть.
 
     Спрашивается только по показанным товарам, а не по всем: при поиске это разница
     между шестью запросами и шестью сотнями, и на телефоне она видна глазом.
@@ -106,7 +106,7 @@ def catalog_prices(products, stores) -> dict[int, dict[str, float]]:
     for product in products:
         found: dict[str, float] = {}
         for store in stores:
-            snap = repo.latest_price_for(product.id, store.id)
+            snap = freshness.price_for(product.id, store.id)
             if not snap:
                 continue
             value = snap.get("price_per_kg") if (product.unit == "kg") else snap.get("price")

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 
-from app import config, location, repo
+from app import config, freshness, location, repo
 from app.models import BasketLine, Offer, Store, Variant
 
 log = logging.getLogger(__name__)
@@ -15,9 +15,11 @@ log = logging.getLogger(__name__)
 def _price_for_line(product_id: int, store: Store, qty: float, unit: str) -> tuple[float | None, bool]:
     """Стоимость позиции целиком в магазине: (цена * qty, в наличии).
 
-    Для весовых берём price_per_kg, для штучных — цену упаковки.
+    Для весовых берём price_per_kg, для штучных — цену упаковки. Цена только
+    свежая (app/freshness.py): устаревшая не участвует в расчёте, магазин по этой
+    позиции просто выпадает, а не предлагается по цене, которой уже нет.
     """
-    snap = repo.latest_price_for(product_id, store.id)
+    snap = freshness.price_for(product_id, store.id)
     if not snap:
         return None, False
     if unit == "kg":
@@ -60,21 +62,25 @@ def _history_price(product_id: int) -> float | None:
 
 
 def baseline_total(basket_id: int) -> float:
-    """Baseline: стоимость всей корзины в одном базовом магазине без акций (раздел 2 спецификации).
+    """Сколько человек заплатил бы за эту корзину по-старому — база для «Экономии».
 
-    Порядок источников цены: цена базового магазина -> последняя цена из истории покупок ->
-    минимальная известная цена среди остальных магазинов.
+    Экономия на экране — «по сравнению с тем, сколько вы платили за эти товары
+    раньше», поэтому первым источником идёт ЕГО ЖЕ цена из чеков: последняя цена
+    за единицу в истории покупок. Цена чужой сети в этом месте была бы подменой —
+    сравнением с магазином, где человек, может быть, никогда не покупает.
+
+    Товар, которого в чеках нет (добавлен вручную), оценивается ценой базового
+    магазина (`baseline_store`), а если и её нет — самой низкой действующей ценой:
+    так такой товар не рисует экономии из воздуха. Цены магазинов — только свежие.
     """
     base_store = repo.get_store(config.get("baseline_store", "pyaterochka"))
     total = 0.0
     for item in repo.basket_items(basket_id):
         qty, unit, pid = float(item["qty"]), item["unit"] or "pcs", item["product_id"]
-        price = None
-        if base_store:
+        hp = _history_price(pid)
+        price = round(hp * qty, 2) if hp is not None else None
+        if price is None and base_store:
             price, _ = _price_for_line(pid, base_store, qty, unit)
-        if price is None:
-            hp = _history_price(pid)
-            price = round(hp * qty, 2) if hp is not None else None
         if price is None:
             others = []
             for store in repo.list_stores():

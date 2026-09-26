@@ -55,10 +55,12 @@ class PlanLine:
     unit: str | None = None
     price: float | None = None
     url: str | None = None
+    product_id: int | None = None
 
     def as_dict(self) -> dict:
         return {"sku": self.sku, "qty": self.qty, "name": self.name,
-                "unit": self.unit, "price": self.price, "url": self.url}
+                "unit": self.unit, "price": self.price, "url": self.url,
+                "product_id": self.product_id}
 
 
 @dataclass
@@ -69,6 +71,10 @@ class CartPlan:
     lines: list[PlanLine] = field(default_factory=list)
     unknown: list[str] = field(default_factory=list)
     note: str = ""
+    # проверка перед оформлением (verify): что изменилось и чего больше нет
+    checked: bool = False
+    changes: list[dict] = field(default_factory=list)
+    gone: list[str] = field(default_factory=list)
 
     @property
     def ready(self) -> bool:
@@ -80,7 +86,8 @@ class CartPlan:
 
     def as_dict(self) -> dict:
         return {"store": self.store_code, "lines": [line.as_dict() for line in self.lines],
-                "unknown": list(self.unknown), "total": self.total, "note": self.note}
+                "unknown": list(self.unknown), "total": self.total, "note": self.note,
+                "checked": self.checked, "changes": list(self.changes), "gone": list(self.gone)}
 
 
 def available(store_code: str) -> bool:
@@ -137,7 +144,7 @@ def _price(line, store_code: str) -> float | None:
     return None
 
 
-def build(store_code: str, lines, *, force: bool = False) -> CartPlan:
+def build(store_code: str, lines, *, force: bool = False, verify_prices: bool = False) -> CartPlan:
     """Собрать наряд по позициям расчёта.
 
     Артикул берётся из ПОДТВЕРЖДЁННОГО сопоставления и ниоткуда больше. Догадка
@@ -169,13 +176,75 @@ def build(store_code: str, lines, *, force: bool = False) -> CartPlan:
             unit=(mapping or {}).get("unit"),
             price=_price(line, store_code),
             url=(mapping or {}).get("url"),
+            product_id=product_id,
         ))
+
+    if verify_prices and plan.lines:
+        verify(plan)
+        if plan.gone and not plan.lines:
+            return plan
 
     if plan.unknown and plan.lines:
         plan.note = (f"{len(plan.unknown)} позиц. этой сети незнакомы — они останутся "
                      "вне корзины, соберите их обычным поиском.")
     elif plan.unknown:
         plan.note = "Ни одна позиция этой сети не знакома — класть в корзину нечего."
+    return plan
+
+
+def verify(plan: CartPlan, refresh=None) -> CartPlan:
+    """Проверка цен и наличия перед оформлением — последний шаг до корзины магазина.
+
+    Расчёт мог быть сделан полчаса назад, и за это время цена сменилась или товар
+    кончился. Поэтому перед тем как класть товары в корзину, спрашиваем магазин ещё
+    раз по каждой позиции наряда и сверяем:
+
+        цена изменилась   → в наряде новая цена, а в `changes` — было/стало,
+                            чтобы человек увидел новую сумму ДО того, как товары
+                            лягут в корзину;
+        нет в наличии     → позиция уходит из наряда в `gone`;
+        свежей цены нет   → тоже `gone`: класть в корзину товар, цену которого
+                            подтвердить не удалось, значит обещать сумму наугад.
+
+    `refresh` — чем обновить цены (по умолчанию matcher.refresh_prices); падение
+    магазина не роняет оформление, но и не пропускает непроверенное.
+    """
+    from app import freshness
+
+    store = repo.get_store(plan.store_code)
+    ids = [ln.product_id for ln in plan.lines if ln.product_id]
+    if not store or not ids:
+        return plan
+    if refresh is None:
+        from app.matcher import refresh_prices as refresh
+    try:
+        refresh(ids, [plan.store_code])
+    except Exception as exc:  # noqa: BLE001 — магазин недоступен; решит свежесть снимков
+        log.warning("Проверка цен %s перед оформлением не удалась: %s", plan.store_code, exc)
+
+    kept: list[PlanLine] = []
+    for ln in plan.lines:
+        if not ln.product_id:
+            kept.append(ln)
+            continue
+        snap = freshness.price_for(ln.product_id, store.id)
+        if not snap or not bool(snap.get("in_stock", 1)):
+            plan.gone.append(ln.name)
+            continue
+        is_kg = (ln.unit or "pcs") == "kg"
+        base = (snap.get("price_per_kg") or snap.get("price")) if is_kg else snap.get("price")
+        if base is None:
+            plan.gone.append(ln.name)
+            continue
+        now = round(float(base) * ln.qty, 2)
+        if ln.price is not None and abs(now - ln.price) >= 0.01:
+            plan.changes.append({"name": ln.name, "was": ln.price, "now": now})
+        kept.append(PlanLine(sku=ln.sku, qty=ln.qty, name=ln.name, unit=ln.unit,
+                             price=now, url=ln.url, product_id=ln.product_id))
+    plan.lines = kept
+    plan.checked = True
+    if plan.gone and not plan.lines:
+        plan.note = "Ни одного товара сейчас нет в наличии — класть в корзину нечего."
     return plan
 
 

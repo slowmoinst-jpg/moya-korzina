@@ -18,6 +18,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from app import chains
 from app.importers.ofd_pdf import Receipt, ReceiptRow
 
 # как называются нужные колонки в выгрузках
@@ -139,8 +140,13 @@ def parse_receipt_json(payload: str | dict) -> Receipt:
 
     # «Мои чеки онлайн» присылает сеть отдельным полем brand, и оно человечнее
     # адреса торговой точки: «Пятёрочка» вместо «ООО "Агроторг", ул. Ленина, 1».
-    store = str(node.get("brand") or node.get("retailPlace") or node.get("user")
-                or node.get("store") or node.get("retailPlaceAddress") or "—").strip() or "—"
+    # Сеть при этом должна узнаваться (app/chains.py): в чеке ФНС точка часто
+    # записана как «Торговая точка 412», а сеть видна только по юрлицу в «user».
+    # Поэтому берём первое поле, по которому сеть узнаётся, и лишь потом — первое непустое.
+    fields = [str(node.get(k) or "").strip()
+              for k in ("brand", "retailPlace", "user", "store", "retailPlaceAddress")]
+    fields = [f for f in fields if f]
+    store = next((f for f in fields if chains.resolve(f)), fields[0] if fields else "—")
 
     rows: list[ReceiptRow] = []
     for item in node["items"]:

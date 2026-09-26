@@ -81,7 +81,7 @@ from urllib.parse import quote
 
 from flask import g, redirect, render_template, request
 
-from app import repo
+from app import freshness, repo
 from app.web import auth
 from app.web.views import SCREEN_BY_KEY
 
@@ -324,7 +324,7 @@ def _price_matrix(items, stores) -> tuple[dict, dict]:
         qty = float(item.get("qty") or 0)
         is_kg = (item.get("unit") or "pcs") == "kg"
         for store in stores:
-            snap = repo.latest_price_for(pid, store.id)
+            snap = freshness.price_for(pid, store.id)
             if not snap:
                 continue
             base = (snap.get("price_per_kg") or snap.get("price")) if is_kg else snap.get("price")

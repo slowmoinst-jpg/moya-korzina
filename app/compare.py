@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from app import repo
+from app import freshness, repo
 from app import config
 from app.matcher.normalize import normalize_name, parse_weight, similarity
 from app.models import Location
@@ -265,10 +265,10 @@ def compare_product(product_id: int) -> list[StoreOffer]:
         if not mapping:
             out.append(StoreOffer(store.code, store.name, note="товар не связан с магазином"))
             continue
-        snap = repo.latest_price_for(product_id, store.id)
+        snap = freshness.price_for(product_id, store.id)
         if not snap:
             out.append(StoreOffer(store.code, store.name, sku=mapping.get("sku") or "",
-                                  name=mapping.get("raw_name") or "", note="цены ещё не брали"))
+                                  name=mapping.get("raw_name") or "", note="свежей цены нет"))
             continue
         unit = mapping.get("unit") or product.unit or "pcs"
         price = snap.get("price_per_kg") if (unit == "kg" and snap.get("price_per_kg")) else snap.get("price")

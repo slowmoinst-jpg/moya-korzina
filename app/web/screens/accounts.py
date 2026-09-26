@@ -396,7 +396,7 @@ def _act():
 
     # Остальным корзину кладёт браузер на нашем сервере, под сохранённым входом.
     try:
-        built = cartplan.build(code, lines, force=True)
+        built = cartplan.build(code, lines, force=True, verify_prices=True)
     except Exception:  # noqa: BLE001
         log.warning("наряд для %s не собрался", code, exc_info=True)
         return redirect(f"{PATH}?trouble={code}")

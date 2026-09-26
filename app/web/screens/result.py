@@ -416,7 +416,7 @@ def _act():
                 from app.web import auth
 
                 try:
-                    cp = cartplan.build(target, lines, force=True)
+                    cp = cartplan.build(target, lines, force=True, verify_prices=True)
                     if cp.lines:
                         if shopstore.load(target) is None:
                             # Класть некуда, пока человек не вошёл. Ведём туда, где

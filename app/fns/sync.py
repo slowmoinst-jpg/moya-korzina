@@ -21,7 +21,7 @@ import json
 from datetime import datetime
 from typing import Any, Callable
 
-from app import config, repo
+from app import chains, config, repo
 from app.fns.client import Cabinet, CabinetError, Unauthorized, new_device_id
 from app.importers.bundle import import_bundle
 
@@ -220,6 +220,10 @@ def _pack(catalogue: list[dict], receipts: list[dict], failed: list[dict]) -> st
                        "receipts": receipts, "failed": failed}, ensure_ascii=False)
 
 
+def _named(store: str | None) -> bool:
+    return bool(str(store or "").strip().strip("—-").strip())
+
+
 def sync(on_step: Callable[[str, int, int], None] | None = None,
          cabinet: Cabinet | None = None, batch: int = 50) -> dict:
     """Сходить в кабинет, взять новые чеки, положить в историю. Возвращает отчёт загрузки.
@@ -262,7 +266,15 @@ def sync(on_step: Callable[[str, int, int], None] | None = None,
     # Чеки, по которым ФНС уже сказала «состава нет», из очереди исключены: иначе
     # каждая проверка заново спрашивала бы сто с лишним чеков 2018 года ради того же
     # отказа — и минуту работы, и лишний стук в ФНС.
-    skip = known | repo.unavailable_receipt_keys()
+    skip = known | repo.unavailable_receipt_keys() | repo.other_store_receipt_keys()
+    # Чек магазина, где мы не собираем заказы, откладывается ещё по описи — его состав
+    # у ФНС не спрашиваем вовсе (app/chains.py). Опись без названия продавца не
+    # судим: такой чек возьмём, а решит store_receipts по самому чеку.
+    for e in entries:
+        if e["key"] in skip or not _named(e.get("store")) or chains.accepts(e.get("store")):
+            continue
+        repo.mark_receipt_other_store(e["key"], e.get("date"), e.get("store"), e.get("total"))
+        skip.add(e["key"])
     need = [e for e in entries if e["key"] not in skip]
     # В очередь идёт не только то, что кабинет показал сейчас, но и то, что у нас уже
     # записано невзятым. Опись читается постранично, и пока её читаешь, лента в
@@ -322,6 +334,7 @@ def sync(on_step: Callable[[str, int, int], None] | None = None,
         "pending": len(repo.pending_receipts()),
         "no_data": len(repo.unavailable_receipt_keys()),
         "gone_now": len(gone),
+        "other_stores": len(repo.other_store_receipts()),
         "seen": len(entries),
         "synced_at": _now(),
     })
