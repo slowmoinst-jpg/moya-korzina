@@ -610,3 +610,16 @@ def test_cartplan_waiting_gives_out_what_was_put_aside(door, places, basket_with
     code, again, _ = door.knock(api.CARTPLAN, body)
     assert code == 200
     assert again["lines"] == [], "отложенный наряд выдан второй раз — корзина удвоится"
+
+
+def test_door_log_request_handles_missing_attributes():
+    """Сбой разбора запроса (сканирование порта, битый сокет) не роняет log_request."""
+    class DummyDoor(api.Door):
+        def __init__(self):
+            pass
+
+    dummy = DummyDoor()
+    # Ни self.path, ни self.command не выставлены: не должно падать с AttributeError
+    dummy.log_request(400)
+    assert dummy._path() == ""
+

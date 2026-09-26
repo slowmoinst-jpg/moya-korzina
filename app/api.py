@@ -407,13 +407,15 @@ class Door(BaseHTTPRequestHandler):
     def log_request(self, code: object = "-", size: object = "-") -> None:
         # Адрес пишем очищенным от параметров: если в них случайно уехал секрет,
         # журнал сервера — последнее место, где он должен осесть.
-        log.info("%s %s → %s", self.command, self._path(), code)
+        cmd = getattr(self, "command", None) or "-"
+        log.info("%s %s → %s", cmd, self._path(), code)
 
     def log_error(self, fmt: str, *args) -> None:
         log.warning(fmt, *args)
 
     def _path(self) -> str:
-        path = urlsplit(self.path).path
+        raw = getattr(self, "path", None) or ""
+        path = urlsplit(raw).path
         return path[:-1] if len(path) > 1 and path.endswith("/") else path
 
     def _origin(self) -> str | None:
