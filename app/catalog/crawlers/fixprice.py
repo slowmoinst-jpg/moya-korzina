@@ -143,7 +143,7 @@ class FixPriceCrawler(Crawler):
     name = "Fix Price"
 
     def __init__(self) -> None:
-        self.pace = Pace()
+        self.pace = Pace(chain=self.code)
         self.per_page = 24                     # столько витрина кладёт на страницу сама
         self.max_pages = int(config.get("catalog.fixprice.max_pages") or 60)
         self.max_sections = int(config.get("catalog.fixprice.max_sections") or 40)

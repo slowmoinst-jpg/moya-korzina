@@ -125,7 +125,15 @@
 </div>
 
 {% if best.missing %}
-  <div class="note warn">Не нашли цену для: {{ best.missing|join(', ') }}</div>
+  <div class="note warn">Не нашли цену для: {{ best.missing|join(', ') }}.
+    Экономия посчитана без этих позиций.</div>
+{% endif %}
+
+{% if best.stale %}
+  {# Несвежая цена — не ошибка, а повод проверить: акция могла кончиться, цена —
+     вырасти. Человек видит, какие позиции считаны по старому снимку, до поездки. #}
+  <div class="note warn">Цены старше {{ best.stale_days }} дн. — проверьте перед заказом:
+    {% for ln in best.stale %}{{ ln.product_name }} ({{ ln.store_name }}, {{ ln.stale_since }}){{ ', ' if not loop.last }}{% endfor %}</div>
 {% endif %}
 
 {% if doubts and doubts.products %}
@@ -180,7 +188,8 @@
       {% for ln in s.lines %}
         <div class="row" style="justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)">
           <span style="flex:1;min-width:0">{{ ln.name }}
-            <span class="dim">{{ num(ln.qty) }} {{ ln.unit }}</span></span>
+            <span class="dim">{{ num(ln.qty) }} {{ ln.unit }}</span>
+            {% if ln.note %}<br><span class="dim" style="font-size:.85rem">{{ ln.note }}</span>{% endif %}</span>
           <span>{{ rub(ln.price) }}</span>
         </div>
       {% endfor %}

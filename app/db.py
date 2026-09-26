@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS store_prices (
     price REAL NOT NULL,
     price_per_kg REAL,
     in_stock INTEGER NOT NULL DEFAULT 1,
-    fetched_at TEXT NOT NULL
+    fetched_at TEXT NOT NULL,
+    source TEXT                     -- NULL — живая цена; fallback — справочная из CSV
 );
 
 CREATE TABLE IF NOT EXISTS baskets (
@@ -202,6 +203,7 @@ LATE_COLUMNS: list[tuple[str, str, str]] = [
     ("products", "barcode", "TEXT"),
     ("store_products", "ean", "TEXT"),
     ("purchase_history", "receipt_key", "TEXT"),
+    ("store_prices", "source", "TEXT"),
 ]
 
 

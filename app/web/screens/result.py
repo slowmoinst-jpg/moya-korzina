@@ -162,10 +162,26 @@ def _chosen(variants, mode: str | None):
     if not split or not single:
         return variants[0], None
     if mode not in ("split", "single"):
-        mode = "split" if split.total <= single.total else "single"
+        # По итогу С РУЧНОЙ РАБОТОЙ, как ранжирует сам расчёт. По одним деньгам
+        # экран советовал дробить корзину там, где расчёт уже взвесил перебивание
+        # по позициям и счёл дробление хуже.
+        mode = "split" if _effort(split) <= _effort(single) else "single"
     switch = {"split": {"label": f"Разделить · {rub(split.total)}", "on": mode == "split"},
               "single": {"label": f"Один магазин · {rub(single.total)}", "on": mode == "single"}}
     return (split if mode == "split" else single), switch
+
+
+def _stale_days() -> int:
+    from app import service
+    return int(service.stale_after_days())
+
+
+def _effort(variant) -> float:
+    """Итог варианта вместе с ценой ручной работы (Variant.effort_total)."""
+    value = getattr(variant, "effort_total", None)
+    if value is None:
+        value = float(getattr(variant, "total", 0.0) or 0.0)
+    return float(value)
 
 
 def _units() -> dict[int, str]:
@@ -217,7 +233,8 @@ def _store_card(store, units: dict[int, str], with_handover: bool, trouble: str 
         "lines": [{"name": getattr(ln, "product_name", "—"),
                    "qty": getattr(ln, "qty", 0),
                    "unit": unit_label(units.get(getattr(ln, "product_id", None))),
-                   "price": getattr(ln, "price", 0.0)} for ln in lines],
+                   "price": getattr(ln, "price", 0.0),
+                   "note": getattr(ln, "note", None)} for ln in lines],
         "kind": kind,
         "asks_link": kind == ho.LINK,
         "trouble": trouble == code,
@@ -278,8 +295,9 @@ def _store_card(store, units: dict[int, str], with_handover: bool, trouble: str 
                 # сыра превращаются в одну упаковку у КОНКРЕТНОГО товара, и
                 # человек должен видеть это до передачи, а не потом в чеке.
                 card["plan"] = {"lines": [{"name": ln.name, "qty": ln.qty,
-                                           "unit": unit_label(ln.unit), "price": ln.price,
-                                           "rounded": cart.rounding(ln.qty, ln.unit)}
+                                           "unit": unit_label(ln.per or ln.unit),
+                                           "price": ln.price,
+                                           "rounded": cart.rounding_of(ln)}
                                           for ln in plan.lines],
                                 "unknown": list(plan.unknown), "total": plan.total,
                                 "note": plan.note,
@@ -359,7 +377,9 @@ def _draw(basket: dict, bundle: dict, mode: str | None, trouble: str | None, pla
               "stores": [_store_card(s, units, True, trouble)
                          for s in (getattr(best, "stores", None) or [])],
               "penalty": float(getattr(best, "penalty", 0.0) or 0.0),
-              "missing": list(getattr(best, "missing_products", None) or [])},
+              "missing": list(getattr(best, "missing_products", None) or []),
+              "stale": list(getattr(best, "stale_lines", None) or []),
+              "stale_days": _stale_days()},
         others=[{"n": n, "variant": v, "figures": _figures(v, bundle["baseline"]),
                  "stores": [_store_card(s, units, False, None)
                             for s in (getattr(v, "stores", None) or [])],
@@ -422,6 +442,11 @@ def _act():
                             # Класть некуда, пока человек не вошёл. Ведём туда, где
                             # входят, — человеку нужен следующий шаг, а не диагноз.
                             return redirect(f"/cabinet?store={target}")
+                        # Корзина сюда уже уезжала сегодня — вторая полная
+                        # передача удвоит её. Спрашиваем на «Кабинетах», где видно,
+                        # что и когда легло.
+                        if not cart.running(target) and cart.already_sent(target):
+                            return redirect("/accounts?resend=" + target)
                         # Пускатель сам не пустит вторую передачу в ту же сеть, и
                         # ответ «не пустил» надо донести: молча увести на «пошла»
                         # значило бы соврать человеку, который нажал дважды.

@@ -75,7 +75,7 @@ class VkusvillCrawler(Crawler):
 
     def __init__(self) -> None:
         self.cap = int(config.get("catalog.vkusvill.details_per_run") or 2000)
-        self.pace = Pace()
+        self.pace = Pace(chain=self.code)
 
     def universe(self) -> list[str]:
         ids: list[str] = []

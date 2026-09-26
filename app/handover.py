@@ -127,6 +127,14 @@ def penalty_by_store() -> dict[str, float]:
             out[code] = float(prices.get(kind, 0) or 0)
         except (TypeError, ValueError):
             out[code] = 0.0
+    # Своя цена времени на сеть: дальний самовывоз, неудобное окно доставки.
+    # Задаёт владелец (optimizer.store_extra_rub), по умолчанию пусто — выдумывать
+    # чужую дорогу не наше дело.
+    for code, extra in (config.get("optimizer.store_extra_rub") or {}).items():
+        try:
+            out[str(code)] = out.get(str(code), 0.0) + float(extra or 0)
+        except (TypeError, ValueError):
+            continue
     return out
 
 

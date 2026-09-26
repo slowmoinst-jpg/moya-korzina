@@ -59,6 +59,23 @@
     не пустит. Если пустить, всё лягло бы в вашу корзину второй раз. Дождитесь конца: ход
     показан ниже и обновляется сам.</div>
 {% endif %}
+{% if resend %}
+  {# Вторая полная передача кладёт поверх лежащего — корзина удваивается. Не
+     отказываем, а спрашиваем: корзину могли очистить руками. #}
+  <div class="note warn" style="margin:12px 0">Корзина в {{ resend.name }} уже передана сегодня
+    в {{ resend.at }}: там лежит {{ resend.landed }} позиц. Сеть кладёт товар поверх лежащего,
+    поэтому ещё одна передача целиком удвоит корзину.
+    <form method="post" style="margin-top:8px" data-once>
+      <input type="hidden" name="again" value="1">
+      {% if resend.retry %}
+        <button class="btn main" type="submit" name="do" value="retry:{{ resend.code }}">
+          Доложить только непроложенное ({{ resend.retry }})</button>
+      {% endif %}
+      <button class="btn" type="submit" name="do" value="send:{{ resend.code }}">
+        Корзину очистил — передать целиком ещё раз</button>
+    </form>
+  </div>
+{% endif %}
 {% if gone %}
   <div class="note warn" style="margin:12px 0">Повторять нечего: тех позиций, что не легли,
     в сегодняшней корзине уже нет — она изменилась после передачи. Посчитайте корзину заново

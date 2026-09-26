@@ -143,8 +143,15 @@ def _center_point(center: dict) -> tuple[float, float] | None:
     return None
 
 
+# Дальше этого центр METRO уже не «ваш»: доставка и самовывоз у сети по городу и
+# области. Без потолка человек из города без METRO получал цены центра за сотни
+# километров — правдоподобные и ничем не отличимые от своих.
+MAX_KM = 60.0
+
+
 def nearest_store(address: str) -> dict | None:
-    """Ближайший к адресу торговый центр. None — адрес не разобрался или центров нет.
+    """Ближайший к адресу торговый центр. None — адрес не разобрался, центров нет
+    или ближайший дальше connectors.metro_max_km.
 
     У METRO центров на всю страну меньше сотни, и в городе их единицы: в Петербурге
     три. Поэтому «ближайший» здесь честно означает ближайший, а не хаб доставки,
@@ -168,19 +175,30 @@ def nearest_store(address: str) -> dict | None:
             best, best_km = center, km
     if best is None:
         return None
+    try:
+        limit = float(config.get("connectors.metro_max_km") or MAX_KM)
+    except (TypeError, ValueError):
+        limit = MAX_KM
+    if best_km is not None and best_km > limit:
+        log.info("metro: ближайший центр к «%s» в %.0f км — дальше %.0f км, это не ваш",
+                 address, best_km, limit)
+        return None
     return {"code": str(best.get("store_id") or best.get("id") or ""),
             "address": best.get("address") or best.get("name") or "",
             "city": best.get("city") or "", "distance_km": round(best_km or 0.0, 2)}
 
 
 def _store_id(location: Location | None) -> str | None:
-    """Код точки для запроса: из места клиента, иначе запасной из config.yaml."""
+    """Код точки для запроса: из места клиента, иначе запасной из config.yaml.
+
+    Адрес известен, а центра рядом нет — это ответ «METRO здесь нет», а не повод
+    взять запасной петербургский центр: его цены и наличие выглядели бы своими.
+    """
     if location and location.store_id:
         return str(location.store_id)
     if location and location.address:
         found = nearest_store(location.address)
-        if found and found["code"]:
-            return found["code"]
+        return found["code"] if found and found["code"] else None
     fallback = config.get("connectors.metro_store_id")
     return str(fallback) if fallback else None
 

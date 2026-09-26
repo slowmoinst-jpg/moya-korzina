@@ -58,7 +58,7 @@ class VprokCrawler(Crawler):
     name = "Перекрёсток Впрок"
 
     def __init__(self) -> None:
-        self.pace = Pace()
+        self.pace = Pace(chain=self.code)
         self.cap = int(config.get("catalog.vprok.max_products") or 0)
 
     def crawl(self, progress: Progress | None = None) -> Iterator[ChainProduct]:

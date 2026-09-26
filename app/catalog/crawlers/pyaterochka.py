@@ -140,7 +140,7 @@ class PyaterochkaCrawler(Crawler):
     name = "Пятёрочка"
 
     def __init__(self, stores: list[str] | None = None, sections: list[str] | None = None) -> None:
-        self.pace = Pace()
+        self.pace = Pace(chain=self.code)
         if stores and isinstance(stores, list) and any(s in DEFAULT_SECTIONS for s in stores):
             self.sections = stores
             self.stores = []

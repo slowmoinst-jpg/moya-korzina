@@ -54,6 +54,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import threading
 import time
@@ -66,6 +67,18 @@ log = logging.getLogger(__name__)
 
 STEP_PAUSE = 1.3          # между карточками: темп покупателя, а не выгребания
 CLICK_PAUSE = 0.7         # между нажатиями «ещё одну» на той же карточке
+
+# Блок покупки товара — не дальше этого ниже заголовка. Замер 19.09.2026: у
+# Магнита кнопка товара на 167 точек ниже h1, у METRO на 192, а карусель «с этим
+# покупают» начинается на 803. Всё, что ниже потолка, — чужие товары: их кнопки
+# «в корзину» и их «нет в наличии» к этой карточке отношения не имеют.
+BUYBOX_BELOW = 700
+
+# Сколько держать повторную ПОЛНУЮ передачу после удачной, часов. Сеть кладёт
+# товар поверх лежащего, и второе нажатие «Передать» за вечер удваивало корзину.
+# Повтор непроложенного (only) этим сроком не ограничен — он и сделан, чтобы
+# докладывать.
+RESEND_HOURS = 12
 QTY_LIMIT = 30            # больше тридцати штук одного товара — это ошибка, а не корзина
 LINE_LIMIT = 60           # длиннее наряда у корзины не бывает
 LOAD_TIMEOUT = 45000
@@ -111,38 +124,94 @@ def _packs(times: int) -> str:
     return "упаковки" if 2 <= last <= 4 else "упаковок"
 
 
-def _pieces(qty, unit: str | None = None) -> tuple[int, str]:
+def _pieces(qty, unit: str | None = None, pack_g: float | None = None,
+            per: str | None = None) -> tuple[int, str]:
     """Сколько раз нажать. Витрина считает штуками, дробное нажать нельзя.
 
-    Округляем и ГОВОРИМ об этом: 0,7 кг сыра превратились в одну упаковку, и
-    человек должен увидеть это в отчёте, а не потом в чеке. Заметка возвращается
-    отдельной строкой от причины неудачи нарочно: округление случается и с
-    позицией, которая ЛЕГЛА, а склеенное с причиной оно терялось бы ровно в этом,
-    самом частом случае.
+    Округляем ВВЕРХ и ГОВОРИМ об этом: 0,7 кг сыра превратились в одну упаковку,
+    и человек должен увидеть это в отчёте, а не потом в чеке. Вверх — потому что
+    недоложенное придётся докупать отдельной поездкой, а лишние двести граммов
+    нет; прежний round() к тому же округлял 2,5 до 2 (банковское округление).
+
+    КИЛОГРАММЫ КОРЗИНЫ И УПАКОВКИ СЕТИ — РАЗНЫЕ ЧИСЛА. Если корзина считает
+    позицию в килограммах (per="kg"), а сеть продаёт её упаковками известного веса
+    (pack_g), нажатий столько, сколько упаковок: 0,4 кг по 200 г — две, 1,5 кг
+    сеткой по 2,5 кг — одна. Раньше это было round(0,4) = одна упаковка на 200 г
+    и round(1,5) = две сетки на 5 кг.
+
+    Заметка возвращается отдельной строкой от причины неудачи нарочно: округление
+    случается и с позицией, которая ЛЕГЛА, а склеенное с причиной оно терялось бы
+    ровно в этом, самом частом случае.
     """
     try:
         wanted = float(qty)
     except (TypeError, ValueError):
         wanted = 1.0
-    times = min(QTY_LIMIT, max(1, round(wanted)))
+    try:
+        pack = float(pack_g) if pack_g else 0.0
+    except (TypeError, ValueError):
+        pack = 0.0
+    by_packs = (str(per or "").lower() in ("kg", "кг") and pack > 0
+                and str(unit or "").lower() not in ("kg", "кг"))
+    if by_packs:
+        exact = wanted * 1000.0 / pack
+        times = min(QTY_LIMIT, max(1, math.ceil(exact - 1e-9)))
+        if abs(times - exact) < 1e-9:
+            return times, f"{_qty_text(wanted)} кг — {times} уп. по {pack:g} г"
+        got = round(times * pack / 1000.0, 3)
+        return times, (f"{_qty_text(wanted)} кг упаковками по {pack:g} г не набрать — "
+                       f"взяли {times} {_packs(times)}, это {_qty_text(got)} кг")
+    times = min(QTY_LIMIT, max(1, math.ceil(wanted - 1e-9)))
     if times == wanted:
         return times, ""
-    word = _measure(unit)
+    word = _measure(per or unit)
     return times, (f"{_qty_text(wanted)}{' ' + word if word else ''} нажатием не положить — "
                    f"взяли {times} {_packs(times)}")
 
 
-def rounding(qty, unit: str | None = None) -> str:
+def _field(line, name: str, default=None):
+    """Поле строки наряда: строкой бывает и PlanLine, и словарь позиции."""
+    if isinstance(line, dict):
+        return line.get(name, default)
+    return getattr(line, name, default)
+
+
+def pieces_of(line) -> tuple[int, str]:
+    """Сколько нажатий у строки наряда и что об этом сказать — по всем её полям."""
+    return _pieces(_field(line, "qty", 1), _field(line, "unit"),
+                   _field(line, "pack_g"), _field(line, "per"))
+
+
+def rounding(qty, unit: str | None = None, pack_g: float | None = None,
+             per: str | None = None) -> str:
     """Что случится с дробным количеством на витрине. Нечему случиться — пусто.
 
     Открыта наружу для экранов: округление надо показывать ДО нажатия, а не только
     в отчёте. Человек, увидевший «0,7 кг → 1 упаковка» заранее, поправит количество
     сам; узнавший об этом из чека — уже нет.
     """
-    return _pieces(qty, unit)[1]
+    return _pieces(qty, unit, pack_g, per)[1]
 
 
-def _budget(qty, unit=None) -> float:
+def rounding_of(line) -> str:
+    """То же, что rounding, но по строке наряда целиком — с фасовкой и единицей корзины."""
+    return pieces_of(line)[1]
+
+
+def _step_pause() -> float:
+    """Пауза между карточками: не чаще connectors.rate_limit_rps и не быстрее покупателя."""
+    if STEP_PAUSE <= 0:                    # тесты и отладка выключают паузу целиком
+        return 0.0
+    try:
+        from app import config
+
+        rps = float(config.get("connectors.rate_limit_rps", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        rps = 1.0
+    return max(STEP_PAUSE, 1.0 / rps if rps > 0 else 0.0)
+
+
+def _budget(qty, unit=None, pack_g=None, per=None) -> float:
     """Сколько ждать поручения по одной карточке — считая от количества.
 
     ПОЧЕМУ НЕ ОБЩИЙ СРОК driver.CALL_TIMEOUT. Он равен 90 секундам, а бюджет одной
@@ -155,7 +224,7 @@ def _budget(qty, unit=None) -> float:
     это время объявляет эту позицию непроложенной и предлагает её повторить — и
     человек кладёт себе второй раз то, что уже лежит.
     """
-    times, _ = _pieces(qty, unit)
+    times, _ = _pieces(qty, unit, pack_g, per)
     return min(CARD_LIMIT, LOAD_TIMEOUT / 1000 + 30 + times * (5 + 8 + CLICK_PAUSE))
 
 
@@ -183,21 +252,43 @@ PICKED = "data-korzina-add"
 # ЗАГОЛОВКА. Карусели живут ниже, панели и меню — выше. Заголовка нет (редко, но
 # бывает) — берём самую верхнюю видимую: это всё равно ближе к товару, чем
 # двадцатая по счёту из карусели.
-_PICK_JS = """([pattern, mark, below]) => {
-    const want = new RegExp(pattern, 'i');
+#
+# И НЕ ДАЛЬШЕ БЛОКА ПОКУПКИ (BUYBOX_BELOW). Когда самого товара нет в наличии,
+# его кнопки нет вовсе, и «первой видимой ниже заголовка» оказывалась кнопка
+# карусели — то есть в корзину ложился ЧУЖОЙ товар. Кнопка ниже потолка не
+# берётся никогда: лучше «кнопки не нашлось», чем не тот творог.
+#
+# `selectors` — говорящие признаки сети (signals.ADD_TO_CART). По ним кандидаты
+# отбираются вместо имени, но правило места то же: у Дикси кнопка
+# `card-line__cartBnt` есть и у каждой плитки карусели, и первая в разметке
+# бывает не той.
+_PICK_JS = """([pattern, mark, below, window_px, selectors]) => {
+    const want = pattern ? new RegExp(pattern, 'i') : null;
     for (const e of document.querySelectorAll('[' + mark + ']')) e.removeAttribute(mark);
     const h1 = document.querySelector('h1');
     const top = h1 ? h1.getBoundingClientRect().top + window.scrollY : null;
+    let nodes = [];
+    if (selectors && selectors.length) {
+        for (const sel of selectors) {
+            try { nodes = nodes.concat(Array.from(document.querySelectorAll(sel))); }
+            catch (e) { /* селектор сети устарел — просто не участвует */ }
+        }
+    } else {
+        nodes = Array.from(document.querySelectorAll('button,[role=button]'));
+    }
     let best = null, bestY = Infinity;
-    for (const e of document.querySelectorAll('button,[role=button]')) {
+    for (const e of nodes) {
         if (e.disabled) continue;
         const r = e.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
-        const name = ((e.getAttribute('aria-label') || '') + ' ' +
-                      (e.innerText || '')).replace(/\\s+/g, ' ').trim();
-        if (!want.test(name)) continue;
+        if (want) {
+            const name = ((e.getAttribute('aria-label') || '') + ' ' +
+                          (e.innerText || '')).replace(/\\s+/g, ' ').trim();
+            if (!want.test(name)) continue;
+        }
         const y = r.top + window.scrollY;
         if (below && top !== null && y < top) continue;
+        if (top !== null && window_px && y > top + window_px) continue;
         if (y < bestY) { best = e; bestY = y; }
     }
     if (!best) return null;
@@ -216,23 +307,33 @@ def _add_button(page, chain: str, again: bool):
     Выбор делает сама страница (_PICK_JS выше): ей видно, где заголовок и где
     что нарисовано, а нам — нет. Перебирать узлы отсюда значило бы спросить у
     браузера четыреста раз «ты видимый?» по одному, и всё равно не узнать, какой
-    из них принадлежит товару.
+    из них принадлежит товару. Правило места одно для признаков сети и для
+    имени: ниже заголовка и не дальше блока покупки.
     """
-    if not again:
-        for selector in signals.ADD_TO_CART.get(chain) or ():
-            try:
-                node = page.query_selector(selector)
-            except Exception:  # noqa: BLE001 — селектор мог стать невалидным
-                node = None
-            if node and node.is_enabled() and node.is_visible():
-                return node
+    selectors = [] if again else list(signals.ADD_TO_CART.get(chain) or ())
+    if selectors:
+        try:
+            if page.evaluate(_PICK_JS, ["", PICKED, True, BUYBOX_BELOW, selectors]) is not None:
+                node = page.query_selector(f"[{PICKED}]")
+                if node is not None:
+                    return node
+        except Exception:  # noqa: BLE001 — выбор страницей запрещён: ниже прежний путь
+            log.info("%s: выбор кнопки по признаку сети не удался", chain, exc_info=True)
+            for selector in selectors:
+                try:
+                    node = page.query_selector(selector)
+                except Exception:  # noqa: BLE001 — селектор мог стать невалидным
+                    node = None
+                if node and node.is_enabled() and node.is_visible():
+                    return node
 
     pattern = signals.PLUS_NAME if again else signals.ADD_NAME
-    # «Ещё одну» ищем БЕЗ привязки к заголовку: после первого нажатия витрина
+    # «Ещё одну» ищем БЕЗ привязки к заголовку снизу: после первого нажатия витрина
     # часто подменяет кнопку счётчиком «− 1 +», и плюс оказывается там же, где
-    # была кнопка, — но бывает и выше, в прилипшей панели покупки.
+    # была кнопка, — но бывает и выше, в прилипшей панели покупки. Сверху потолок
+    # тот же: плюс карусели — это чужой товар.
     try:
-        if page.evaluate(_PICK_JS, [pattern, PICKED, not again]) is None:
+        if page.evaluate(_PICK_JS, [pattern, PICKED, not again, BUYBOX_BELOW, []]) is None:
             return None
         return page.query_selector(f"[{PICKED}]")
     except Exception:  # noqa: BLE001 — страница могла уехать прямо сейчас
@@ -256,6 +357,45 @@ def _add_button(page, chain: str, again: bool):
         if want.search(" ".join(name.split())):
             return node
     return None
+
+
+# «Нет в наличии» — только в блоке покупки. Прежняя проверка искала слова по
+# первым 6000 знакам всей страницы, а там и карусель («Закончился» у соседа), и
+# баннеры («акция закончилась»): позиция пропускалась при товаре в наличии.
+_GONE_JS = """([pattern, window_px]) => {
+    const want = new RegExp(pattern, 'i');
+    const h1 = document.querySelector('h1');
+    if (!h1) return null;
+    const top = h1.getBoundingClientRect().top + window.scrollY;
+    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walk.nextNode())) {
+        const text = (node.nodeValue || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+        if (!text || !want.test(text)) continue;
+        const holder = node.parentElement;
+        if (!holder) continue;
+        const r = holder.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        const y = r.top + window.scrollY;
+        if (y >= top - 200 && y <= top + window_px) return true;
+    }
+    return false;
+}"""
+
+
+def _gone(page, text: str) -> bool:
+    """Говорит ли КАРТОЧКА, что товара нет. Слова в карусели и баннерах не в счёт.
+
+    Страница без заголовка (редко) или с запретом на скрипт — прежняя проверка по
+    тексту: лучше лишний раз не положить, чем положить не то.
+    """
+    try:
+        found = page.evaluate(_GONE_JS, [signals.GONE, BUYBOX_BELOW])
+    except Exception:  # noqa: BLE001 — страница не дала скрипт: судим по тексту
+        found = None
+    if isinstance(found, bool):
+        return found
+    return bool(re.search(signals.GONE, (text or "").lower()))
 
 
 # СЕТИ, У КОТОРЫХ ЗАМЕРЕНО, ЧТО НАЖАТИЕ ОБЯЗАНО УЙТИ ЗАПРОСОМ К КОРЗИНЕ.
@@ -450,7 +590,7 @@ def _put_one(page, chain: str, line: dict) -> tuple[bool, str, str, int]:
     первого нажатия витрина перерисовывает карточку, узел отваливается, а кнопку
     «ещё одну» у пяти сетей из шести живьём никто не видел.
     """
-    times, rounded = _pieces(line.get("qty"), line.get("unit"))
+    times, rounded = pieces_of(line)
 
     url = line.get("url")
     if not url:
@@ -489,7 +629,7 @@ def _put_one(page, chain: str, line: dict) -> tuple[bool, str, str, int]:
         # подряд (см. NO_SHOWCASE в signals.py).
         return False, ("витрина не открывает карточки в выбранном магазине — из него "
                        "нельзя заказать вовсе. Выберите другую точку"), rounded, 0
-    if re.search(signals.GONE, text.lower()):
+    if _gone(page, text):
         return False, "карточка говорит, что товара нет в наличии", rounded, 0
 
     watching = _watch_cart(page, chain)
@@ -628,6 +768,33 @@ def running(chain: str) -> bool:
     return (time.time() - beat) < STALE_AFTER
 
 
+def already_sent(chain: str, hours: float | None = None) -> dict | None:
+    """Недавняя передача в эту сеть, после которой в корзине что-то лежит. Нет — None.
+
+    ЗАЧЕМ. Сеть кладёт товар ПОВЕРХ лежащего: вторая полная передача за вечер
+    удваивала корзину — у METRO одним запросом, у остальных нажатиями. От двойного
+    нажатия защищала только отметка «идёт», а после конца передачи кнопка снова
+    была живой. Возвращает {finished_at, landed} — чтобы экран сказал, когда и
+    сколько уже легло, и спросил, класть ли ещё раз.
+    """
+    from datetime import datetime
+
+    got = progress(chain)
+    if not got or not got.get("finished_at") or running(chain):
+        return None
+    try:
+        when = datetime.fromisoformat(str(got["finished_at"]))
+    except ValueError:
+        return None
+    window = float(RESEND_HOURS if hours is None else hours) * 3600.0
+    if (datetime.now() - when).total_seconds() > window:
+        return None
+    landed = [i for i in (got.get("items") or []) if isinstance(i, dict) and i.get("ok")]
+    if not landed:
+        return None
+    return {"finished_at": str(got["finished_at"]), "landed": len(landed)}
+
+
 def report(chain: str) -> list[dict]:
     """Отчёт по позициям последней передачи: что легло, что нет и почему."""
     got = progress(chain) or {}
@@ -685,7 +852,11 @@ def _with_qty(line, qty: float):
     """
     import dataclasses
 
+    # Недостающее — уже в НАЖАТИЯХ, а не в килограммах корзины: перевод в
+    # упаковки сделан при первом заходе, и второй раз его делать нельзя.
     try:
+        if dataclasses.is_dataclass(line) and hasattr(line, "pack_g"):
+            return dataclasses.replace(line, qty=qty, pack_g=None, per=None)
         return dataclasses.replace(line, qty=qty)
     except Exception:  # noqa: BLE001
         log.warning("строку наряда %s не удалось урезать до %s",
@@ -718,7 +889,7 @@ def _shortlist(chain: str, plan, only) -> tuple[list, dict]:
         if short is None:
             continue
         out.append(short)
-        already[sku] = _pieces(getattr(line, "qty", 1), getattr(line, "unit", None))[0] - left
+        already[sku] = pieces_of(line)[0] - left
     return out, already
 
 
@@ -745,11 +916,13 @@ def _row(line, ok: bool, why: str, note: str, earlier: bool = False,
     позиции легла только часть, и докладывает недостающее вместо целого.
     `unknown` — «браузер не ответил, легло или нет»: такое не повторяют.
     """
-    times, _ = _pieces(getattr(line, "qty", 1), getattr(line, "unit", None))
+    times, _ = pieces_of(line)
     return {"sku": str(getattr(line, "sku", "") or ""),
             "name": getattr(line, "name", "") or str(getattr(line, "sku", "") or ""),
             "qty": getattr(line, "qty", None),
-            "unit": getattr(line, "unit", None),
+            # Количество считано в единице КОРЗИНЫ (per), если она известна: «0,4 кг»,
+            # а не «0,4 шт» у сыра, который сеть продаёт упаковками.
+            "unit": getattr(line, "per", None) or getattr(line, "unit", None),
             "ok": bool(ok), "why": why or "", "note": note or "", "earlier": earlier,
             "put": int(put), "times": int(times), "unknown": bool(unknown)}
 
@@ -855,6 +1028,12 @@ def _checked(chain: str, phone: str, ok: list, note: str) -> str:
             f"ВНИМАНИЕ: приложение положило {len(ok)} позиц., а корзина магазина "
             "показывает ноль. Откройте её в окне магазина и посмотрите сами — "
             "возможно, сеть не приняла товары.")
+    if count < len(ok):
+        # Меньше, чем положено, — часть нажатий сеть не засчитала. Больше — не
+        # улика: в корзине могло лежать своё, и счётчик у части сетей считает штуки.
+        return ((note + " ") if note else "") + (
+            f"ВНИМАНИЕ: приложение положило {len(ok)} позиц., а корзина магазина "
+            f"показывает {count}. Откройте её в окне магазина и сверьте с отчётом ниже.")
     return ((note + " ") if note else "") + f"Корзина магазина показывает {count} позиц."
 
 
@@ -971,15 +1150,21 @@ def _metro(chain: str, lines: list, items: list, state: dict) -> dict:
     _progress(chain, started_at=time.strftime("%Y-%m-%dT%H:%M:%S"), finished_at=None,
               done=0, at=1, total=len(lines), note="", items=items,
               now=f"передаю {len(lines)} позиций одним разом")
+    # Сколько штук просим — то же число, что покажет заметка об округлении:
+    # раньше METRO округляла вверх сама (1,3 → 2), а заметка считала через round
+    # и писала «взяли 1 упаковку». Человек читал одно, а в корзине было другое.
+    from types import SimpleNamespace
+
+    counts = {str(ln.sku): pieces_of(ln)[0] for ln in lines}
     try:
-        metro_cart.fill(store_id, user_hash, lines)
+        metro_cart.fill(store_id, user_hash,
+                        [SimpleNamespace(sku=sku, qty=count) for sku, count in counts.items()])
         basket = metro_cart.read(store_id, user_hash)
     except Exception as exc:  # noqa: BLE001 — чужая сеть: причина важнее типа
         log.warning("%s: корзину наполнить не вышло", chain, exc_info=True)
         why = f"{type(exc).__name__}: {str(exc)[:200]}"
         for line in lines:
-            items.append(_row(line, False, why, rounding(getattr(line, "qty", 1),
-                                                         getattr(line, "unit", None))))
+            items.append(_row(line, False, why, rounding_of(line)))
         return _done(chain, [], [{"sku": str(ln.sku), "why": why} for ln in lines], items,
                      "METRO не приняла корзину. " + why)
 
@@ -995,11 +1180,19 @@ def _metro(chain: str, lines: list, items: list, state: dict) -> dict:
     failed: list[dict] = []
     for line in lines:
         sku = str(line.sku)
-        mark = rounding(getattr(line, "qty", 1), getattr(line, "unit", None))
+        mark = rounding_of(line)
         put = inside.get(sku, 0)
-        if put:
+        wanted = counts.get(sku, 1)
+        if put >= wanted:
             ok.append(sku)
-            items.append(_row(line, True, "", mark, put=put))
+            items.append(_row(line, True, "", mark, put=wanted))
+        elif put:
+            # Легла часть: в центре меньше, чем просили. Засчитать позицию целой
+            # значило бы спрятать недостачу — повтор её бы не доложил, а человек
+            # узнал бы на кассе. Сколько легло, помним: повтор доложит остальное.
+            why = f"положено {put} из {wanted}: в торговом центре METRO не хватило"
+            failed.append({"sku": sku, "why": why})
+            items.append(_row(line, False, why, mark, put=put))
         else:
             why = ("METRO ответила, что этого товара нет в выбранном торговом центре"
                    if sku in missing else "в корзине METRO этой позиции не видно")
@@ -1134,7 +1327,8 @@ def deliver(chain: str, phone: str, plan) -> dict:
     for number, line in enumerate(lines, start=1):
         item = {"sku": str(line.sku), "qty": getattr(line, "qty", 1),
                 "url": getattr(line, "url", None), "name": getattr(line, "name", ""),
-                "unit": getattr(line, "unit", None)}
+                "unit": getattr(line, "unit", None),
+                "pack_g": getattr(line, "pack_g", None), "per": getattr(line, "per", None)}
         # Имя пишем ДО нажатия: экран должен говорить «кладу творог», пока творог
         # кладётся, а не после того, как всё кончилось.
         _progress(chain, at=number, now=item["name"] or item["sku"])
@@ -1143,7 +1337,7 @@ def deliver(chain: str, phone: str, plan) -> dict:
                 chain, phone, lambda page, it=item: _put_one(page, chain, it),
                 # Свой срок на каждую карточку: общий (90 с) короче бюджета одной
                 # карточки уже при двух штуках — см. _budget.
-                timeout=_budget(item["qty"], item["unit"]))
+                timeout=_budget(item["qty"], item["unit"], item["pack_g"], item["per"]))
         except driver.BrowserTimeout:
             # САМЫЙ ДОРОГОЙ СЛУЧАЙ, И ОН НЕ «НЕ ЛЕГЛО». Поручение по таймауту не
             # отменяется: оно осталось в очереди потока браузера и, скорее всего,
@@ -1155,13 +1349,13 @@ def deliver(chain: str, phone: str, plan) -> dict:
                               "браузер не ответил вовремя — легло это или нет, приложение "
                               "не знает. Посмотрите корзину в магазине: повтор мог бы "
                               "положить второй раз, поэтому сам он её не тронет",
-                              rounding(item["qty"], item["unit"]), unknown=True))
+                              rounding_of(item), unknown=True))
             failed.append({"sku": item["sku"], "why": "браузер не ответил вовремя"})
             # А вот до остальных дело не дошло вовсе — они честно не легли.
             for rest in lines[number:]:
                 failed.append({"sku": str(rest.sku), "why": "до этой позиции передача не дошла"})
                 items.append(_row(rest, False, "до этой позиции передача не дошла",
-                                  rounding(getattr(rest, "qty", 1), getattr(rest, "unit", None))))
+                                  rounding_of(rest)))
             break
         except driver.BrowserUnavailable as err:
             # Браузер отвалился на середине. Недошедшие позиции не «пропали», а не
@@ -1170,8 +1364,7 @@ def deliver(chain: str, phone: str, plan) -> dict:
             # и вне глаз человека.
             for rest in lines[number - 1:]:
                 failed.append({"sku": str(rest.sku), "why": str(err)})
-                items.append(_row(rest, False, str(err),
-                                  rounding(getattr(rest, "qty", 1), getattr(rest, "unit", None))))
+                items.append(_row(rest, False, str(err), rounding_of(rest)))
             break
         if done:
             ok.append(item["sku"])
@@ -1185,7 +1378,7 @@ def deliver(chain: str, phone: str, plan) -> dict:
             mark = ((mark + "; ") if mark else "") + f"доложено к тем {lay}, что уже лежали"
         items.append(_row(line, done, why, mark, put=put))
         _progress(chain, done=len(ok) + len(failed), items=items)
-        time.sleep(STEP_PAUSE)
+        time.sleep(_step_pause())
 
     verdict = ""
     if not ok and failed:
@@ -1214,7 +1407,8 @@ def _done(chain: str, ok: list, failed: list, items: list, note: str) -> dict:
     return {"ok": ok, "failed": failed, "note": note}
 
 
-def start(chain: str, phone: str, plan, *, only=None, wait: bool = False) -> bool:
+def start(chain: str, phone: str, plan, *, only=None, wait: bool = False,
+          again: bool = False) -> bool:
     """Пустить передачу фоном. Ждать её в запросе нельзя: она идёт минутами.
 
     `wait` — для пачки (app/cartfill.py), а не для экрана: ей возвращаться некуда,
@@ -1222,8 +1416,10 @@ def start(chain: str, phone: str, plan, *, only=None, wait: bool = False) -> boo
     Путь при этом тот же самый — та же отметка о ходе, тот же отчёт, — и
     рабочее место после передачи так же закрыто, как в фоновом потоке.
 
-    Отвечает, пошла ли передача. `False` значит «в эту сеть уже идёт другая» — и
-    это НЕ мелочь: второй заход положил бы всё в корзину человека повторно.
+    Отвечает, пошла ли передача. `False` значит «в эту сеть уже идёт другая» или
+    «полная передача уже была недавно» (already_sent), — и это НЕ мелочь: второй
+    заход положил бы всё в корзину человека повторно. Повторить целиком можно,
+    только явно сказав `again=True`: это решение человека, а не второе нажатие.
 
     ОТМЕТКА СТАВИТСЯ ЗДЕСЬ, а не в фоновом потоке. Между «пустили поток» и «поток
     дошёл до первой записи» проходят доли секунды, и второе нажатие в эту щель
@@ -1246,6 +1442,8 @@ def start(chain: str, phone: str, plan, *, only=None, wait: bool = False) -> boo
     naryad = plan
     with _START:
         if running(chain):
+            return False
+        if only is None and not again and already_sent(chain):
             return False
         if only is None:
             # Полный наряд начинает отчёт с чистого листа: прежние строки говорят
@@ -1302,4 +1500,5 @@ def start(chain: str, phone: str, plan, *, only=None, wait: bool = False) -> boo
 
 
 __all__ = ["deliver", "start", "progress", "running", "report", "failed_skus", "rounding",
-           "PROGRESS_KEY", "QTY_LIMIT", "LINE_LIMIT", "STALE_AFTER"]
+           "rounding_of", "pieces_of", "already_sent",
+           "PROGRESS_KEY", "QTY_LIMIT", "LINE_LIMIT", "STALE_AFTER", "RESEND_HOURS"]

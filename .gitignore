@@ -24,3 +24,5 @@ data/*.db-wal
 android/*.apk
 android/apk.b64
 android/apk.err
+# Общий темп запросов к сетям между процессами (app/connectors/cache.reserve).
+data/pace/

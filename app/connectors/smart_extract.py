@@ -212,10 +212,14 @@ def price_from_html(store_code: str, page: str, note: str = "") -> dict | None:
                 "и регулярное выражение в коннекторе пора чинить", store_code,
                 f" ({note})" if note else "")
     unit = str(result.get("unit") or "").strip().lower()
+    # Промолчала про наличие — значит не знает, а не «нет». Схема отдаёт None,
+    # и bool(None) делал из молчания отсутствие: магазин выпадал из корзины при
+    # найденной цене.
+    stock = result.get("in_stock")
     return {
         "price": price,
         "unit": "kg" if unit.startswith(("кг", "kg")) else "pcs",
-        "in_stock": bool(result.get("in_stock", True)),
+        "in_stock": True if stock is None else bool(stock),
     }
 
 

@@ -23,6 +23,11 @@ from app.optimizer.calc import best_offer, store_total
 BRUTE_FORCE_LIMIT = 22
 MAX_COMBOS = 4_000_000
 
+# Штраф за чек ниже минимального заказа, в копейках. Не бесконечность: если
+# добрать минимум в наборе нельзя никак, лучшее из невозможного всё равно нужно
+# показать — с пометкой below_min_order, в конце списка.
+MIN_ORDER_FINE = 10 ** 9
+
 
 def _cents(value: float) -> int:
     return int(round(float(value) * 100))
@@ -45,15 +50,25 @@ def _cost_fn(store: Store, offers: list[Offer], handover: float = 0.0):
     человека в третий магазин ради сорока рублей, где он потратит четверть часа.
     Прибавляется к стоимости магазина, а не к подытогу, — на порог бесплатной
     доставки и на минимальный чек оно влиять не должно, это не покупка.
+
+    МИНИМАЛЬНЫЙ ЗАКАЗ ВХОДИТ В ЦЕЛЕВУЮ ФУНКЦИЮ. Раньше он только помечался в
+    готовом варианте, и перебор внутри пары находил разбиение дешевле всех — но
+    ниже минимума, магазин его не примет. Допустимое разбиение той же пары при
+    этом терялось: вариант уезжал в конец списка целиком. Теперь чек ниже
+    минимума стоит заведомо дороже любого допустимого, и перебор его обходит,
+    пока есть чем добрать.
     """
     free_from = _cents(store.free_delivery_from)
     fee = _cents(store.delivery_fee)
+    min_order = _cents(store.min_order)
     handover_cents = _cents(handover)
     active = [(o.percent / 100.0, _cents(o.cap_left), _cents(o.min_check_rub))
               for o in (offers or ()) if o.is_valid_on()]
 
     def cost(subtotal: int) -> float:
         value = subtotal + (0 if subtotal >= free_from else fee)
+        if 0 < subtotal < min_order:
+            value += MIN_ORDER_FINE + (min_order - subtotal)
         discount = 0.0
         for percent, cap_left, min_check in active:
             if subtotal >= min_check:
@@ -191,10 +206,29 @@ def _brute_force_any(free, prices, subs, counts, costs, penalty_cents) -> list[i
 
 
 def _local_search(free, prices, subs, counts, costs, penalty_cents) -> list[int] | None:
-    """Страховка на случай очень больших корзин: старт с самой дешёвой цены + улучшения."""
-    choice = []
-    for pos, (_i, options) in enumerate(free):
-        choice.append(min(options, key=lambda j: prices[pos][j]))
+    """Страховка на случай очень больших корзин: улучшения по одной позиции.
+
+    Стартов несколько — «каждая позиция там, где дешевле» и «всё, что можно, в
+    один магазин» для каждого магазина набора. Со старта «где дешевле» подъём
+    застревает у порогов: бесплатная доставка и минимальный чек добираются не
+    одной позицией, а несколькими сразу, и шаг в одну позицию их не видит.
+    """
+    n = len(costs)
+    starts = [[min(options, key=lambda j: prices[pos][j]) for pos, (_i, options) in enumerate(free)]]
+    for target in range(n):
+        starts.append([target if target in options else min(options, key=lambda j: prices[pos][j])
+                       for pos, (_i, options) in enumerate(free)])
+
+    best_choice, best_value = None, float("inf")
+    for start in starts:
+        choice, value = _climb(list(start), free, prices, subs, counts, costs, penalty_cents)
+        if value < best_value - 1e-9:
+            best_choice, best_value = choice, value
+    return best_choice if best_value < float("inf") else None
+
+
+def _climb(choice, free, prices, subs, counts, costs, penalty_cents) -> tuple[list[int], float]:
+    """Подъём от стартового распределения: переносим по позиции, пока становится дешевле."""
     cur_subs, cur_counts = list(subs), list(counts)
     for pos, j in enumerate(choice):
         cur_subs[j] += prices[pos][j]
@@ -221,12 +255,32 @@ def _local_search(free, prices, subs, counts, costs, penalty_cents) -> list[int]
                     cur_counts[j] -= 1
                     cur_subs[current] += prices[pos][current]
                     cur_counts[current] += 1
-    return choice if best < float("inf") else None
+    return choice, best
+
+
+def _covered_baseline(lines: list[BasketLine], missing: list[int], baseline: float,
+                      baseline_lines: dict[int, float] | None) -> float:
+    """База сравнения без позиций, которых в варианте нет.
+
+    Экономия — это «столько же товаров, но дешевле». Вариант без части корзины
+    сравнивается с базой без той же части, иначе недостающий товар становится
+    его выгодой: база 1000 ₽, не хватает позиции за 900 ₽ — и «экономия» 900 ₽.
+    """
+    base = float(baseline)
+    for i in missing:
+        line = lines[i]
+        if baseline_lines is not None and line.product_id in baseline_lines:
+            part = float(baseline_lines[line.product_id])
+        else:
+            known = [float(p) for p in line.prices.values() if p is not None]
+            part = min(known) if known else 0.0
+        base -= part
+    return round(max(0.0, base), 2)
 
 
 def _build_variant(lines: list[BasketLine], combo: tuple[Store, ...], assign: list[int | None],
                    missing: list[int], offers: dict[int, list[Offer]], baseline: float,
-                   penalty: float) -> Variant | None:
+                   penalty: float, baseline_lines: dict[int, float] | None = None) -> Variant | None:
     groups: dict[int, list[int]] = {}
     for i, j in enumerate(assign):
         if j is not None:
@@ -253,6 +307,8 @@ def _build_variant(lines: list[BasketLine], combo: tuple[Store, ...], assign: li
                 card_id=offer.card_id if offer else None, card_name=None,
                 product_id=line.product_id, product_name=line.name,
                 qty=line.qty, price=price, discount=share,
+                note=line.notes.get(store.code),
+                stale_since=line.stale.get(store.code),
             ))
         residue = round(discount - sum(v.discount for v in vlines), 2)
         if vlines and residue:
@@ -271,7 +327,7 @@ def _build_variant(lines: list[BasketLine], combo: tuple[Store, ...], assign: li
     return Variant(
         stores=breakdowns,
         total=total,
-        baseline=round(float(baseline), 2),
+        baseline=_covered_baseline(lines, missing, baseline, baseline_lines),
         penalty=variant_penalty,
         missing_products=[lines[i].name for i in missing],
     )
@@ -279,13 +335,18 @@ def _build_variant(lines: list[BasketLine], combo: tuple[Store, ...], assign: li
 
 def optimize(lines: list[BasketLine], stores: list[Store], offers: dict[int, list[Offer]],
              baseline: float, penalty: float, top_n: int = 3, max_stores: int = 2,
-             handover: dict[str, float] | None = None) -> list[Variant]:
+             handover: dict[str, float] | None = None,
+             baseline_lines: dict[int, float] | None = None) -> list[Variant]:
     """Перебирает разбиения корзины на 1..max_stores магазинов, для каждого магазина подбирает
     лучшую карту, считает итог, возвращает top_n лучших вариантов, отсортированных по total.
 
     Варианты с непокрытыми позициями (missing_products) и с чеком ниже store.min_order
     не выбрасываются, а помечаются и уходят в конец списка: они заведомо хуже полноценных,
     но пользователю видно, почему.
+
+    baseline_lines — база по позициям (product_id -> рубли). С ней экономия варианта,
+    где части корзины нет, считается без этой части; без неё недостающая позиция
+    оценивается по самой низкой известной цене.
     """
     lines = list(lines or [])
     stores = list(stores or [])
@@ -307,7 +368,8 @@ def optimize(lines: list[BasketLine], stores: list[Store], offers: dict[int, lis
             if found is None:                 # набору не хватило позиций на все магазины
                 continue
             assign, missing = found
-            variant = _build_variant(lines, combo, assign, missing, offers, baseline, penalty)
+            variant = _build_variant(lines, combo, assign, missing, offers, baseline, penalty,
+                                     baseline_lines)
             if variant is None:
                 continue
             # набор магазинов, реально задействованных в варианте (пара могла схлопнуться в один)

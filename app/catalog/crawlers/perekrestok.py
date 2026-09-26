@@ -124,7 +124,7 @@ class PerekrestokCrawler(Crawler):
     name = "Перекрёсток"
 
     def __init__(self) -> None:
-        self.pace = Pace()
+        self.pace = Pace(chain=self.code)
         # Потолок на случай, если сеть однажды выложит карту на миллион строк:
         # база растёт, а польза от хвоста падает. 0 — без потолка.
         self.cap = int(config.get("catalog.perekrestok.max_products") or 0)

@@ -243,7 +243,8 @@ def refresh_prices(product_ids: list[int], store_codes: list[str]) -> dict:
                 continue
             repo.save_price(sp_id, snap.price, getattr(snap, "price_per_kg", None),
                             bool(getattr(snap, "in_stock", True)),
-                            getattr(snap, "fetched_at", None))
+                            getattr(snap, "fetched_at", None) or None,
+                            source=getattr(snap, "source", None))
             updated += 1
     return {"updated": updated, "errors": errors}
 

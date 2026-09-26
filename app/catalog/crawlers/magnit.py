@@ -15,8 +15,10 @@ limit ≤ 50, offset до ~10 000. Поэтому обход всегда по �
 
 Несколько точек обходятся ОДНИМ обходом, а не несколькими: пропавшими товары
 помечаются только после полного обхода сети, и два отдельных обхода объявили бы
-пропавшим всё, чего нет в другом городе. Повторы по артикулу отсекаются — товар,
-который есть в обеих точках, это одна строка каталога.
+пропавшим всё, чего нет в другом городе. Товар, который есть в обеих точках, — это
+одна строка каталога, но цена и остаток у него свои в каждой: повтор из второй
+точки приходит отметкой seen_only с ценой и кодом точки (ChainProduct.point), и
+база кладёт их в chain_prices, не трогая саму строку.
 
 Цены в копейках — делим на сто. Штрихкода нет нигде. Бренд и вес лежат только в
 карточке (отдельный запрос на товар), сюда не берём: для сопоставления фасовка
@@ -27,10 +29,8 @@ from __future__ import annotations
 import logging
 from typing import Iterator
 
-import requests
-
 from app import config, homeexit
-from app.catalog.crawlers import USER_AGENT, Pace, http_get
+from app.catalog.crawlers import Pace, http_get, http_post
 from app.catalog.model import ChainProduct, CrawlBlocked, Crawler, Progress
 from app.matcher.normalize import parse_weight
 
@@ -87,7 +87,7 @@ class MagnitCrawler(Crawler):
         self.stores = [str(s) for s in (stores or []) if s] or [self._spare()]
         self.store_type = str(config.get("catalog.magnit.store_type") or "dostavka")
         self.catalog_type = str(config.get("catalog.magnit.catalog_type") or "3")
-        self.pace = Pace()
+        self.pace = Pace(chain=self.code)
 
     @staticmethod
     def _spare() -> str:
@@ -105,22 +105,18 @@ class MagnitCrawler(Crawler):
         return response.json().get("items") or []
 
     def _page(self, store: str, leaf_id: int, offset: int) -> dict:
-        self.pace.wait()
         body = {"categories": [leaf_id], "includeAdultGoods": True,
                 "pagination": {"offset": offset, "limit": PAGE},
                 "sort": {"order": "desc", "type": "popularity"}, "term": "",
                 "storeCode": store, "storeType": self.store_type,
                 "catalogType": self.catalog_type}
         proxies = homeexit.requests_proxies(self.code)
-        response = requests.post(f"{BASE}/webgate/v2/goods/search", json=body, timeout=60,
-                                 headers={"User-Agent": USER_AGENT, "Accept": "application/json",
-                                          "Content-Type": "application/json"},
-                                 proxies=proxies)
-        if response.status_code in (401, 403, 429):
-            raise CrawlBlocked(f"поиск по категории {leaf_id}: ответ {response.status_code}")
+        # Через общий повтор (http_post): 403/429 — сперва просьба сбавить темп, и
+        # только после нескольких попыток с паузами — закрытая дорога (CrawlBlocked).
+        response = http_post(f"{BASE}/webgate/v2/goods/search", self.pace, json=body,
+                             accept="application/json", proxies=proxies)
         if "json" not in (response.headers.get("Content-Type") or ""):
             raise CrawlBlocked("список товаров пришёл не JSON — похоже на страницу защиты")
-        response.raise_for_status()
         return response.json()
 
     def crawl(self, progress: Progress | None = None) -> Iterator[ChainProduct]:
@@ -137,6 +133,7 @@ class MagnitCrawler(Crawler):
         plan = leaves(tree)
         say(f"магазин {store}: листьев категорий {len(plan)}")
         before = len(seen)
+        here: set[str] = set()            # артикулы этой точки: товар бывает в двух категориях
         for n, (leaf_id, path) in enumerate(plan, start=1):
             offset = 0
             while True:
@@ -144,9 +141,19 @@ class MagnitCrawler(Crawler):
                 items = data.get("items") or []
                 for item in items:
                     product = to_product(item, path)
-                    if product and product.sku not in seen:
+                    if not product or product.sku in here:
+                        continue
+                    here.add(product.sku)
+                    product.point = store
+                    if product.sku not in seen:
                         seen.add(product.sku)
                         yield product
+                    else:
+                        # Тот же товар в другой точке: строка каталога одна, а цена и
+                        # остаток свои — их и несём, саму строку не трогая.
+                        yield ChainProduct(sku=product.sku, name=product.name,
+                                           price=product.price, in_stock=product.in_stock,
+                                           point=store, seen_only=True)
                 pagination = data.get("pagination") or {}
                 if not items or not pagination.get("hasMore"):
                     break

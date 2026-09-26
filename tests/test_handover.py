@@ -473,9 +473,15 @@ class Shop:
                     number = int(found.group(1))
                     best = number if best is None or number > best else best
             return best
-        if not isinstance(arg, list) or len(arg) != 3:
+        if not isinstance(arg, list) or len(arg) != 5:
+            # «Нет в наличии» в блоке покупки (cart._GONE_JS) двойник не
+            # рисует: None — «страница не ответила», и наряд судит по тексту.
             return None
-        pattern, _mark, below = arg
+        pattern, _mark, below, window, selectors = arg
+        if selectors:
+            # Признаков сети (data-testid Дикси) у двойника нет — только имена.
+            self.picked = None
+            return None
         want = re.compile(pattern, re.I)
         card = self.cards[self.url]
         best = None
@@ -485,6 +491,8 @@ class Shop:
             if not want.search(" ".join((node.name or "").split())):
                 continue
             if below and node.top < card.title_top:
+                continue
+            if window and node.top > card.title_top + window:
                 continue
             if best is None or node.top < best.top:
                 best = node
@@ -1349,7 +1357,7 @@ def test_metro_without_a_named_token_refuses_before_touching_the_network(db, mon
     assert "metro_api_token" in got["note"], "не названа настройка, которой не хватает"
 
 
-def test_metro_promises_no_cart_while_it_cannot_fill_one():
+def test_metro_promises_no_cart_while_it_cannot_fill_one(db):
     """Слова про METRO не обещают корзину, которой сегодня нет.
 
     Обещание «положим сами», сбывающееся когда-нибудь потом, человеку не помогает,
@@ -1987,3 +1995,152 @@ def test_the_rule_that_tells_our_requests_from_strangers_is_checked_directly():
 
     assert cart.own_cart_calls(seen, "magnit") == [201]
     assert cart.own_cart_calls(seen, "vkusvill") == [], "сеть без замера судить нечем"
+
+
+# ---------- ревизия 26.09.2026: вес, упаковки, чужие кнопки, повторная передача ----------
+
+def test_kilos_of_the_basket_become_packs_of_the_shop():
+    """0,4 кг сыра упаковками по 200 г — две, а не одна, как давал round(0,4)."""
+    times, note = cart._pieces(0.4, "pcs", pack_g=200, per="kg")
+    assert times == 2 and "2 уп. по 200 г" in note
+    times, note = cart._pieces(1.5, "pcs", pack_g=2500, per="kg")
+    assert times == 1, "сетка 2,5 кг одна — не две, как было при round(1,5)"
+    assert "2,5 кг" in note
+
+
+def test_rounding_goes_up_and_not_to_even():
+    """2,5 → 3: банковское округление давало 2, и полкило приходилось докупать."""
+    assert cart._pieces(2.5, "kg")[0] == 3
+    assert cart._pieces(1.3, "kg")[0] == 2
+    assert cart._pieces(2, "pcs") == (2, "")
+
+
+def test_the_plan_knows_the_unit_of_the_basket_and_the_pack(db):
+    """Наряд несёт единицу корзины и фасовку сети — без них упаковки не посчитать."""
+    from app import cartplan
+
+    cheese = repo.upsert_product(Product(id=None, name="Сыр Российский", unit="kg"))
+    shop = repo.get_store("magnit")
+    sp = repo.upsert_store_product(shop.id, "7", "Сыр Российский 200 г", weight_g=200,
+                                   unit="pcs", url=SYR)
+    repo.confirm_mapping(cheese, sp, confirmed=True)
+
+    class Line:
+        product_id, qty, name = cheese, 0.4, "Сыр"
+
+    plan = cartplan.build("magnit", [Line()], force=True)
+    line = plan.lines[0]
+    assert (line.per, line.pack_g) == ("kg", 200.0)
+    assert cart.pieces_of(line)[0] == 2
+
+
+def test_a_carousel_button_is_never_taken_for_the_products_own(db, shop):
+    """Своего «в корзину» нет (товар кончился) — кнопка карусели не нажимается.
+
+    Раньше «первой видимой ниже заголовка» оказывалась кнопка чужого товара из
+    «с этим покупают», и в корзину ложился не тот творог.
+    """
+    carousel = Node("в корзину", top=300 + 800)
+    shop({TVOROG: Card("Творог Простоквашино 5% 200 г. Цена 89 ₽", [carousel], title_top=300)})
+    got = cart.deliver("magnit", "79990000041",
+                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+    assert got["ok"] == [] and carousel.clicks == 0
+
+
+def test_the_buy_box_decides_about_stock_not_the_whole_page():
+    """«Закончился» у соседа в карусели — не «нет в наличии» у этого товара."""
+    class Page:
+        def __init__(self, answer):
+            self.answer = answer
+
+        def evaluate(self, script, arg=None):
+            if isinstance(self.answer, Exception):
+                raise self.answer
+            return self.answer
+
+    text = "Творог 89 ₽ В корзину … С этим покупают: Молоко — закончился"
+    assert cart._gone(Page(False), text) is False
+    assert cart._gone(Page(True), "Нет в наличии") is True
+    # скрипт не дали — судим по тексту, как раньше: лучше не положить, чем не то
+    assert cart._gone(Page(RuntimeError("CSP")), text) is True
+
+
+def test_metro_asks_for_the_same_number_the_note_shows(metro_shop):
+    """1,3 кг — две упаковки и в заметке, и в запросе к METRO."""
+    sent = metro_shop([{"article": 117189, "count": 2, "eshop_product_id": 55}])
+    cart.deliver("metro", "79990000041",
+                 CartPlan(store_code="metro",
+                          lines=[PlanLine(sku="117189", qty=1.3, name="Сыр", unit="kg")]))
+    assert sent["filled"]["lines"] == [("117189", 2)]
+    assert "2 упаковки" in cart.report("metro")[0]["note"]
+
+
+def test_metro_part_of_a_position_is_not_a_whole_one(metro_shop):
+    """Просили три, центр положил одну — позиция не «легла», и повтор доложит две."""
+    metro_shop([{"article": 117189, "count": 1, "eshop_product_id": 55}])
+    got = cart.deliver("metro", "79990000041", metro_naryad([("117189", 3, "Творог")]))
+    assert got["ok"] == []
+    row = cart.report("metro")[0]
+    assert row["put"] == 1 and row["times"] == 3 and "1 из 3" in row["why"]
+    assert cart._left_to_put("metro", "117189") == 2
+
+
+def test_a_second_full_handover_is_asked_about_not_done(db, shop, monkeypatch):
+    """Удачная передача закончилась — вторая целиком не пускается без «да, ещё раз».
+
+    Сеть кладёт поверх лежащего, и второе нажатие «Передать» удваивало корзину.
+    Повтор непроложенного этим не ограничен: он и сделан, чтобы докладывать.
+    """
+    import app.collector as collector
+
+    # Рабочее место у теста своё (db): пускатель не должен его переключать.
+    monkeypatch.setattr(users, "open_workspace", lambda phone: None)
+    monkeypatch.setattr(users, "deactivate", lambda: None)
+    monkeypatch.setattr(collector, "accept", lambda data: None)
+    shop({TVOROG: Card("Творог. Цена 89 ₽", [Node("в корзину")])})
+    plan = naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)])
+
+    assert cart.start("magnit", "79990000041", plan, wait=True) is True
+    assert cart.already_sent("magnit")["landed"] == 1
+    assert cart.start("magnit", "79990000041", plan, wait=True) is False
+    assert cart.start("magnit", "79990000041", plan, wait=True, only=["magnit-1"]) is True
+    assert cart.start("magnit", "79990000041", plan, wait=True, again=True) is True
+
+
+def test_pressing_send_after_a_finished_handover_asks_first(web):
+    """После удачной передачи «Передать» не кладёт всё второй раз, а спрашивает.
+
+    Кнопки на выбор две: доложить только непроложенное или — если человек сам
+    очистил корзину — передать целиком ещё раз.
+    """
+    import datetime as dt
+
+    enter(web)
+    seed_basket()
+    save_login()
+    users.open_workspace(PHONE)
+    finished = (dt.datetime.now() - dt.timedelta(minutes=5)).isoformat(timespec="seconds")
+    cart._progress("magnit", started_at=finished, finished_at=finished, total=2, at=0, done=2,
+                   now="", items=[{"sku": "magnit-1", "name": "Молоко", "ok": True},
+                                  {"sku": "magnit-2", "name": "Сыр", "ok": False, "why": "нет"}])
+
+    answer = web.post("/accounts", data={"do": "send:magnit"})
+    assert answer.status_code == 302
+    assert "resend=magnit" in answer.headers["Location"]
+
+    page = text(web.get("/accounts?resend=magnit"))
+    assert "удвоит корзину" in page
+    assert "Доложить только непроложенное (1)" in page
+    assert 'name="again" value="1"' in page
+
+
+def test_a_shop_counter_below_what_was_put_is_called_out(db, shop):
+    """Корзина сети показывает меньше позиций, чем легло по нашему отчёту, — сказать."""
+    page = shop({TVOROG: Card("Творог. Цена 89 ₽", [Node("в корзину")]),
+                 MOLOKO: Card("Молоко. Цена 79 ₽", [Node("в корзину")])})
+    page.cart_count = 1
+    got = cart.deliver("magnit", "79990000041", naryad([
+        ("magnit-1", 1, "Творог", "pcs", TVOROG),
+        ("magnit-2", 1, "Молоко", "pcs", MOLOKO)]))
+    assert got["ok"] == ["magnit-1", "magnit-2"]
+    assert "показывает 1" in got["note"] and "ВНИМАНИЕ" in got["note"]

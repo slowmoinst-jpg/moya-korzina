@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 CSV_PATH = os.path.join(config.ROOT, "data", "fallback_prices.csv")
 DEFAULT_STORE = "pyaterochka"          # чем подменяем абстрактный код 'stub'
+FALLBACK = "fallback"                  # отметка справочной цены в снимке (PriceSnapshot.source)
 
 _rows_cache: dict[str, list[dict]] | None = None
 
@@ -118,6 +119,7 @@ def fallback_prices(store_code: str, skus: list[str]) -> list[PriceSnapshot]:
             price_per_kg=row["price_per_kg"] or (row["price"] if row["unit"] == "kg" else None),
             in_stock=row["in_stock"],
             name=row["name"],
+            source=FALLBACK,
         ))
     return snapshots
 

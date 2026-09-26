@@ -178,6 +178,39 @@ def test_an_address_that_did_not_resolve_gives_no_point(monkeypatch):
     assert metro.nearest_store("белиберда") is None
 
 
+def test_a_centre_hundreds_of_km_away_is_not_yours(monkeypatch):
+    """В городе без METRO ближайший центр — за сотни километров, и его цены не наши."""
+    monkeypatch.setattr(metro, "tradecenters", lambda: [
+        {"store_id": 15, "coordinates": {"latitude": 60.01, "longitude": 30.25}}])
+    import app.geo as geo
+    monkeypatch.setattr(geo, "coords", lambda addr: (56.83, 60.61))     # Екатеринбург
+    assert metro.nearest_store("Екатеринбург, Малышева 51") is None
+
+
+def test_known_address_without_a_centre_does_not_take_the_spare_one(monkeypatch):
+    """Адрес известен, центра рядом нет — это «METRO здесь нет», а не запасной Петербург."""
+    from app.models import Location
+
+    monkeypatch.setattr(metro, "nearest_store", lambda address: None)
+    monkeypatch.setattr(metro.config, "get",
+                        lambda key, default=None: "15" if key == "connectors.metro_store_id" else default)
+    assert metro._store_id(Location(address="Тикси, Морская 1")) is None
+    assert metro._store_id(Location()) == "15", "адреса нет вовсе — запасной центр, как раньше"
+
+
+def test_metro_follows_the_persons_address(monkeypatch):
+    """Живые цены и корзина METRO идут по адресу человека, как и ночной обход.
+
+    Раньше место METRO не отдавалось вовсе: живые цены и корзина брали пустой
+    connectors.metro_store_id и отвечали «не задана точка».
+    """
+    from app import location
+    from app.models import Location
+
+    monkeypatch.setattr(location, "address", lambda: "Санкт-Петербург, Комендантский 5")
+    assert location.for_store("metro") == Location(address="Санкт-Петербург, Комендантский 5")
+
+
 def test_metro_is_a_chain_with_points():
     """Цена и остаток у METRO свои по точкам — значит она обязана быть в BY_POINT.
 

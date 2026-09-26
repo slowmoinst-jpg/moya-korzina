@@ -319,20 +319,23 @@ def _price_matrix(items, stores) -> tuple[dict, dict]:
     """(product_id, store_code) -> стоимость позиции целиком; и сумма корзины по сети."""
     cell: dict[tuple[int, str], dict] = {}
     totals: dict[str, float] = {s.code: 0.0 for s in stores}
+    from app import service
+
     for item in items:
         pid = int(item["product_id"])
         qty = float(item.get("qty") or 0)
-        is_kg = (item.get("unit") or "pcs") == "kg"
+        unit = item.get("unit") or "pcs"
         for store in stores:
-            snap = repo.latest_price_for(pid, store.id)
-            if not snap:
+            # Тот же расчёт, что у оптимизатора: цена килограмма не берётся из цены
+            # фасовки, разные фасовки приводятся к весу эталона. Два расчёта цены
+            # на двух экранах однажды разошлись бы, и строка корзины спорила бы с итогом.
+            found = service.line_price(pid, store, qty, unit, item.get("weight_g"))
+            if not found:
                 continue
-            base = (snap.get("price_per_kg") or snap.get("price")) if is_kg else snap.get("price")
-            if base is None:
-                continue
-            value = round(float(base) * qty, 2)
-            in_stock = bool(snap.get("in_stock", 1))
-            cell[(pid, store.code)] = {"value": value, "in_stock": in_stock}
+            value = found["value"]
+            in_stock = found["in_stock"]
+            cell[(pid, store.code)] = {"value": value, "in_stock": in_stock,
+                                       "stale": found["stale"], "note": found["note"]}
             if in_stock:
                 # Складывать цену отсутствующего товара — значит обещать корзину,
                 # которую не соберут. Поэтому в сумму сети идёт только то, что есть.

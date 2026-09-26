@@ -53,7 +53,12 @@ KEY_ADDRESS = "address"        # адрес клиента, общий для в
 # До 16.09.2026 код магазина Магнита был настройкой установки, одной на всех:
 # человек из Москвы видел цены Краснодара и узнать об этом не мог — чужая цена
 # выглядит как своя.
-ADDRESS_STORES = ("lenta", "magnit")
+#
+# METRO добавлен 26.09.2026: ночной обход уже ходил по центру, подобранному к
+# адресу, а живые цены и корзина брали connectors.metro_store_id — пустой, то есть
+# «точка не задана» и ни одной цены. Центр по адресу подбирает сам коннектор
+# (app/connectors/metro.py, _store_id -> nearest_store).
+ADDRESS_STORES = ("lenta", "magnit", "metro")
 
 
 def address() -> str | None:
@@ -168,10 +173,14 @@ def _magnit_place(addr: str) -> Location:
     if not store:
         return Location(address=addr)
     from app import config
+    # Доставка — если её хотят И если этот магазин её делает. Магазину без доставки
+    # цены и корзина доставки ни к чему: кука nmg_dt=DELIVERY уводила окно магазина
+    # не туда, и корзина могла не собраться.
+    wants = bool(config.get("connectors.magnit_delivery", True))
     return Location(
         store_id=store["code"],
         shop_type=store.get("format") or "ME",
-        delivery=bool(config.get("connectors.magnit_delivery", True)),
+        delivery=wants and bool(store.get("delivery", True)),
     )
 
 

@@ -37,14 +37,28 @@ USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 
 class Pace:
-    """Не чаще N запросов в секунду. Одна на сборщик, ждёт перед каждым запросом."""
+    """Не чаще N запросов в секунду. Одна на сборщик, ждёт перед каждым запросом.
 
-    def __init__(self, rps: float | None = None) -> None:
+    С `chain` темп общий с коннекторами той же сети и с другими процессами
+    (app/connectors/cache.reserve): ночной обход и живой поиск на экране иначе
+    ходили бы в одну сеть каждый в своём темпе, вдвое чаще разрешённого.
+    """
+
+    def __init__(self, rps: float | None = None, chain: str | None = None) -> None:
         rate = float(rps or config.get("catalog.rate_limit_rps") or 1.0)
         self.gap = 1.0 / max(rate, 0.05)
         self.last = 0.0
+        self.chain = chain or None
 
     def wait(self) -> None:
+        if self.chain:
+            from app.connectors.cache import reserve
+
+            delay = reserve(self.chain, self.gap)
+            if delay > 0:
+                time.sleep(delay)
+            self.last = time.time()
+            return
         delta = time.time() - self.last
         if delta < self.gap:
             time.sleep(self.gap - delta)
@@ -86,13 +100,32 @@ def http_get(url: str, pace: Pace | None = None, timeout: float = 60.0,
     THROTTLED пробуются заново с растущей паузой: чаще всего это темп, а не запрет.
     Кончились попытки — наружу CrawlBlocked, и сеть в этот обход пропускается.
     """
+    return http_request("GET", url, pace, timeout, retries, **kwargs)
+
+
+def http_post(url: str, pace: Pace | None = None, timeout: float = 60.0,
+              retries: int = RETRIES, **kwargs) -> requests.Response:
+    """POST с теми же повторами, что и GET.
+
+    Шлюз Магнита принимает список товаров только POST-ом, и до 26.09.2026 этот
+    запрос шёл мимо повторов: первый же 429 объявлял сеть закрытой, хотя на Дикси
+    тот же ответ оказался просьбой сбавить темп, а 5xx записывал обход упавшим.
+    """
+    return http_request("POST", url, pace, timeout, retries, **kwargs)
+
+
+def http_request(method: str, url: str, pace: Pace | None = None, timeout: float = 60.0,
+                 retries: int = RETRIES, **kwargs) -> requests.Response:
+    """Запрос с браузерным UA и повтором при отказе — общий для GET и POST."""
+    send = requests.post if method.upper() == "POST" else requests.get
     headers = {"User-Agent": USER_AGENT, "Accept": kwargs.pop("accept", "*/*")}
+    headers.update(kwargs.pop("headers", None) or {})
     last = ""
     for attempt in range(max(1, retries)):
         if pace:
             pace.wait()
         try:
-            response = requests.get(url, headers=headers, timeout=timeout, **kwargs)
+            response = send(url, headers=headers, timeout=timeout, **kwargs)
         except requests.RequestException as exc:
             last = f"{type(exc).__name__}: {exc}"
         else:

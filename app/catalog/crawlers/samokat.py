@@ -125,7 +125,7 @@ class SamokatCrawler(Crawler):
     name = "Самокат"
 
     def __init__(self, stores: list[str] | None = None, categories: list[str] | None = None) -> None:
-        self.pace = Pace()
+        self.pace = Pace(chain=self.code)
         if stores and isinstance(stores, list) and any(s in DEFAULT_CATEGORIES for s in stores):
             self.categories = stores
             self.stores = []

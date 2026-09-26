@@ -93,6 +93,10 @@ def fill_store(phone: str, store, *, dry_run: bool = False) -> str:
     if dry_run:
         return f"положу в корзину {len(plan.lines)} поз. на {plan.total:.2f} ₽{unknown}"
 
+    sent = cart.already_sent(code)
+    if sent:
+        return (f"корзина уже передана в {sent['finished_at'][11:16]} "
+                f"({sent['landed']} поз.) — второй раз не кладу, иначе всё ляжет дважды")
     started = cart.start(code, phone, plan, wait=True)
     # Передача с ожиданием закрывает рабочее место за собой, как её фоновый поток,
     # а пачке оно нужно дальше — под следующую сеть.

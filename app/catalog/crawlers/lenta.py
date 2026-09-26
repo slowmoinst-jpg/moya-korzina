@@ -66,7 +66,7 @@ class LentaCrawler(Crawler):
         # второй хаб не добавил бы каталогу ни строки, зато удвоил бы запросы.
         self.store_id = int(hub or config.get("catalog.lenta.store_id") or DEFAULT_STORE_ID)
         self.cap = int(config.get("catalog.lenta.details_per_run") or 2000)
-        self.pace = Pace()
+        self.pace = Pace(chain=self.code)
 
     def universe(self) -> list[str]:
         ids: list[str] = []

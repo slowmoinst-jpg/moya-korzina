@@ -77,6 +77,35 @@ def test_an_hour_long_retry_after_is_capped(monkeypatch):
     assert seen == [60.0]
 
 
+def test_magnit_goods_page_is_retried_too(monkeypatch):
+    """Список товаров Магнита идёт POST-ом — и повторяется так же, как GET.
+
+    До 26.09.2026 запрос шёл мимо повторов: первый же 429 закрывал Магнит на ночь.
+    """
+    from app.catalog.crawlers.magnit import MagnitCrawler
+
+    seen = []
+    sent = []
+    replies = [Reply(429), Reply(200, headers={"Content-Type": "application/json"})]
+    replies[1].json = lambda: {"items": [], "pagination": {"hasMore": False}}
+
+    def post(url, **kwargs):
+        sent.append(kwargs.get("json"))
+        return replies.pop(0)
+
+    from app import homeexit
+
+    monkeypatch.setattr(homeexit, "requests_proxies", lambda chain: None)
+    monkeypatch.setattr(crawlers.time, "sleep", lambda s: seen.append(s))
+    monkeypatch.setattr(crawlers.requests, "post", post)
+    crawler = MagnitCrawler(["992301"])
+    crawler.pace = crawlers.Pace(1000)
+    assert crawler._page("992301", 5, 0) == {"items": [], "pagination": {"hasMore": False}}
+    assert [s for s in seen if s >= 1] == [2.0], "после 429 — пауза и вторая попытка"
+    assert len(sent) == 2
+    assert sent[0]["storeCode"] == "992301" and sent[0]["categories"] == [5]
+
+
 # ---------- карта сайта Дикси ----------
 REAL = [
     "https://dixy.ru/product/draje-mms-s-molochnym-shokoladom-chernaya-smorodina-45g-2000650171/",

@@ -60,12 +60,18 @@ def _fetch_api_stores(lat: float, lon: float, radius_km: float) -> list[dict] | 
                 addr = str(item.get("address") or item.get("name") or "").strip()
                 if not code:
                     continue
-                slat = float(item.get("lat") or item.get("latitude") or lat)
-                slon = float(item.get("lon") or item.get("longitude") or lon)
+                # Магазин без координат — расстояние неизвестно, а не ноль: подставив
+                # точку запроса, мы делали его «ближайшим» и уводили расчёт в него.
+                try:
+                    slat = float(item.get("lat") or item.get("latitude"))
+                    slon = float(item.get("lon") or item.get("longitude"))
+                    distance = _distance_m(lat, lon, slat, slon)
+                except (TypeError, ValueError):
+                    distance = float("inf")
                 out.append({
                     "code": code,
                     "address": addr,
-                    "distance": _distance_m(lat, lon, slat, slon),
+                    "distance": distance,
                 })
             if out:
                 return out

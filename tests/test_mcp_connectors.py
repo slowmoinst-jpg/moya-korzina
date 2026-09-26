@@ -326,6 +326,13 @@ def test_service_builds_lenta_link_through_lentas_own_connector(monkeypatch):
         called["location"] = location
         return "https://lenta.com/x"
 
+    from app import location
+    from app.models import Store
+
+    # База здесь не поднимается: магазин и место клиента подставлены, как и
+    # сопоставление. Без этого тест зависел от того, какой тест шёл перед ним.
+    monkeypatch.setattr(repo, "get_store", lambda code: Store(id=1, code=code, name=code))
+    monkeypatch.setattr(location, "for_store", lambda code: None)
     monkeypatch.setattr(repo, "confirmed_mapping", lambda product_id, store_id: {"sku": "80424"})
     monkeypatch.setattr(lenta, "cart_link", fake_link)
 

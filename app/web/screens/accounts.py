@@ -254,7 +254,7 @@ def _row(store, conn) -> dict:
                     # человек, увидевший «0,7 кг → 1 упаковка» заранее, поправит
                     # количество сам; узнавший из чека — уже нет.
                     "rounded": [f"{ln.name}: {mark}" for ln in built.lines
-                                if (mark := cart.rounding(ln.qty, ln.unit))]}
+                                if (mark := cart.rounding_of(ln))]}
         except Exception:  # noqa: BLE001 — наряд не повод ронять экран
             log.warning("наряд для %s не собрался", code, exc_info=True)
 
@@ -337,7 +337,22 @@ def page():
         trouble=request.args.get("trouble"),
         busy=request.args.get("busy"),
         gone=request.args.get("gone"),
+        resend=_resend(request.args.get("resend")),
     )
+
+
+def _resend(code: str | None) -> dict | None:
+    """Что сказать, когда человек просит положить уже положенное ещё раз."""
+    code = (code or "").strip().lower()
+    if code not in store_accounts.ABILITIES:
+        return None
+    sent = cart.already_sent(code)
+    if not sent:
+        return None
+    known = {s.code: s.name for s in repo.list_stores()}
+    return {"code": code, "name": known.get(code, code),
+            "at": sent["finished_at"][11:16], "landed": sent["landed"],
+            "retry": len(cart.failed_skus(code))}
 
 
 def _act():
@@ -410,6 +425,13 @@ def _act():
         # пишем «не получилось»: человеку нужен следующий шаг, а не диагноз.
         return redirect(f"/cabinet?store={code}")
 
+    # Полная передача после удачной — та же беда, что и двойное нажатие: сеть кладёт
+    # поверх лежащего. Спрашиваем, а не отказываем: человек мог очистить корзину
+    # сам и хотеть положить заново. Решает он, ответом «да, ещё раз».
+    again = bool(request.form.get("again"))
+    if what == "send" and not again and cart.already_sent(code):
+        return redirect(f"{PATH}?resend={code}")
+
     only = None
     if what == "retry":
         # Только то, что не легло, и только то, что ещё есть в сегодняшней корзине.
@@ -420,7 +442,7 @@ def _act():
         if not only:
             return redirect(f"{PATH}?gone={code}")
 
-    if not cart.start(code, auth.current_phone() or "", built, only=only):
+    if not cart.start(code, auth.current_phone() or "", built, only=only, again=again):
         return redirect(f"{PATH}?busy={code}")
     return redirect(f"{PATH}?sent={code}")
 

@@ -86,11 +86,13 @@ def resolve_address(address: str) -> dict:
     nearest_stores (проверка адреса на экране), и delivery_hub (код для цен).
     Пустой словарь — сервер не ответил или адрес не разобран.
     """
-    address = (address or "").strip()
+    # Пробелы схлопнуты, регистр в ключе кэша не важен: «Москва,  Ходынский» и
+    # «москва, ходынский» — один адрес, и второй раз спрашивать Ленту о нём незачем.
+    address = " ".join((address or "").split())
     if not address:
         return {}
     answer = mcp_client.call_tool(MCP_URL, "lenta", "storefront_resolve_store",
-                                  {"address": address}, cache_key=f"stores:{address}")
+                                  {"address": address}, cache_key=f"stores:{address.lower()}")
     return mcp_client.ok_payload(answer) or {}
 
 

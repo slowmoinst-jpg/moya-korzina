@@ -55,10 +55,18 @@ class PlanLine:
     unit: str | None = None
     price: float | None = None
     url: str | None = None
+    # В чём считано qty: «kg» — килограммы корзины, «pcs» — штуки. unit выше —
+    # единица ТОВАРА СЕТИ, и они расходятся: корзина просит 0,4 кг сыра, а сеть
+    # продаёт его упаковками по 200 г.
+    per: str | None = None
+    # Вес одной упаковки товара сети, граммы. С ним килограммы корзины переводятся
+    # в упаковки: 0,4 кг по 200 г — две, а не одна, как выходило из round(0,4).
+    pack_g: float | None = None
 
     def as_dict(self) -> dict:
         return {"sku": self.sku, "qty": self.qty, "name": self.name,
-                "unit": self.unit, "price": self.price, "url": self.url}
+                "unit": self.unit, "price": self.price, "url": self.url,
+                "per": self.per, "pack_g": self.pack_g}
 
 
 @dataclass
@@ -137,6 +145,24 @@ def _price(line, store_code: str) -> float | None:
     return None
 
 
+def _per(line, product_id) -> str | None:
+    """В чём корзина считает эту позицию: «kg» или «pcs». Не знаем — None."""
+    unit = getattr(line, "unit", None)
+    if unit in ("kg", "pcs"):
+        return unit
+    product = repo.get_product(product_id) if product_id else None
+    return product.unit if product else None
+
+
+def _pack(mapping: dict | None) -> float | None:
+    """Вес упаковки товара сети в граммах, если он известен и осмыслен."""
+    try:
+        grams = float((mapping or {}).get("weight_g") or 0)
+    except (TypeError, ValueError):
+        return None
+    return grams if grams > 0 else None
+
+
 def build(store_code: str, lines, *, force: bool = False) -> CartPlan:
     """Собрать наряд по позициям расчёта.
 
@@ -162,13 +188,16 @@ def build(store_code: str, lines, *, force: bool = False) -> CartPlan:
         if not sku:
             plan.unknown.append(name)
             continue
+        shop_unit = (mapping or {}).get("unit")
         plan.lines.append(PlanLine(
             sku=str(sku),
             qty=float(getattr(line, "qty", 1) or 1),
             name=(mapping or {}).get("raw_name") or name,
-            unit=(mapping or {}).get("unit"),
+            unit=shop_unit,
             price=_price(line, store_code),
             url=(mapping or {}).get("url"),
+            per=_per(line, product_id),
+            pack_g=_pack(mapping) if shop_unit != "kg" else None,
         ))
 
     if plan.unknown and plan.lines:

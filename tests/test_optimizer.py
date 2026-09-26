@@ -281,13 +281,74 @@ def test_below_min_order_is_flagged_and_demoted():
     ]
     variants = optimize(lines, [a, b], {}, baseline=1120.0, penalty=0.0, top_n=3, max_stores=2)
 
-    # разбиение дало бы 1000 + 100 = 1100, но чек «b» 100 < min_order 500
+    # Разбиение 1000 + 100 = 1100 дешевле всех, но чек «b» 100 < min_order 500 —
+    # такой заказ не оформить. Пара поэтому берёт исполнимое разбиение (1320),
+    # а наверху — «всё в a» за 1120.
     split = next(v for v in variants if len(v.stores) == 2)
-    assert split.total == 1100.0
-    assert next(s for s in split.stores if s.store_code == "b").below_min_order is True
-    # и поэтому наверху более дорогой, но исполнимый вариант «всё в a» = 1120
+    assert split.total == 1320.0
+    assert all(not s.below_min_order for s in split.stores)
     assert variants[0].total == 1120.0
     assert all(not s.below_min_order for s in variants[0].stores)
+
+
+def test_single_store_below_min_order_is_still_shown_flagged():
+    """Добрать минимум нечем — лучшее из невозможного всё равно видно, с пометкой."""
+    b = mk_store("b", 2, "ВкусВилл", min_order=500.0)
+    lines = [mk_line(1, "Мелочь", {"b": 100.0})]
+    variants = optimize(lines, [b], {}, baseline=100.0, penalty=0.0, top_n=3, max_stores=1)
+    assert variants[0].total == 100.0
+    assert variants[0].stores[0].below_min_order is True
+
+
+def test_pair_keeps_feasible_split_when_cheapest_is_below_min_order():
+    """Мин. заказ в целевой функции: допустимое разбиение пары не теряется.
+
+    Раньше пара находила A{400}+B{95+200}=695 с чеком A ниже минимума, вариант
+    уезжал в конец, а исполнимое A{400+100}+B{200}=700 не показывалось вовсе.
+    """
+    a = mk_store("a", 1, "Магнит", min_order=500.0)
+    b = mk_store("b", 2, "ВкусВилл")
+    lines = [
+        mk_line(1, "x", {"a": 400.0, "b": 395.0}),
+        mk_line(2, "y", {"a": 100.0, "b": 95.0}),
+        mk_line(3, "z", {"a": 300.0, "b": 200.0}),
+    ]
+    variants = optimize(lines, [a, b], {}, baseline=800.0, penalty=0.0, top_n=3, max_stores=2)
+    split = next(v for v in variants if len(v.stores) == 2)
+    assert split.total == 700.0
+    assert all(not s.below_min_order for s in split.stores)
+    assert [v.total for v in variants] == [690.0, 700.0, 800.0]
+
+
+def test_savings_do_not_count_missing_products():
+    """Недостающая позиция — не выгода: база варианта считается без неё."""
+    a = mk_store("a", 1, "Магнит")
+    lines = [
+        mk_line(1, "x", {"a": 100.0}),
+        mk_line(2, "y", {}),
+    ]
+    variants = optimize(lines, [a], {}, baseline=1000.0, penalty=0.0, top_n=1, max_stores=1,
+                        baseline_lines={1: 100.0, 2: 900.0})
+    assert variants[0].missing_products == ["y"]
+    assert variants[0].baseline == 100.0
+    assert variants[0].savings_rub == 0.0
+
+
+def test_local_search_reaches_free_delivery_threshold():
+    """Большая корзина (локальный поиск): порог бесплатной доставки добирается.
+
+    По одной позиции порог не виден: каждая по отдельности дешевле в «b», а
+    доставка «a» снимается, только когда туда уходит 24 позиции разом. Старт
+    «где дешевле» застревал на одной позиции в «a» (4051 ₽).
+    """
+    a = mk_store("a", 1, "Магнит", fee=500.0, free_from=2400.0)
+    b = mk_store("b", 2, "ВкусВилл", fee=500.0, free_from=100000.0)
+    lines = [mk_line(i, f"p{i}", {"a": 101.0, "b": 100.0}) for i in range(1, 31)]
+    lines.append(mk_line(99, "только в b", {"b": 50.0}))
+    variants = optimize(lines, [a, b], {}, baseline=3500.0, penalty=0.0, top_n=5, max_stores=2)
+    split = next(v for v in variants if len(v.stores) == 2)
+    # 24 позиции в «a» (2424 ₽, доставка бесплатна) + 6 и «только в b» в «b» (650 + 500)
+    assert split.total == 3574.0
 
 
 def test_discount_is_distributed_over_lines():

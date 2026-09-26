@@ -184,20 +184,26 @@ class DixyConnector(HistoryConnector):
         return found[:limit]
 
     # --- цены ---
-    def _page_price(self, sku: str) -> tuple[float | None, str]:
-        """Цена с карточки товара. Пустая страница — не беда, есть чем заменить."""
+    def _page_price(self, sku: str) -> tuple[float | None, str, dict]:
+        """Цена с карточки товара. Пустая страница — не беда, есть чем заменить.
+
+        Третье значение — что сказала модель, если цену читала она: наличие и
+        единица. Разбор вёрстки о наличии молчит, и тогда словарь пуст.
+        """
         url = self._known_url(sku)
         if not url:
-            return None, ""
+            return None, "", {}
         page, _ = cached_call(self.code, f"product:{sku}", lambda: self._get(url))
         if not isinstance(page, str):
-            return None, ""
+            return None, "", {}
         price = parse_price(page)
         if price is None:
             # страница есть, а цены в ней не видно — вёрстка могла смениться
             guess = smart_extract.price_from_html(self.code, page, f"артикул {sku}")
-            price = guess["price"] if guess else None
-        return price, page
+            if guess:
+                return guess["price"], page, guess
+            return None, page, {}
+        return price, page, {}
 
     def _known_url(self, sku: str) -> str | None:
         """Адрес карточки, сохранённый матчером при сопоставлении."""
@@ -220,16 +226,17 @@ class DixyConnector(HistoryConnector):
             if sku in listed or str(sku).startswith(("hist-", self.fallback_sku_prefix)):
                 rest.append(sku)             # прайс и чеки разберёт родитель
                 continue
-            price, page = self._page_price(sku)
+            price, page, guess = self._page_price(sku)
             if price is None:
                 rest.append(sku)
                 continue
+            per_kg = _unit("", page) == "kg" or guess.get("unit") == "kg"
             out.append(PriceSnapshot(
                 store_code=self.code,
                 sku=str(sku),
                 price=price,
-                price_per_kg=price if _unit("", page) == "kg" else None,
-                in_stock=True,
+                price_per_kg=price if per_kg else None,
+                in_stock=bool(guess.get("in_stock", True)),
                 name=None,
             ))
         if rest:

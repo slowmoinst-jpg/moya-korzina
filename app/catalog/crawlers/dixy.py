@@ -198,7 +198,7 @@ class DixyCrawler(Crawler):
         self.brand_cap = int(config.get("catalog.dixy.max_brand_queries") or 400)
         self.max_shelf_pages = int(config.get("catalog.dixy.max_shelf_pages") or 80)
         self.shelf_skip = set(config.get("catalog.dixy.shelf_skip") or [])
-        self.pace = Pace()
+        self.pace = Pace(chain=self.code)
 
     # ---------- витрина через домашний выход ----------
     def _shelf(self, say: Progress) -> dict[str, ChainProduct]:

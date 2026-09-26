@@ -9,9 +9,19 @@ if ROOT not in sys.path:
 
 from app.shopbrowser import live
 
-def test_live_availability():
-    # На Windows доступно всегда
+def test_live_availability(monkeypatch):
+    """На Windows окно есть всегда, на Linux — только с графическим окружением.
+
+    Раньше тест ждал True на любой машине и падал на сервере и в облачной
+    проверке, где DISPLAY нет, — то есть проверял машину, а не код.
+    """
+    monkeypatch.setattr(os, "name", "nt")
     assert live.is_live_available() is True
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setenv("DISPLAY", ":99")
+    assert live.is_live_available() is True
+    monkeypatch.delenv("DISPLAY")
+    assert live.is_live_available() is False
 
 def test_live_status_idle():
     st = live.get_live_status("magnit", "79990000001")
