@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Выбор выгоды — прототип</title>
+<!--
+  Прототип шага 2 «Выбор выгоды» (docs/design/basket-variants-2026-09-26.md, §2).
+  Сделан по скиллам Эмиля Ковальски (.claude/skills/prototype, emil-design-eng):
+  три по-настоящему разных направления за переключателем внизу/вверху экрана.
+  Клавиши 1–3 и ←/→ переключают, R — повтор анимаций.
+  Токены — из app/web/static/korzina.css (направление «Цвет магазина»).
+  Это изолированный файл: в код приложения ничего отсюда не импортируется.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600&family=Unbounded:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FFFFFF; --tint:#F4F5F7;
+  --ink:#14161A; --ink2:#565C66; --ink3:#8B929C;
+  --line:#E7E9ED; --line2:#D2D6DD;
+  --green:#1E7A4B; --green-soft:#E6F3EC;
+  --amber:#B8730E; --amber-soft:#FBF0DF;
+  --s-magnit:#D8452B; --s-pyaterochka:#E2A32B; --s-samokat:#7A5CD0;
+  --radius:14px;
+  --ease-out:cubic-bezier(0.23,1,0.32,1);
+  --ease-in-out:cubic-bezier(0.77,0,0.175,1);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+/* место под переключатель прототипа наверху, чтобы он не закрывал шапку */
+#stage{padding-top:64px}
+@media (min-width:480px){#stage{padding-top:0}}
+body{background:#E9EBEF;color:var(--ink);font-family:"Rubik",system-ui,sans-serif;
+  font-feature-settings:"tnum" 1,"lnum" 1;font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased}
+h1,h2,.num{font-family:"Unbounded",system-ui,sans-serif;letter-spacing:-0.01em;margin:0}
+button{font:inherit;color:inherit}
+
+/* телефон: приложением пользуются стоя у полки */
+.phone{max-width:400px;min-height:100vh;margin:0 auto;background:var(--paper);position:relative;
+  display:flex;flex-direction:column;overflow:hidden}
+@media (min-width:480px){.phone{min-height:820px;margin:84px auto 40px;border-radius:28px;
+  box-shadow:0 0 0 1px rgba(0,0,0,.06),0 24px 60px rgba(20,22,26,.14)}}
+.bar{display:flex;align-items:center;gap:10px;padding:14px 16px 10px}
+.back{width:36px;height:36px;border-radius:999px;border:1px solid var(--line);background:none;cursor:pointer}
+.addr{margin-left:auto;border:1px solid var(--line2);border-radius:999px;padding:5px 12px;font-size:.82rem;color:var(--ink2)}
+.eyebrow{font-size:.7rem;letter-spacing:.09em;text-transform:uppercase;color:var(--ink3)}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex:none}
+.content{flex:1;padding:0 16px 120px}
+
+/* общая кнопка действия: почти чёрная, отклик на нажатие */
+.cta{position:absolute;left:16px;right:16px;bottom:16px;height:56px;border:0;border-radius:16px;
+  background:var(--ink);color:#fff;font-weight:500;font-size:1rem;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  transition:transform 160ms var(--ease-out),background-color 200ms ease}
+.cta:active{transform:scale(0.97)}
+.cta[data-state="busy"]{background:#2B2E35}
+.cta[data-state="done"]{background:var(--green)}
+.cta .lbl{display:inline-block;transition:opacity 150ms ease-out,transform 150ms ease-out,filter 150ms ease-out}
+.cta .lbl.swap{opacity:0;transform:translateY(6px);filter:blur(2px)}
+.spin{width:16px;height:16px;border-radius:50%;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;
+  animation:spin 600ms linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* вход содержимого: ease-out, из 0.97/сдвига, лесенкой 40 мс */
+.in{animation:rise 260ms var(--ease-out) both;animation-delay:calc(var(--i,0) * 40ms)}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}}
+
+@media (hover:hover) and (pointer:fine){ .hov:hover{background:var(--tint)} }
+
+/* ============ 1. «Чек»: спокойный список, раскрытие на месте ============ */
+.v1 .head{padding:6px 0 18px}
+.v1 .head .num{font-size:2.1rem;font-weight:700;color:var(--green)}
+.v1 .opt{border:1px solid var(--line);border-radius:var(--radius);margin-bottom:10px;background:#fff;
+  transition:border-color 200ms ease,box-shadow 200ms ease}
+.v1 .opt[data-picked]{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink)}
+.v1 .row{display:flex;align-items:center;gap:12px;padding:14px;cursor:pointer;width:100%;border:0;background:none;text-align:left;border-radius:var(--radius)}
+.v1 .radio{width:20px;height:20px;border-radius:50%;border:2px solid var(--line2);flex:none;position:relative;transition:border-color 150ms ease}
+.v1 .radio::after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--ink);transform:scale(0.5);opacity:0;
+  transition:transform 180ms var(--ease-out),opacity 180ms var(--ease-out)}
+.v1 [data-picked] .radio{border-color:var(--ink)}
+.v1 [data-picked] .radio::after{transform:scale(1);opacity:1}
+.v1 .t{font-weight:500}
+.v1 .sub{font-size:.84rem;color:var(--ink2)}
+.v1 .sum{margin-left:auto;text-align:right}
+.v1 .sum .num{font-size:1.05rem;font-weight:600}
+.v1 .save{font-size:.78rem;color:var(--green);font-weight:500}
+.v1 .badge{display:inline-block;font-size:.68rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+  background:var(--green-soft);color:var(--green);border-radius:6px;padding:2px 6px;margin-left:6px;vertical-align:2px}
+.v1 .more{display:grid;grid-template-rows:0fr;transition:grid-template-rows 220ms var(--ease-out)}
+.v1 [data-picked] .more{grid-template-rows:1fr}
+.v1 .more > div{overflow:hidden}
+.v1 .more ul{list-style:none;margin:0;padding:0 14px 14px 46px;opacity:0;transition:opacity 150ms ease-out}
+.v1 [data-picked] .more ul{opacity:1;transition-delay:60ms}
+.v1 .more li{display:flex;justify-content:space-between;gap:8px;font-size:.88rem;padding:5px 0;border-top:1px dashed var(--line)}
+.v1 .more li span:first-child{display:flex;align-items:center;gap:8px}
+.v1 .note{font-size:.82rem;color:var(--ink3);margin-top:8px}
+
+/* ============ 2. «Весы»: одна большая сумма, переключатель режимов ============ */
+.v2 .seg{position:relative;display:grid;grid-template-columns:repeat(3,1fr);background:var(--tint);border-radius:12px;padding:3px;margin:4px 0 22px}
+.v2 .seg button{position:relative;z-index:1;border:0;background:none;height:38px;font-size:.88rem;font-weight:500;color:var(--ink2);cursor:pointer;border-radius:9px;transition:color 200ms ease}
+.v2 .seg button[aria-pressed="true"]{color:var(--ink)}
+.v2 .seg button:active{transform:scale(0.97)}
+.v2 .thumb{position:absolute;top:3px;left:3px;height:38px;width:calc((100% - 6px)/3);background:#fff;border-radius:9px;
+  box-shadow:0 1px 3px rgba(20,22,26,.1);transition:transform 240ms var(--ease-in-out)}
+.v2 .hero{text-align:center;padding:4px 0 20px}
+.v2 .hero .num{font-size:2.9rem;font-weight:700;line-height:1.05}
+.v2 .hero .delta{display:inline-flex;gap:6px;align-items:center;margin-top:10px;padding:5px 12px;border-radius:999px;font-size:.88rem;font-weight:500}
+.v2 .delta.good{background:var(--green-soft);color:var(--green)}
+.v2 .delta.meh{background:var(--amber-soft);color:var(--amber)}
+.v2 .swapin{animation:blurin 200ms var(--ease-out) both}
+@keyframes blurin{from{opacity:0;filter:blur(4px);transform:translateY(4px)}}
+.v2 .stack{height:14px;border-radius:999px;overflow:hidden;display:flex;background:var(--tint);margin:4px 0 14px}
+.v2 .stack i{display:block;height:100%;transform-origin:left;animation:grow 320ms var(--ease-out) both}
+@keyframes grow{from{transform:scaleX(0.6);opacity:0}}
+.v2 .facts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px}
+.v2 .fact{background:var(--tint);border-radius:12px;padding:10px}
+.v2 .fact b{display:block;font-family:"Unbounded";font-weight:600;font-size:1rem}
+.v2 .fact span{font-size:.75rem;color:var(--ink2)}
+.v2 .shop{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+.v2 .shop .n{font-weight:500}
+.v2 .shop .m{font-size:.82rem;color:var(--ink2)}
+.v2 .shop .p{margin-left:auto;font-family:"Unbounded";font-weight:600}
+
+/* ============ 3. «Лента»: карточки листаются пальцем ============ */
+.v3 .content{padding:0 0 120px}
+.v3 .lead{padding:4px 16px 14px}
+.v3 .rail{display:flex;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;padding:0 16px 8px;scrollbar-width:none;overscroll-behavior-x:contain}
+.v3 .rail::-webkit-scrollbar{display:none}
+.v3 .card{flex:0 0 84%;scroll-snap-align:center;border-radius:22px;padding:18px;color:#fff;min-height:430px;
+  display:flex;flex-direction:column;position:relative;overflow:hidden}
+.v3 .card .k{font-size:.72rem;letter-spacing:.09em;text-transform:uppercase;opacity:.8}
+.v3 .card h2{font-size:1.25rem;font-weight:600;margin:4px 0 16px}
+.v3 .card .num{font-size:2.5rem;font-weight:700;line-height:1}
+.v3 .card .save{margin-top:8px;font-weight:500;display:inline-block;background:rgba(255,255,255,.18);padding:4px 10px;border-radius:999px;font-size:.85rem;align-self:flex-start}
+.v3 .card ul{list-style:none;padding:0;margin:auto 0 0}
+.v3 .card li{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid rgba(255,255,255,.2);font-size:.9rem}
+.v3 .card .ic{font-size:.82rem;opacity:.85;margin-top:12px}
+.v3 .c1{background:linear-gradient(160deg,#1E7A4B,#14543A)}
+.v3 .c2{background:linear-gradient(160deg,#D8452B,#A83420)}
+.v3 .c3{background:linear-gradient(160deg,#7A5CD0,#5A3FAE)}
+.v3 .dots{display:flex;justify-content:center;gap:6px;padding:10px 0}
+.v3 .dots i{width:6px;height:6px;border-radius:999px;background:var(--line2);transition:transform 200ms var(--ease-out),background-color 200ms ease}
+.v3 .dots i[data-on]{background:var(--ink);transform:scale(1.35)}
+.v3 .missing{margin:6px 16px 0;padding:12px 14px;border-radius:12px;background:var(--amber-soft);color:var(--amber);font-size:.86rem}
+
+/* тост о результате */
+.toast{position:absolute;left:16px;right:16px;bottom:84px;background:var(--ink);color:#fff;border-radius:14px;padding:12px 14px;
+  font-size:.9rem;display:flex;gap:10px;align-items:center;
+  opacity:0;transform:translateY(12px);transition:opacity 200ms var(--ease-out),transform 200ms var(--ease-out);pointer-events:none}
+.toast[data-show]{opacity:1;transform:none}
+
+@media (prefers-reduced-motion:reduce){
+  .in,.v2 .swapin,.v2 .stack i{animation:none}
+  .v2 .thumb,.v1 .more,.toast{transition:none}
+  .cta:active{transform:none}
+}
+
+/* ---- picker: спецификация PICKER.md, дословно ---- */
+.proto-picker{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;align-items:center;gap:2px;padding:4px;border-radius:999px;background:rgba(10,10,10,0.82);-webkit-backdrop-filter:blur(12px) saturate(1.4);backdrop-filter:blur(12px) saturate(1.4);box-shadow:0 0 0 1px rgba(255,255,255,0.08) inset,0 8px 24px rgba(0,0,0,0.24),0 2px 6px rgba(0,0,0,0.12);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13px;line-height:1;-webkit-font-smoothing:antialiased;user-select:none;-webkit-user-select:none}
+.proto-picker-highlight{position:absolute;top:4px;left:0;height:28px;border-radius:999px;background:rgba(255,255,255,0.12);will-change:transform}
+.proto-picker[data-ready] .proto-picker-highlight{transition:transform 250ms cubic-bezier(0.23,1,0.32,1),width 250ms cubic-bezier(0.23,1,0.32,1)}
+@media (prefers-reduced-motion:reduce){.proto-picker[data-ready] .proto-picker-highlight{transition:none}}
+.proto-picker-item{position:relative;display:flex;align-items:center;height:28px;padding:0 12px;border:0;border-radius:999px;background:transparent;color:rgba(255,255,255,0.55);font:inherit;cursor:pointer;transition:color 150ms ease-out}
+.proto-picker-item:hover{color:rgba(255,255,255,0.85)}
+.proto-picker-item:active{transform:scale(0.97)}
+.proto-picker-item:focus-visible{outline:2px solid rgba(255,255,255,0.4);outline-offset:2px}
+.proto-picker-item[data-active]{color:#fff}
+.proto-picker-divider{width:1px;height:16px;margin:0 4px;background:rgba(255,255,255,0.12)}
+.proto-picker-replay{padding:0 10px;font-size:14px}
+.proto-picker[data-position="top"]{bottom:auto;top:24px}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<!-- у всех вариантов кнопка действия внизу, поэтому переключатель наверху -->
+<nav class="proto-picker" aria-label="Prototype variants" data-position="top">
+  <span class="proto-picker-highlight" aria-hidden="true"></span>
+  <button class="proto-picker-item" data-active aria-current="true">Чек</button>
+  <button class="proto-picker-item">Весы</button>
+  <button class="proto-picker-item">Лента</button>
+  <span class="proto-picker-divider" aria-hidden="true"></span>
+  <button class="proto-picker-item proto-picker-replay" aria-label="Replay animation (R)">↻</button>
+</nav>
+
+<script>
+// Правдоподобные данные: корзина «Как обычно», 23 позиции, адрес владельца.
+const BASE = 4600; // та же корзина в одном «привычном» магазине
+const OPTS = [
+  {key:'split', name:'Максимальная выгода', short:'Выгода', sum:3290, eta:'сегодня 18–20', couriers:2, found:'23 из 23',
+   stores:[{n:'Магнит у дома',c:'--s-magnit',items:14,p:2040,m:'доставка 0 ₽ от 1 500 ₽'},
+           {n:'Пятёрочка',c:'--s-pyaterochka',items:9,p:1250,m:'доставка 0 ₽ по карте «Выручай»'}],
+   why:'Молочка и крупы в Пятёрочке по карте, остальное в Магните. Кэшбэк Альфы 7% уже учтён.'},
+  {key:'one', name:'Всё в одном месте', short:'Один', sum:3850, eta:'сегодня 17–19', couriers:1, found:'23 из 23',
+   stores:[{n:'Магнит у дома',c:'--s-magnit',items:23,p:3850,m:'один курьер, доставка 0 ₽'}],
+   why:'Один заказ и один курьер. Дороже выгоды на 560 ₽.'},
+  {key:'fast', name:'Экспресс', short:'Быстро', sum:4200, eta:'через 15 мин', couriers:1, found:'21 из 23',
+   stores:[{n:'Самокат',c:'--s-samokat',items:21,p:4200,m:'нет в наличии: ряженка 4%, гречка «Мистраль»'}],
+   why:'Когда нужно сейчас. Двух позиций нет, их добавим в следующий заказ.'},
+];
+const rub = n => n.toLocaleString('ru-RU').replace(/ /g,' ') + ' ₽';
+const bar = `<div class="bar"><button class="back" aria-label="Назад">←</button>
+  <div><div class="eyebrow">Шаг 2 из 3</div><b>Как обычно · 23 позиции</b></div>
+  <span class="addr">Лиговский, 50</span></div>`;
+const cta = t => `<button class="cta" data-state="idle"><span class="lbl">${t}</span></button><div class="toast"><span>✓</span><span></span></div>`;
+
+// 1. «Чек» — ось: плотность. Все три варианта видны сразу, выбранный раскрывается на месте.
+function v1(){
+  const o = OPTS.map((x,i)=>`<div class="opt in" style="--i:${i+1}" ${i===0?'data-picked':''} data-i="${i}">
+    <button class="row hov"><span class="radio"></span>
+      <span><span class="t">${x.name}</span>${i===0?'<span class="badge">совет</span>':''}
+        <div class="sub">${x.stores.length===1?x.stores[0].n:x.stores.length+' магазина'} · ${x.eta}</div></span>
+      <span class="sum"><span class="num">${rub(x.sum)}</span><div class="save">−${rub(BASE-x.sum)}</div></span></button>
+    <div class="more"><div><ul>${x.stores.map(s=>`<li><span><i class="dot" style="background:var(${s.c})"></i>${s.n} · ${s.items} поз.</span><span>${rub(s.p)}</span></li>`).join('')}
+      <li><span>${x.why}</span></li></ul></div></div></div>`).join('');
+  return `<div class="phone v1">${bar}<div class="content">
+    <div class="head in"><div class="eyebrow">Можно сэкономить до</div><div class="num">${rub(BASE-OPTS[0].sum)}</div>
+      <div class="sub" style="color:var(--ink2)">против ${rub(BASE)} в привычном магазине</div></div>
+    ${o}<div class="note in" style="--i:4">Цены проверены 12 минут назад под ваш адрес.</div></div>
+    ${cta('Собрать корзины · '+rub(OPTS[0].sum))}</div>`;
+}
+function wire1(root){
+  root.querySelectorAll('.opt').forEach(el=>el.querySelector('.row').addEventListener('click',()=>{
+    root.querySelectorAll('.opt').forEach(o=>o.toggleAttribute('data-picked',o===el));
+    const x = OPTS[+el.dataset.i]; setCta(root,'Собрать '+(x.stores.length>1?'корзины':'корзину')+' · '+rub(x.sum));
+  }));
+}
+
+// 2. «Весы» — ось: модель взаимодействия. Одна крупная сумма, режимы переключаются сегментом.
+function v2(){
+  return `<div class="phone v2">${bar}<div class="content">
+    <div class="seg in" role="group" aria-label="Режим"><span class="thumb"></span>
+      ${OPTS.map((x,i)=>`<button aria-pressed="${i===0}" data-i="${i}">${x.short}</button>`).join('')}</div>
+    <div class="body"></div></div>${cta('')}</div>`;
+}
+function body2(x){
+  const d = BASE-x.sum, good = d>=700;
+  return `<div class="hero swapin"><div class="eyebrow">${x.name}</div><div class="num">${rub(x.sum)}</div>
+      <div class="delta ${good?'good':'meh'}">${good?'↓':'≈'} ${rub(d)} против привычного</div></div>
+    <div class="stack">${x.stores.map(s=>`<i style="width:${s.p/x.sum*100}%;background:var(${s.c})"></i>`).join('')}</div>
+    <div class="facts"><div class="fact in" style="--i:1"><b>${x.eta.replace('сегодня ','')}</b><span>${x.eta.startsWith('через')?'доставка':'сегодня'}</span></div>
+      <div class="fact in" style="--i:2"><b>${x.couriers}</b><span>${x.couriers>1?'курьера':'курьер'}</span></div>
+      <div class="fact in" style="--i:3"><b>${x.found.split(' ')[0]}/23</b><span>в наличии</span></div></div>
+    ${x.stores.map((s,i)=>`<div class="shop in" style="--i:${i+3}"><i class="dot" style="background:var(${s.c})"></i>
+      <div><div class="n">${s.n} · ${s.items} поз.</div><div class="m">${s.m}</div></div><span class="p">${rub(s.p)}</span></div>`).join('')}
+    <p class="dim" style="color:var(--ink2);font-size:.86rem">${x.why}</p>`;
+}
+function wire2(root){
+  const btns=[...root.querySelectorAll('.seg button')], thumb=root.querySelector('.thumb'), body=root.querySelector('.body');
+  const pick=i=>{btns.forEach((b,j)=>b.setAttribute('aria-pressed',j===i));
+    thumb.style.transform=`translateX(${i*100}%)`; body.innerHTML=body2(OPTS[i]);
+    setCta(root,'Собрать · '+rub(OPTS[i].sum));};
+  btns.forEach((b,i)=>b.addEventListener('click',()=>pick(i)));
+  body.innerHTML=body2(OPTS[0]); root.querySelector('.cta .lbl').textContent='Собрать · '+rub(OPTS[0].sum);
+}
+
+// 3. «Лента» — ось: раскладка и характер. Один вариант на экран, листается пальцем, цвет — от сети.
+function v3(){
+  const cls=['c1','c2','c3'];
+  return `<div class="phone v3">${bar}<div class="content">
+    <div class="lead in"><h1 style="font-size:1.35rem">Три способа купить</h1><div style="color:var(--ink2)">Листайте — выберите, что важнее сегодня</div></div>
+    <div class="rail">${OPTS.map((x,i)=>`<article class="card ${cls[i]} in" style="--i:${i+1}" data-i="${i}">
+      <div class="k">${i===0?'Совет · ':''}${x.stores.length} ${x.stores.length>1?'магазина':'магазин'}</div><h2>${x.name}</h2>
+      <div class="num">${rub(x.sum)}</div><span class="save">экономия ${rub(BASE-x.sum)}</span>
+      <div class="ic">${x.eta} · ${x.couriers} ${x.couriers>1?'курьера':'курьер'} · ${x.found}</div>
+      <ul>${x.stores.map(s=>`<li><span>${s.n}</span><span>${rub(s.p)}</span></li>`).join('')}</ul></article>`).join('')}</div>
+    <div class="dots">${OPTS.map((_,i)=>`<i ${i===0?'data-on':''}></i>`).join('')}</div>
+    <div class="missing" hidden></div></div>${cta('Собрать · '+rub(OPTS[0].sum))}</div>`;
+}
+function wire3(root){
+  const rail=root.querySelector('.rail'), dots=[...root.querySelectorAll('.dots i')], miss=root.querySelector('.missing');
+  let cur=0;
+  rail.addEventListener('scroll',()=>{
+    const cards=[...rail.children], mid=rail.scrollLeft+rail.clientWidth/2;
+    let i=cards.reduce((b,c,j)=>Math.abs(c.offsetLeft+c.offsetWidth/2-mid)<Math.abs(cards[b].offsetLeft+cards[b].offsetWidth/2-mid)?j:b,0);
+    if(i===cur) return; cur=i;
+    dots.forEach((d,j)=>d.toggleAttribute('data-on',j===i));
+    const x=OPTS[i]; miss.hidden=x.found==='23 из 23'; miss.textContent='Нет в наличии: '+x.stores[0].m.split(': ')[1];
+    setCta(root,'Собрать · '+rub(x.sum));
+  },{passive:true});
+}
+
+// кнопка: подпись меняется через короткое размытие, состояния «наполняю → готово»
+function setCta(root,t){
+  const b=root.querySelector('.cta'), l=b.querySelector('.lbl');
+  if(b.dataset.state!=='idle'||l.textContent===t) return;
+  l.classList.add('swap'); setTimeout(()=>{l.textContent=t;l.classList.remove('swap')},120);
+}
+function wireCta(root){
+  const b=root.querySelector('.cta'), toast=root.querySelector('.toast');
+  b.addEventListener('click',()=>{
+    if(b.dataset.state!=='idle') return;
+    const was=b.querySelector('.lbl').textContent;
+    b.dataset.state='busy'; b.innerHTML='<span class="spin"></span><span class="lbl">Наполняю корзины в магазинах…</span>';
+    setTimeout(()=>{ b.dataset.state='done'; b.innerHTML='<span class="lbl">✓ Готово — осталось нажать «Заказать»</span>';
+      toast.lastElementChild.textContent='Корзины наполнены. Откройте приложения магазинов для оплаты.';
+      toast.setAttribute('data-show','');
+      setTimeout(()=>{toast.removeAttribute('data-show'); b.dataset.state='idle'; b.innerHTML=`<span class="lbl">${was}</span>`;},2600);
+    },1400);
+  });
+}
+
+const variants=[v1,v2,v3], wires=[wire1,wire2,wire3];
+
+// ---- проводка переключателя: PICKER.md, дословно (+ навешивание обработчиков варианта) ----
+const stage=document.getElementById('stage');
+const picker=document.querySelector('.proto-picker');
+const highlight=picker.querySelector('.proto-picker-highlight');
+const items=[...picker.querySelectorAll('.proto-picker-item:not(.proto-picker-replay)')];
+const replay=picker.querySelector('.proto-picker-replay');
+let current=0;
+function moveHighlight(){const el=items[current];highlight.style.width=el.offsetWidth+'px';highlight.style.transform=`translateX(${el.offsetLeft}px)`;}
+function mount(i){stage.innerHTML='';requestAnimationFrame(()=>{stage.innerHTML=variants[i]();wires[i](stage);wireCta(stage);});}
+function setActive(i){
+  if(i<0||i>=variants.length)return;
+  current=i;
+  items.forEach((el,j)=>{el.toggleAttribute('data-active',j===i);if(j===i)el.setAttribute('aria-current','true');else el.removeAttribute('aria-current');});
+  moveHighlight();
+  const url=new URL(location);url.searchParams.set('v',i+1);history.replaceState(null,'',url);
+  mount(i);
+}
+items.forEach((el,i)=>el.addEventListener('click',()=>setActive(i)));
+replay?.addEventListener('click',()=>mount(current));
+window.addEventListener('resize',moveHighlight);
+document.addEventListener('keydown',(e)=>{
+  if(/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)||e.target.isContentEditable)return;
+  if(e.metaKey||e.ctrlKey||e.altKey)return;
+  const num=parseInt(e.key,10);
+  if(num>=1&&num<=variants.length)setActive(num-1);
+  else if(e.key==='ArrowRight')setActive((current+1)%variants.length);
+  else if(e.key==='ArrowLeft')setActive((current-1+variants.length)%variants.length);
+  else if(e.key==='r'||e.key==='R')mount(current);
+});
+setActive((parseInt(new URLSearchParams(location.search).get('v'),10)||1)-1);
+requestAnimationFrame(()=>requestAnimationFrame(()=>picker.setAttribute('data-ready','')));
+</script>
+</body>
+</html>
