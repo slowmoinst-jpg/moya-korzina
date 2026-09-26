@@ -216,16 +216,25 @@ def _ensure_product(raw_name: str, qty: float | None = None) -> tuple[int, bool]
     weighed = (fractional or sold_by_weight(raw_name)) and not grams
     existing = repo.find_product_by_name(name)
     if existing and existing.id:
-        if weighed and existing.unit == "pcs" and not existing.weight_g:
+        if weighed and existing.unit == "pcs" and not existing.weight_g \
+                and not _in_a_basket(existing.id):
             # Товар, заведённый штучным по первому чеку, пришёл дробным количеством —
             # значит его берут на вес. Отметка обязана это узнать: расчёт и корзина
-            # считают по ней (service.is_weighed).
+            # считают по ней (service.is_weighed). Но не у товара, что лежит в
+            # корзине: там его «2» набраны штуками, и перевод сделал бы их килограммами.
             existing.unit = "kg"
             repo.upsert_product(existing)
         return existing.id, False
     unit = "kg" if weighed else "pcs"
     pid = repo.upsert_product(Product(id=None, name=name, weight_g=grams, unit=unit))
     return pid, True
+
+
+def _in_a_basket(product_id: int) -> bool:
+    """Лежит ли товар хоть в одной корзине человека."""
+    with repo.get_conn() as c:
+        return c.execute("SELECT 1 FROM basket_items WHERE product_id=? LIMIT 1",
+                         (product_id,)).fetchone() is not None
 
 
 def _remember_barcode(product_id: int, barcode: str) -> None:

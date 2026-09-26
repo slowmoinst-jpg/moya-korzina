@@ -152,7 +152,9 @@ LATE_COLUMNS = (("chain_products", "price_seen", "TEXT"),)
 
 # Версия данных каталога (PRAGMA user_version). 1 — сняты ложные «kg» у строк сетей,
 # чьи сборщики ставили единицу по отсутствию граммовки (app/db.FALSE_KG_CHAINS).
-SCHEMA_VERSION = 1
+# 2 — у развесного Ленты цена порции заменена ценой килограмма.
+SCHEMA_VERSION = 2
+LENTA_PER_KG_SINCE = "2026-09-27"   # с этого дня сборщик Ленты пишет развесному цену за кг
 
 
 def init() -> None:
@@ -172,16 +174,30 @@ def _migrate(conn: sqlite3.Connection) -> None:
     Без этого ложное «kg» жило бы вечно: обновление строки берёт единицу через
     COALESCE, и новая «не сказано» (None) старую «kg» не перетирает.
     """
-    if conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= SCHEMA_VERSION:
         return
-    from app.db import FALSE_KG_CHAINS
-    from app.matcher.normalize import sold_by_weight
+    if version < 1:
+        from app.db import FALSE_KG_CHAINS
+        from app.matcher.normalize import sold_by_weight
 
-    placeholders = ",".join("?" * len(FALSE_KG_CHAINS))
-    rows = conn.execute(f"SELECT id, name FROM chain_products WHERE unit='kg'"
-                        f" AND chain IN ({placeholders})", FALSE_KG_CHAINS).fetchall()
-    conn.executemany("UPDATE chain_products SET unit=NULL WHERE id=?",
-                     [(r["id"],) for r in rows if not sold_by_weight(r["name"] or "")])
+        placeholders = ",".join("?" * len(FALSE_KG_CHAINS))
+        rows = conn.execute(f"SELECT id, name FROM chain_products WHERE unit='kg'"
+                            f" AND chain IN ({placeholders})", FALSE_KG_CHAINS).fetchall()
+        conn.executemany("UPDATE chain_products SET unit=NULL WHERE id=?",
+                         [(r["id"],) for r in rows if not sold_by_weight(r["name"] or "")])
+    if version < 2:
+        # Ленту сборщик перечитывает только по новым артикулам, и старые развесные
+        # строки хранили бы цену ПОРЦИИ как цену килограмма ещё долго. Фасовка
+        # известна — пересчитываем; нет — цену снимаем: перенос в базу человека
+        # тогда не запишет ложную, а живая придёт при первом расчёте.
+        # Только строки, заведённые до исправления сборщика: у новых цена уже за кг.
+        old = "chain='lenta' AND unit='kg' AND price IS NOT NULL AND first_seen < ?"
+        conn.execute("UPDATE chain_products SET price = ROUND(price * 1000.0 / weight_g, 2)"
+                     f" WHERE {old} AND weight_g > 0", (LENTA_PER_KG_SINCE,))
+        conn.execute("UPDATE chain_products SET price = NULL, price_seen = NULL"
+                     f" WHERE {old} AND (weight_g IS NULL OR weight_g <= 0)",
+                     (LENTA_PER_KG_SINCE,))
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 

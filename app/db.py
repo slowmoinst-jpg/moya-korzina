@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS purchase_history (
     total REAL NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_history_product ON purchase_history(product_id);
+
 CREATE TABLE IF NOT EXISTS store_products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
@@ -249,18 +251,33 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     from app.service import weighed_by_evidence
 
+    # Одним проходом по таблицам, а не запросом на каждый эталон: миграция идёт в
+    # первом запросе после выкладки, и на большой базе поштучные запросы держали
+    # запись секундами — соседний запрос падал с «database is locked».
+    kg = {r["id"]: r["name"] or "" for r in conn.execute("SELECT id, name FROM products WHERE unit='kg'")}
+    bought: dict[int, list] = {}
+    for r in conn.execute("SELECT product_id, qty, raw_name FROM purchase_history"
+                          " WHERE product_id IN (SELECT id FROM products WHERE unit='kg')"):
+        bought.setdefault(r["product_id"], []).append((r["qty"], r["raw_name"]))
+    sold: dict[int, list] = {}
+    for r in conn.execute("SELECT m.product_id, sp.unit, sp.weight_g, sp.raw_name"
+                          " FROM product_mapping m JOIN store_products sp ON sp.id = m.store_product_id"
+                          " WHERE m.confirmed=1 AND m.product_id IN"
+                          " (SELECT id FROM products WHERE unit='kg')"):
+        sold.setdefault(r["product_id"], []).append((r["unit"], r["weight_g"], r["raw_name"]))
+    # Дробное количество в корзине — тоже довод: человек набрал «0,7», видя «кг»,
+    # и перевод в штуки молча сделал бы из 0,7 кг одну пачку.
+    in_baskets = {r["product_id"] for r in conn.execute(
+        "SELECT DISTINCT product_id FROM basket_items WHERE ABS(qty - ROUND(qty)) > 0.0001")}
+
     flipped = []
-    for product in conn.execute("SELECT id, name FROM products WHERE unit='kg'").fetchall():
-        bought = [(r["qty"], r["raw_name"]) for r in conn.execute(
-            "SELECT qty, raw_name FROM purchase_history WHERE product_id=?", (product["id"],))]
-        sold = [(r["unit"], r["weight_g"], r["raw_name"]) for r in conn.execute(
-            "SELECT sp.unit, sp.weight_g, sp.raw_name FROM product_mapping m"
-            " JOIN store_products sp ON sp.id = m.store_product_id"
-            " WHERE m.product_id=? AND m.confirmed=1", (product["id"],))]
-        if not bought and not sold:
+    for pid, name in kg.items():
+        if pid in in_baskets:
+            continue
+        if not bought.get(pid) and not sold.get(pid):
             continue                  # ни чеков, ни сетей — судить не по чему, верим отметке
-        if not weighed_by_evidence(product["name"] or "", bought, sold):
-            flipped.append((product["id"],))
+        if not weighed_by_evidence(name, bought.get(pid, []), sold.get(pid, [])):
+            flipped.append((pid,))
     conn.executemany("UPDATE products SET unit='pcs' WHERE id=?", flipped)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     if reset or flipped:

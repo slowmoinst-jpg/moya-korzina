@@ -2184,3 +2184,34 @@ def test_the_plan_does_not_weigh_a_loaf(db):
     line = cartplan.build("magnit", [Line()], force=True).lines[0]
     assert line.per == "pcs"
     assert cart.pieces_of(line) == (1, "")
+
+
+def test_the_result_screen_asks_before_filling_the_same_cart_twice(web):
+    """С «Результата» повтор спрашивается ЗДЕСЬ, у позиций этой сети.
+
+    Раньше вопрос уводил на «Кабинеты», и «передать ещё раз» там собирало наряд
+    из всей корзины, а не из того, что расчёт отдал этой сети. Блок с вопросом
+    раскрыт: свёрнутым он прятал бы вопрос, и нажатие выглядело бы мёртвым.
+    """
+    import datetime as dt
+    import re as regex
+
+    from app import store_accounts
+
+    enter(web)
+    basket_id = seed_basket()
+    save_login()
+    users.open_workspace(PHONE)
+    store_accounts.mark_connected("magnit", gives=[store_accounts.CART])
+    finished = (dt.datetime.now() - dt.timedelta(minutes=3)).isoformat(timespec="seconds")
+    cart._progress("magnit", started_at=finished, finished_at=finished, total=1, at=0, done=1,
+                   now="", items=[{"sku": "magnit-1", "name": "Молоко", "ok": True}])
+
+    page = text(web.get(f"/result?basket={basket_id}&mode=single"))
+    assert "уже передана" in page and "удвоит корзину" in page
+    assert 'name="again" value="1"' in page
+    assert regex.search(r"<details[^>]*\bopen\b[^>]*>\s*<summary[^>]*>Что уедет в корзину", page)
+
+    answer = web.post("/result", data={"basket": basket_id, "do": "link:magnit"})
+    assert answer.status_code == 302
+    assert "/result?basket=" in answer.headers["Location"], "без «ещё раз» — назад к вопросу"

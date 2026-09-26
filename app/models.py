@@ -154,11 +154,12 @@ class Variant:
 
     @property
     def savings_rub(self) -> float:
-        """Экономия при СРАВНИМОМ количестве: база и вариант приведены к весу эталона.
+        """Экономия в рублях: база минус итог — разность двух чисел на экране.
 
-        Без поправки на фасовку (pack_extra = 0) — просто база минус итог.
+        Поправка на фасовку (pack_extra) сюда не входит: она про выбор варианта, а
+        экономия, которая не сходится с «Было бы» и «Заплатим», читается враньём.
         """
-        return round(self.baseline - self.total - self.pack_extra, 2)
+        return round(self.baseline - self.total, 2)
 
     @property
     def savings_pct(self) -> float:

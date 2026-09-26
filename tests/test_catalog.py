@@ -740,3 +740,18 @@ def test_adopt_takes_the_unit_from_the_chains_not_a_stale_one(catalog, user_db):
     assert repo.get_product(bread).unit == "pcs"
     lenta_id = repo.get_store("lenta").id
     assert repo.latest_price_for(bananas, lenta_id)["price_per_kg"] == 120.0
+
+
+def test_old_lenta_portion_prices_become_kilo_prices(catalog):
+    """Развесное Ленты хранило цену порции: 300 г за 225 ₽ — это 750 ₽/кг."""
+    store.upsert_products("lenta", [P("1", "Сыр NATURA весовой", unit="kg", weight_g=300,
+                                      price=225.0),
+                                    P("2", "Огурцы весовые", unit="kg", price=40.0),
+                                    P("3", "Молоко 930 мл", unit="pcs", weight_g=930, price=90.0)],
+                          seen_at="2026-09-20T03:30:00")
+    with store.connect() as conn:
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+    store.init()
+    prices = {r["sku"]: r["price"] for r in store.products_of_chain("lenta")}
+    assert prices == {"1": 750.0, "2": None, "3": 90.0}

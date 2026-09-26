@@ -13,6 +13,12 @@ import math
 
 QTY_LIMIT = 30            # больше тридцати штук одного товара — это ошибка, а не корзина
 
+# Сети, где весовой товар продаётся ПОРЦИЯМИ известного веса, и порции кладёт сама
+# сеть. Лента: quantity развесного — число фасовок по weightGrams (замер 19.09.2026,
+# app/connectors/lenta._weight_rules). Для них расчёт считает целые порции, как их
+# и положит ссылка. Сеть сюда вписывается только после замера.
+PORTION_CHAINS = ("lenta",)
+
 
 def qty_text(value: float) -> str:
     """0.7 → «0,7». Точка в количестве читается как чужая машина, а не как вес."""
@@ -42,7 +48,7 @@ def packs_word(times: int) -> str:
 
 
 def pieces(qty, unit: str | None = None, pack_g: float | None = None,
-            per: str | None = None) -> tuple[int, str]:
+           per: str | None = None, limit: int | None = QTY_LIMIT) -> tuple[int, str]:
     """Сколько раз нажать. Витрина считает штуками, дробное нажать нельзя.
 
     Округляем ВВЕРХ и ГОВОРИМ об этом: 0,7 кг сыра превратились в одну упаковку,
@@ -59,6 +65,11 @@ def pieces(qty, unit: str | None = None, pack_g: float | None = None,
     Заметка возвращается отдельной строкой от причины неудачи нарочно: округление
     случается и с позицией, которая ЛЕГЛА, а склеенное с причиной оно терялось бы
     ровно в этом, самом частом случае.
+
+    limit — потолок нажатий на одну позицию (QTY_LIMIT). Расчёт цены зовёт без
+    потолка (limit=None): деньги считаются за просимое количество, иначе сорок
+    бутылок стоили бы как тридцать, и разница уходила в «экономию». Наряд кладёт
+    не больше потолка и говорит об этом в заметке.
     """
     try:
         wanted = float(qty)
@@ -72,19 +83,29 @@ def pieces(qty, unit: str | None = None, pack_g: float | None = None,
                 and str(unit or "").lower() not in ("kg", "кг"))
     if by_packs:
         exact = wanted * 1000.0 / pack
-        times = min(QTY_LIMIT, max(1, math.ceil(exact - 1e-9)))
-        if abs(times - exact) < 1e-9:
-            return times, f"{qty_text(wanted)} кг — {times} уп. по {pack:g} г"
-        got = round(times * pack / 1000.0, 3)
+        need = max(1, math.ceil(exact - 1e-9))
+        times, capped = _cap(need, limit)
+        if abs(need - exact) < 1e-9:
+            return times, f"{qty_text(wanted)} кг — {need} уп. по {pack:g} г" + capped
+        got = round(need * pack / 1000.0, 3)
         return times, (f"{qty_text(wanted)} кг упаковками по {pack:g} г не набрать — "
-                       f"взяли {times} {packs_word(times)}, это {qty_text(got)} кг")
-    times = min(QTY_LIMIT, max(1, math.ceil(wanted - 1e-9)))
-    if times == wanted:
-        return times, ""
+                       f"взяли {need} {packs_word(need)}, это {qty_text(got)} кг" + capped)
+    need = max(1, math.ceil(wanted - 1e-9))
+    times, capped = _cap(need, limit)
+    if need == wanted:
+        return times, capped.lstrip("; ")
     word = measure(per or unit)
     return times, (f"{qty_text(wanted)}{' ' + word if word else ''} нажатием не положить — "
-                   f"взяли {times} {packs_word(times)}")
+                   f"взяли {need} {packs_word(need)}" + capped)
+
+
+def _cap(need: int, limit: int | None) -> tuple[int, str]:
+    """Нажатий не больше потолка — и сказать, если потолок сработал."""
+    if limit is None or need <= limit:
+        return need, ""
+    return limit, (f"; больше {limit} одного товара за раз приложение не кладёт — "
+                   f"остальные {need - limit} положите сами")
 
 
 
-__all__ = ["pieces", "qty_text", "measure", "packs_word", "QTY_LIMIT"]
+__all__ = ["pieces", "qty_text", "measure", "packs_word", "QTY_LIMIT", "PORTION_CHAINS"]

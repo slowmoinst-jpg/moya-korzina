@@ -343,3 +343,37 @@ def test_the_cart_link_asks_for_the_same_amount_the_calculation_paid_for(shop, m
 
     assert service.cart_link("lenta", [Line(cheese, 0.7), Line(loose, 0.7), Line(piece, 1)])
     assert sent["items"] == [(101, 2.0, None), (102, 0.7, "kg"), (103, 1.0, None)]
+
+
+def test_forty_bottles_cost_forty_bottles(shop):
+    """Потолок нажатий (30) — про корзину, а не про деньги: сорок бутылок стоят сорок."""
+    from app import purchase
+
+    pid = _mapped(shop, "Вода 1,5 л", "pcs", weight_g=1500, shop_unit="pcs", shop_weight=1500,
+                  price=30.0)
+    assert service.line_price(pid, shop, 40, "pcs", 1500)["value"] == 1200.0
+    count, note = purchase.pieces(40, "pcs", None, "pcs")
+    assert count == 30 and "остальные 10 положите сами" in note
+
+
+def test_the_migration_keeps_kilos_typed_into_a_basket(shop):
+    """«0,7» в корзине, набранные при «кг», — довод: перевод в штуки сделал бы пачку."""
+    cheese = _mapped(shop, "Сыр Российский", "kg", shop_unit="pcs", shop_weight=400,
+                     price=300.0, shop_name="Сыр Российский 400 г")
+    basket = repo.create_basket("проверка")
+    repo.set_basket_item(basket, cheese, 0.7)
+    _migrate_again()
+    assert repo.get_product(cheese).unit == "kg"
+    assert service.line_price(cheese, shop, 0.7, "kg")["value"] == 600.0
+
+
+def test_lenta_weight_goods_are_priced_by_whole_portions(shop):
+    """Лента кладёт развес порциями: 0,7 кг по 300 г — три порции, как положит ссылка."""
+    lenta = repo.get_store("lenta")
+    cheese = _mapped(lenta, "Сыр NATURA весовой", "kg", shop_unit="kg", shop_weight=300,
+                     price=225.0, per_kg=750.0)
+    found = service.line_price(cheese, lenta, 0.7, "kg")
+    assert found["value"] == 675.0 and "300 г" in found["note"]
+    piece = _mapped(lenta, "Сыр Ламбер 230 г", "pcs", weight_g=230, sku="2", shop_unit="kg",
+                    shop_weight=300, price=225.0, per_kg=750.0, shop_name="Сыр весовой")
+    assert service.line_price(piece, lenta, 1, "pcs", 230)["value"] == 225.0, "одна порция"

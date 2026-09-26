@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime
 
 from app import config, location, purchase, repo
@@ -161,12 +162,20 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
     adjust = 0.0
     packed = bool(pack_g) and shop_unit != "kg"
     by_weight = not packed and _shop_by_weight(snap)
+    # Порции развеса, которые сеть кладёт сама (Лента: число фасовок по weightGrams).
+    portion = pack_g if (by_weight and store.code in purchase.PORTION_CHAINS) else None
 
     if weighed:
         if packed:
-            count, note = purchase.pieces(qty, shop_unit, pack_g, "kg")
+            count, note = purchase.pieces(qty, shop_unit, pack_g, "kg", limit=None)
             value = count * price
             note = f"{note} по {price:.2f} ₽"
+        elif portion:
+            count = max(1, math.ceil(qty * 1000.0 / portion - 1e-9))
+            value = count * rate * portion / 1000.0
+            if abs(count * portion - qty * 1000.0) > 1e-6:
+                note = (f"сеть кладёт порциями по {portion:g} г: {purchase.qty_text(qty)} кг — "
+                        f"{count} порц., {purchase.qty_text(round(count * portion / 1000.0, 3))} кг")
         elif by_weight:
             value = rate * qty
         elif shop_unit == "pcs":
@@ -177,12 +186,13 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
             # рублях за кг, поэтому так и читаем.
             value = price * qty
     else:
-        count, _ = purchase.pieces(qty, shop_unit, None, "pcs")
+        count, _ = purchase.pieces(qty, shop_unit, None, "pcs", limit=None)
         if by_weight:
-            if not ref_g:
+            grams = portion or ref_g                  # порцию сети кладут целиком
+            if not grams:
                 return None                           # штука неизвестного веса
-            value = rate * ref_g / 1000.0 * count
-            note = f"на вес: {rate:.2f} ₽/кг, взято по {ref_g:g} г"
+            value = rate * grams / 1000.0 * count
+            note = f"на вес: {rate:.2f} ₽/кг, взято по {grams:g} г"
         else:
             value = price * count
             if ref_g and pack_g and abs(pack_g - ref_g) / ref_g > PACK_SAME:
@@ -280,10 +290,11 @@ def baseline_by_product(basket_id: int) -> dict[int, float]:
             found = line_price(pid, base_store, qty, unit, grams, weighed)
             # Товара нет в базовом магазине — его «цена» там не база: Магнит на
             # отсутствующий товар пишет справочную цену или ноль с пометкой «нет».
-            # База — в сравнимом количестве (с поправкой на фасовку), как и вариант:
-            # иначе вариант, выбранный за цену килограмма, показывал бы «минус».
+            # База — в рублях, как и «Заплатим»: экономия на экране обязана быть
+            # разностью двух показанных чисел. Поправка на фасовку живёт только в
+            # выборе варианта (Variant.pack_extra).
             if found and found["in_stock"] and found["value"] > 0:
-                price = found["value"] + found["adjust"]
+                price = found["value"]
         if price is None:
             hp = _history_price(pid)
             price = round(hp * qty, 2) if hp is not None else None
@@ -493,7 +504,9 @@ def cart_link(store_code: str, lines) -> str | None:
             items.append((int(sku), qty, "kg"))
             continue
         pack = _grams((mapping or {}).get("weight_g")) if shop_unit != "kg" else None
-        count, _ = purchase.pieces(qty, shop_unit, pack, per)
+        # Без нашего потолка в 30 нажатий: ссылку собирает сеть, и свои пределы
+        # (saleLimit Ленты, MAX_QTY ВкусВилла) она держит сама.
+        count, _ = purchase.pieces(qty, shop_unit, pack, per, limit=None)
         items.append((int(sku), float(count), None))
     if not items:
         return None
