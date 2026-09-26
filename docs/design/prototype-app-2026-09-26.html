@@ -11,8 +11,9 @@
   Все надписи — по словарю docs/design/nazvaniya-2026-09-26.md: привычные слова из
   приложений доставки продуктов, одна вещь — одно название, никакой внутренней кухни.
 
-  Вкладки: Главная · Каталог · Корзина · Магазины · Профиль.
-  «Где дешевле» въезжает справа (с Главной и из Корзины), карточки товара и магазина
+  Вкладки: Главная · Каталог · Корзина · Заказы · Профиль. Магазины — в Профиле, только вход в аккаунты.
+  Про обновление цен и серверные настройки в интерфейсе ничего нет: это дело сервера.
+  «Где дешевле» въезжает справа (с Главной и из Корзины), карточки товара, магазина, заказа
   поднимаются снизу листом.
 
   Движение по apple-design: отклик на pointerdown (§1); лист и экран тянутся пальцем 1:1
@@ -248,30 +249,25 @@ button{font:inherit;color:inherit;letter-spacing:inherit;background:none;border:
       <h1 class="large">Главная</h1>
 
       <div class="hero">
-        <div class="k">Ваша корзина · <span data-count>23 товара</span></div>
+        <div class="k">Ваша корзина · <span data-mode-name>Как обычно</span> · <span data-count>23 товара</span></div>
         <div class="sum">3 290 ₽</div>
         <span class="gain">Экономия 1 310 ₽</span>
-        <div class="k" style="margin-top:2px">по сравнению с покупкой всего в Перекрёстке — 4 600 ₽</div>
+        <div class="k" style="margin-top:2px">по сравнению с тем, сколько вы платили за эти товары раньше, — 4 600 ₽</div>
         <div class="stack" aria-hidden="true"><i style="flex:2040;background:var(--s-magnit)"></i><i style="flex:1250;background:var(--s-pyaterochka)"></i></div>
         <div class="meta">Магнит и Пятёрочка · доставка сегодня с 18:00 до 20:00</div>
         <button class="btn" data-open-choice="Главная">Где дешевле</button>
       </div>
 
       <div class="tiles">
-        <button class="tile press" data-go="history"><span class="k">Экономия за сентябрь</span><span class="n" style="color:var(--green)">4 870 ₽</span><span class="k">4 заказа</span></button>
-        <button class="tile press" data-tab="3"><span class="k">Цены обновлены</span><span class="n">03:10</span><span class="k">сегодня · 5 из 6 магазинов</span></button>
+        <button class="tile press" data-tab="3"><span class="k">Экономия в сентябре</span><span class="n" style="color:var(--green)">4 870 ₽</span><span class="k">4 заказа</span></button>
+        <button class="tile press" data-tab="3"><span class="k">Экономия за всё время</span><span class="n" style="color:var(--green)">18 340 ₽</span><span class="k">с июня · 15 заказов</span></button>
       </div>
+
+      <div id="attention"></div>
 
       <div class="h">Скидки на ваши товары</div>
       <div class="group" id="deals"></div>
       <div class="foot">Скидки уже учтены в цене вашей корзины.</div>
-
-      <div class="h">Требуется действие</div>
-      <div class="group">
-        <button class="row press withic" data-store="samokat"><span class="ic" style="background:var(--s-samokat)">С</span>
-          <span class="main"><span class="t">Войдите в аккаунт Самоката</span><span class="s">Цены Самоката от вчера. Войдите, чтобы обновить</span></span>
-          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-      </div>
     </section>
 
     <!-- ============ Каталог ============ -->
@@ -283,23 +279,30 @@ button{font:inherit;color:inherit;letter-spacing:inherit;background:none;border:
       <div class="chips" id="cats"></div>
       <div class="h" id="catHead">Все товары</div>
       <div class="group" id="catList"></div>
-      <div class="foot">Цена «от» — самая низкая среди подключённых магазинов для вашего адреса.</div>
+      <div class="foot">Цена «от» — самая низкая среди ваших магазинов для адреса доставки.</div>
     </section>
 
     <!-- ============ Корзина ============ -->
     <section class="screen" id="s-cart" style="padding-bottom:190px">
       <div class="nav"><span class="small">Корзина</span><button class="right" id="clearCart">Очистить</button></div>
       <h1 class="large">Корзина</h1>
-      <div class="foot" style="margin:-8px 0 12px">Собрана по вашим чекам за последние 3 месяца. Меняйте количество — цена пересчитается.</div>
+      <div class="seg" data-seg id="modeSeg" style="margin-bottom:8px"><span class="th"></span><button aria-pressed="true" data-mode="usual">Как обычно</button><button aria-pressed="false" data-mode="manual">Вручную</button></div>
+      <div class="foot" id="modeNote" style="margin:0 0 12px"></div>
       <div class="group" id="cartList"></div>
     </section>
 
-    <!-- ============ Магазины ============ -->
-    <section class="screen" id="s-stores">
-      <div class="nav"><span class="small">Магазины</span></div>
-      <h1 class="large">Магазины</h1>
-      <div id="storeList"></div>
-      <div class="foot" style="margin-top:14px">Магнит пускает вход из приложения без проверок. Пятёрочка, Самокат, Лента и Дикси могут попросить пройти проверку «Я не робот» — пройдите её сами, дальше приложение справится.</div>
+    <!-- ============ Заказы ============ -->
+    <section class="screen" id="s-orders">
+      <div class="nav"><span class="small">Заказы</span></div>
+      <h1 class="large">Заказы</h1>
+      <div class="group">
+        <button class="row press withic" id="fnsBtn"><span class="ic" style="background:#0A7AFF">↓</span>
+          <span class="main"><span class="t" style="color:var(--tint)">Загрузить чеки из ФНС</span><span class="s">Все чеки, выданные на ваш номер телефона</span></span></button>
+        <button class="row press withic" id="addBtn"><span class="ic" style="background:#5856D6">+</span>
+          <span class="main"><span class="t" style="color:var(--tint)">Добавить чек вручную</span><span class="s">QR-код с чека, фото или файл</span></span></button>
+      </div>
+      <div class="foot">По заказам приложение понимает, что вы обычно покупаете, и собирает корзину «Как обычно».</div>
+      <div id="orderList"></div>
     </section>
 
     <!-- ============ Профиль ============ -->
@@ -314,7 +317,10 @@ button{font:inherit;color:inherit;letter-spacing:inherit;background:none;border:
         <div class="row"><span class="main"><span class="t">Способ получения</span></span>
           <div class="seg" style="width:190px" data-seg><span class="th"></span><button aria-pressed="true">Доставка</button><button aria-pressed="false">Самовывоз</button></div></div>
       </div>
-      <div class="foot">От адреса зависят магазины и цены.</div>
+
+      <div class="h">Мои магазины</div>
+      <div class="group" id="storeList"></div>
+      <div class="foot">Войдите в аккаунты своих магазинов — тогда мы соберём заказ прямо в вашей корзине магазина, с вашими картами и адресом. Номер телефона и код из СМС вы вводите сами.</div>
 
       <div class="h">Карты</div>
       <div class="group">
@@ -325,38 +331,17 @@ button{font:inherit;color:inherit;letter-spacing:inherit;background:none;border:
       </div>
       <div class="foot">Приложение подскажет, какой картой платить в каждом магазине.</div>
 
-      <div class="h">Покупки</div>
+      <div class="h">Чеки</div>
       <div class="group">
-        <button class="row press withic" data-go="history"><span class="ic" style="background:#0A7AFF">↺</span><span class="main"><span class="t">История покупок</span><span class="s">4 заказа в сентябре · экономия 4 870 ₽</span></span>
+        <button class="row press withic" data-tab="3"><span class="ic" style="background:#0A7AFF">≡</span><span class="main"><span class="t">Чеки из ФНС</span><span class="s">Подключено к номеру +7 ••• ••• 45-67</span></span>
           <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-        <button class="row press withic"><span class="ic" style="background:#5856D6">≡</span><span class="main"><span class="t">Чеки из ФНС</span><span class="s">Загружено 118 чеков · вчера в 22:15</span></span>
-          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-      </div>
-
-      <div class="h">Поиск цен</div>
-      <div class="group">
-        <div class="row"><span class="main"><span class="t">Максимум магазинов в заказе</span><span class="s">Больше магазинов — дешевле, но больше доставок</span></span>
-          <span class="val" id="maxShops" style="margin-right:8px">2</span>
-          <div class="stepper"><button id="minus" aria-label="Меньше">−</button><button id="plus" aria-label="Больше">+</button></div></div>
-        <div class="row"><span class="main"><span class="t">Делить заказ, если экономия от</span></span>
-          <div class="seg" style="width:170px" data-seg><span class="th"></span><button aria-pressed="false">200 ₽</button><button aria-pressed="true">350 ₽</button><button aria-pressed="false">500 ₽</button></div></div>
-        <label class="row"><span class="main"><span class="t">Предлагать товары, которые вы обычно покупаете</span><span class="s">Например, «Молоко 2,5%» — Простоквашино 930 мл</span></span>
-          <span class="sw"><input type="checkbox" checked><i></i></span></label>
-      </div>
-
-      <div class="h">Обновление цен</div>
-      <div class="group">
-        <label class="row"><span class="main"><span class="t">Обновлять цены ночью</span><span class="s">Каждый день в 03:00</span></span>
-          <span class="sw"><input type="checkbox" checked><i></i></span></label>
-        <label class="row"><span class="main"><span class="t">Обновлять через домашний интернет</span><span class="s">Для магазинов, которые не отдают цены приложению напрямую: Дикси</span></span>
-          <span class="sw"><input type="checkbox" checked><i></i></span></label>
       </div>
 
       <div class="h">Уведомления</div>
       <div class="group">
         <label class="row"><span class="main"><span class="t">Скидки на ваши товары</span></span><span class="sw"><input type="checkbox" checked><i></i></span></label>
         <label class="row"><span class="main"><span class="t">Нужно войти в аккаунт магазина</span></span><span class="sw"><input type="checkbox" checked><i></i></span></label>
-        <label class="row"><span class="main"><span class="t">Итоги недели</span></span><span class="sw"><input type="checkbox"><i></i></span></label>
+        <label class="row"><span class="main"><span class="t">Заказ собран</span></span><span class="sw"><input type="checkbox" checked><i></i></span></label>
       </div>
 
       <div class="h">О приложении</div>
@@ -369,15 +354,14 @@ button{font:inherit;color:inherit;letter-spacing:inherit;background:none;border:
 
     <nav class="tabbar" aria-label="Разделы">
       <button aria-current="page" data-tab="0"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M13 3.2 3 11.4v11a1.2 1.2 0 0 0 1.2 1.2h5.6v-7h6.4v7h5.6a1.2 1.2 0 0 0 1.2-1.2v-11z"/></svg>Главная</button>
-      <button data-tab="1"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M4 4h7.5v7.5H4zm10.5 0H22v7.5h-7.5zM4 14.5h7.5V22H4zm10.5 0H22V22h-7.5z" opacity=".95"/></svg>Каталог</button>
+      <button data-tab="1"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M4 4h7.5v7.5H4zm10.5 0H22v7.5h-7.5zM4 14.5h7.5V22H4zm10.5 0H22V22h-7.5z"/></svg>Каталог</button>
       <button data-tab="2"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M2.5 4h3.3l2.6 11.2a1.5 1.5 0 0 0 1.5 1.2h9.6a1.5 1.5 0 0 0 1.5-1.1L23 8H7.4L6.9 5.6A2 2 0 0 0 5 4zM10 19a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6zm9 0a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6z"/></svg><span class="count" id="tabCount">23</span>Корзина</button>
-      <button data-tab="3"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M4 10.2 5.6 4.8A1.5 1.5 0 0 1 7 3.8h12a1.5 1.5 0 0 1 1.4 1l1.6 5.4a3 3 0 0 1-3 3 3 3 0 0 1-3-1.4 3 3 0 0 1-2.9 1.4 3 3 0 0 1-3-1.4 3 3 0 0 1-3 1.4 3 3 0 0 1-3.1-2.6zM5.6 15h1.8v5.6h11.2V15h1.8v6.4a1.4 1.4 0 0 1-1.4 1.4H7a1.4 1.4 0 0 1-1.4-1.4V15z"/></svg><span class="badge"></span>Магазины</button>
-      <button data-tab="4"><svg viewBox="0 0 26 26" fill="currentColor"><circle cx="13" cy="8.5" r="4.8"/><path d="M3.5 22.5c.6-5 4.6-8 9.5-8s8.9 3 9.5 8z"/></svg>Профиль</button>
+      <button data-tab="3"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M6 2.8h14a1.2 1.2 0 0 1 1.2 1.2v19.2l-2.8-1.8-2.8 1.8-2.6-1.8-2.6 1.8-2.8-1.8-2.8 1.8V4A1.2 1.2 0 0 1 6 2.8zm3 5.2v1.8h8V8zm0 4v1.8h8V12zm0 4v1.8h5V16z"/></svg>Заказы</button>
+      <button data-tab="4"><svg viewBox="0 0 26 26" fill="currentColor"><circle cx="13" cy="8.5" r="4.8"/><path d="M3.5 22.5c.6-5 4.6-8 9.5-8s8.9 3 9.5 8z"/></svg><span class="badge" id="profileBadge"></span>Профиль</button>
     </nav>
 
-    <!-- панель «Где дешевле» над вкладками, только на экране корзины -->
     <div class="toolbar" id="cartBar" style="bottom:83px;display:none;padding-bottom:12px">
-      <div class="note" id="cartNote">23 товара в корзине · сравним цены в 5 магазинах</div>
+      <div class="note" id="cartNote"></div>
       <button class="btn" data-open-choice="Корзина">Где дешевле</button></div>
   </div>
 
@@ -391,13 +375,13 @@ button{font:inherit;color:inherit;letter-spacing:inherit;background:none;border:
         <span class="small">Где дешевле</span></div>
       <h1 class="large">Где дешевле</h1>
       <div id="opts"></div>
-      <div class="foot">Цены обновлены 12 минут назад для адреса Лиговский пр., 50. Если купить всё в Перекрёстке — 4 600 ₽.</div>
+      <div class="foot">Перед оформлением цены и наличие проверяются ещё раз в вашем аккаунте магазина. Раньше вы платили за эти товары 4 600 ₽.</div>
     </section>
     <div class="toolbar"><div class="note" id="ctaNote"></div>
       <button class="btn" id="cta" data-state="idle"></button></div>
   </div>
 
-  <!-- ============ Лист снизу: карточка магазина или товара ============ -->
+  <!-- ============ Лист снизу ============ -->
   <div class="scrim" id="scrim"></div>
   <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="shName">
     <div class="grab" id="grab"><div class="top"><span class="ic" id="shIc"></span>
@@ -410,18 +394,22 @@ button{font:inherit;color:inherit;letter-spacing:inherit;background:none;border:
 <script>
 /* ---------------- данные ---------------- */
 const BASE = 4600;
+const SHOPS = {magnit:['Магнит','--s-magnit'], pyaterochka:['Пятёрочка','--s-pyaterochka'], vkusvill:['ВкусВилл','--s-vkusvill'],
+               lenta:['Лента','--s-lenta'], samokat:['Самокат','--s-samokat'], dixy:['Дикси','--s-dixy']};
+// аккаунты магазинов: вошёл ли человек (приложение собирает заказ только под его аккаунтом)
+const ACC = {magnit:{in:true, phone:'+7 ••• ••• 45-67', card:'Магнит Плюс', on:true},
+             pyaterochka:{in:true, phone:'+7 ••• ••• 45-67', card:'Выручай-карта', on:true},
+             vkusvill:{in:true, phone:'+7 ••• ••• 45-67', on:true},
+             samokat:{in:false, on:true}, lenta:{in:false, on:true}, dixy:{in:false, on:false}};
 const OPTS = [
-  {name:'Дешевле всего', sum:3290, sub:'2 магазина · 2 доставки · сегодня 18:00–20:00', note:'2 доставки · все товары в наличии', rec:true,
+  {name:'Дешевле всего', sum:3290, sub:'2 магазина · 2 доставки · сегодня 18:00–20:00', note:'2 доставки · все товары в наличии', rec:true, shops:['magnit','pyaterochka'],
    stores:[['Магнит у дома','--s-magnit',14,2040],['Пятёрочка','--s-pyaterochka',9,1250]],
    why:'Молочные продукты и крупы — в Пятёрочке по Выручай-карте, остальное — в Магните. Кешбэк Альфа-Банка 7% учтён.'},
-  {name:'В одном магазине', sum:3850, sub:'Магнит у дома · 1 доставка · сегодня 17:00–19:00', note:'1 доставка · все товары в наличии',
+  {name:'В одном магазине', sum:3850, sub:'Магнит у дома · 1 доставка · сегодня 17:00–19:00', note:'1 доставка · все товары в наличии', shops:['magnit'],
    stores:[['Магнит у дома','--s-magnit',23,3850]], why:'Один заказ и одна доставка. Дороже варианта «Дешевле всего» на 560 ₽.'},
-  {name:'Быстрее всего', sum:4200, sub:'Самокат · 1 доставка · через 15 минут', note:'Нет в наличии: ряженка 4%, гречка «Мистраль»',
-   stores:[['Самокат','--s-samokat',21,4200]], why:'Цены Самоката от вчера. Войдите в аккаунт Самоката, чтобы обновить.'},
+  {name:'Быстрее всего', sum:4200, sub:'Самокат · 1 доставка · через 15 минут', note:'Нет в наличии: ряженка 4%, гречка «Мистраль»', shops:['samokat'],
+   stores:[['Самокат','--s-samokat',21,4200]], why:'Двух товаров сейчас нет — остальное привезут за 15 минут.'},
 ];
-const SHOPS = {magnit:['Магнит','--s-magnit'], pyaterochka:['Пятёрочка','--s-pyaterochka'], vkusvill:['ВкусВилл','--s-vkusvill'],
-               lenta:['Лента','--s-lenta'], samokat:['Самокат','--s-samokat']};
-// товар: название, фасовка, категория, базовая цена, количество в корзине, старая цена (если скидка)
 const ITEMS = [
   ['Молоко 2,5%','Простоквашино, 930 мл','Молочное',84,2,99],['Кефир 1%','Домик в деревне, 900 г','Молочное',89,1],
   ['Масло сливочное 82,5%','Экомилк, 180 г','Молочное',149,1,189],['Яйца С0','Селянские, 10 шт.','Молочное',119,1,139],
@@ -435,32 +423,39 @@ const ITEMS = [
   ['Помидоры','500 г','Овощи и фрукты',199,1],['Огурцы','450 г','Овощи и фрукты',139,1],
   ['Чай чёрный','Greenfield, 100 пак.','Бакалея',239,1],['Кофе молотый','Жокей, 250 г','Бакалея',399,1],
   ['Сахар','Русский, 1 кг','Бакалея',89,1],
-].map(([n,p,c,price,q,old],i)=>({i,n,p,c,price,q,old}));
-// цены в магазинах — детерминированно от базовой; одна сеть может не иметь товара
+].map(([n,p,c,price,q,old],i)=>({i,n,p,c,price,usual:q,old}));
+// две корзины: «Как обычно» (из заказов) и «Вручную» (пустая, наполняется из каталога)
+const CART = {usual:Object.fromEntries(ITEMS.map(it=>[it.i,it.usual])), manual:{}};
+let mode = 'usual';
+const qty = it => CART[mode][it.i]||0;
 function pricesFor(it){
   const f = {magnit:1, pyaterochka:1.06, vkusvill:1.14, lenta:1.03, samokat:1.18};
   const rot = ['magnit','pyaterochka','vkusvill','lenta'][it.i%4];
-  return Object.keys(f).map(k=>{
-    const p = k===rot ? it.price : Math.round(it.price*f[k]*(k==='magnit'?1.05:1));
-    return {k, p, out: (it.i%7===3 && k==='samokat')};
-  }).sort((a,b)=>(a.out-b.out)||(a.p-b.p));
+  return Object.keys(f).map(k=>({k, p: k===rot ? it.price : Math.round(it.price*f[k]*(k==='magnit'?1.05:1)), out: (it.i%7===3 && k==='samokat')}))
+    .sort((a,b)=>(a.out-b.out)||(a.p-b.p));
 }
-const STORES = [
-  {sec:'Точные цены', foot:'Цены конкретного магазина рядом с вашим адресом.', items:[
-    {id:'magnit',st:'ok',label:'Точные цены',s:'Магнит у дома, Лиговский пр., 43',upd:'6 минут назад',acc:'Вход выполнен',on:true},
-    {id:'vkusvill',st:'ok',label:'Точные цены',s:'ВкусВилл, Обводный канал, 21',upd:'20 минут назад',on:true}]},
-  {sec:'Через ваш аккаунт', foot:'Цены видны после входа в ваш аккаунт магазина. Номер телефона и код из СМС вы вводите сами.', items:[
-    {id:'pyaterochka',st:'ok',label:'Вход выполнен',s:'Выручай-карта',upd:'вчера в 21:40',acc:'Вход выполнен',on:true},
-    {id:'samokat',st:'warn',label:'Войдите в аккаунт',s:'Цены от вчера',upd:'вчера в 19:05',acc:'Нужно войти',on:true,need:true}]},
-  {sec:'Примерные цены', foot:'Общие цены сети. В вашем магазине цена может отличаться.', items:[
-    {id:'lenta',st:'warn',label:'Примерные цены',s:'Обновлено сегодня в 03:10',upd:'сегодня в 03:10',on:true},
-    {id:'dixy',st:'warn',label:'Отключён',s:'Не участвует в поиске цен',upd:'сегодня в 03:40',on:false,name:'Дикси',c:'--s-dixy'}]},
+// заказы: через приложение, из ФНС, добавленные вручную
+const ORDERS = [
+  {d:'24 сентября', shop:'magnit', sum:2040, n:14, src:'Через приложение', save:680, items:[0,1,4,7,8,12,14,16,17,18,19,20,21,22]},
+  {d:'24 сентября', shop:'pyaterochka', sum:1250, n:9, src:'Через приложение', save:630, items:[2,3,5,6,9,10,11,13,15]},
+  {d:'17 сентября', shop:'magnit', sum:3620, n:21, src:'Через приложение', save:1140, items:[0,1,2,3,4,5,7,9,11,12,14,15,16,17,18,19,20,21]},
+  {d:'12 сентября', shop:'vkusvill', sum:1480, n:7, src:'Чек из ФНС', items:[3,4,6,14,15,18,19]},
+  {d:'9 сентября', shop:'pyaterochka', sum:2210, n:12, src:'Чек добавлен вручную', items:[0,2,5,8,9,10,11,13,16,17,22,21]},
 ];
-const byId = Object.fromEntries(STORES.flatMap(g=>g.items).map(s=>[s.id,{...s, name:s.name||SHOPS[s.id][0], c:s.c||SHOPS[s.id][1]}]));
+// что придёт из ФНС: часть — из магазинов, где мы не собираем заказы
+const FNS_NEW = [
+  {d:'25 сентября', shop:'vkusvill', sum:860, n:5, src:'Чек из ФНС', items:[3,4,14,18,19]},
+  {d:'22 сентября', shop:'magnit', sum:1340, n:8, src:'Чек из ФНС', items:[0,1,7,8,12,16,17,22]},
+  {d:'20 сентября', shop:'pyaterochka', sum:990, n:6, src:'Чек из ФНС', items:[2,5,9,10,11,13]},
+];
+const FNS_SKIPPED = [['Аптека «Ригла»',2],['Перекрёсток',1],['Леруа Мерлен',1],['Шоколадница',1]];
+const SKIPPED = [['Перекрёсток',3],['Аптека «Ригла»',2],['Fix Price',1]];
 
 const rub = n => n.toLocaleString('ru-RU') + ' ₽';
 const plural = (n,a,b,c) => { const m=n%10, h=n%100; return n+' '+(m===1&&h!==11?a:m>=2&&m<=4&&(h<10||h>=20)?b:c); };
 const goods = n => plural(n,'товар','товара','товаров');
+const checks = n => plural(n,'чек','чека','чеков');
+const gen = {magnit:'Магнита',pyaterochka:'Пятёрочки',vkusvill:'ВкусВилла',lenta:'Ленты',samokat:'Самоката',dixy:'Дикси'};
 const chev = '<svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const buzz = ms => { try{ navigator.vibrate && navigator.vibrate(ms) }catch(e){} };
@@ -512,6 +507,7 @@ document.addEventListener('pointerdown', e => {
   addEventListener('pointerup',up); addEventListener('pointercancel',up);
 });
 
+
 /* ---------------- вкладки: переключаются мгновенно, как в iOS ---------------- */
 const screens = [...document.querySelectorAll('.base .screen')];
 const tabs = [...document.querySelectorAll('.tabbar button')];
@@ -522,7 +518,7 @@ function tab(i){
   cartBar.style.display = i===2 ? '' : 'none';
   requestAnimationFrame(layoutSegs);
 }
-document.addEventListener("click", e=>{ const t=e.target.closest("[data-tab]"); if(t) tab(+t.dataset.tab); if(e.target.closest("[data-go]")) tab(4); });
+document.addEventListener('click', e=>{ const t=e.target.closest('[data-tab]'); if(t && !t.closest('.sheet')) tab(+t.dataset.tab); });
 
 /* шапка: стекло и мелкий заголовок, только когда крупный уехал (§12) */
 document.querySelectorAll('.screen').forEach(s=>{
@@ -530,7 +526,7 @@ document.querySelectorAll('.screen').forEach(s=>{
   s.addEventListener('scroll',()=>nav.toggleAttribute('data-scrolled', s.scrollTop > (large.offsetTop + large.offsetHeight - 52)),{passive:true});
 });
 
-/* ---------------- сегменты, степпер, переключатели ---------------- */
+/* ---------------- сегменты и переключатели ---------------- */
 function layoutSegs(){
   document.querySelectorAll('[data-seg]').forEach(seg=>{
     const bs=[...seg.querySelectorAll('button')], th=seg.querySelector('.th'), i=bs.findIndex(b=>b.getAttribute('aria-pressed')==='true');
@@ -539,21 +535,26 @@ function layoutSegs(){
 }
 document.querySelectorAll('[data-seg]').forEach(seg=>seg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
   seg.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed', x===b)); layoutSegs(); buzz(8);
+  if(b.dataset.mode){ mode=b.dataset.mode; drawCart(); drawCatalog(); }
 })));
-let shops = 2;
-const minus=document.getElementById('minus'), plus=document.getElementById('plus'), maxShops=document.getElementById('maxShops');
-function drawShops(){ maxShops.textContent = shops; minus.disabled = shops<=1; plus.disabled = shops>=3; }
-minus.onclick=()=>{shops--;drawShops();buzz(8)}; plus.onclick=()=>{shops++;drawShops();buzz(8)}; drawShops();
 document.addEventListener('change', e=>{ if(e.target.matches('.sw input')) buzz(10); });
 
-/* ---------------- Главная: скидки на ваши товары ---------------- */
+/* ---------------- Главная ---------------- */
 document.getElementById('deals').innerHTML = ITEMS.filter(it=>it.old).map(it=>{
   const best = pricesFor(it)[0], [sn,sc]=SHOPS[best.k];
   return `<button class="row press withic" data-item="${it.i}"><span class="ic" style="background:var(${sc})">${sn[0]}</span>
     <span class="main"><span class="t">${it.n}</span><span class="s">${it.p} · ${sn}</span></span>
     <span><span class="old">${it.old}</span><span class="drop">${rub(best.p)}</span></span></button>`;}).join('');
+// «Требуется действие» — только то, без чего нельзя собрать заказ
+function drawAttention(){
+  const need = Object.keys(ACC).filter(k=>ACC[k].on && !ACC[k].in && OPTS.some(o=>o.shops.includes(k)));
+  document.getElementById('attention').innerHTML = need.length ? `<div class="h">Требуется действие</div><div class="group">${need.map(k=>`
+    <button class="row press withic" data-store="${k}"><span class="ic" style="background:var(${SHOPS[k][1]})">${SHOPS[k][0][0]}</span>
+      <span class="main"><span class="t">Войдите в аккаунт ${gen[k]}</span><span class="s">Без входа мы не сможем собрать заказ в ${SHOPS[k][0]==='Самокат'?'Самокате':SHOPS[k][0]}</span></span>${chev}</button>`).join('')}</div>` : '';
+  document.getElementById('profileBadge').hidden = !need.length;
+}
 
-/* ---------------- Каталог: поиск и категории ---------------- */
+/* ---------------- Каталог ---------------- */
 const CATS = ['Все','Молочное','Хлеб','Крупы','Мясо','Овощи и фрукты','Бакалея'];
 let cat = 'Все';
 const q = document.getElementById('q');
@@ -569,40 +570,58 @@ function drawCatalog(){
   document.getElementById('catList').innerHTML = list.length ? list.map(it=>{
     const best=pricesFor(it)[0];
     return `<button class="row press withic" data-item="${it.i}"><span class="ic soft">${it.n[0]}</span>
-      <span class="main"><span class="t">${it.n}</span><span class="s">${it.p}</span></span>
+      <span class="main"><span class="t">${it.n}</span><span class="s">${it.p}${qty(it)?` · в корзине ${qty(it)} шт.`:''}</span></span>
       <span class="pr"><b>от ${rub(best.p)}</b><span>${SHOPS[best.k][0]}</span></span>${chev}</button>`;}).join('')
     : `<div class="empty">Ничего не нашлось.<br>Проверьте, нет ли опечатки.</div>`;
 }
-drawCatalog();
 
-/* ---------------- Корзина ---------------- */
+/* ---------------- Корзина: «Как обычно» или «Вручную» ---------------- */
 function drawCart(){
-  const inCart = ITEMS.filter(it=>it.q>0);
-  document.getElementById('cartList').innerHTML = inCart.length ? inCart.map(it=>`
+  const inCart = ITEMS.filter(it=>qty(it)>0), n = inCart.length;
+  document.getElementById('modeNote').textContent = mode==='usual'
+    ? 'Собрана по вашим заказам: товары, которые вы покупаете регулярно. Меняйте количество или уберите лишнее.'
+    : 'Своя корзина с нуля. Добавляйте товары из каталога.';
+  document.getElementById('cartList').innerHTML = n ? inCart.map(it=>`
     <div class="row withic"><span class="ic soft">${it.n[0]}</span>
       <button class="main press" data-item="${it.i}" style="text-align:left;border-radius:8px"><span class="t">${it.n}</span><span class="s">${it.p} · от ${rub(pricesFor(it)[0].p)}</span></button>
-      <div class="qty"><button data-dec="${it.i}" aria-label="Уменьшить количество">−</button><span>${it.q}</span><button data-inc="${it.i}" aria-label="Увеличить количество">+</button></div></div>`).join('')
-    : `<div class="empty">Корзина пуста.<br>Добавьте товары из каталога.</div>`;
-  const n = inCart.length;
-  document.getElementById('tabCount').textContent = n; document.getElementById('tabCount').hidden = !n;
+      <div class="qty"><button data-dec="${it.i}" aria-label="Уменьшить количество">−</button><span>${qty(it)}</span><button data-inc="${it.i}" aria-label="Увеличить количество">+</button></div></div>`).join('')
+    : `<div class="empty">${mode==='usual'?'Корзина пуста.<br>Загрузите чеки в разделе «Заказы» — и она соберётся сама.':'Корзина пуста.'}<br><br><button class="btn plain" data-tab="1" style="width:auto;padding:0 20px;margin:0 auto">Перейти в каталог</button></div>`;
+  const tc = document.getElementById('tabCount'); tc.textContent = n; tc.hidden = !n;
   document.querySelectorAll('[data-count]').forEach(e=>e.textContent=goods(n));
-  document.getElementById('cartNote').textContent = n ? `${goods(n)} в корзине · сравним цены в 5 магазинах` : 'Корзина пуста';
+  document.querySelectorAll('[data-mode-name]').forEach(e=>e.textContent=mode==='usual'?'Как обычно':'Вручную');
+  document.getElementById('cartNote').textContent = n ? `${goods(n)} в корзине` : 'Корзина пуста';
   document.querySelectorAll('[data-open-choice]').forEach(b=>b.disabled=!n);
 }
 document.addEventListener('click', e=>{
   const inc=e.target.closest('[data-inc]'), dec=e.target.closest('[data-dec]');
-  if(inc){ ITEMS[+inc.dataset.inc].q++; drawCart(); buzz(6); }
-  if(dec){ ITEMS[+dec.dataset.dec].q--; drawCart(); buzz(6); }
+  if(inc){ CART[mode][inc.dataset.inc]=(CART[mode][inc.dataset.inc]||0)+1; drawCart(); drawCatalog(); buzz(6); }
+  if(dec){ CART[mode][dec.dataset.dec]=Math.max(0,(CART[mode][dec.dataset.dec]||0)-1); drawCart(); drawCatalog(); buzz(6); }
 });
-document.getElementById('clearCart').addEventListener('click',()=>{ ITEMS.forEach(it=>it.q=0); drawCart(); });
-drawCart();
+document.getElementById('clearCart').addEventListener('click',()=>{ CART[mode]={}; drawCart(); drawCatalog(); });
 
-/* ---------------- Магазины ---------------- */
-document.getElementById('storeList').innerHTML = STORES.map(g=>`<div class="h">${g.sec}</div><div class="group">${g.items.map(x=>{const s=byId[x.id]; return `
-  <button class="row press withic" data-store="${s.id}"><span class="ic" style="background:var(${s.c})">${s.name[0]}</span>
-    <span class="main"><span class="t">${s.name}</span><span class="s">${s.s}</span></span>
-    <span class="state ${s.st}" style="margin:0">${s.label}</span>${chev}</button>`}).join('')}</div>${g.foot?`<div class="foot">${g.foot}</div>`:''}`).join('');
+/* ---------------- Заказы ---------------- */
+let skipped = SKIPPED.map(x=>[...x]);
+function drawOrders(){
+  const byMonth = {};
+  ORDERS.map((o,i)=>[o,i]).sort((a,b)=>parseInt(b[0].d)-parseInt(a[0].d))
+    .forEach(x=>{ (byMonth['Сентябрь']=byMonth['Сентябрь']||[]).push(x); });
+  const skippedN = skipped.reduce((a,x)=>a+x[1],0);
+  document.getElementById('orderList').innerHTML = Object.entries(byMonth).map(([m,list])=>`<div class="h">${m}</div><div class="group">${list.map(([o,i])=>`
+    <button class="row press withic" data-order="${i}"><span class="ic" style="background:var(${SHOPS[o.shop][1]})">${SHOPS[o.shop][0][0]}</span>
+      <span class="main"><span class="t">${SHOPS[o.shop][0]} · ${goods(o.n)}</span><span class="s">${o.d} · ${o.src}</span></span>
+      <span class="pr"><b>${rub(o.sum)}</b>${o.save?`<span class="best">экономия ${rub(o.save)}</span>`:''}</span></button>`).join('')}</div>`).join('')
+    + (skippedN ? `<div class="h">Не добавлены</div><div class="group"><button class="row press" id="skippedBtn"><span class="main"><span class="t">${checks(skippedN)} из других магазинов</span>
+        <span class="s">${skipped.map(x=>x[0]).join(', ')}</span></span>${chev}</button></div>
+        <div class="foot">В этих магазинах мы пока не собираем заказы, поэтому их чеки не попадают в заказы и в корзину «Как обычно».</div>` : '');
+}
 
+/* ---------------- Мои магазины (в Профиле) ---------------- */
+function drawStores(){
+  document.getElementById('storeList').innerHTML = Object.keys(ACC).map(k=>{ const a=ACC[k]; return `
+    <button class="row press withic" data-store="${k}"><span class="ic" style="background:var(${SHOPS[k][1]})">${SHOPS[k][0][0]}</span>
+      <span class="main"><span class="t">${SHOPS[k][0]}</span><span class="s">${!a.on?'Не заказываем здесь':a.in?(a.card||'Вход выполнен'):'Вход не выполнен'}</span></span>
+      ${a.in?'<span class="state ok" style="margin:0">Вход выполнен</span>':`<span class="val" style="color:var(--tint)">Войти</span>`}${chev}</button>`;}).join('');
+}
 /* ---------------- лист снизу (§2–§9, §12) ---------------- */
 const device=document.getElementById('device'), base=document.getElementById('base'),
       sheet=document.getElementById('sheet'), scrim=document.getElementById('scrim'), grab=document.getElementById('grab'),
@@ -640,44 +659,142 @@ dragger(shBody, {axis:'y', start:()=>{ sheetAnim&&sheetAnim.stop(); return sheet
   move:y=>{ if(shBody.scrollTop<=0 && y>0) paintSheet(y); }, end:v=>{ if(sheetY>0) settleSheet(v); },
   when:e=>shBody.scrollTop<=0 && !e.target.closest('input,label,.btn,.qty')});
 
-function openStore(id){
-  const s = byId[id];
-  showSheet({icon:s.name[0], color:`var(${s.c})`, title:s.name, state:s.label, cls:s.st, body:`
-    ${s.need?`<div class="hero" style="margin-top:14px"><div class="k">Чтобы видеть актуальные цены ${s.name==='Самокат'?'Самоката':s.name}</div>
-      <div style="margin:6px 0 14px;font-size:15px;color:var(--ink2)">Откроется страница входа магазина. Номер телефона и код из СМС вы вводите сами. Приложение запомнит только то, что вход выполнен.</div>
-      <button class="btn">Войти в аккаунт</button></div>`:''}
-    <div class="h">Цены</div><div class="group">
-      <div class="row"><span class="main"><span class="t">Точность</span></span><span class="val">${s.st==='ok'?'Точные цены':s.need?'Цены от вчера':'Примерные цены'}</span></div>
-      <div class="row"><span class="main"><span class="t">Обновлено</span></span><span class="val">${s.upd}</span></div>
-      ${s.acc?`<div class="row"><span class="main"><span class="t">Аккаунт</span></span><span class="val">${s.acc}</span></div>`:''}
-      <button class="row press"><span class="main"><span class="t" style="color:var(--tint)">Обновить цены</span></span></button></div>
-    <div class="h">Поиск цен</div><div class="group">
-      <label class="row"><span class="main"><span class="t">Искать цены в этом магазине</span><span class="s">Выключите, если не заказываете здесь</span></span>
-        <span class="sw"><input type="checkbox" ${s.on?'checked':''}><i></i></span></label>
-      <label class="row"><span class="main"><span class="t">Только с бесплатной доставкой</span></span><span class="sw"><input type="checkbox"><i></i></span></label></div>`});
+
+function redrawAll(){ drawAttention(); drawStores(); drawOrders(); drawCart(); drawCatalog(); }
+
+/* карточка магазина: вход в аккаунт, заказывать ли здесь */
+function openStore(k){
+  const a = ACC[k], [name, color] = SHOPS[k];
+  const body = () => a.in ? `
+    <div class="h">Аккаунт</div><div class="group">
+      <div class="row"><span class="main"><span class="t">Телефон</span></span><span class="val">${a.phone}</span></div>
+      ${a.card?`<div class="row"><span class="main"><span class="t">Карта лояльности</span></span><span class="val">${a.card}</span></div>`:''}</div>
+    <div class="foot">Заказ собирается в вашей корзине ${gen[k]} — с вашими скидками, картой и адресом. Оплачиваете вы сами в приложении магазина.</div>
+    <div class="h">Заказы</div><div class="group">
+      <label class="row"><span class="main"><span class="t">Заказывать в ${name==='Самокат'?'Самокате':name==='Лента'?'Ленте':name}</span><span class="s">Выключите, если не хотите здесь покупать</span></span>
+        <span class="sw"><input type="checkbox" data-acc-on ${a.on?'checked':''}><i></i></span></label></div>
+    <div class="group" style="margin-top:22px"><button class="row press" data-logout><span class="main"><span class="t" style="color:var(--red)">Выйти из аккаунта</span></span></button></div>`
+  : `<div class="hero" style="margin-top:14px"><div class="k">Вход не выполнен</div>
+      <div style="margin:6px 0 14px;font-size:15px;color:var(--ink2)">Войдите в свой аккаунт ${gen[k]}, чтобы мы собирали заказ прямо в вашей корзине магазина. Откроется страница входа ${gen[k]}: номер телефона и код из СМС вы вводите сами.</div>
+      <button class="btn" data-login>Войти в аккаунт</button></div>
+    <div class="group"><label class="row"><span class="main"><span class="t">Заказывать в ${name==='Самокат'?'Самокате':name==='Лента'?'Ленте':name}</span></span>
+      <span class="sw"><input type="checkbox" data-acc-on ${a.on?'checked':''}><i></i></span></label></div>`;
+  const paint = () => { const st=document.getElementById('shState'); st.hidden=false; st.className='state '+(a.in?'ok':'warn'); st.textContent=a.in?'Вход выполнен':'Вход не выполнен'; shBody.innerHTML=body(); };
+  showSheet({icon:name[0], color:`var(${color})`, title:name, state:'', body:''}); paint();
+  shBody.onclick = e => {
+    if(e.target.closest('[data-login]')){
+      const b=e.target.closest('[data-login]'); b.dataset.state='busy'; b.innerHTML='<span class="spin"></span>Ждём вход на странице магазина…';
+      setTimeout(()=>{ a.in=true; a.phone='+7 ••• ••• 45-67'; buzz([12,60,12]); paint(); redrawAll(); },1300);
+    }
+    if(e.target.closest('[data-logout]')){ a.in=false; paint(); redrawAll(); }
+  };
+  shBody.onchange = e => { if(e.target.matches('[data-acc-on]')){ a.on=e.target.checked; redrawAll(); } };
 }
+
+/* карточка товара: цены во всех магазинах и наличие */
 function openItem(i){
   const it = ITEMS[i], ps = pricesFor(it), best = ps[0];
   const body = () => `<div class="foot" style="margin:12px 0 0">${it.p}</div>
     <div class="h">Цены в магазинах</div><div class="group cmp">${ps.map((x,j)=>`
       <div class="row withic"><span class="ic" style="background:var(${SHOPS[x.k][1]})">${SHOPS[x.k][0][0]}</span>
-        <span class="main"><span class="t">${SHOPS[x.k][0]}</span>${j===0?'<span class="s best">Дешевле всего</span>':x.out?'<span class="s">Нет в наличии</span>':`<span class="s">дороже на ${rub(x.p-best.p)}</span>`}</span>
+        <span class="main"><span class="t">${SHOPS[x.k][0]}</span>${x.out?'<span class="s">Нет в наличии</span>':j===0?'<span class="s best">Дешевле всего</span>':`<span class="s">дороже на ${rub(x.p-best.p)}</span>`}</span>
         <span class="val">${x.out?'—':`<b ${j===0?'class="best"':''}>${rub(x.p)}</b>`}</span></div>`).join('')}</div>
-    <div class="foot">Цены для адреса Лиговский пр., 50 с учётом ваших карт лояльности.</div>
-    <div style="margin-top:18px">${it.q>0
-      ? `<div class="row" style="background:var(--card);border-radius:14px"><span class="main"><span class="t">В корзине</span></span>
-          <div class="qty"><button data-dec="${it.i}" aria-label="Уменьшить количество">−</button><span>${it.q}</span><button data-inc="${it.i}" aria-label="Увеличить количество">+</button></div></div>`
+    <div class="foot">Цены для вашего адреса с учётом карт лояльности.</div>
+    <div style="margin-top:18px">${qty(it)>0
+      ? `<div class="row" style="background:var(--card);border-radius:14px"><span class="main"><span class="t">В корзине «${mode==='usual'?'Как обычно':'Вручную'}»</span></span>
+          <div class="qty"><button data-dec="${it.i}" aria-label="Уменьшить количество">−</button><span>${qty(it)}</span><button data-inc="${it.i}" aria-label="Увеличить количество">+</button></div></div>`
       : `<button class="btn" data-add="${it.i}">Добавить в корзину · от ${rub(best.p)}</button>`}</div>`;
   showSheet({icon:it.n[0], color:'var(--fill)', title:it.n, state:it.old?`Скидка ${Math.round((1-best.p/it.old)*100)}%`:'', cls:'ok', body:body()});
   document.getElementById('shIc').style.color='var(--ink2)';
-  shBody.onclick = e => { if(e.target.closest('[data-add],[data-inc],[data-dec]')){ if(e.target.closest('[data-add]')){ it.q=1; drawCart(); buzz(10);} requestAnimationFrame(()=>shBody.innerHTML=body()); } };
+  shBody.onclick = e => { if(e.target.closest('[data-add],[data-inc],[data-dec]')){
+    if(e.target.closest('[data-add]')){ CART[mode][it.i]=1; drawCart(); drawCatalog(); buzz(10); }
+    requestAnimationFrame(()=>shBody.innerHTML=body()); } };
 }
-document.addEventListener('click', e=>{
-  const s=e.target.closest('[data-store]'); if(s) return openStore(s.dataset.store);
-  const it=e.target.closest('[data-item]'); if(it){ shBody.onclick=null; openItem(+it.dataset.item); }
-});
-document.addEventListener('click', e=>{ if(e.target.closest('[data-store]')) shBody.onclick=null; }, true);
 
+/* карточка заказа: состав и «Добавить в корзину» */
+function openOrder(i){
+  const o = ORDERS[i], [name,color] = SHOPS[o.shop];
+  showSheet({icon:name[0], color:`var(${color})`, title:`${name} · ${rub(o.sum)}`, state:o.src, cls:o.save?'ok':'', body:`
+    <div class="foot" style="margin:12px 0 0">${o.d} · ${goods(o.n)}${o.save?` · экономия ${rub(o.save)}`:''}</div>
+    <div class="h">Товары</div><div class="group">${o.items.map(j=>{const it=ITEMS[j]; return `
+      <button class="row press" data-item-in="${j}"><span class="main"><span class="t">${it.n}</span><span class="s">${it.p}</span></span><span class="val">${rub(it.price)}</span></button>`;}).join('')}</div>
+    <div style="margin-top:18px"><button class="btn" data-repeat>Добавить все товары в корзину</button></div>
+    <div class="foot">Товары попадут в корзину «Вручную» — сравните, где они дешевле сегодня.</div>`});
+  shBody.onclick = e => { if(e.target.closest('[data-repeat]')){
+    o.items.forEach(j=>CART.manual[j]=(CART.manual[j]||0)+1); mode='manual';
+    document.querySelectorAll('#modeSeg button').forEach(b=>b.setAttribute('aria-pressed', b.dataset.mode==='manual'));
+    drawCart(); drawCatalog(); buzz(10); closeSheet(); tab(2); } };
+}
+
+/* загрузка чеков из ФНС: новые чеки → заказы; чеки чужих магазинов отсеиваются */
+function openFns(){
+  showSheet({icon:'↓', color:'#0A7AFF', title:'Чеки из ФНС', state:'', body:`
+    <div class="hero" style="margin-top:14px;text-align:center"><div class="spin" style="margin:6px auto 12px;border-color:var(--fill);border-top-color:var(--tint);width:26px;height:26px;border-width:3px"></div>
+      <div>Загружаем чеки, выданные на +7 ••• ••• 45-67…</div></div>`});
+  shBody.onclick=null;
+  setTimeout(()=>{
+    const add = FNS_NEW.splice(0), skip = FNS_SKIPPED.splice(0);
+    add.forEach(o=>ORDERS.unshift(o));
+    skip.forEach(([n,c])=>{ const x=skipped.find(s=>s[0]===n); x ? x[1]+=c : skipped.push([n,c]); });
+    const skipN = skip.reduce((a,x)=>a+x[1],0);
+    buzz([12,60,12]); drawOrders();
+    shBody.innerHTML = add.length+skipN ? `
+      <div class="hero" style="margin-top:14px"><div class="k">Новых чеков: ${add.length+skipN}</div>
+        <div class="sum" style="font-size:28px;color:var(--green)">+${plural(add.length,'заказ','заказа','заказов')}</div>
+        <div class="meta" style="margin-bottom:0">Добавлены в «Заказы» и учтены в корзине «Как обычно».</div></div>
+      <div class="h">Добавлены</div><div class="group">${add.map(o=>`<div class="row withic"><span class="ic" style="background:var(${SHOPS[o.shop][1]})">${SHOPS[o.shop][0][0]}</span>
+        <span class="main"><span class="t">${SHOPS[o.shop][0]} · ${goods(o.n)}</span><span class="s">${o.d}</span></span><span class="val">${rub(o.sum)}</span></div>`).join('')}</div>
+      ${skipN?`<div class="h">Не добавлены · ${checks(skipN)}</div><div class="group">${skip.map(([n,c])=>`<div class="row"><span class="main"><span class="t">${n}</span></span><span class="val">${checks(c)}</span></div>`).join('')}</div>
+      <div class="foot">В этих магазинах мы пока не собираем заказы.</div>`:''}`
+    : `<div class="empty">Новых чеков нет.<br>Все ваши чеки уже загружены.</div>`;
+  },1500);
+}
+
+/* чек вручную: QR-код, фото или файл */
+function openAdd(){
+  showSheet({icon:'+', color:'#5856D6', title:'Добавить чек', state:'', body:`
+    <div class="foot" style="margin:12px 0 0">Подойдёт любой кассовый чек с QR-кодом, в том числе электронный из письма.</div>
+    <div class="group" style="margin-top:14px">
+      <button class="row press withic" data-way="qr"><span class="ic" style="background:#0A7AFF">⌗</span><span class="main"><span class="t">Сканировать QR-код</span></span>${chev}</button>
+      <button class="row press withic" data-way="file"><span class="ic" style="background:#34C759">▣</span><span class="main"><span class="t">Выбрать фото или файл</span></span>${chev}</button>
+      <button class="row press withic" data-way="hand"><span class="ic" style="background:#8E8E93">✎</span><span class="main"><span class="t">Ввести данные с чека</span><span class="s">Дата, сумма, ФН, ФД и ФП</span></span>${chev}</button>
+    </div><div id="addResult"></div>`});
+  shBody.onclick = e => {
+    const w = e.target.closest('[data-way]'); if(!w) return;
+    const r = document.getElementById('addResult');
+    r.innerHTML = `<div class="hero" style="margin-top:14px;text-align:center"><div class="spin" style="margin:0 auto 10px;border-color:var(--fill);border-top-color:var(--tint)"></div>Проверяем чек в ФНС…</div>`;
+    setTimeout(()=>{
+      if(w.dataset.way==='file'){   // чек из магазина, где мы не собираем заказы
+        const x=skipped.find(s=>s[0]==='Перекрёсток'); x[1]++; drawOrders(); buzz(20);
+        r.innerHTML = `<div class="hero" style="margin-top:14px"><span class="state warn">Не добавлен</span>
+          <div style="margin-top:8px">Чек из Перекрёстка, 23 сентября, 1 870 ₽.</div>
+          <div class="k" style="margin-top:6px">В Перекрёстке мы пока не собираем заказы, поэтому чек не попадёт в заказы и в корзину «Как обычно».</div></div>`;
+      } else {
+        const o={d:'26 сентября', shop:'pyaterochka', sum:740, n:5, src:'Чек добавлен вручную', items:[0,2,8,9,17]};
+        ORDERS.unshift(o); drawOrders(); buzz([12,60,12]);
+        r.innerHTML = `<div class="hero" style="margin-top:14px"><span class="state ok">Добавлен</span>
+          <div style="margin-top:8px">Пятёрочка · 5 товаров · 740 ₽, сегодня.</div>
+          <div class="k" style="margin-top:6px">Заказ появился в «Заказах», товары учтены в корзине «Как обычно».</div></div>`;
+      }
+    },1200);
+  };
+}
+function openSkipped(){
+  const n = skipped.reduce((a,x)=>a+x[1],0);
+  showSheet({icon:'!', color:'#8E8E93', title:'Не добавлены', state:checks(n), cls:'warn', body:`
+    <div class="group" style="margin-top:14px">${skipped.map(([s,c])=>`<div class="row"><span class="main"><span class="t">${s}</span></span><span class="val">${checks(c)}</span></div>`).join('')}</div>
+    <div class="foot">В этих магазинах мы пока не собираем заказы. Когда магазин появится в приложении, его чеки добавятся сами.</div>`});
+  shBody.onclick=null;
+}
+
+document.getElementById('fnsBtn').addEventListener('click', openFns);
+document.getElementById('addBtn').addEventListener('click', openAdd);
+document.addEventListener('click', e=>{
+  if(e.target.closest('#skippedBtn')) return openSkipped();
+  const s=e.target.closest('[data-store]'); if(s) return openStore(s.dataset.store);
+  const o=e.target.closest('[data-order]'); if(o) return openOrder(+o.dataset.order);
+  const it=e.target.closest('[data-item]'); if(it && !it.closest('.sheet')) return openItem(+it.dataset.item);
+});
 /* ---------------- «Где дешевле»: въезжает справа, уезжает вправо, свайп от края (§7) ---------------- */
 const push=document.getElementById('choice'), dim=document.getElementById('pushdim');
 let pushX, pushAnim, pushOpen=false; const W=()=>device.offsetWidth;
@@ -705,32 +822,41 @@ dragger(document.getElementById('edge'),{axis:'x',start:()=>{pushAnim&&pushAnim.
   move:x=>paintPush(Math.max(0,x)),end:settlePush});
 addEventListener('keydown', e=>{ if(e.key==='Escape'){ if(scrim.hasAttribute('data-on')) closeSheet(); else if(pushOpen) closePush(); }});
 
+
+/* варианты покупки; оформление: сначала проверка цен и наличия, потом товары в корзинах магазинов */
 const optsEl=document.getElementById('opts'), cta=document.getElementById('cta'), ctaNote=document.getElementById('ctaNote');
-const ctaText = o => 'Перейти к оформлению · ' + rub(o.sum);
 optsEl.innerHTML = OPTS.map((o,i)=>`<div class="opt" ${i===0?'data-picked':''} data-i="${i}">
   <button class="row press" style="gap:14px"><span class="radio"></span>
     <span class="main"><span class="t">${o.name}${o.rec?'<span class="pill">Рекомендуем</span>':''}</span><span class="s">${o.sub}</span></span>
     <span class="price"><b>${rub(o.sum)}</b><span>Экономия ${rub(BASE-o.sum)}</span></span></button>
   <div class="more"><div><ul>${o.stores.map(s=>`<li><span><i class="dot" style="background:var(${s[1]})"></i>${s[0]} · ${goods(s[2])}</span><span>${rub(s[3])}</span></li>`).join('')}<li>${o.why}</li></ul></div></div></div>`).join('');
 const picked = () => OPTS[+optsEl.querySelector('[data-picked]').dataset.i];
-cta.textContent = ctaText(OPTS[0]); ctaNote.textContent = OPTS[0].note;
+const needLogin = o => o.shops.filter(k=>!ACC[k].in);
+function paintCta(){
+  const o = picked(), miss = needLogin(o);
+  cta.textContent = miss.length ? `Войти в аккаунт ${gen[miss[0]]}` : 'Перейти к оформлению · ' + rub(o.sum);
+  ctaNote.textContent = miss.length ? `Чтобы собрать заказ в ${SHOPS[miss[0]][0]==='Самокат'?'Самокате':SHOPS[miss[0]][0]}, войдите в свой аккаунт` : o.note;
+}
 optsEl.querySelectorAll('.opt').forEach(el=>el.querySelector('.row').addEventListener('click',()=>{
   if(cta.dataset.state!=='idle') return;
-  optsEl.querySelectorAll('.opt').forEach(x=>x.toggleAttribute('data-picked',x===el));
-  cta.textContent=ctaText(picked()); ctaNote.textContent=picked().note; buzz(8);
+  optsEl.querySelectorAll('.opt').forEach(x=>x.toggleAttribute('data-picked',x===el)); paintCta(); buzz(8);
 }));
 cta.addEventListener('click',()=>{
   if(cta.dataset.state!=='idle') return;
-  cta.dataset.state='busy'; cta.innerHTML='<span class="spin"></span>Добавляем товары в корзины магазинов…';
+  const o = picked(), miss = needLogin(o);
+  if(miss.length) return openStore(miss[0]);
+  cta.dataset.state='busy'; cta.innerHTML='<span class="spin"></span>Проверяем цены и наличие…';
+  setTimeout(()=>{ cta.innerHTML='<span class="spin"></span>Добавляем товары в ваши корзины…'; },900);
   setTimeout(()=>{ cta.dataset.state='done'; cta.textContent='Оплатите заказ в приложении магазина'; buzz([12,60,12]);
-    ctaNote.textContent='Товары уже в корзинах магазинов. До оплаты заказ можно изменить.';
-    setTimeout(()=>{ cta.dataset.state='idle'; cta.textContent=ctaText(picked()); ctaNote.textContent=picked().note; },3200);
-  },1400);
+    ctaNote.textContent='Товары уже в ваших корзинах магазинов. До оплаты заказ можно изменить.';
+    setTimeout(()=>{ cta.dataset.state='idle'; paintCta(); },3200);
+  },2000);
 });
+const _redraw = redrawAll; redrawAll = () => { _redraw(); if(cta.dataset.state==='idle') paintCta(); };
 
 addEventListener('resize',()=>{ layoutSegs(); if(!pushOpen){ paintPush(W()); } });
 paintPush(W()); dim.style.opacity=0;
-layoutSegs();
+redrawAll(); layoutSegs();
 </script>
 </body>
 </html>
