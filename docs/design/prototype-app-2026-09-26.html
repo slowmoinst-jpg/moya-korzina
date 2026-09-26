@@ -8,24 +8,20 @@
 <title>Моя корзина — прототип</title>
 <!--
   Сквозной прототип приложения по скиллам .claude/skills/apple-design и emil-design-eng.
-  Экраны: «Сегодня» (главный), «Магазины», «Настройки» и «Выбор выгоды» (открывается с главной).
+  Все надписи — по словарю docs/design/nazvaniya-2026-09-26.md: привычные слова из
+  приложений доставки продуктов, одна вещь — одно название, никакой внутренней кухни.
 
-  Что здесь сделано по Apple, по пунктам скилла:
-   §1  отклик на нажатие приходит на pointerdown, без задержки тапа;
-   §2–6 карточка магазина и экран выбора тянутся пальцем 1:1, с учётом места захвата;
-        на отпускании берётся скорость, конечная точка проецируется (d = 0.998),
-        пружина стартует с текущего значения и скорости пальца, её можно схватить на лету;
-   §4  пружины: по умолчанию демпфирование 1.0, отклик 0.35 с; 0.85 — только после броска;
-   §7  что выехало справа, уходит вправо; что поднялось снизу, опускается вниз;
-   §9  выше края лист не упирается, а тянется с сопротивлением (rubber-band);
-   §12 полупрозрачные панель вкладок и шапка; разделитель под шапкой появляется,
-        только когда под неё заехало содержимое; под листом фон тускнеет и отодвигается;
-   §13 короткий отклик вибрацией на переключателях и на готовности корзины;
-   §14 prefers-reduced-motion — перекрёстное растворение вместо сдвигов,
-        prefers-reduced-transparency — сплошные панели, prefers-contrast — чёткие границы;
-   §15 системный шрифт, крупный заголовок с отрицательной разрядкой, текст около нуля;
-   §16 вкладки названы по содержимому («Сегодня», «Магазины», «Настройки»), а не «Главная»;
-        опасных подтверждений нет — всё обратимо.
+  Вкладки: Главная · Каталог · Корзина · Магазины · Профиль.
+  «Где дешевле» въезжает справа (с Главной и из Корзины), карточки товара и магазина
+  поднимаются снизу листом.
+
+  Движение по apple-design: отклик на pointerdown (§1); лист и экран тянутся пальцем 1:1
+  и продолжают движение со скоростью пальца, конечная точка проецируется (§2–6);
+  пружины с демпфированием 1.0, отскок 0.85 только после броска (§4); что выехало справа,
+  уходит вправо, что поднялось снизу — вниз (§7); сопротивление за краем (§9);
+  стеклянные панели и разделитель шапки, только когда под неё заехало содержимое (§12);
+  короткая вибрация на переключателях и готовности (§13); reduced-motion / transparency /
+  contrast (§14); системный шрифт и разрядка по размеру (§15).
   Токены цветов сетей — из app/web/static/korzina.css. В код приложения отсюда ничего не импортируется.
 -->
 <style>
@@ -215,143 +211,193 @@ button{font:inherit;color:inherit;letter-spacing:inherit;background:none;border:
   .sw i::after,.seg .th,.more,.nav .small{transition-duration:0ms}
   .btn[data-down]{transform:none}
 }
+
+/* ---------- добавлено: пять вкладок, поиск, корзина ---------- */
+.tabbar{grid-template-columns:repeat(5,1fr)}
+.tabbar button{position:relative}
+.tabbar .count{position:absolute;top:-2px;left:calc(50% + 6px);min-width:18px;height:18px;padding:0 5px;border-radius:99px;
+  background:var(--red);color:#fff;font-size:11px;font-weight:600;line-height:18px;text-align:center}
+.tabbar .badge{top:0;left:calc(50% + 8px);margin:0}
+.search{display:flex;align-items:center;gap:6px;height:36px;border-radius:10px;background:var(--fill);padding:0 8px;margin:0 0 12px;color:var(--ink2)}
+.search input{flex:1;border:0;background:none;font:inherit;color:var(--ink);outline:none;min-width:0;font-size:17px}
+.search input::placeholder{color:var(--ink2)}
+.chips{display:flex;gap:8px;overflow-x:auto;margin:0 -16px 6px;padding:0 16px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;height:32px;padding:0 14px;border-radius:99px;background:var(--card);font-size:15px;font-weight:500}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.qty{display:flex;align-items:center;background:var(--fill);border-radius:99px;height:32px;flex:none}
+.qty button{width:32px;height:32px;display:grid;place-items:center;font-size:19px;color:var(--tint)}
+.qty span{min-width:22px;text-align:center;font-size:15px;font-weight:600}
+.pr{text-align:right;flex:none;font-size:15px}
+.pr b{display:block;font-weight:600}
+.pr span{font-size:13px;color:var(--ink2)}
+.cmp .row .val b{color:var(--ink);font-weight:600}
+.best{color:var(--green)!important}
+.empty{text-align:center;color:var(--ink2);padding:40px 20px}
+.row .ic.soft{background:var(--fill);color:var(--ink2)}
 </style>
 </head>
 <body>
 <div class="device" id="device">
 
   <div class="base" id="base">
-    <!-- ============ Сегодня ============ -->
-    <section class="screen" id="s-today" data-on data-title="Сегодня">
-      <div class="nav"><span class="small">Сегодня</span>
-        <span class="right" aria-label="Адрес">Лиговский, 50</span></div>
-      <h1 class="large">Сегодня</h1>
+    <!-- ============ Главная ============ -->
+    <section class="screen" id="s-home" data-on>
+      <div class="nav"><span class="small">Главная</span>
+        <button class="right" data-tab="4" aria-label="Адрес доставки">Лиговский пр., 50</button></div>
+      <h1 class="large">Главная</h1>
 
       <div class="hero">
-        <div class="k">Как обычно · 23 позиции · на неделю</div>
+        <div class="k">Ваша корзина · <span data-count>23 товара</span></div>
         <div class="sum">3 290 ₽</div>
-        <span class="gain">↓ 1 310 ₽ против привычного магазина</span>
+        <span class="gain">Экономия 1 310 ₽</span>
+        <div class="k" style="margin-top:2px">по сравнению с покупкой всего в Перекрёстке — 4 600 ₽</div>
         <div class="stack" aria-hidden="true"><i style="flex:2040;background:var(--s-magnit)"></i><i style="flex:1250;background:var(--s-pyaterochka)"></i></div>
-        <div class="meta">Магнит и Пятёрочка · привезут сегодня с 18 до 20</div>
-        <button class="btn" data-open="choice">Выбрать, как купить</button>
+        <div class="meta">Магнит и Пятёрочка · доставка сегодня с 18:00 до 20:00</div>
+        <button class="btn" data-open-choice="Главная">Где дешевле</button>
       </div>
 
       <div class="tiles">
-        <button class="tile press" data-tab="1"><span class="k">Сэкономлено в сентябре</span><span class="n" style="color:var(--green)">4 870 ₽</span><span class="k">за 4 заказа</span></button>
-        <button class="tile press" data-tab="1"><span class="k">Цены обновлены</span><span class="n">5 из 6</span><span class="k">сетей, ночью в 03:10</span></button>
+        <button class="tile press" data-go="history"><span class="k">Экономия за сентябрь</span><span class="n" style="color:var(--green)">4 870 ₽</span><span class="k">4 заказа</span></button>
+        <button class="tile press" data-tab="3"><span class="k">Цены обновлены</span><span class="n">03:10</span><span class="k">сегодня · 5 из 6 магазинов</span></button>
       </div>
 
-      <div class="h">Подешевело из привычного</div>
-      <div class="group">
-        <div class="row press withic"><span class="ic" style="background:var(--s-pyaterochka)">П</span>
-          <span class="main"><span class="t">Масло сливочное 82,5% · 180 г</span><span class="s">Экомилк · Пятёрочка</span></span>
-          <span><span class="old">189</span><span class="drop">149 ₽</span></span></div>
-        <div class="row press withic"><span class="ic" style="background:var(--s-magnit)">М</span>
-          <span class="main"><span class="t">Молоко 2,5% · 930 мл</span><span class="s">Простоквашино · Магнит</span></span>
-          <span><span class="old">99</span><span class="drop">84 ₽</span></span></div>
-        <div class="row press withic"><span class="ic" style="background:var(--s-vkusvill)">В</span>
-          <span class="main"><span class="t">Яйца С0 · 10 шт.</span><span class="s">ВкусВилл</span></span>
-          <span><span class="old">139</span><span class="drop">119 ₽</span></span></div>
-      </div>
-      <div class="foot">Эти цены уже учтены в сумме «Как обычно».</div>
+      <div class="h">Скидки на ваши товары</div>
+      <div class="group" id="deals"></div>
+      <div class="foot">Скидки уже учтены в цене вашей корзины.</div>
 
-      <div class="h">Требует внимания</div>
+      <div class="h">Требуется действие</div>
       <div class="group">
         <button class="row press withic" data-store="samokat"><span class="ic" style="background:var(--s-samokat)">С</span>
-          <span class="main"><span class="t">Войдите в Самокат</span><span class="s">Без входа его цены не видны — вариант «Экспресс» считается по вчерашним</span></span>
+          <span class="main"><span class="t">Войдите в аккаунт Самоката</span><span class="s">Цены Самоката от вчера. Войдите, чтобы обновить</span></span>
           <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
+    </section>
+
+    <!-- ============ Каталог ============ -->
+    <section class="screen" id="s-catalog">
+      <div class="nav"><span class="small">Каталог</span></div>
+      <h1 class="large">Каталог</h1>
+      <label class="search"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <input id="q" type="search" placeholder="Поиск товаров" autocomplete="off" enterkeyhint="search"></label>
+      <div class="chips" id="cats"></div>
+      <div class="h" id="catHead">Все товары</div>
+      <div class="group" id="catList"></div>
+      <div class="foot">Цена «от» — самая низкая среди подключённых магазинов для вашего адреса.</div>
+    </section>
+
+    <!-- ============ Корзина ============ -->
+    <section class="screen" id="s-cart" style="padding-bottom:190px">
+      <div class="nav"><span class="small">Корзина</span><button class="right" id="clearCart">Очистить</button></div>
+      <h1 class="large">Корзина</h1>
+      <div class="foot" style="margin:-8px 0 12px">Собрана по вашим чекам за последние 3 месяца. Меняйте количество — цена пересчитается.</div>
+      <div class="group" id="cartList"></div>
     </section>
 
     <!-- ============ Магазины ============ -->
-    <section class="screen" id="s-stores" data-title="Магазины">
+    <section class="screen" id="s-stores">
       <div class="nav"><span class="small">Магазины</span></div>
       <h1 class="large">Магазины</h1>
       <div id="storeList"></div>
-      <div class="foot" style="margin-top:14px">Окно входа пройдено вживую только в Магните. Пятёрочка, Самокат, Лента и Дикси встречают сервер своей проверкой — её вы проходите сами, приложение подхватывает дальше.</div>
+      <div class="foot" style="margin-top:14px">Магнит пускает вход из приложения без проверок. Пятёрочка, Самокат, Лента и Дикси могут попросить пройти проверку «Я не робот» — пройдите её сами, дальше приложение справится.</div>
     </section>
 
-    <!-- ============ Настройки ============ -->
-    <section class="screen" id="s-settings" data-title="Настройки">
-      <div class="nav"><span class="small">Настройки</span></div>
-      <h1 class="large">Настройки</h1>
+    <!-- ============ Профиль ============ -->
+    <section class="screen" id="s-profile">
+      <div class="nav"><span class="small">Профиль</span></div>
+      <h1 class="large">Профиль</h1>
 
-      <div class="h">Куда везти</div>
+      <div class="h">Адрес доставки</div>
       <div class="group">
-        <button class="row press"><span class="main"><span class="t">Адрес</span><span class="s">Лиговский пр., 50, кв. 14 · Санкт-Петербург</span></span>
+        <button class="row press"><span class="main"><span class="t">Адрес</span><span class="s">Санкт-Петербург, Лиговский пр., 50, кв. 14</span></span>
           <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-        <div class="row"><span class="main"><span class="t">Получение</span></span>
+        <div class="row"><span class="main"><span class="t">Способ получения</span></span>
           <div class="seg" style="width:190px" data-seg><span class="th"></span><button aria-pressed="true">Доставка</button><button aria-pressed="false">Самовывоз</button></div></div>
       </div>
-      <div class="foot">Адрес определяет, какой магазин и какие цены берутся в расчёт.</div>
+      <div class="foot">От адреса зависят магазины и цены.</div>
 
-      <div class="h">Расчёт корзины</div>
+      <div class="h">Карты</div>
       <div class="group">
-        <div class="row"><span class="main"><span class="t">Магазинов в одном заказе</span><span class="s">Больше магазинов — дешевле, но больше курьеров</span></span>
-          <span class="val" id="maxShops" style="margin-right:8px">до 2</span>
+        <button class="row press withic"><span class="ic" style="background:#FF9500">%</span><span class="main"><span class="t">Карты лояльности</span><span class="s">Выручай-карта, Магнит Плюс</span></span>
+          <span class="val">2</span><svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button class="row press withic"><span class="ic" style="background:#34C759">₽</span><span class="main"><span class="t">Банковские карты</span><span class="s">Кешбэк: Альфа-Банк 7%, Т-Банк 5%</span></span>
+          <span class="val">2</span><svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      <div class="foot">Приложение подскажет, какой картой платить в каждом магазине.</div>
+
+      <div class="h">Покупки</div>
+      <div class="group">
+        <button class="row press withic" data-go="history"><span class="ic" style="background:#0A7AFF">↺</span><span class="main"><span class="t">История покупок</span><span class="s">4 заказа в сентябре · экономия 4 870 ₽</span></span>
+          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button class="row press withic"><span class="ic" style="background:#5856D6">≡</span><span class="main"><span class="t">Чеки из ФНС</span><span class="s">Загружено 118 чеков · вчера в 22:15</span></span>
+          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+
+      <div class="h">Поиск цен</div>
+      <div class="group">
+        <div class="row"><span class="main"><span class="t">Максимум магазинов в заказе</span><span class="s">Больше магазинов — дешевле, но больше доставок</span></span>
+          <span class="val" id="maxShops" style="margin-right:8px">2</span>
           <div class="stepper"><button id="minus" aria-label="Меньше">−</button><button id="plus" aria-label="Больше">+</button></div></div>
-        <div class="row"><span class="main"><span class="t">Советовать разделить заказ</span><span class="s">если выгода больше</span></span>
+        <div class="row"><span class="main"><span class="t">Делить заказ, если экономия от</span></span>
           <div class="seg" style="width:170px" data-seg><span class="th"></span><button aria-pressed="false">200 ₽</button><button aria-pressed="true">350 ₽</button><button aria-pressed="false">500 ₽</button></div></div>
-        <label class="row"><span class="main"><span class="t">Подставлять привычный бренд</span><span class="s">«Молоко 2,5%» → Простоквашино 930 мл</span></span>
+        <label class="row"><span class="main"><span class="t">Предлагать товары, которые вы обычно покупаете</span><span class="s">Например, «Молоко 2,5%» — Простоквашино 930 мл</span></span>
           <span class="sw"><input type="checkbox" checked><i></i></span></label>
       </div>
 
-      <div class="h">Скидки и кэшбэк</div>
+      <div class="h">Обновление цен</div>
       <div class="group">
-        <button class="row press withic"><span class="ic" style="background:var(--s-pyaterochka)">П</span><span class="main"><span class="t">Выручай-карта</span><span class="s">Пятёрочка · баллы учитываются</span></span>
-          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-        <button class="row press withic"><span class="ic" style="background:var(--s-magnit)">М</span><span class="main"><span class="t">Магнит Плюс</span><span class="s">цены по карте</span></span>
-          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-        <button class="row press withic"><span class="ic" style="background:#EF3124">А</span><span class="main"><span class="t">Альфа-Банк</span><span class="s">7% в супермаркетах до 30 сентября</span></span>
-          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-        <button class="row press withic"><span class="ic" style="background:#FFDD2D;color:#333">Т</span><span class="main"><span class="t">Т-Банк</span><span class="s">5% на продукты</span></span>
-          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-      </div>
-      <div class="foot">Расчёт сам выбирает, какой картой платить в каждом магазине.</div>
-
-      <div class="h">Сбор цен</div>
-      <div class="group">
-        <label class="row"><span class="main"><span class="t">Ночной обход</span><span class="s">в 03:00, не чаще запроса в секунду на сеть</span></span>
+        <label class="row"><span class="main"><span class="t">Обновлять цены ночью</span><span class="s">Каждый день в 03:00</span></span>
           <span class="sw"><input type="checkbox" checked><i></i></span></label>
-        <label class="row"><span class="main"><span class="t">Через домашний интернет</span><span class="s">для сетей, которые не пускают сервер · Дикси</span></span>
+        <label class="row"><span class="main"><span class="t">Обновлять через домашний интернет</span><span class="s">Для магазинов, которые не отдают цены приложению напрямую: Дикси</span></span>
           <span class="sw"><input type="checkbox" checked><i></i></span></label>
-        <button class="row press"><span class="main"><span class="t">Чеки</span><span class="s">ФНС подключена · 118 чеков за полгода</span></span>
-          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
 
       <div class="h">Уведомления</div>
       <div class="group">
-        <label class="row"><span class="main"><span class="t">Подешевело из привычного</span></span><span class="sw"><input type="checkbox" checked><i></i></span></label>
-        <label class="row"><span class="main"><span class="t">Нужен вход в магазин</span></span><span class="sw"><input type="checkbox" checked><i></i></span></label>
+        <label class="row"><span class="main"><span class="t">Скидки на ваши товары</span></span><span class="sw"><input type="checkbox" checked><i></i></span></label>
+        <label class="row"><span class="main"><span class="t">Нужно войти в аккаунт магазина</span></span><span class="sw"><input type="checkbox" checked><i></i></span></label>
         <label class="row"><span class="main"><span class="t">Итоги недели</span></span><span class="sw"><input type="checkbox"><i></i></span></label>
       </div>
-      <div class="foot" style="text-align:center;margin:26px 0 0">Моя корзина · сборка 26.09.2026</div>
+
+      <div class="h">О приложении</div>
+      <div class="group">
+        <button class="row press"><span class="main"><span class="t">Что умеет приложение</span></span>
+          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <div class="row"><span class="main"><span class="t">Версия</span></span><span class="val">26.09.2026</span></div>
+      </div>
     </section>
 
     <nav class="tabbar" aria-label="Разделы">
-      <button aria-current="page" data-tab="0"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M5 9.5h16l-1.5 11a2 2 0 0 1-2 1.7h-9a2 2 0 0 1-2-1.7L5 9.5zm4.2-1.2L12 3.6a1.2 1.2 0 0 1 2 0l2.8 4.7h-1.9L13 5.2l-1.9 3.1H9.2z"/></svg>Сегодня</button>
-      <button data-tab="1"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M4 10.2 5.6 4.8A1.5 1.5 0 0 1 7 3.8h12a1.5 1.5 0 0 1 1.4 1l1.6 5.4a3 3 0 0 1-3 3 3 3 0 0 1-3-1.4 3 3 0 0 1-2.9 1.4 3 3 0 0 1-3-1.4 3 3 0 0 1-3 1.4 3 3 0 0 1-3.1-2.6zM5.6 15h1.8v5.6h11.2V15h1.8v6.4a1.4 1.4 0 0 1-1.4 1.4H7a1.4 1.4 0 0 1-1.4-1.4V15z"/></svg><span class="badge"></span>Магазины</button>
-      <button data-tab="2"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M13 9a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 1.8a2.2 2.2 0 1 1 0 4.4 2.2 2.2 0 0 1 0-4.4zM11.6 2.5h2.8l.5 2.5 1.6.7 2.1-1.4 2 2-1.4 2.1.7 1.6 2.5.5v2.8l-2.5.5-.7 1.6 1.4 2.1-2 2-2.1-1.4-1.6.7-.5 2.5h-2.8l-.5-2.5-1.6-.7-2.1 1.4-2-2 1.4-2.1-.7-1.6-2.5-.5v-2.8l2.5-.5.7-1.6-1.4-2.1 2-2 2.1 1.4 1.6-.7z"/></svg>Настройки</button>
+      <button aria-current="page" data-tab="0"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M13 3.2 3 11.4v11a1.2 1.2 0 0 0 1.2 1.2h5.6v-7h6.4v7h5.6a1.2 1.2 0 0 0 1.2-1.2v-11z"/></svg>Главная</button>
+      <button data-tab="1"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M4 4h7.5v7.5H4zm10.5 0H22v7.5h-7.5zM4 14.5h7.5V22H4zm10.5 0H22V22h-7.5z" opacity=".95"/></svg>Каталог</button>
+      <button data-tab="2"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M2.5 4h3.3l2.6 11.2a1.5 1.5 0 0 0 1.5 1.2h9.6a1.5 1.5 0 0 0 1.5-1.1L23 8H7.4L6.9 5.6A2 2 0 0 0 5 4zM10 19a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6zm9 0a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6z"/></svg><span class="count" id="tabCount">23</span>Корзина</button>
+      <button data-tab="3"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M4 10.2 5.6 4.8A1.5 1.5 0 0 1 7 3.8h12a1.5 1.5 0 0 1 1.4 1l1.6 5.4a3 3 0 0 1-3 3 3 3 0 0 1-3-1.4 3 3 0 0 1-2.9 1.4 3 3 0 0 1-3-1.4 3 3 0 0 1-3 1.4 3 3 0 0 1-3.1-2.6zM5.6 15h1.8v5.6h11.2V15h1.8v6.4a1.4 1.4 0 0 1-1.4 1.4H7a1.4 1.4 0 0 1-1.4-1.4V15z"/></svg><span class="badge"></span>Магазины</button>
+      <button data-tab="4"><svg viewBox="0 0 26 26" fill="currentColor"><circle cx="13" cy="8.5" r="4.8"/><path d="M3.5 22.5c.6-5 4.6-8 9.5-8s8.9 3 9.5 8z"/></svg>Профиль</button>
     </nav>
+
+    <!-- панель «Где дешевле» над вкладками, только на экране корзины -->
+    <div class="toolbar" id="cartBar" style="bottom:83px;display:none;padding-bottom:12px">
+      <div class="note" id="cartNote">23 товара в корзине · сравним цены в 5 магазинах</div>
+      <button class="btn" data-open-choice="Корзина">Где дешевле</button></div>
   </div>
 
   <div class="pushdim" id="pushdim"></div>
 
-  <!-- ============ Выбор выгоды (въезжает справа, уезжает вправо) ============ -->
+  <!-- ============ Где дешевле (въезжает справа, уезжает вправо) ============ -->
   <div class="push" id="choice" aria-hidden="true">
     <div class="edge" id="edge" aria-hidden="true"></div>
     <section class="screen" id="s-choice">
-      <div class="nav"><button class="left" data-back><svg width="12" height="20" viewBox="0 0 12 20"><path d="M10 2 2 10l8 8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>Сегодня</button>
-        <span class="small">Как купить</span></div>
-      <h1 class="large">Как купить</h1>
+      <div class="nav"><button class="left" data-back><svg width="12" height="20" viewBox="0 0 12 20"><path d="M10 2 2 10l8 8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="backLabel">Главная</span></button>
+        <span class="small">Где дешевле</span></div>
+      <h1 class="large">Где дешевле</h1>
       <div id="opts"></div>
-      <div class="foot">Цены проверены 12 минут назад под адрес Лиговский, 50. Привычный магазин — 4 600 ₽ за ту же корзину.</div>
+      <div class="foot">Цены обновлены 12 минут назад для адреса Лиговский пр., 50. Если купить всё в Перекрёстке — 4 600 ₽.</div>
     </section>
-    <div class="toolbar"><div class="note" id="ctaNote">2 курьера · 23 из 23 в наличии</div>
-      <button class="btn" id="cta" data-state="idle">Собрать корзины · 3 290 ₽</button></div>
+    <div class="toolbar"><div class="note" id="ctaNote"></div>
+      <button class="btn" id="cta" data-state="idle"></button></div>
   </div>
 
-  <!-- ============ Лист магазина (поднимается снизу, опускается вниз) ============ -->
+  <!-- ============ Лист снизу: карточка магазина или товара ============ -->
   <div class="scrim" id="scrim"></div>
   <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="shName">
     <div class="grab" id="grab"><div class="top"><span class="ic" id="shIc"></span>
@@ -365,56 +411,97 @@ button{font:inherit;color:inherit;letter-spacing:inherit;background:none;border:
 /* ---------------- данные ---------------- */
 const BASE = 4600;
 const OPTS = [
-  {name:'Максимальная выгода', sum:3290, eta:'сегодня 18–20', note:'2 курьера · 23 из 23 в наличии', rec:true,
+  {name:'Дешевле всего', sum:3290, sub:'2 магазина · 2 доставки · сегодня 18:00–20:00', note:'2 доставки · все товары в наличии', rec:true,
    stores:[['Магнит у дома','--s-magnit',14,2040],['Пятёрочка','--s-pyaterochka',9,1250]],
-   why:'Молочное и крупы — в Пятёрочке по Выручай-карте, остальное — в Магните. Кэшбэк Альфы 7% учтён.'},
-  {name:'Всё в одном месте', sum:3850, eta:'сегодня 17–19', note:'1 курьер · 23 из 23 в наличии',
-   stores:[['Магнит у дома','--s-magnit',23,3850]], why:'Один заказ и один курьер. На 560 ₽ дороже выгоды.'},
-  {name:'Экспресс', sum:4200, eta:'через 15 минут', note:'1 курьер · 21 из 23 — нет ряженки и гречки',
-   stores:[['Самокат','--s-samokat',21,4200]], why:'Цены вчерашние: войдите в Самокат, чтобы обновить.'},
+   why:'Молочные продукты и крупы — в Пятёрочке по Выручай-карте, остальное — в Магните. Кешбэк Альфа-Банка 7% учтён.'},
+  {name:'В одном магазине', sum:3850, sub:'Магнит у дома · 1 доставка · сегодня 17:00–19:00', note:'1 доставка · все товары в наличии',
+   stores:[['Магнит у дома','--s-magnit',23,3850]], why:'Один заказ и одна доставка. Дороже варианта «Дешевле всего» на 560 ₽.'},
+  {name:'Быстрее всего', sum:4200, sub:'Самокат · 1 доставка · через 15 минут', note:'Нет в наличии: ряженка 4%, гречка «Мистраль»',
+   stores:[['Самокат','--s-samokat',21,4200]], why:'Цены Самоката от вчера. Войдите в аккаунт Самоката, чтобы обновить.'},
 ];
+const SHOPS = {magnit:['Магнит','--s-magnit'], pyaterochka:['Пятёрочка','--s-pyaterochka'], vkusvill:['ВкусВилл','--s-vkusvill'],
+               lenta:['Лента','--s-lenta'], samokat:['Самокат','--s-samokat']};
+// товар: название, фасовка, категория, базовая цена, количество в корзине, старая цена (если скидка)
+const ITEMS = [
+  ['Молоко 2,5%','Простоквашино, 930 мл','Молочное',84,2,99],['Кефир 1%','Домик в деревне, 900 г','Молочное',89,1],
+  ['Масло сливочное 82,5%','Экомилк, 180 г','Молочное',149,1,189],['Яйца С0','Селянские, 10 шт.','Молочное',119,1,139],
+  ['Творог 5%','Простоквашино, 300 г','Молочное',139,1],['Сметана 15%','Домик в деревне, 300 г','Молочное',99,1],
+  ['Сыр Российский','Киприно, 200 г','Молочное',219,1],['Хлеб Бородинский','Хлебный дом, 400 г','Хлеб',89,1],
+  ['Батон нарезной','Хлебный дом, 400 г','Хлеб',55,1],['Гречка','Мистраль, 900 г','Крупы',129,1],
+  ['Рис круглозёрный','Увелка, 800 г','Крупы',115,1],['Макароны','Barilla, 450 г','Крупы',139,2],
+  ['Куриное филе','Петелинка, 1 кг','Мясо',389,1],['Фарш говяжий','Мираторг, 400 г','Мясо',299,1],
+  ['Бананы','1 кг','Овощи и фрукты',129,1],['Яблоки Гренни Смит','1 кг','Овощи и фрукты',159,1],
+  ['Картофель','2,5 кг','Овощи и фрукты',179,1],['Морковь','1 кг','Овощи и фрукты',59,1],
+  ['Помидоры','500 г','Овощи и фрукты',199,1],['Огурцы','450 г','Овощи и фрукты',139,1],
+  ['Чай чёрный','Greenfield, 100 пак.','Бакалея',239,1],['Кофе молотый','Жокей, 250 г','Бакалея',399,1],
+  ['Сахар','Русский, 1 кг','Бакалея',89,1],
+].map(([n,p,c,price,q,old],i)=>({i,n,p,c,price,q,old}));
+// цены в магазинах — детерминированно от базовой; одна сеть может не иметь товара
+function pricesFor(it){
+  const f = {magnit:1, pyaterochka:1.06, vkusvill:1.14, lenta:1.03, samokat:1.18};
+  const rot = ['magnit','pyaterochka','vkusvill','lenta'][it.i%4];
+  return Object.keys(f).map(k=>{
+    const p = k===rot ? it.price : Math.round(it.price*f[k]*(k==='magnit'?1.05:1));
+    return {k, p, out: (it.i%7===3 && k==='samokat')};
+  }).sort((a,b)=>(a.out-b.out)||(a.p-b.p));
+}
 const STORES = [
-  {sec:'Цены по вашему адресу', items:[
-    {id:'magnit',n:'Магнит',c:'--s-magnit',st:'ok',label:'Живые цены',s:'Магнит у дома · Лиговский, 43 · 6 мин назад',on:true,login:'Вход выполнен · Магнит Плюс'},
-    {id:'vkusvill',n:'ВкусВилл',c:'--s-vkusvill',st:'ok',label:'Живые цены',s:'Даркстор Обводный · 20 мин назад',on:true}]},
-  {sec:'Через ваш вход',foot:'Цены видит ваш кабинет магазина, открытый внутри приложения. Вход вы проходите сами.',items:[
-    {id:'pyaterochka',n:'Пятёрочка',c:'--s-pyaterochka',st:'ok',label:'Вход выполнен',s:'Выручай-карта · вчера в 21:40',on:true,login:'Вход выполнен · Выручай-карта'},
-    {id:'samokat',n:'Самокат',c:'--s-samokat',st:'warn',label:'Нужен вход',s:'Цены вчерашние',on:true,need:true}]},
-  {sec:'Только каталог',foot:'Цены с витрины сети без привязки к вашему магазину — могут отличаться на полке.',items:[
-    {id:'lenta',n:'Лента',c:'--s-lenta',st:'warn',label:'Каталог',s:'Ночной обход · 03:10',on:true},
-    {id:'dixy',n:'Дикси',c:'--s-dixy',st:'warn',label:'Каталог',s:'Через домашний интернет · 03:40',on:false}]},
+  {sec:'Точные цены', foot:'Цены конкретного магазина рядом с вашим адресом.', items:[
+    {id:'magnit',st:'ok',label:'Точные цены',s:'Магнит у дома, Лиговский пр., 43',upd:'6 минут назад',acc:'Вход выполнен',on:true},
+    {id:'vkusvill',st:'ok',label:'Точные цены',s:'ВкусВилл, Обводный канал, 21',upd:'20 минут назад',on:true}]},
+  {sec:'Через ваш аккаунт', foot:'Цены видны после входа в ваш аккаунт магазина. Номер телефона и код из СМС вы вводите сами.', items:[
+    {id:'pyaterochka',st:'ok',label:'Вход выполнен',s:'Выручай-карта',upd:'вчера в 21:40',acc:'Вход выполнен',on:true},
+    {id:'samokat',st:'warn',label:'Войдите в аккаунт',s:'Цены от вчера',upd:'вчера в 19:05',acc:'Нужно войти',on:true,need:true}]},
+  {sec:'Примерные цены', foot:'Общие цены сети. В вашем магазине цена может отличаться.', items:[
+    {id:'lenta',st:'warn',label:'Примерные цены',s:'Обновлено сегодня в 03:10',upd:'сегодня в 03:10',on:true},
+    {id:'dixy',st:'warn',label:'Отключён',s:'Не участвует в поиске цен',upd:'сегодня в 03:40',on:false,name:'Дикси',c:'--s-dixy'}]},
 ];
+const byId = Object.fromEntries(STORES.flatMap(g=>g.items).map(s=>[s.id,{...s, name:s.name||SHOPS[s.id][0], c:s.c||SHOPS[s.id][1]}]));
+
 const rub = n => n.toLocaleString('ru-RU') + ' ₽';
+const plural = (n,a,b,c) => { const m=n%10, h=n%100; return n+' '+(m===1&&h!==11?a:m>=2&&m<=4&&(h<10||h>=20)?b:c); };
+const goods = n => plural(n,'товар','товара','товаров');
 const chev = '<svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const buzz = ms => { try{ navigator.vibrate && navigator.vibrate(ms) }catch(e){} };
 
 /* ---------------- пружина (§4): демпфирование + отклик, старт с текущего значения и скорости ---------------- */
 function spring({from, to, velocity=0, damping=1, response=.35, onUpdate, onDone}){
-  if(reduced.matches){ onUpdate(to); onDone&&onDone(); return {stop(){}, value:()=>to}; }
+  if(reduced.matches){ onUpdate(to); onDone&&onDone(); return {stop(){}}; }
   const k = Math.pow(2*Math.PI/response, 2), c = 4*Math.PI*damping/response;
   let x = from, v = velocity, last = performance.now(), raf, alive = true;
   const step = now => {
-    let dt = Math.min(.032, (now-last)/1000); last = now;
-    // полуявный Эйлер мелкими шагами — устойчив и при резком отклике
+    const dt = Math.min(.032, (now-last)/1000); last = now;
     for(let t=0; t<dt; t+=1/240){ const h=Math.min(1/240,dt-t); v += (-k*(x-to) - c*v)*h; x += v*h; }
     onUpdate(x);
     if(Math.abs(v)<5 && Math.abs(x-to)<.5){ onUpdate(to); alive=false; onDone&&onDone(); return; }
     raf = requestAnimationFrame(step);
   };
   raf = requestAnimationFrame(step);
-  return {stop(){ if(alive){cancelAnimationFrame(raf); alive=false} }, value:()=>x, velocity:()=>v};
+  return {stop(){ if(alive){cancelAnimationFrame(raf); alive=false} }};
 }
-// §6: куда долетит бросок (формула Apple, d = 0.998)
-const project = (v, d=.998) => (v/1000)*d/(1-d);
-// §9: сопротивление за краем
-const rubber = (o, dim, c=.55) => (o*dim*c)/(dim + c*Math.abs(o));
-// §2: скорость по последним 100 мс движения
+const project = (v, d=.998) => (v/1000)*d/(1-d);                       // §6
+const rubber = (o, dim, c=.55) => (o*dim*c)/(dim + c*Math.abs(o));     // §9
 function tracker(){
   let pts=[];
   return {add(p){ const t=performance.now(); pts.push([p,t]); pts=pts.filter(q=>t-q[1]<100); },
           v(){ if(pts.length<2) return 0; const a=pts[0], b=pts[pts.length-1]; return (b[0]-a[0])/Math.max(1,(b[1]-a[1]))*1000; },
           reset(){ pts=[]; }};
+}
+function dragger(el, {axis, start, move, end, when=()=>true}){
+  const tr = tracker(); let origin=null, startVal=0, committed=false, id;
+  el.addEventListener('pointerdown', e=>{
+    if(!when(e)) return;
+    origin = axis==='y'?e.clientY:e.clientX; startVal = start(); committed=false; id=e.pointerId; tr.reset(); tr.add(origin);
+  });
+  el.addEventListener('pointermove', e=>{
+    if(origin===null || e.pointerId!==id) return;
+    const p = axis==='y'?e.clientY:e.clientX, d = p-origin;
+    if(!committed){ if(Math.abs(d)<8) return; committed=true; el.setPointerCapture(id); }   // §10: порог 8 px
+    tr.add(p); move(startVal + d);                                                          // 1:1 от места захвата
+  });
+  const up = ()=>{ if(origin===null) return; origin=null; if(committed) end(tr.v()); };
+  el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
 }
 
 /* ---------------- нажатия: подсветка сразу на pointerdown (§1) ---------------- */
@@ -428,20 +515,22 @@ document.addEventListener('pointerdown', e => {
 /* ---------------- вкладки: переключаются мгновенно, как в iOS ---------------- */
 const screens = [...document.querySelectorAll('.base .screen')];
 const tabs = [...document.querySelectorAll('.tabbar button')];
+const cartBar = document.getElementById('cartBar');
 function tab(i){
   screens.forEach((s,j)=>s.toggleAttribute('data-on', j===i));
   tabs.forEach((b,j)=>j===i ? b.setAttribute('aria-current','page') : b.removeAttribute('aria-current'));
+  cartBar.style.display = i===2 ? '' : 'none';
   requestAnimationFrame(layoutSegs);
 }
-document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>tab(+b.dataset.tab)));
+document.addEventListener("click", e=>{ const t=e.target.closest("[data-tab]"); if(t) tab(+t.dataset.tab); if(e.target.closest("[data-go]")) tab(4); });
 
-/* ---------------- шапка: стекло и мелкий заголовок, только когда крупный уехал (§12) ---------------- */
+/* шапка: стекло и мелкий заголовок, только когда крупный уехал (§12) */
 document.querySelectorAll('.screen').forEach(s=>{
   const nav = s.querySelector('.nav'), large = s.querySelector('.large');
   s.addEventListener('scroll',()=>nav.toggleAttribute('data-scrolled', s.scrollTop > (large.offsetTop + large.offsetHeight - 52)),{passive:true});
 });
 
-/* ---------------- сегменты и степпер ---------------- */
+/* ---------------- сегменты, степпер, переключатели ---------------- */
 function layoutSegs(){
   document.querySelectorAll('[data-seg]').forEach(seg=>{
     const bs=[...seg.querySelectorAll('button')], th=seg.querySelector('.th'), i=bs.findIndex(b=>b.getAttribute('aria-pressed')==='true');
@@ -453,102 +542,152 @@ document.querySelectorAll('[data-seg]').forEach(seg=>seg.querySelectorAll('butto
 })));
 let shops = 2;
 const minus=document.getElementById('minus'), plus=document.getElementById('plus'), maxShops=document.getElementById('maxShops');
-function drawShops(){ maxShops.textContent = shops===1?'один':'до '+shops; minus.disabled = shops<=1; plus.disabled = shops>=3; }
+function drawShops(){ maxShops.textContent = shops; minus.disabled = shops<=1; plus.disabled = shops>=3; }
 minus.onclick=()=>{shops--;drawShops();buzz(8)}; plus.onclick=()=>{shops++;drawShops();buzz(8)}; drawShops();
-document.querySelectorAll('.sw input').forEach(i=>i.addEventListener('change',()=>buzz(10)));
+document.addEventListener('change', e=>{ if(e.target.matches('.sw input')) buzz(10); });
 
-/* ---------------- список магазинов ---------------- */
-document.getElementById('storeList').innerHTML = STORES.map(g=>`<div class="h">${g.sec}</div><div class="group">${g.items.map(s=>`
-  <button class="row press withic" data-store="${s.id}"><span class="ic" style="background:var(${s.c})">${s.n[0]}</span>
-    <span class="main"><span class="t">${s.n}</span><span class="s">${s.s}</span></span>
-    <span class="state ${s.st}" style="margin:0">${s.on?s.label:'Выключен'}</span>${chev}</button>`).join('')}</div>${g.foot?`<div class="foot">${g.foot}</div>`:''}`).join('');
-const byId = Object.fromEntries(STORES.flatMap(g=>g.items).map(s=>[s.id,s]));
+/* ---------------- Главная: скидки на ваши товары ---------------- */
+document.getElementById('deals').innerHTML = ITEMS.filter(it=>it.old).map(it=>{
+  const best = pricesFor(it)[0], [sn,sc]=SHOPS[best.k];
+  return `<button class="row press withic" data-item="${it.i}"><span class="ic" style="background:var(${sc})">${sn[0]}</span>
+    <span class="main"><span class="t">${it.n}</span><span class="s">${it.p} · ${sn}</span></span>
+    <span><span class="old">${it.old}</span><span class="drop">${rub(best.p)}</span></span></button>`;}).join('');
 
-/* ---------------- лист магазина: поднимается снизу, тянется пальцем, бросается (§2–§9, §12) ---------------- */
+/* ---------------- Каталог: поиск и категории ---------------- */
+const CATS = ['Все','Молочное','Хлеб','Крупы','Мясо','Овощи и фрукты','Бакалея'];
+let cat = 'Все';
+const q = document.getElementById('q');
+document.getElementById('cats').innerHTML = CATS.map(c=>`<button class="chip" aria-pressed="${c===cat}">${c}</button>`).join('');
+document.querySelectorAll('#cats .chip').forEach(b=>b.addEventListener('click',()=>{
+  cat=b.textContent; document.querySelectorAll('#cats .chip').forEach(x=>x.setAttribute('aria-pressed',x===b)); drawCatalog();
+}));
+q.addEventListener('input', drawCatalog);
+function drawCatalog(){
+  const s = q.value.trim().toLowerCase();
+  const list = ITEMS.filter(it=>(cat==='Все'||it.c===cat) && (!s || (it.n+' '+it.p).toLowerCase().includes(s)));
+  document.getElementById('catHead').textContent = s ? `Найдено: ${goods(list.length)}` : (cat==='Все'?'Все товары':cat);
+  document.getElementById('catList').innerHTML = list.length ? list.map(it=>{
+    const best=pricesFor(it)[0];
+    return `<button class="row press withic" data-item="${it.i}"><span class="ic soft">${it.n[0]}</span>
+      <span class="main"><span class="t">${it.n}</span><span class="s">${it.p}</span></span>
+      <span class="pr"><b>от ${rub(best.p)}</b><span>${SHOPS[best.k][0]}</span></span>${chev}</button>`;}).join('')
+    : `<div class="empty">Ничего не нашлось.<br>Проверьте, нет ли опечатки.</div>`;
+}
+drawCatalog();
+
+/* ---------------- Корзина ---------------- */
+function drawCart(){
+  const inCart = ITEMS.filter(it=>it.q>0);
+  document.getElementById('cartList').innerHTML = inCart.length ? inCart.map(it=>`
+    <div class="row withic"><span class="ic soft">${it.n[0]}</span>
+      <button class="main press" data-item="${it.i}" style="text-align:left;border-radius:8px"><span class="t">${it.n}</span><span class="s">${it.p} · от ${rub(pricesFor(it)[0].p)}</span></button>
+      <div class="qty"><button data-dec="${it.i}" aria-label="Уменьшить количество">−</button><span>${it.q}</span><button data-inc="${it.i}" aria-label="Увеличить количество">+</button></div></div>`).join('')
+    : `<div class="empty">Корзина пуста.<br>Добавьте товары из каталога.</div>`;
+  const n = inCart.length;
+  document.getElementById('tabCount').textContent = n; document.getElementById('tabCount').hidden = !n;
+  document.querySelectorAll('[data-count]').forEach(e=>e.textContent=goods(n));
+  document.getElementById('cartNote').textContent = n ? `${goods(n)} в корзине · сравним цены в 5 магазинах` : 'Корзина пуста';
+  document.querySelectorAll('[data-open-choice]').forEach(b=>b.disabled=!n);
+}
+document.addEventListener('click', e=>{
+  const inc=e.target.closest('[data-inc]'), dec=e.target.closest('[data-dec]');
+  if(inc){ ITEMS[+inc.dataset.inc].q++; drawCart(); buzz(6); }
+  if(dec){ ITEMS[+dec.dataset.dec].q--; drawCart(); buzz(6); }
+});
+document.getElementById('clearCart').addEventListener('click',()=>{ ITEMS.forEach(it=>it.q=0); drawCart(); });
+drawCart();
+
+/* ---------------- Магазины ---------------- */
+document.getElementById('storeList').innerHTML = STORES.map(g=>`<div class="h">${g.sec}</div><div class="group">${g.items.map(x=>{const s=byId[x.id]; return `
+  <button class="row press withic" data-store="${s.id}"><span class="ic" style="background:var(${s.c})">${s.name[0]}</span>
+    <span class="main"><span class="t">${s.name}</span><span class="s">${s.s}</span></span>
+    <span class="state ${s.st}" style="margin:0">${s.label}</span>${chev}</button>`}).join('')}</div>${g.foot?`<div class="foot">${g.foot}</div>`:''}`).join('');
+
+/* ---------------- лист снизу (§2–§9, §12) ---------------- */
 const device=document.getElementById('device'), base=document.getElementById('base'),
-      sheet=document.getElementById('sheet'), scrim=document.getElementById('scrim'), grab=document.getElementById('grab');
-let sheetY, sheetAnim, H = () => sheet.offsetHeight;
+      sheet=document.getElementById('sheet'), scrim=document.getElementById('scrim'), grab=document.getElementById('grab'),
+      shBody=document.getElementById('shBody');
+let sheetY, sheetAnim; const H = () => sheet.offsetHeight;
 function paintSheet(y){
   sheetY = y; const p = Math.max(0, Math.min(1, 1 - y/H()));
   sheet.style.transform = `translateY(${y}px)`;
   scrim.style.opacity = .35*p;
-  // под листом фон отъезжает вглубь и скругляется — как стопка листов в iOS
-  base.style.transform = `translateY(${10*p}px) scale(${1 - .06*p})`;
+  base.style.transform = `translateY(${10*p}px) scale(${1 - .06*p})`;   // фон уходит вглубь, как стопка листов
   base.style.borderRadius = (12*p)+'px'; base.style.filter = p ? `brightness(${1-.08*p})` : '';
 }
-function openSheet(id){
-  const s = byId[id]; if(!s) return;
-  document.getElementById('shIc').textContent = s.n[0];
-  document.getElementById('shIc').style.background = `var(${s.c})`;
-  document.getElementById('shName').textContent = s.n;
-  const st=document.getElementById('shState'); st.className='state '+s.st; st.textContent=s.label;
-  document.getElementById('shBody').innerHTML = `
-    ${s.need?`<div class="hero" style="margin-top:14px"><div class="k">Чтобы видеть цены Самоката</div>
-      <div style="margin:6px 0 14px;font-size:15px;color:var(--ink2)">Откроется окно магазина. Номер и код из СМС вы вводите сами — приложение запомнит только то, что вход выполнен.</div>
-      <button class="btn">Войти в Самокат</button></div>`:''}
-    <div class="h">Как берутся цены</div><div class="group">
-      <div class="row"><span class="main"><span class="t">Источник</span></span><span class="val">${s.label}</span></div>
-      <div class="row"><span class="main"><span class="t">Последнее обновление</span></span><span class="val">${s.s.split(' · ').pop()}</span></div>
-      ${s.login?`<div class="row"><span class="main"><span class="t">Кабинет</span></span><span class="val">${s.login.split(' · ')[1]}</span></div>`:''}
-      <button class="row press"><span class="main"><span class="t" style="color:var(--tint)">Обновить цены сейчас</span></span></button></div>
-    <div class="h">В расчёте</div><div class="group">
-      <label class="row"><span class="main"><span class="t">Учитывать ${s.n}</span><span class="s">Выключите, если не хотите заказывать отсюда</span></span>
-        <span class="sw"><input type="checkbox" ${s.on?'checked':''}><i></i></span></label>
-      <label class="row"><span class="main"><span class="t">Только с доставкой 0 ₽</span></span><span class="sw"><input type="checkbox"><i></i></span></label></div>
-    <div class="foot">Обход — не чаще запроса в секунду, ночью. Упрётся в защиту сети — приложение сменит дорогу и скажет здесь.</div>`;
-  document.getElementById('shBody').querySelectorAll('.sw input').forEach(i=>i.addEventListener('change',()=>buzz(10)));
-  document.getElementById('shBody').scrollTop = 0;
+function showSheet({icon, color, title, state, cls, body}){
+  const ic=document.getElementById('shIc'); ic.textContent=icon; ic.style.background=color; ic.style.color='';
+  document.getElementById('shName').textContent = title;
+  const st=document.getElementById('shState'); st.className='state '+(cls||''); st.textContent=state||''; st.hidden=!state;
+  shBody.innerHTML = body; shBody.scrollTop = 0;
   sheet.style.visibility='visible'; scrim.setAttribute('data-on','');
   sheetAnim && sheetAnim.stop();
   if(sheetY===undefined || sheetY>=H()) paintSheet(H());
-  sheetAnim = spring({from:sheetY, to:0, damping:1, response:.35, onUpdate:paintSheet});
+  sheetAnim = spring({from:sheetY, to:0, response:.35, onUpdate:paintSheet});
 }
 function settleSheet(v){
-  const y = sheetY, end = y + project(v), close = end > H()*.5 || v > 900;
+  const close = sheetY + project(v) > H()*.5 || v > 900;
   sheetAnim && sheetAnim.stop();
-  // пружина берёт скорость пальца; лёгкий отскок — только если был бросок
-  sheetAnim = spring({from:y, to: close?H():0, velocity:v, damping: Math.abs(v)>300 ? .85 : 1, response:.35,
+  sheetAnim = spring({from:sheetY, to: close?H():0, velocity:v, damping: Math.abs(v)>300 ? .85 : 1, response:.35,
     onUpdate:paintSheet, onDone:()=>{ if(close){ sheet.style.visibility='hidden'; scrim.removeAttribute('data-on'); base.style.transform=''; base.style.filter=''; } }});
 }
 const closeSheet = () => settleSheet(1000);
 document.getElementById('shDone').addEventListener('click', e=>{ e.stopPropagation(); closeSheet(); });
 scrim.addEventListener('click', closeSheet);
-addEventListener('keydown', e=>{ if(e.key==='Escape'){ if(scrim.hasAttribute('data-on')) closeSheet(); else if(pushOpen) closePush(); }});
-document.addEventListener('click', e=>{ const r=e.target.closest('[data-store]'); if(r) openSheet(r.dataset.store); });
-
-function dragger(el, {axis, start, move, end, when=()=>true}){
-  const tr = tracker(); let origin=null, startVal=0, committed=false, id;
-  el.addEventListener('pointerdown', e=>{
-    if(!when(e)) return;
-    origin = axis==='y'?e.clientY:e.clientX; startVal = start(); committed=false; id=e.pointerId; tr.reset(); tr.add(origin);
-  });
-  el.addEventListener('pointermove', e=>{
-    if(origin===null || e.pointerId!==id) return;
-    const p = axis==='y'?e.clientY:e.clientX, d = p-origin;
-    if(!committed){ if(Math.abs(d)<8) return; committed=true; el.setPointerCapture(id); } // §10: порог 8 px
-    tr.add(p); move(startVal + d);                                   // 1:1, от места захвата
-  });
-  const up = e=>{ if(origin===null) return; origin=null; if(committed) end(tr.v()); };
-  el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
-}
 dragger(grab, {axis:'y', start:()=>{ sheetAnim&&sheetAnim.stop(); return sheetY; },
-  move:y=>paintSheet(y<0 ? -rubber(-y, H()) : y), end:settleSheet,
-  when:e=>!e.target.closest('.done')});
-// тянуть можно и за содержимое, когда оно прокручено к началу
-const shBody=document.getElementById('shBody');
+  move:y=>paintSheet(y<0 ? -rubber(-y, H()) : y), end:settleSheet, when:e=>!e.target.closest('.done')});
 dragger(shBody, {axis:'y', start:()=>{ sheetAnim&&sheetAnim.stop(); return sheetY; },
   move:y=>{ if(shBody.scrollTop<=0 && y>0) paintSheet(y); }, end:v=>{ if(sheetY>0) settleSheet(v); },
-  when:e=>shBody.scrollTop<=0 && !e.target.closest('input,label,.btn')});
+  when:e=>shBody.scrollTop<=0 && !e.target.closest('input,label,.btn,.qty')});
 
-/* ---------------- «Как купить»: въезжает справа, уезжает вправо, свайп от края (§7) ---------------- */
+function openStore(id){
+  const s = byId[id];
+  showSheet({icon:s.name[0], color:`var(${s.c})`, title:s.name, state:s.label, cls:s.st, body:`
+    ${s.need?`<div class="hero" style="margin-top:14px"><div class="k">Чтобы видеть актуальные цены ${s.name==='Самокат'?'Самоката':s.name}</div>
+      <div style="margin:6px 0 14px;font-size:15px;color:var(--ink2)">Откроется страница входа магазина. Номер телефона и код из СМС вы вводите сами. Приложение запомнит только то, что вход выполнен.</div>
+      <button class="btn">Войти в аккаунт</button></div>`:''}
+    <div class="h">Цены</div><div class="group">
+      <div class="row"><span class="main"><span class="t">Точность</span></span><span class="val">${s.st==='ok'?'Точные цены':s.need?'Цены от вчера':'Примерные цены'}</span></div>
+      <div class="row"><span class="main"><span class="t">Обновлено</span></span><span class="val">${s.upd}</span></div>
+      ${s.acc?`<div class="row"><span class="main"><span class="t">Аккаунт</span></span><span class="val">${s.acc}</span></div>`:''}
+      <button class="row press"><span class="main"><span class="t" style="color:var(--tint)">Обновить цены</span></span></button></div>
+    <div class="h">Поиск цен</div><div class="group">
+      <label class="row"><span class="main"><span class="t">Искать цены в этом магазине</span><span class="s">Выключите, если не заказываете здесь</span></span>
+        <span class="sw"><input type="checkbox" ${s.on?'checked':''}><i></i></span></label>
+      <label class="row"><span class="main"><span class="t">Только с бесплатной доставкой</span></span><span class="sw"><input type="checkbox"><i></i></span></label></div>`});
+}
+function openItem(i){
+  const it = ITEMS[i], ps = pricesFor(it), best = ps[0];
+  const body = () => `<div class="foot" style="margin:12px 0 0">${it.p}</div>
+    <div class="h">Цены в магазинах</div><div class="group cmp">${ps.map((x,j)=>`
+      <div class="row withic"><span class="ic" style="background:var(${SHOPS[x.k][1]})">${SHOPS[x.k][0][0]}</span>
+        <span class="main"><span class="t">${SHOPS[x.k][0]}</span>${j===0?'<span class="s best">Дешевле всего</span>':x.out?'<span class="s">Нет в наличии</span>':`<span class="s">дороже на ${rub(x.p-best.p)}</span>`}</span>
+        <span class="val">${x.out?'—':`<b ${j===0?'class="best"':''}>${rub(x.p)}</b>`}</span></div>`).join('')}</div>
+    <div class="foot">Цены для адреса Лиговский пр., 50 с учётом ваших карт лояльности.</div>
+    <div style="margin-top:18px">${it.q>0
+      ? `<div class="row" style="background:var(--card);border-radius:14px"><span class="main"><span class="t">В корзине</span></span>
+          <div class="qty"><button data-dec="${it.i}" aria-label="Уменьшить количество">−</button><span>${it.q}</span><button data-inc="${it.i}" aria-label="Увеличить количество">+</button></div></div>`
+      : `<button class="btn" data-add="${it.i}">Добавить в корзину · от ${rub(best.p)}</button>`}</div>`;
+  showSheet({icon:it.n[0], color:'var(--fill)', title:it.n, state:it.old?`Скидка ${Math.round((1-best.p/it.old)*100)}%`:'', cls:'ok', body:body()});
+  document.getElementById('shIc').style.color='var(--ink2)';
+  shBody.onclick = e => { if(e.target.closest('[data-add],[data-inc],[data-dec]')){ if(e.target.closest('[data-add]')){ it.q=1; drawCart(); buzz(10);} requestAnimationFrame(()=>shBody.innerHTML=body()); } };
+}
+document.addEventListener('click', e=>{
+  const s=e.target.closest('[data-store]'); if(s) return openStore(s.dataset.store);
+  const it=e.target.closest('[data-item]'); if(it){ shBody.onclick=null; openItem(+it.dataset.item); }
+});
+document.addEventListener('click', e=>{ if(e.target.closest('[data-store]')) shBody.onclick=null; }, true);
+
+/* ---------------- «Где дешевле»: въезжает справа, уезжает вправо, свайп от края (§7) ---------------- */
 const push=document.getElementById('choice'), dim=document.getElementById('pushdim');
 let pushX, pushAnim, pushOpen=false; const W=()=>device.offsetWidth;
 function paintPush(x){
   pushX=x; const p=1-x/W();
   push.style.transform=`translateX(${x}px)`;
-  base.style.transform=`translateX(${-0.3*W()*p}px)`; dim.style.opacity=.12*p;
+  base.style.transform = p>0 ? `translateX(${-0.3*W()*p}px)` : ''; dim.style.opacity=.12*p;
 }
-function openPush(){
+function openPush(from){
+  document.getElementById('backLabel').textContent = from;   // «‹ Главная» или «‹ Корзина» — куда вернёмся
   pushOpen=true; push.style.visibility='visible'; push.setAttribute('aria-hidden','false');
   pushAnim&&pushAnim.stop(); if(pushX===undefined) paintPush(W());
   pushAnim=spring({from:pushX,to:0,response:.38,onUpdate:paintPush});
@@ -560,37 +699,37 @@ function settlePush(v){
     onDone:()=>{ if(close){ pushOpen=false; push.style.visibility='hidden'; push.setAttribute('aria-hidden','true'); base.style.transform=''; } }});
 }
 const closePush=()=>settlePush(1500);
-document.querySelector('[data-open="choice"]').addEventListener('click',openPush);
+document.querySelectorAll('[data-open-choice]').forEach(b=>b.addEventListener('click',()=>openPush(b.dataset.openChoice)));
 document.querySelector('[data-back]').addEventListener('click',closePush);
 dragger(document.getElementById('edge'),{axis:'x',start:()=>{pushAnim&&pushAnim.stop();return pushX},
   move:x=>paintPush(Math.max(0,x)),end:settlePush});
+addEventListener('keydown', e=>{ if(e.key==='Escape'){ if(scrim.hasAttribute('data-on')) closeSheet(); else if(pushOpen) closePush(); }});
 
-/* варианты покупки */
 const optsEl=document.getElementById('opts'), cta=document.getElementById('cta'), ctaNote=document.getElementById('ctaNote');
+const ctaText = o => 'Перейти к оформлению · ' + rub(o.sum);
 optsEl.innerHTML = OPTS.map((o,i)=>`<div class="opt" ${i===0?'data-picked':''} data-i="${i}">
   <button class="row press" style="gap:14px"><span class="radio"></span>
-    <span class="main"><span class="t">${o.name}${o.rec?'<span class="pill">совет</span>':''}</span>
-      <span class="s">${o.stores.length>1?o.stores.length+' магазина':o.stores[0][0]} · ${o.eta}</span></span>
-    <span class="price"><b>${rub(o.sum)}</b><span>−${rub(BASE-o.sum)}</span></span></button>
-  <div class="more"><div><ul>${o.stores.map(s=>`<li><span><i class="dot" style="background:var(${s[1]})"></i>${s[0]} · ${s[2]} поз.</span><span>${rub(s[3])}</span></li>`).join('')}<li>${o.why}</li></ul></div></div></div>`).join('');
+    <span class="main"><span class="t">${o.name}${o.rec?'<span class="pill">Рекомендуем</span>':''}</span><span class="s">${o.sub}</span></span>
+    <span class="price"><b>${rub(o.sum)}</b><span>Экономия ${rub(BASE-o.sum)}</span></span></button>
+  <div class="more"><div><ul>${o.stores.map(s=>`<li><span><i class="dot" style="background:var(${s[1]})"></i>${s[0]} · ${goods(s[2])}</span><span>${rub(s[3])}</span></li>`).join('')}<li>${o.why}</li></ul></div></div></div>`).join('');
+const picked = () => OPTS[+optsEl.querySelector('[data-picked]').dataset.i];
+cta.textContent = ctaText(OPTS[0]); ctaNote.textContent = OPTS[0].note;
 optsEl.querySelectorAll('.opt').forEach(el=>el.querySelector('.row').addEventListener('click',()=>{
   if(cta.dataset.state!=='idle') return;
   optsEl.querySelectorAll('.opt').forEach(x=>x.toggleAttribute('data-picked',x===el));
-  const o=OPTS[+el.dataset.i];
-  cta.textContent=(o.stores.length>1?'Собрать корзины · ':'Собрать корзину · ')+rub(o.sum); ctaNote.textContent=o.note; buzz(8);
+  cta.textContent=ctaText(picked()); ctaNote.textContent=picked().note; buzz(8);
 }));
 cta.addEventListener('click',()=>{
   if(cta.dataset.state!=='idle') return;
-  const was=cta.textContent;
-  cta.dataset.state='busy'; cta.innerHTML='<span class="spin"></span>Наполняю корзины…';
-  setTimeout(()=>{ cta.dataset.state='done'; cta.textContent='Готово — осталось оплатить'; buzz([12,60,12]);
-    ctaNote.textContent='Корзины наполнены в приложениях магазинов. Можно отменить до оплаты.';
-    setTimeout(()=>{ cta.dataset.state='idle'; cta.textContent=was; ctaNote.textContent=OPTS[+optsEl.querySelector('[data-picked]').dataset.i].note; },3200);
+  cta.dataset.state='busy'; cta.innerHTML='<span class="spin"></span>Добавляем товары в корзины магазинов…';
+  setTimeout(()=>{ cta.dataset.state='done'; cta.textContent='Оплатите заказ в приложении магазина'; buzz([12,60,12]);
+    ctaNote.textContent='Товары уже в корзинах магазинов. До оплаты заказ можно изменить.';
+    setTimeout(()=>{ cta.dataset.state='idle'; cta.textContent=ctaText(picked()); ctaNote.textContent=picked().note; },3200);
   },1400);
 });
 
-addEventListener('resize',()=>{ layoutSegs(); if(!pushOpen){pushX=undefined; paintPush(W()); base.style.transform='';} });
-paintPush(W()); base.style.transform=''; dim.style.opacity=0;
+addEventListener('resize',()=>{ layoutSegs(); if(!pushOpen){ paintPush(W()); } });
+paintPush(W()); dim.style.opacity=0;
 layoutSegs();
 </script>
 </body>
