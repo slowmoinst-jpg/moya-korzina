@@ -139,7 +139,21 @@ def page():
         ready=all(s["done"] for s in steps),
         note=_loading_note(address),
         saved=request.args.get("saved") == "1",
+        fresh=_fresh_basket(request.args.get("fresh")),
+        basket_path=SCREEN_BY_KEY["basket"].path,
     )
+
+
+def _fresh_basket(raw: str | None) -> dict | None:
+    """Корзина, чьи цены обновляются по новому адресу. Нет такой — None."""
+    try:
+        basket_id = int(raw or 0)
+    except ValueError:
+        return None
+    if not basket_id:
+        return None
+    found = next((b for b in repo.list_baskets() if int(b["id"]) == basket_id), None)
+    return {"id": basket_id, "name": found.get("name") if found else ""} if found else None
 
 
 __all__ = ["page"]

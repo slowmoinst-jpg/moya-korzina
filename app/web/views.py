@@ -111,8 +111,18 @@ def install(flask_app: Flask) -> None:
         from flask import redirect, request
         from app import location as client_place
 
-        client_place.save_address(request.form.get("address", ""))
-        return redirect("/?saved=1")
+        moved = client_place.save_address(request.form.get("address", ""))
+        # Адрес сменился — цены корзины по новому адресу обновляются сразу, фоном.
+        # Без этого «Результат» считал бы по ценам прежней точки, пока человек сам
+        # не догадается нажать «Обновить цены».
+        fresh = None
+        if moved:
+            try:
+                from app.web.screens import basket as basket_screen
+                fresh = basket_screen.refresh_after_move()
+            except Exception:                    # noqa: BLE001 — адрес сохранён, это главное
+                log.warning("обновление цен после смены адреса не запустилось", exc_info=True)
+        return redirect("/?saved=1" + (f"&fresh={fresh}" if fresh else ""))
 
     @flask_app.get("/address/suggest")
     def screen_address_suggest():

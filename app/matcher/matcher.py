@@ -208,12 +208,21 @@ def auto_match(product_ids: list[int], store_codes: list[str], threshold: float 
 
 # --- цены ------------------------------------------------------------------
 
-def refresh_prices(product_ids: list[int], store_codes: list[str]) -> dict:
-    """Тянет цены по ПОДТВЕРЖДЁННЫМ сопоставлениям и пишет снимки в store_prices."""
+def refresh_prices(product_ids: list[int], store_codes: list[str], progress=None) -> dict:
+    """Тянет цены по ПОДТВЕРЖДЁННЫМ сопоставлениям и пишет снимки в store_prices.
+
+    progress(сделано, всего, сеть) — ход по сетям: обновление идёт минутами, и без
+    хода экран «Корзина» стоял бы на «0 из N», неотличимо от зависания.
+    """
     updated = 0
     errors: list[str] = []
 
-    for store_code in store_codes:
+    for number, store_code in enumerate(store_codes):
+        if progress is not None:
+            try:
+                progress(number, len(store_codes), store_code)
+            except Exception:  # noqa: BLE001 — отметка хода не повод бросать цены
+                pass
         store = repo.get_store(store_code)
         if store is None:
             errors.append(f"{store_code}: магазин не найден")

@@ -35,6 +35,11 @@ def _days(value: str | None) -> float | None:
     return (datetime.now() - when).total_seconds() / 86400.0
 
 
+def _stamp_of(value) -> str:
+    """Отметка времени в сравнимом виде: «2026-09-26T10:00:00»."""
+    return str(value or "").strip().replace(" ", "T")[:19]
+
+
 def stale_after_days() -> float:
     """Старше скольких дней цена считается несвежей и помечается в расчёте."""
     try:
@@ -114,14 +119,20 @@ def _shop_by_weight(snap: dict) -> bool:
             or sold_by_weight(snap.get("sp_name") or ""))
 
 
+_UNSET = object()
+
+
 def line_price(product_id: int, store: Store, qty: float, unit: str,
-               ref_weight_g: float | None = None, weighed: bool | None = None) -> dict | None:
+               ref_weight_g: float | None = None, weighed: bool | None = None,
+               moved: object = _UNSET) -> dict | None:
     """Во что обойдётся позиция корзины в магазине. None — сравнимой цены нет.
 
     Возвращает {"value", "adjust", "in_stock", "fetched_at", "stale", "stale_label", "note"}:
       value   — ДЕНЬГИ: столько заплатит человек за то, что ляжет в корзину;
       adjust  — поправка ТОЛЬКО ДЛЯ ВЫБОРА (разная фасовка), в оплату не входит;
-      stale_label — дата несвежего снимка или «справочная цена» для цены из CSV.
+      stale_label — дата несвежего снимка, «справочная цена» для цены из CSV или
+                    «по прежнему адресу» для цены точки, снятой до смены адреса;
+      moved   — когда сменился адрес (location.moved_at); не передано — прочитать здесь.
 
     Количество — по тому же правилу, по которому его положат в корзину
     (app/purchase.pieces): расчёт и корзина не спорят.
@@ -202,9 +213,17 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
 
     age = _days(snap.get("fetched_at"))
     reference = snap.get("source") == "fallback"
-    stale = reference or (age is not None and age > stale_after_days())
+    if moved is _UNSET:
+        moved = location.moved_at()
+    # Цена ТОЧКИ, снятая до смены адреса, — цена прежнего магазина, как бы свежа
+    # она ни была. Сети без точек (ВкусВилл, Дикси, цены по чекам) адрес не меняет.
+    before_move = (store.code in location.ADDRESS_STORES and bool(moved)
+                   and _stamp_of(snap.get("fetched_at")) < _stamp_of(moved))
+    stale = reference or before_move or (age is not None and age > stale_after_days())
     if reference:
         label = "справочная цена"
+    elif before_move:
+        label = "по прежнему адресу"
     elif stale:
         label = str(snap.get("fetched_at") or "")[:10]
     else:
@@ -222,9 +241,9 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
 
 def _price_for_line(product_id: int, store: Store, qty: float, unit: str,
                     ref_weight_g: float | None = None,
-                    weighed: bool | None = None) -> tuple[float | None, bool]:
+                    weighed: bool | None = None, moved: object = _UNSET) -> tuple[float | None, bool]:
     """Стоимость позиции целиком в магазине: (деньги, в наличии)."""
-    found = line_price(product_id, store, qty, unit, ref_weight_g, weighed)
+    found = line_price(product_id, store, qty, unit, ref_weight_g, weighed, moved)
     if not found:
         return None, False
     return found["value"], found["in_stock"]
@@ -233,6 +252,7 @@ def _price_for_line(product_id: int, store: Store, qty: float, unit: str,
 def build_basket_lines(basket_id: int) -> list[BasketLine]:
     """Строки корзины с ценами по всем магазинам, где есть подтверждённое сопоставление."""
     stores = repo.list_stores()
+    moved = location.moved_at()
     lines: list[BasketLine] = []
     for item in repo.basket_items(basket_id):
         line = BasketLine(
@@ -244,7 +264,7 @@ def build_basket_lines(basket_id: int) -> list[BasketLine]:
         weighed = is_weighed(line.product_id, line.unit, item.get("name"))
         for store in stores:
             found = line_price(line.product_id, store, line.qty, line.unit, item.get("weight_g"),
-                               weighed)
+                               weighed, moved)
             if found is None:
                 continue
             line.prices[store.code] = found["value"]
@@ -280,6 +300,7 @@ def baseline_by_product(basket_id: int) -> dict[int, float]:
     покупок -> минимальная известная цена среди остальных магазинов.
     """
     base_store = repo.get_store(config.get("baseline_store", "pyaterochka"))
+    moved = location.moved_at()
     out: dict[int, float] = {}
     for item in repo.basket_items(basket_id):
         qty, unit, pid = float(item["qty"]), item["unit"] or "pcs", item["product_id"]
@@ -287,7 +308,7 @@ def baseline_by_product(basket_id: int) -> dict[int, float]:
         weighed = is_weighed(pid, unit, item.get("name"))
         price = None
         if base_store:
-            found = line_price(pid, base_store, qty, unit, grams, weighed)
+            found = line_price(pid, base_store, qty, unit, grams, weighed, moved)
             # Товара нет в базовом магазине — его «цена» там не база: Магнит на
             # отсутствующий товар пишет справочную цену или ноль с пометкой «нет».
             # База — в рублях, как и «Заплатим»: экономия на экране обязана быть
@@ -301,7 +322,7 @@ def baseline_by_product(basket_id: int) -> dict[int, float]:
         if price is None:
             others = []
             for store in repo.list_stores():
-                p, _ = _price_for_line(pid, store, qty, unit, grams, weighed)
+                p, _ = _price_for_line(pid, store, qty, unit, grams, weighed, moved)
                 if p:
                     others.append(p)
             price = min(others) if others else 0.0
@@ -329,7 +350,8 @@ def price_coverage(basket_id: int) -> dict[str, tuple[int, int]]:
     return out
 
 
-def calculate(basket_id: int, refresh: bool = True) -> tuple[list[Variant], float]:
+def calculate(basket_id: int, refresh: bool = True,
+              progress=None) -> tuple[list[Variant], float]:
     """Главный расчёт: (топ-N вариантов, baseline).
 
     refresh=True сначала обновляет цены коннекторами по подтверждённым сопоставлениям.
@@ -344,7 +366,7 @@ def calculate(basket_id: int, refresh: bool = True) -> tuple[list[Variant], floa
             from app.matcher import refresh_prices
 
             store_codes = [s.code for s in repo.list_stores()]
-            refresh_prices([it["product_id"] for it in items], store_codes)
+            refresh_prices([it["product_id"] for it in items], store_codes, progress=progress)
         except Exception as exc:  # коннектор/матчер недоступен — работаем на снимках цен
             log.warning("Обновление цен не удалось, считаем по последним снимкам: %s", exc)
 

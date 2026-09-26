@@ -213,6 +213,25 @@ def _start_job(basket_id: int, kind: str, items: list[dict]) -> None:
     worker.start()
 
 
+def refresh_after_move() -> int | None:
+    """Адрес сменился — обновить цены последней корзины по новому. Номер корзины или None.
+
+    Цены прежнего адреса «Результат» помечает, но помечать мало: человек сменил
+    адрес ради цен нового, и ждать, пока он догадается нажать «Обновить цены»,
+    значит показывать ему прежний магазин. Обновление идёт фоном, ход — на
+    экране «Корзина».
+    """
+    baskets = repo.list_baskets()
+    if not baskets:
+        return None
+    basket_id = int(baskets[0]["id"])
+    items = repo.basket_items(basket_id)
+    if not items:
+        return None
+    _start_job(basket_id, "fresh", items)
+    return basket_id
+
+
 def _mark(key, **fields) -> None:
     with _JOBS_LOCK:
         job = _JOBS.get(key)
@@ -230,7 +249,12 @@ def _run_job(key, phone: str, basket_id: int, kind: str, items: list[dict]) -> N
             note = "Цены обновлены по всем позициям."
         else:
             from app import service
-            service.calculate(basket_id, True)   # нужны не варианты, а свежие снимки цен
+
+            def step(done: int, total: int, code: str) -> None:
+                store = repo.get_store(code)
+                _mark(key, done=done, total=total, what=store.name if store else code)
+
+            service.calculate(basket_id, True, progress=step)   # нужны свежие снимки цен
             note = "Цены обновлены — можно смотреть результат."
         _mark(key, status="ok", note=note, finished=time.time())
     except Exception as exc:  # noqa: BLE001 — фоновая работа не должна ронять сервер
@@ -321,6 +345,9 @@ def _price_matrix(items, stores) -> tuple[dict, dict]:
     totals: dict[str, float] = {s.code: 0.0 for s in stores}
     from app import service
 
+    from app import location as client_place
+
+    moved = client_place.moved_at()
     for item in items:
         pid = int(item["product_id"])
         qty = float(item.get("qty") or 0)
@@ -330,7 +357,7 @@ def _price_matrix(items, stores) -> tuple[dict, dict]:
             # Тот же расчёт, что у оптимизатора: цена килограмма не берётся из цены
             # фасовки, разные фасовки приводятся к весу эталона. Два расчёта цены
             # на двух экранах однажды разошлись бы, и строка корзины спорила бы с итогом.
-            found = service.line_price(pid, store, qty, unit, item.get("weight_g"), weighed)
+            found = service.line_price(pid, store, qty, unit, item.get("weight_g"), weighed, moved)
             if not found:
                 continue
             value = found["value"]

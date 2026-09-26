@@ -2,7 +2,9 @@
 {% block title %}Моя корзина{% endblock %}
 {% block body %}
 
-{% if saved %}<div class="note ok">Адрес сохранён. Цены по нему поедут в фоне.</div>{% endif %}
+{% if saved %}<div class="note ok">Адрес сохранён. Цены по нему поедут в фоне.
+  {% if fresh %}Цены корзины «{{ fresh.name }}» уже обновляются по новому адресу —
+    <a href="{{ basket_path }}?id={{ fresh.id }}">ход на экране «Корзина»</a>.{% endif %}</div>{% endif %}
 {% if note %}<div class="note {{ note.kind }}">{{ note.text }}</div>{% endif %}
 
 <div class="card">
