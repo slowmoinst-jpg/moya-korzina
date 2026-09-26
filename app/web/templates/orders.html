@@ -1,0 +1,102 @@
+{# Заказы. Сверху — два способа пополнить: из ФНС и вручную. Ниже — заказы по месяцам,
+   у каждого магазин, сколько товаров, когда и откуда (чек из ФНС или вручную).
+   Внизу одной строкой — чеки других магазинов, которые не стали заказами.
+   Карточка заказа открывается по ?key=… и умеет одно: положить все товары в корзину.
+   Слова — по словарю docs/design/nazvaniya-2026-09-26.md. #}
+{% extends "layout.html" %}
+{% block title %}Заказы — Моя корзина{% endblock %}
+{% block body %}
+
+{% for kind, text in get_flashed_messages(with_categories=true) %}
+  <div class="note {{ kind }}">{{ text }}</div>
+{% endfor %}
+
+{% if chosen %}
+  {# ---------- карточка заказа ---------- #}
+  <a class="back" href="{{ screen.path }}">‹ Заказы</a>
+  <div class="card">
+    <div class="row">
+      <span class="order-ic s-{{ chosen.store_code }}">{{ chosen.store_name[:1] }}</span>
+      <div>
+        <h2 style="margin:0">{{ chosen.store_name }} · {{ rub(chosen.total) }}</h2>
+        <div class="dim">{{ chosen.day }} · {{ goods(chosen.lines|length) }} · {{ chosen.source }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="group-h">Товары</div>
+  <div class="card list">
+    {% for ln in chosen.lines %}
+      <div class="order-row">
+        <span class="grow">{{ ln.name }}{% if ln.qty and ln.qty != 1 %} <span class="dim">× {{ ln.qty|round(3)|string|replace('.0','') }}</span>{% endif %}</span>
+        <span>{{ rub(ln.total) }}</span>
+      </div>
+    {% endfor %}
+  </div>
+  <form method="post" action="{{ screen.path }}">
+    <input type="hidden" name="do" value="repeat">
+    <input type="hidden" name="key" value="{{ chosen.key }}">
+    <button class="btn main wide" type="submit">Добавить все товары в корзину</button>
+  </form>
+  <p class="dim">Товары попадут в новую корзину — сравните, где они дешевле сегодня.</p>
+
+{% else %}
+  {# ---------- пополнить ---------- #}
+  <div class="card list">
+    {% if fns.running %}
+      <div class="order-row"><span class="spin"></span>
+        <span class="grow">Загружаем чеки из ФНС… <span class="dim">{{ fns.saying }}</span></span>
+        <a class="btn" href="{{ screen.path }}">Обновить</a></div>
+    {% elif fns.connected %}
+      <form method="post" action="{{ screen.path }}" class="order-row">
+        <input type="hidden" name="do" value="sync">
+        <button class="link-btn grow" type="submit"><b>Загрузить чеки из ФНС</b>
+          <span class="dim">Все чеки, выданные на ваш номер телефона</span></button>
+      </form>
+    {% else %}
+      <a class="order-row" href="{{ receipts_path }}"><span class="grow"><b>Загрузить чеки из ФНС</b>
+        <span class="dim">Подключите свой номер в ФНС — чеки будут приходить сами</span></span><span class="chev">›</span></a>
+    {% endif %}
+    <a class="order-row" href="{{ receipts_path }}#file"><span class="grow"><b>Добавить чек вручную</b>
+      <span class="dim">Файл чека, QR-код или текст заказа из письма</span></span><span class="chev">›</span></a>
+  </div>
+  <p class="dim">По заказам приложение понимает, что вы обычно покупаете, и собирает корзину «Как обычно».</p>
+
+  {# ---------- заказы ---------- #}
+  {% if not count %}
+    <div class="card">
+      <h2>Заказов пока нет</h2>
+      <p class="muted">Загрузите чеки из ФНС или добавьте чек вручную — и здесь появятся ваши покупки,
+        а корзина «Как обычно» соберётся сама.</p>
+    </div>
+  {% endif %}
+  {% for title, list in months %}
+    <div class="group-h">{{ title }}</div>
+    <div class="card list">
+      {% for o in list %}
+        <a class="order-row" href="{{ screen.path }}?key={{ o.key|urlencode }}">
+          <span class="order-ic s-{{ o.store_code }}">{{ o.store_name[:1] }}</span>
+          <span class="grow"><b>{{ o.store_name }} · {{ goods(o.lines|length) }}</b>
+            <span class="dim">{{ o.day }} · {{ o.source }}</span></span>
+          <span class="sum">{{ rub(o.total) }}</span><span class="chev">›</span>
+        </a>
+      {% endfor %}
+    </div>
+  {% endfor %}
+
+  {# ---------- не добавлены ---------- #}
+  {% if other.total %}
+    <div class="group-h">Не добавлены</div>
+    <div class="card list">
+      <details {{ 'open' if show_other }}>
+        <summary class="order-row"><span class="grow"><b>{{ cheques(other.total) }} из других магазинов</b>
+          <span class="dim">{{ other.shops|map('first')|join(', ') }}</span></span><span class="chev">›</span></summary>
+        {% for name, n in other.shops %}
+          <div class="order-row"><span class="grow">{{ name }}</span><span class="dim">{{ cheques(n) }}</span></div>
+        {% endfor %}
+      </details>
+    </div>
+    <p class="dim">В этих магазинах мы пока не собираем заказы, поэтому их чеки не попадают в заказы
+      и в корзину «Как обычно».</p>
+  {% endif %}
+{% endif %}
+{% endblock %}

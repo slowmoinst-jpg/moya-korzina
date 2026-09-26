@@ -28,7 +28,7 @@ def _round_qty(qty: float, unit: str | None) -> float:
     return float(round(qty))
 
 
-def _history(store_id: int | None = None) -> list[dict]:
+def orderable_history(store_id: int | None = None) -> list[dict]:
     """История для корзины «Как обычно» — без покупок в сетях, где мы не собираем заказ.
 
     Новые чеки таких сетей и так не попадают в историю (app/chains.py), а этот
@@ -46,7 +46,7 @@ def _history(store_id: int | None = None) -> list[dict]:
 
 def last_purchase_items(store_id: int | None = None) -> tuple[str | None, list[dict]]:
     """Позиции самой свежей покупки: (дата, строки). Строки — product_id, qty, unit, name."""
-    rows = _history(store_id)
+    rows = orderable_history(store_id)
     if not rows:
         return None, []
     last_date = max(str(r["date"]) for r in rows)
@@ -67,7 +67,7 @@ def last_purchase_items(store_id: int | None = None) -> tuple[str | None, list[d
 
 def average_month_items(store_id: int | None = None) -> tuple[int, list[dict]]:
     """Среднемесячное количество по каждому товару: (число месяцев, строки)."""
-    rows = _history(store_id)
+    rows = orderable_history(store_id)
     if not rows:
         return 0, []
 
@@ -127,7 +127,7 @@ def build_from_history(kind: str, name: str | None = None, store_id: int | None 
 
 def regular_purchases(min_times: int = 2) -> list[dict]:
     """Товары, которые покупают регулярно: встречались минимум в min_times разных покупках."""
-    rows = _history()
+    rows = orderable_history()
     seen: dict[int, set[str]] = defaultdict(set)
     names: dict[int, str] = {}
     for row in rows:

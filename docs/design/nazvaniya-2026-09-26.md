@@ -182,5 +182,5 @@
 | 3. Проверка перед оформлением | `cartplan.verify` — включена везде, где товары уходят в корзину магазина |
 | 4. Экономия по своим чекам | `service.baseline_total`: сначала цена из истории покупок |
 | Отсев чеков | `app/chains.py` (`orders.chains`), `importers/bundle.store_receipts`, `fns/sync` (по описи, без запроса состава) |
-| «Как обычно» без чужих сетей | `baskets._history` |
+| «Как обычно» без чужих сетей | `baskets.orderable_history` |
 
