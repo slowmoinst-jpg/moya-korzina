@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#F2F2F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<title>Моя корзина — прототип</title>
+<!--
+  Сквозной прототип приложения по скиллам .claude/skills/apple-design и emil-design-eng.
+  Экраны: «Сегодня» (главный), «Магазины», «Настройки» и «Выбор выгоды» (открывается с главной).
+
+  Что здесь сделано по Apple, по пунктам скилла:
+   §1  отклик на нажатие приходит на pointerdown, без задержки тапа;
+   §2–6 карточка магазина и экран выбора тянутся пальцем 1:1, с учётом места захвата;
+        на отпускании берётся скорость, конечная точка проецируется (d = 0.998),
+        пружина стартует с текущего значения и скорости пальца, её можно схватить на лету;
+   §4  пружины: по умолчанию демпфирование 1.0, отклик 0.35 с; 0.85 — только после броска;
+   §7  что выехало справа, уходит вправо; что поднялось снизу, опускается вниз;
+   §9  выше края лист не упирается, а тянется с сопротивлением (rubber-band);
+   §12 полупрозрачные панель вкладок и шапка; разделитель под шапкой появляется,
+        только когда под неё заехало содержимое; под листом фон тускнеет и отодвигается;
+   §13 короткий отклик вибрацией на переключателях и на готовности корзины;
+   §14 prefers-reduced-motion — перекрёстное растворение вместо сдвигов,
+        prefers-reduced-transparency — сплошные панели, prefers-contrast — чёткие границы;
+   §15 системный шрифт, крупный заголовок с отрицательной разрядкой, текст около нуля;
+   §16 вкладки названы по содержимому («Сегодня», «Магазины», «Настройки»), а не «Главная»;
+        опасных подтверждений нет — всё обратимо.
+  Токены цветов сетей — из app/web/static/korzina.css. В код приложения отсюда ничего не импортируется.
+-->
+<style>
+:root{
+  color-scheme:light dark;
+  --bg:#F2F2F7; --card:#FFFFFF; --fill:rgba(118,118,128,.12);
+  --ink:#000; --ink2:rgba(60,60,67,.62); --ink3:rgba(60,60,67,.32);
+  --sep:rgba(60,60,67,.18); --tint:#0A7AFF;
+  --green:#1E7A4B; --green-soft:rgba(30,122,75,.12);
+  --amber:#B8730E; --amber-soft:rgba(184,115,14,.13);
+  --red:#D70015;
+  --bar:rgba(249,249,249,.78);
+  --s-magnit:#D8452B; --s-vkusvill:#2E9E5B; --s-pyaterochka:#E2A32B;
+  --s-lenta:#3B6FD4; --s-dixy:#C8562F; --s-samokat:#7A5CD0;
+  --r:12px;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#000; --card:#1C1C1E; --fill:rgba(118,118,128,.24);
+  --ink:#fff; --ink2:rgba(235,235,245,.6); --ink3:rgba(235,235,245,.3);
+  --sep:rgba(84,84,88,.6); --tint:#0A84FF;
+  --green:#30D158; --green-soft:rgba(48,209,88,.16);
+  --amber:#FFB340; --amber-soft:rgba(255,179,64,.16);
+  --bar:rgba(22,22,24,.78);
+}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%}
+body{background:#D9DADF;color:var(--ink);
+  font:17px/1.29 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"Segoe UI",Roboto,sans-serif;
+  letter-spacing:-.022em;font-feature-settings:"tnum" 1;-webkit-font-smoothing:antialiased;
+  display:grid;place-items:center}
+@media (prefers-color-scheme:dark){body{background:#111}}
+button{font:inherit;color:inherit;letter-spacing:inherit;background:none;border:0;padding:0;cursor:pointer;
+  -webkit-user-select:none;user-select:none;touch-action:manipulation}
+
+/* ---------- корпус: на телефоне — весь экран, на компьютере — рамка ---------- */
+.device{position:relative;width:100vw;height:100dvh;overflow:hidden;background:#000}
+@media (min-width:500px){.device{width:390px;height:844px;border-radius:48px;
+  box-shadow:0 0 0 11px #1b1b1d,0 0 0 12px #3a3a3c,0 30px 80px rgba(0,0,0,.35)}}
+
+/* слой вкладок: уходит вглубь, когда поверх поднимается лист */
+.base{position:absolute;inset:0;background:var(--bg);transform-origin:50% 0;overflow:hidden;will-change:transform}
+.screen{position:absolute;inset:0;overflow-y:auto;overscroll-behavior:contain;padding:0 16px 110px;display:none;
+  -webkit-overflow-scrolling:touch}
+.screen[data-on]{display:block}
+
+/* шапка: прозрачная, пока под ней ничего нет; стекло и линия — когда содержимое заехало */
+.nav{position:sticky;top:0;z-index:5;margin:0 -16px;height:52px;display:flex;align-items:center;justify-content:center;
+  padding:0 16px;transition:background-color 200ms ease,box-shadow 200ms ease}
+.nav .small{font-weight:600;font-size:17px;opacity:0;transform:translateY(4px);
+  transition:opacity 180ms ease-out,transform 180ms ease-out}
+.nav[data-scrolled]{background:var(--bar);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);
+  box-shadow:0 .5px 0 var(--sep)}
+.nav[data-scrolled] .small{opacity:1;transform:none}
+.nav .left{position:absolute;left:8px;display:flex;align-items:center;gap:2px;color:var(--tint);font-size:17px;height:44px;padding:0 8px}
+.nav .right{position:absolute;right:8px;color:var(--tint);height:44px;padding:0 8px;display:flex;align-items:center}
+.large{font-size:34px;line-height:1.12;font-weight:700;letter-spacing:-.03em;margin:2px 0 14px}
+
+/* сгруппированные списки в духе «Настроек» */
+.h{font-size:13px;letter-spacing:-.005em;text-transform:uppercase;color:var(--ink2);margin:22px 16px 7px}
+.foot{font-size:13px;letter-spacing:-.005em;color:var(--ink2);margin:7px 16px 0;line-height:1.38}
+.group{background:var(--card);border-radius:var(--r);overflow:hidden}
+.row{position:relative;display:flex;align-items:center;gap:12px;min-height:44px;padding:10px 16px;width:100%;text-align:left}
+.row + .row::before{content:"";position:absolute;top:0;right:0;left:var(--inset,16px);border-top:.5px solid var(--sep)}
+.row .ic{--inset:60px;width:30px;height:30px;border-radius:7px;display:grid;place-items:center;color:#fff;font-weight:600;font-size:15px;flex:none}
+.row:has(.ic) + .row::before,.row.withic + .row::before{left:58px}
+.row .main{flex:1;min-width:0}
+.row .t{display:block}
+.row .s{display:block;font-size:13px;letter-spacing:-.005em;color:var(--ink2);margin-top:1px}
+.row .val{color:var(--ink2);white-space:nowrap}
+.chev{width:8px;height:13px;flex:none;color:var(--ink3)}
+/* подсветка строки — сразу по нажатию, снимается на отпускании */
+.press{transition:background-color 250ms ease}
+.press[data-down]{background:var(--fill);transition:none}
+
+/* переключатель iOS */
+.sw{position:relative;width:51px;height:31px;flex:none}
+.sw input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer}
+.sw i{position:absolute;inset:0;border-radius:99px;background:var(--fill);transition:background-color 200ms ease;pointer-events:none}
+.sw i::after{content:"";position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;
+  box-shadow:0 3px 8px rgba(0,0,0,.15),0 1px 1px rgba(0,0,0,.16);transition:transform 260ms cubic-bezier(.3,1.3,.5,1)}
+.sw input:checked + i{background:#34C759}
+.sw input:checked + i::after{transform:translateX(20px)}
+.sw input:focus-visible + i{outline:2px solid var(--tint);outline-offset:2px}
+
+/* сегмент */
+.seg{position:relative;display:grid;grid-auto-flow:column;grid-auto-columns:1fr;background:var(--fill);border-radius:9px;padding:2px}
+.seg button{position:relative;z-index:1;height:28px;font-size:13px;font-weight:500;border-radius:7px}
+.seg .th{position:absolute;top:2px;left:2px;bottom:2px;border-radius:7px;background:var(--card);
+  box-shadow:0 3px 8px rgba(0,0,0,.12),0 3px 1px rgba(0,0,0,.04);transition:transform 280ms cubic-bezier(.23,1,.32,1)}
+@media (prefers-color-scheme:dark){.seg .th{background:#636366}}
+
+.stepper{display:flex;background:var(--fill);border-radius:8px;overflow:hidden}
+.stepper button{width:46px;height:32px;font-size:20px;display:grid;place-items:center}
+.stepper button + button{border-left:.5px solid var(--sep)}
+.stepper button:disabled{color:var(--ink3)}
+
+/* кнопки */
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;height:50px;border-radius:14px;width:100%;
+  background:var(--tint);color:#fff;font-weight:600;transition:transform 160ms cubic-bezier(.23,1,.32,1),opacity 160ms ease}
+.btn[data-down]{transform:scale(.97);opacity:.85;transition-duration:80ms}
+.btn.plain{background:var(--fill);color:var(--tint)}
+.btn[data-state="done"]{background:#34C759}
+
+/* ---------- «Сегодня» ---------- */
+.hero{background:var(--card);border-radius:20px;padding:18px;margin-bottom:12px}
+.hero .k{font-size:13px;color:var(--ink2);letter-spacing:-.005em}
+.hero .sum{font-size:40px;font-weight:700;letter-spacing:-.035em;line-height:1.05;margin:4px 0 2px}
+.hero .gain{display:inline-flex;align-items:center;gap:4px;color:var(--green);font-weight:600;font-size:15px}
+.hero .meta{font-size:15px;color:var(--ink2);margin:10px 0 16px;letter-spacing:-.015em}
+.stack{display:flex;height:6px;border-radius:99px;overflow:hidden;gap:2px;margin:12px 0 0}
+.stack i{display:block;border-radius:99px}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:4px}
+.tile{background:var(--card);border-radius:16px;padding:14px;text-align:left}
+.tile .n{font-size:24px;font-weight:700;letter-spacing:-.03em;display:block;margin-top:4px}
+.tile .k{font-size:13px;color:var(--ink2);letter-spacing:-.005em}
+.drop{color:var(--green);font-weight:600}
+.old{color:var(--ink3);text-decoration:line-through;font-size:13px;margin-right:4px}
+
+/* ---------- панель вкладок: стекло поверх содержимого ---------- */
+.tabbar{position:absolute;left:0;right:0;bottom:0;z-index:10;display:grid;grid-template-columns:repeat(3,1fr);
+  padding:6px 8px calc(env(safe-area-inset-bottom,0px) + 20px);background:var(--bar);
+  -webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);box-shadow:0 -.5px 0 var(--sep)}
+.tabbar button{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10px;font-weight:500;letter-spacing:.01em;color:#8E8E93;padding:2px 0}
+.tabbar button[aria-current="page"]{color:var(--tint)}
+.tabbar svg{width:26px;height:26px}
+.tabbar .badge{position:absolute;margin-left:22px;margin-top:-2px;min-width:8px;height:8px;border-radius:99px;background:var(--red)}
+
+/* ---------- экран, въезжающий справа ---------- */
+.push{position:absolute;inset:0;z-index:20;background:var(--bg);transform:translateX(100%);visibility:hidden;
+  box-shadow:-10px 0 30px rgba(0,0,0,.12);will-change:transform}
+.push .screen{display:block;padding-bottom:140px}
+.edge{position:absolute;left:0;top:0;bottom:0;width:22px;z-index:6;touch-action:none}
+.pushdim{position:absolute;inset:0;z-index:15;background:#000;opacity:0;pointer-events:none}
+.opt{background:var(--card);border-radius:var(--r);margin-bottom:10px;overflow:hidden;
+  box-shadow:0 0 0 0 var(--tint);transition:box-shadow 200ms ease}
+.opt[data-picked]{box-shadow:0 0 0 2px var(--tint)}
+.opt .row{padding:14px 16px}
+.radio{width:22px;height:22px;border-radius:50%;border:1.5px solid var(--ink3);flex:none;position:relative;transition:border-color 150ms ease}
+.radio::after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--tint);transform:scale(.4);opacity:0;
+  transition:transform 200ms cubic-bezier(.23,1,.32,1),opacity 150ms ease-out}
+.opt[data-picked] .radio{border-color:var(--tint)}
+.opt[data-picked] .radio::after{transform:none;opacity:1}
+.opt .price{text-align:right;flex:none}
+.opt .price b{font-size:17px;font-weight:600;display:block}
+.opt .price span{font-size:13px;color:var(--green);font-weight:500}
+.pill{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;background:var(--green-soft);color:var(--green);
+  border-radius:5px;padding:2px 5px;margin-left:6px;vertical-align:2px}
+.more{display:grid;grid-template-rows:0fr;transition:grid-template-rows 260ms cubic-bezier(.23,1,.32,1)}
+.opt[data-picked] .more{grid-template-rows:1fr}
+.more>div{overflow:hidden}
+.more ul{list-style:none;margin:0;padding:0 16px 14px 50px;font-size:15px;opacity:0;transition:opacity 150ms ease-out}
+.opt[data-picked] .more ul{opacity:1;transition-delay:80ms}
+.more li{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:.5px solid var(--sep)}
+.more li:last-child{color:var(--ink2);font-size:13px;display:block}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:7px;vertical-align:1px}
+.toolbar{position:absolute;left:0;right:0;bottom:0;z-index:6;padding:12px 16px calc(env(safe-area-inset-bottom,0px) + 22px);
+  background:var(--bar);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);box-shadow:0 -.5px 0 var(--sep)}
+.toolbar .note{font-size:13px;color:var(--ink2);text-align:center;margin-bottom:8px;letter-spacing:-.005em}
+.spin{width:16px;height:16px;border-radius:50%;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;animation:spin 700ms linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---------- лист снизу ---------- */
+.scrim{position:absolute;inset:0;z-index:30;background:#000;opacity:0;pointer-events:none}
+.scrim[data-on]{pointer-events:auto}
+.sheet{position:absolute;left:0;right:0;bottom:0;top:54px;z-index:31;background:var(--bg);border-radius:12px 12px 0 0;
+  transform:translateY(110%);visibility:hidden;display:flex;flex-direction:column;will-change:transform;
+  box-shadow:0 -4px 30px rgba(0,0,0,.18)}
+.grab{flex:none;padding:6px 16px 4px;touch-action:none;cursor:grab}
+.grab::before{content:"";display:block;width:36px;height:5px;border-radius:99px;background:var(--ink3);margin:0 auto 10px}
+.grab .top{display:flex;align-items:center;gap:12px}
+.grab .ic{width:44px;height:44px;border-radius:11px;display:grid;place-items:center;color:#fff;font-weight:700;font-size:20px}
+.grab h2{margin:0;font-size:22px;font-weight:700;letter-spacing:-.025em}
+.grab .done{margin-left:auto;color:var(--tint);font-weight:600;height:44px;padding:0 4px}
+.sheet .body{flex:1;overflow-y:auto;overscroll-behavior:contain;padding:0 16px 40px}
+.state{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;border-radius:99px;padding:3px 9px;margin-top:3px}
+.state.ok{background:var(--green-soft);color:var(--green)}
+.state.warn{background:var(--amber-soft);color:var(--amber)}
+
+@media (prefers-reduced-transparency:reduce){
+  .nav[data-scrolled],.tabbar,.toolbar{background:var(--card);-webkit-backdrop-filter:none;backdrop-filter:none}
+}
+@media (prefers-contrast:more){
+  :root{--sep:rgba(60,60,67,.5);--ink2:rgba(60,60,67,.85)}
+  .group,.opt,.tile,.hero{box-shadow:0 0 0 1px var(--sep)}
+}
+@media (prefers-reduced-motion:reduce){
+  .sw i::after,.seg .th,.more,.nav .small{transition-duration:0ms}
+  .btn[data-down]{transform:none}
+}
+</style>
+</head>
+<body>
+<div class="device" id="device">
+
+  <div class="base" id="base">
+    <!-- ============ Сегодня ============ -->
+    <section class="screen" id="s-today" data-on data-title="Сегодня">
+      <div class="nav"><span class="small">Сегодня</span>
+        <span class="right" aria-label="Адрес">Лиговский, 50</span></div>
+      <h1 class="large">Сегодня</h1>
+
+      <div class="hero">
+        <div class="k">Как обычно · 23 позиции · на неделю</div>
+        <div class="sum">3 290 ₽</div>
+        <span class="gain">↓ 1 310 ₽ против привычного магазина</span>
+        <div class="stack" aria-hidden="true"><i style="flex:2040;background:var(--s-magnit)"></i><i style="flex:1250;background:var(--s-pyaterochka)"></i></div>
+        <div class="meta">Магнит и Пятёрочка · привезут сегодня с 18 до 20</div>
+        <button class="btn" data-open="choice">Выбрать, как купить</button>
+      </div>
+
+      <div class="tiles">
+        <button class="tile press" data-tab="1"><span class="k">Сэкономлено в сентябре</span><span class="n" style="color:var(--green)">4 870 ₽</span><span class="k">за 4 заказа</span></button>
+        <button class="tile press" data-tab="1"><span class="k">Цены обновлены</span><span class="n">5 из 6</span><span class="k">сетей, ночью в 03:10</span></button>
+      </div>
+
+      <div class="h">Подешевело из привычного</div>
+      <div class="group">
+        <div class="row press withic"><span class="ic" style="background:var(--s-pyaterochka)">П</span>
+          <span class="main"><span class="t">Масло сливочное 82,5% · 180 г</span><span class="s">Экомилк · Пятёрочка</span></span>
+          <span><span class="old">189</span><span class="drop">149 ₽</span></span></div>
+        <div class="row press withic"><span class="ic" style="background:var(--s-magnit)">М</span>
+          <span class="main"><span class="t">Молоко 2,5% · 930 мл</span><span class="s">Простоквашино · Магнит</span></span>
+          <span><span class="old">99</span><span class="drop">84 ₽</span></span></div>
+        <div class="row press withic"><span class="ic" style="background:var(--s-vkusvill)">В</span>
+          <span class="main"><span class="t">Яйца С0 · 10 шт.</span><span class="s">ВкусВилл</span></span>
+          <span><span class="old">139</span><span class="drop">119 ₽</span></span></div>
+      </div>
+      <div class="foot">Эти цены уже учтены в сумме «Как обычно».</div>
+
+      <div class="h">Требует внимания</div>
+      <div class="group">
+        <button class="row press withic" data-store="samokat"><span class="ic" style="background:var(--s-samokat)">С</span>
+          <span class="main"><span class="t">Войдите в Самокат</span><span class="s">Без входа его цены не видны — вариант «Экспресс» считается по вчерашним</span></span>
+          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+    </section>
+
+    <!-- ============ Магазины ============ -->
+    <section class="screen" id="s-stores" data-title="Магазины">
+      <div class="nav"><span class="small">Магазины</span></div>
+      <h1 class="large">Магазины</h1>
+      <div id="storeList"></div>
+      <div class="foot" style="margin-top:14px">Окно входа пройдено вживую только в Магните. Пятёрочка, Самокат, Лента и Дикси встречают сервер своей проверкой — её вы проходите сами, приложение подхватывает дальше.</div>
+    </section>
+
+    <!-- ============ Настройки ============ -->
+    <section class="screen" id="s-settings" data-title="Настройки">
+      <div class="nav"><span class="small">Настройки</span></div>
+      <h1 class="large">Настройки</h1>
+
+      <div class="h">Куда везти</div>
+      <div class="group">
+        <button class="row press"><span class="main"><span class="t">Адрес</span><span class="s">Лиговский пр., 50, кв. 14 · Санкт-Петербург</span></span>
+          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <div class="row"><span class="main"><span class="t">Получение</span></span>
+          <div class="seg" style="width:190px" data-seg><span class="th"></span><button aria-pressed="true">Доставка</button><button aria-pressed="false">Самовывоз</button></div></div>
+      </div>
+      <div class="foot">Адрес определяет, какой магазин и какие цены берутся в расчёт.</div>
+
+      <div class="h">Расчёт корзины</div>
+      <div class="group">
+        <div class="row"><span class="main"><span class="t">Магазинов в одном заказе</span><span class="s">Больше магазинов — дешевле, но больше курьеров</span></span>
+          <span class="val" id="maxShops" style="margin-right:8px">до 2</span>
+          <div class="stepper"><button id="minus" aria-label="Меньше">−</button><button id="plus" aria-label="Больше">+</button></div></div>
+        <div class="row"><span class="main"><span class="t">Советовать разделить заказ</span><span class="s">если выгода больше</span></span>
+          <div class="seg" style="width:170px" data-seg><span class="th"></span><button aria-pressed="false">200 ₽</button><button aria-pressed="true">350 ₽</button><button aria-pressed="false">500 ₽</button></div></div>
+        <label class="row"><span class="main"><span class="t">Подставлять привычный бренд</span><span class="s">«Молоко 2,5%» → Простоквашино 930 мл</span></span>
+          <span class="sw"><input type="checkbox" checked><i></i></span></label>
+      </div>
+
+      <div class="h">Скидки и кэшбэк</div>
+      <div class="group">
+        <button class="row press withic"><span class="ic" style="background:var(--s-pyaterochka)">П</span><span class="main"><span class="t">Выручай-карта</span><span class="s">Пятёрочка · баллы учитываются</span></span>
+          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button class="row press withic"><span class="ic" style="background:var(--s-magnit)">М</span><span class="main"><span class="t">Магнит Плюс</span><span class="s">цены по карте</span></span>
+          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button class="row press withic"><span class="ic" style="background:#EF3124">А</span><span class="main"><span class="t">Альфа-Банк</span><span class="s">7% в супермаркетах до 30 сентября</span></span>
+          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button class="row press withic"><span class="ic" style="background:#FFDD2D;color:#333">Т</span><span class="main"><span class="t">Т-Банк</span><span class="s">5% на продукты</span></span>
+          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      <div class="foot">Расчёт сам выбирает, какой картой платить в каждом магазине.</div>
+
+      <div class="h">Сбор цен</div>
+      <div class="group">
+        <label class="row"><span class="main"><span class="t">Ночной обход</span><span class="s">в 03:00, не чаще запроса в секунду на сеть</span></span>
+          <span class="sw"><input type="checkbox" checked><i></i></span></label>
+        <label class="row"><span class="main"><span class="t">Через домашний интернет</span><span class="s">для сетей, которые не пускают сервер · Дикси</span></span>
+          <span class="sw"><input type="checkbox" checked><i></i></span></label>
+        <button class="row press"><span class="main"><span class="t">Чеки</span><span class="s">ФНС подключена · 118 чеков за полгода</span></span>
+          <svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+
+      <div class="h">Уведомления</div>
+      <div class="group">
+        <label class="row"><span class="main"><span class="t">Подешевело из привычного</span></span><span class="sw"><input type="checkbox" checked><i></i></span></label>
+        <label class="row"><span class="main"><span class="t">Нужен вход в магазин</span></span><span class="sw"><input type="checkbox" checked><i></i></span></label>
+        <label class="row"><span class="main"><span class="t">Итоги недели</span></span><span class="sw"><input type="checkbox"><i></i></span></label>
+      </div>
+      <div class="foot" style="text-align:center;margin:26px 0 0">Моя корзина · сборка 26.09.2026</div>
+    </section>
+
+    <nav class="tabbar" aria-label="Разделы">
+      <button aria-current="page" data-tab="0"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M5 9.5h16l-1.5 11a2 2 0 0 1-2 1.7h-9a2 2 0 0 1-2-1.7L5 9.5zm4.2-1.2L12 3.6a1.2 1.2 0 0 1 2 0l2.8 4.7h-1.9L13 5.2l-1.9 3.1H9.2z"/></svg>Сегодня</button>
+      <button data-tab="1"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M4 10.2 5.6 4.8A1.5 1.5 0 0 1 7 3.8h12a1.5 1.5 0 0 1 1.4 1l1.6 5.4a3 3 0 0 1-3 3 3 3 0 0 1-3-1.4 3 3 0 0 1-2.9 1.4 3 3 0 0 1-3-1.4 3 3 0 0 1-3 1.4 3 3 0 0 1-3.1-2.6zM5.6 15h1.8v5.6h11.2V15h1.8v6.4a1.4 1.4 0 0 1-1.4 1.4H7a1.4 1.4 0 0 1-1.4-1.4V15z"/></svg><span class="badge"></span>Магазины</button>
+      <button data-tab="2"><svg viewBox="0 0 26 26" fill="currentColor"><path d="M13 9a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 1.8a2.2 2.2 0 1 1 0 4.4 2.2 2.2 0 0 1 0-4.4zM11.6 2.5h2.8l.5 2.5 1.6.7 2.1-1.4 2 2-1.4 2.1.7 1.6 2.5.5v2.8l-2.5.5-.7 1.6 1.4 2.1-2 2-2.1-1.4-1.6.7-.5 2.5h-2.8l-.5-2.5-1.6-.7-2.1 1.4-2-2 1.4-2.1-.7-1.6-2.5-.5v-2.8l2.5-.5.7-1.6-1.4-2.1 2-2 2.1 1.4 1.6-.7z"/></svg>Настройки</button>
+    </nav>
+  </div>
+
+  <div class="pushdim" id="pushdim"></div>
+
+  <!-- ============ Выбор выгоды (въезжает справа, уезжает вправо) ============ -->
+  <div class="push" id="choice" aria-hidden="true">
+    <div class="edge" id="edge" aria-hidden="true"></div>
+    <section class="screen" id="s-choice">
+      <div class="nav"><button class="left" data-back><svg width="12" height="20" viewBox="0 0 12 20"><path d="M10 2 2 10l8 8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>Сегодня</button>
+        <span class="small">Как купить</span></div>
+      <h1 class="large">Как купить</h1>
+      <div id="opts"></div>
+      <div class="foot">Цены проверены 12 минут назад под адрес Лиговский, 50. Привычный магазин — 4 600 ₽ за ту же корзину.</div>
+    </section>
+    <div class="toolbar"><div class="note" id="ctaNote">2 курьера · 23 из 23 в наличии</div>
+      <button class="btn" id="cta" data-state="idle">Собрать корзины · 3 290 ₽</button></div>
+  </div>
+
+  <!-- ============ Лист магазина (поднимается снизу, опускается вниз) ============ -->
+  <div class="scrim" id="scrim"></div>
+  <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="shName">
+    <div class="grab" id="grab"><div class="top"><span class="ic" id="shIc"></span>
+      <div><h2 id="shName"></h2><span class="state" id="shState"></span></div>
+      <button class="done" id="shDone">Готово</button></div></div>
+    <div class="body" id="shBody"></div>
+  </div>
+</div>
+
+<script>
+/* ---------------- данные ---------------- */
+const BASE = 4600;
+const OPTS = [
+  {name:'Максимальная выгода', sum:3290, eta:'сегодня 18–20', note:'2 курьера · 23 из 23 в наличии', rec:true,
+   stores:[['Магнит у дома','--s-magnit',14,2040],['Пятёрочка','--s-pyaterochka',9,1250]],
+   why:'Молочное и крупы — в Пятёрочке по Выручай-карте, остальное — в Магните. Кэшбэк Альфы 7% учтён.'},
+  {name:'Всё в одном месте', sum:3850, eta:'сегодня 17–19', note:'1 курьер · 23 из 23 в наличии',
+   stores:[['Магнит у дома','--s-magnit',23,3850]], why:'Один заказ и один курьер. На 560 ₽ дороже выгоды.'},
+  {name:'Экспресс', sum:4200, eta:'через 15 минут', note:'1 курьер · 21 из 23 — нет ряженки и гречки',
+   stores:[['Самокат','--s-samokat',21,4200]], why:'Цены вчерашние: войдите в Самокат, чтобы обновить.'},
+];
+const STORES = [
+  {sec:'Цены по вашему адресу', items:[
+    {id:'magnit',n:'Магнит',c:'--s-magnit',st:'ok',label:'Живые цены',s:'Магнит у дома · Лиговский, 43 · 6 мин назад',on:true,login:'Вход выполнен · Магнит Плюс'},
+    {id:'vkusvill',n:'ВкусВилл',c:'--s-vkusvill',st:'ok',label:'Живые цены',s:'Даркстор Обводный · 20 мин назад',on:true}]},
+  {sec:'Через ваш вход',foot:'Цены видит ваш кабинет магазина, открытый внутри приложения. Вход вы проходите сами.',items:[
+    {id:'pyaterochka',n:'Пятёрочка',c:'--s-pyaterochka',st:'ok',label:'Вход выполнен',s:'Выручай-карта · вчера в 21:40',on:true,login:'Вход выполнен · Выручай-карта'},
+    {id:'samokat',n:'Самокат',c:'--s-samokat',st:'warn',label:'Нужен вход',s:'Цены вчерашние',on:true,need:true}]},
+  {sec:'Только каталог',foot:'Цены с витрины сети без привязки к вашему магазину — могут отличаться на полке.',items:[
+    {id:'lenta',n:'Лента',c:'--s-lenta',st:'warn',label:'Каталог',s:'Ночной обход · 03:10',on:true},
+    {id:'dixy',n:'Дикси',c:'--s-dixy',st:'warn',label:'Каталог',s:'Через домашний интернет · 03:40',on:false}]},
+];
+const rub = n => n.toLocaleString('ru-RU') + ' ₽';
+const chev = '<svg class="chev" viewBox="0 0 8 13"><path d="M1 1l5.5 5.5L1 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+const buzz = ms => { try{ navigator.vibrate && navigator.vibrate(ms) }catch(e){} };
+
+/* ---------------- пружина (§4): демпфирование + отклик, старт с текущего значения и скорости ---------------- */
+function spring({from, to, velocity=0, damping=1, response=.35, onUpdate, onDone}){
+  if(reduced.matches){ onUpdate(to); onDone&&onDone(); return {stop(){}, value:()=>to}; }
+  const k = Math.pow(2*Math.PI/response, 2), c = 4*Math.PI*damping/response;
+  let x = from, v = velocity, last = performance.now(), raf, alive = true;
+  const step = now => {
+    let dt = Math.min(.032, (now-last)/1000); last = now;
+    // полуявный Эйлер мелкими шагами — устойчив и при резком отклике
+    for(let t=0; t<dt; t+=1/240){ const h=Math.min(1/240,dt-t); v += (-k*(x-to) - c*v)*h; x += v*h; }
+    onUpdate(x);
+    if(Math.abs(v)<5 && Math.abs(x-to)<.5){ onUpdate(to); alive=false; onDone&&onDone(); return; }
+    raf = requestAnimationFrame(step);
+  };
+  raf = requestAnimationFrame(step);
+  return {stop(){ if(alive){cancelAnimationFrame(raf); alive=false} }, value:()=>x, velocity:()=>v};
+}
+// §6: куда долетит бросок (формула Apple, d = 0.998)
+const project = (v, d=.998) => (v/1000)*d/(1-d);
+// §9: сопротивление за краем
+const rubber = (o, dim, c=.55) => (o*dim*c)/(dim + c*Math.abs(o));
+// §2: скорость по последним 100 мс движения
+function tracker(){
+  let pts=[];
+  return {add(p){ const t=performance.now(); pts.push([p,t]); pts=pts.filter(q=>t-q[1]<100); },
+          v(){ if(pts.length<2) return 0; const a=pts[0], b=pts[pts.length-1]; return (b[0]-a[0])/Math.max(1,(b[1]-a[1]))*1000; },
+          reset(){ pts=[]; }};
+}
+
+/* ---------------- нажатия: подсветка сразу на pointerdown (§1) ---------------- */
+document.addEventListener('pointerdown', e => {
+  const el = e.target.closest('.press,.btn'); if(!el) return;
+  el.setAttribute('data-down','');
+  const up = () => { el.removeAttribute('data-down'); removeEventListener('pointerup',up); removeEventListener('pointercancel',up); };
+  addEventListener('pointerup',up); addEventListener('pointercancel',up);
+});
+
+/* ---------------- вкладки: переключаются мгновенно, как в iOS ---------------- */
+const screens = [...document.querySelectorAll('.base .screen')];
+const tabs = [...document.querySelectorAll('.tabbar button')];
+function tab(i){
+  screens.forEach((s,j)=>s.toggleAttribute('data-on', j===i));
+  tabs.forEach((b,j)=>j===i ? b.setAttribute('aria-current','page') : b.removeAttribute('aria-current'));
+  requestAnimationFrame(layoutSegs);
+}
+document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>tab(+b.dataset.tab)));
+
+/* ---------------- шапка: стекло и мелкий заголовок, только когда крупный уехал (§12) ---------------- */
+document.querySelectorAll('.screen').forEach(s=>{
+  const nav = s.querySelector('.nav'), large = s.querySelector('.large');
+  s.addEventListener('scroll',()=>nav.toggleAttribute('data-scrolled', s.scrollTop > (large.offsetTop + large.offsetHeight - 52)),{passive:true});
+});
+
+/* ---------------- сегменты и степпер ---------------- */
+function layoutSegs(){
+  document.querySelectorAll('[data-seg]').forEach(seg=>{
+    const bs=[...seg.querySelectorAll('button')], th=seg.querySelector('.th'), i=bs.findIndex(b=>b.getAttribute('aria-pressed')==='true');
+    th.style.width = bs[0].offsetWidth+'px'; th.style.transform = `translateX(${i*bs[0].offsetWidth}px)`;
+  });
+}
+document.querySelectorAll('[data-seg]').forEach(seg=>seg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+  seg.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed', x===b)); layoutSegs(); buzz(8);
+})));
+let shops = 2;
+const minus=document.getElementById('minus'), plus=document.getElementById('plus'), maxShops=document.getElementById('maxShops');
+function drawShops(){ maxShops.textContent = shops===1?'один':'до '+shops; minus.disabled = shops<=1; plus.disabled = shops>=3; }
+minus.onclick=()=>{shops--;drawShops();buzz(8)}; plus.onclick=()=>{shops++;drawShops();buzz(8)}; drawShops();
+document.querySelectorAll('.sw input').forEach(i=>i.addEventListener('change',()=>buzz(10)));
+
+/* ---------------- список магазинов ---------------- */
+document.getElementById('storeList').innerHTML = STORES.map(g=>`<div class="h">${g.sec}</div><div class="group">${g.items.map(s=>`
+  <button class="row press withic" data-store="${s.id}"><span class="ic" style="background:var(${s.c})">${s.n[0]}</span>
+    <span class="main"><span class="t">${s.n}</span><span class="s">${s.s}</span></span>
+    <span class="state ${s.st}" style="margin:0">${s.on?s.label:'Выключен'}</span>${chev}</button>`).join('')}</div>${g.foot?`<div class="foot">${g.foot}</div>`:''}`).join('');
+const byId = Object.fromEntries(STORES.flatMap(g=>g.items).map(s=>[s.id,s]));
+
+/* ---------------- лист магазина: поднимается снизу, тянется пальцем, бросается (§2–§9, §12) ---------------- */
+const device=document.getElementById('device'), base=document.getElementById('base'),
+      sheet=document.getElementById('sheet'), scrim=document.getElementById('scrim'), grab=document.getElementById('grab');
+let sheetY, sheetAnim, H = () => sheet.offsetHeight;
+function paintSheet(y){
+  sheetY = y; const p = Math.max(0, Math.min(1, 1 - y/H()));
+  sheet.style.transform = `translateY(${y}px)`;
+  scrim.style.opacity = .35*p;
+  // под листом фон отъезжает вглубь и скругляется — как стопка листов в iOS
+  base.style.transform = `translateY(${10*p}px) scale(${1 - .06*p})`;
+  base.style.borderRadius = (12*p)+'px'; base.style.filter = p ? `brightness(${1-.08*p})` : '';
+}
+function openSheet(id){
+  const s = byId[id]; if(!s) return;
+  document.getElementById('shIc').textContent = s.n[0];
+  document.getElementById('shIc').style.background = `var(${s.c})`;
+  document.getElementById('shName').textContent = s.n;
+  const st=document.getElementById('shState'); st.className='state '+s.st; st.textContent=s.label;
+  document.getElementById('shBody').innerHTML = `
+    ${s.need?`<div class="hero" style="margin-top:14px"><div class="k">Чтобы видеть цены Самоката</div>
+      <div style="margin:6px 0 14px;font-size:15px;color:var(--ink2)">Откроется окно магазина. Номер и код из СМС вы вводите сами — приложение запомнит только то, что вход выполнен.</div>
+      <button class="btn">Войти в Самокат</button></div>`:''}
+    <div class="h">Как берутся цены</div><div class="group">
+      <div class="row"><span class="main"><span class="t">Источник</span></span><span class="val">${s.label}</span></div>
+      <div class="row"><span class="main"><span class="t">Последнее обновление</span></span><span class="val">${s.s.split(' · ').pop()}</span></div>
+      ${s.login?`<div class="row"><span class="main"><span class="t">Кабинет</span></span><span class="val">${s.login.split(' · ')[1]}</span></div>`:''}
+      <button class="row press"><span class="main"><span class="t" style="color:var(--tint)">Обновить цены сейчас</span></span></button></div>
+    <div class="h">В расчёте</div><div class="group">
+      <label class="row"><span class="main"><span class="t">Учитывать ${s.n}</span><span class="s">Выключите, если не хотите заказывать отсюда</span></span>
+        <span class="sw"><input type="checkbox" ${s.on?'checked':''}><i></i></span></label>
+      <label class="row"><span class="main"><span class="t">Только с доставкой 0 ₽</span></span><span class="sw"><input type="checkbox"><i></i></span></label></div>
+    <div class="foot">Обход — не чаще запроса в секунду, ночью. Упрётся в защиту сети — приложение сменит дорогу и скажет здесь.</div>`;
+  document.getElementById('shBody').querySelectorAll('.sw input').forEach(i=>i.addEventListener('change',()=>buzz(10)));
+  document.getElementById('shBody').scrollTop = 0;
+  sheet.style.visibility='visible'; scrim.setAttribute('data-on','');
+  sheetAnim && sheetAnim.stop();
+  if(sheetY===undefined || sheetY>=H()) paintSheet(H());
+  sheetAnim = spring({from:sheetY, to:0, damping:1, response:.35, onUpdate:paintSheet});
+}
+function settleSheet(v){
+  const y = sheetY, end = y + project(v), close = end > H()*.5 || v > 900;
+  sheetAnim && sheetAnim.stop();
+  // пружина берёт скорость пальца; лёгкий отскок — только если был бросок
+  sheetAnim = spring({from:y, to: close?H():0, velocity:v, damping: Math.abs(v)>300 ? .85 : 1, response:.35,
+    onUpdate:paintSheet, onDone:()=>{ if(close){ sheet.style.visibility='hidden'; scrim.removeAttribute('data-on'); base.style.transform=''; base.style.filter=''; } }});
+}
+const closeSheet = () => settleSheet(1000);
+document.getElementById('shDone').addEventListener('click', e=>{ e.stopPropagation(); closeSheet(); });
+scrim.addEventListener('click', closeSheet);
+addEventListener('keydown', e=>{ if(e.key==='Escape'){ if(scrim.hasAttribute('data-on')) closeSheet(); else if(pushOpen) closePush(); }});
+document.addEventListener('click', e=>{ const r=e.target.closest('[data-store]'); if(r) openSheet(r.dataset.store); });
+
+function dragger(el, {axis, start, move, end, when=()=>true}){
+  const tr = tracker(); let origin=null, startVal=0, committed=false, id;
+  el.addEventListener('pointerdown', e=>{
+    if(!when(e)) return;
+    origin = axis==='y'?e.clientY:e.clientX; startVal = start(); committed=false; id=e.pointerId; tr.reset(); tr.add(origin);
+  });
+  el.addEventListener('pointermove', e=>{
+    if(origin===null || e.pointerId!==id) return;
+    const p = axis==='y'?e.clientY:e.clientX, d = p-origin;
+    if(!committed){ if(Math.abs(d)<8) return; committed=true; el.setPointerCapture(id); } // §10: порог 8 px
+    tr.add(p); move(startVal + d);                                   // 1:1, от места захвата
+  });
+  const up = e=>{ if(origin===null) return; origin=null; if(committed) end(tr.v()); };
+  el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+}
+dragger(grab, {axis:'y', start:()=>{ sheetAnim&&sheetAnim.stop(); return sheetY; },
+  move:y=>paintSheet(y<0 ? -rubber(-y, H()) : y), end:settleSheet,
+  when:e=>!e.target.closest('.done')});
+// тянуть можно и за содержимое, когда оно прокручено к началу
+const shBody=document.getElementById('shBody');
+dragger(shBody, {axis:'y', start:()=>{ sheetAnim&&sheetAnim.stop(); return sheetY; },
+  move:y=>{ if(shBody.scrollTop<=0 && y>0) paintSheet(y); }, end:v=>{ if(sheetY>0) settleSheet(v); },
+  when:e=>shBody.scrollTop<=0 && !e.target.closest('input,label,.btn')});
+
+/* ---------------- «Как купить»: въезжает справа, уезжает вправо, свайп от края (§7) ---------------- */
+const push=document.getElementById('choice'), dim=document.getElementById('pushdim');
+let pushX, pushAnim, pushOpen=false; const W=()=>device.offsetWidth;
+function paintPush(x){
+  pushX=x; const p=1-x/W();
+  push.style.transform=`translateX(${x}px)`;
+  base.style.transform=`translateX(${-0.3*W()*p}px)`; dim.style.opacity=.12*p;
+}
+function openPush(){
+  pushOpen=true; push.style.visibility='visible'; push.setAttribute('aria-hidden','false');
+  pushAnim&&pushAnim.stop(); if(pushX===undefined) paintPush(W());
+  pushAnim=spring({from:pushX,to:0,response:.38,onUpdate:paintPush});
+}
+function settlePush(v){
+  const close = pushX + project(v) > W()*.5;
+  pushAnim&&pushAnim.stop();
+  pushAnim=spring({from:pushX,to:close?W():0,velocity:v,response:.38,onUpdate:paintPush,
+    onDone:()=>{ if(close){ pushOpen=false; push.style.visibility='hidden'; push.setAttribute('aria-hidden','true'); base.style.transform=''; } }});
+}
+const closePush=()=>settlePush(1500);
+document.querySelector('[data-open="choice"]').addEventListener('click',openPush);
+document.querySelector('[data-back]').addEventListener('click',closePush);
+dragger(document.getElementById('edge'),{axis:'x',start:()=>{pushAnim&&pushAnim.stop();return pushX},
+  move:x=>paintPush(Math.max(0,x)),end:settlePush});
+
+/* варианты покупки */
+const optsEl=document.getElementById('opts'), cta=document.getElementById('cta'), ctaNote=document.getElementById('ctaNote');
+optsEl.innerHTML = OPTS.map((o,i)=>`<div class="opt" ${i===0?'data-picked':''} data-i="${i}">
+  <button class="row press" style="gap:14px"><span class="radio"></span>
+    <span class="main"><span class="t">${o.name}${o.rec?'<span class="pill">совет</span>':''}</span>
+      <span class="s">${o.stores.length>1?o.stores.length+' магазина':o.stores[0][0]} · ${o.eta}</span></span>
+    <span class="price"><b>${rub(o.sum)}</b><span>−${rub(BASE-o.sum)}</span></span></button>
+  <div class="more"><div><ul>${o.stores.map(s=>`<li><span><i class="dot" style="background:var(${s[1]})"></i>${s[0]} · ${s[2]} поз.</span><span>${rub(s[3])}</span></li>`).join('')}<li>${o.why}</li></ul></div></div></div>`).join('');
+optsEl.querySelectorAll('.opt').forEach(el=>el.querySelector('.row').addEventListener('click',()=>{
+  if(cta.dataset.state!=='idle') return;
+  optsEl.querySelectorAll('.opt').forEach(x=>x.toggleAttribute('data-picked',x===el));
+  const o=OPTS[+el.dataset.i];
+  cta.textContent=(o.stores.length>1?'Собрать корзины · ':'Собрать корзину · ')+rub(o.sum); ctaNote.textContent=o.note; buzz(8);
+}));
+cta.addEventListener('click',()=>{
+  if(cta.dataset.state!=='idle') return;
+  const was=cta.textContent;
+  cta.dataset.state='busy'; cta.innerHTML='<span class="spin"></span>Наполняю корзины…';
+  setTimeout(()=>{ cta.dataset.state='done'; cta.textContent='Готово — осталось оплатить'; buzz([12,60,12]);
+    ctaNote.textContent='Корзины наполнены в приложениях магазинов. Можно отменить до оплаты.';
+    setTimeout(()=>{ cta.dataset.state='idle'; cta.textContent=was; ctaNote.textContent=OPTS[+optsEl.querySelector('[data-picked]').dataset.i].note; },3200);
+  },1400);
+});
+
+addEventListener('resize',()=>{ layoutSegs(); if(!pushOpen){pushX=undefined; paintPush(W()); base.style.transform='';} });
+paintPush(W()); base.style.transform=''; dim.style.opacity=0;
+layoutSegs();
+</script>
+</body>
+</html>
