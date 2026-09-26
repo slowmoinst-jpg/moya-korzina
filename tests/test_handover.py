@@ -1200,15 +1200,23 @@ def metro_shop(db, monkeypatch):
 
     sent: dict = {"filled": None}
 
-    def open_metro(inside: list[dict], unavailable: list[dict] | None = None):
+    def open_metro(inside: list[dict], unavailable: list[dict] | None = None,
+                   before: list[dict] | None = None):
+        """inside — корзина после записи, before — что в ней лежало до неё."""
+        sent["filled"] = None
+
         def fill(store_id, user_hash, lines):
             sent["filled"] = {"store": store_id, "hash": user_hash,
                               "lines": [(str(l.sku), l.qty) for l in lines]}
             return metro_cart.Basket()
 
+        def read(store_id, user_hash):
+            now = inside if sent["filled"] is not None else (before or [])
+            return metro_cart.Basket(user_hash=user_hash, lines=list(now),
+                                     unavailable=list(unavailable or []))
+
         monkeypatch.setattr(metro_cart, "fill", fill)
-        monkeypatch.setattr(metro_cart, "read", lambda store_id, user_hash: metro_cart.Basket(
-            user_hash=user_hash, lines=list(inside), unavailable=list(unavailable or [])))
+        monkeypatch.setattr(metro_cart, "read", read)
         return sent
 
     return open_metro
@@ -2144,3 +2152,62 @@ def test_a_shop_counter_below_what_was_put_is_called_out(db, shop):
         ("magnit-2", 1, "Молоко", "pcs", MOLOKO)]))
     assert got["ok"] == ["magnit-1", "magnit-2"]
     assert "показывает 1" in got["note"] and "ВНИМАНИЕ" in got["note"]
+
+
+def test_metro_retry_counts_only_what_it_added(metro_shop):
+    """Доложить одну к двум лежащим: засчитано то, что ПРИБАВИЛОСЬ, а не что лежит.
+
+    По итогу корзины повтор видел две штуки при просьбе «одну» и отчитывался
+    «легло», ничего не положив.
+    """
+    two = [{"article": 117189, "count": 2, "eshop_product_id": 55}]
+    metro_shop(two, before=two)             # сеть не добавила ничего
+    got = cart.deliver("metro", "79990000041", metro_naryad([("117189", 1, "Творог")]))
+    assert got["ok"] == []
+    assert "в корзине METRO этой позиции не видно" in cart.report("metro")[0]["why"]
+
+
+def test_the_plan_does_not_weigh_a_loaf(db):
+    """«Хлеб Бородинский нарезка» с отметкой kg — не весовой: одна буханка, не три."""
+    from app import cartplan
+
+    bread = repo.upsert_product(Product(id=None, name="Хлеб БОРОДИНСКИЙ нарезка", unit="kg"))
+    shop = repo.get_store("magnit")
+    sp = repo.upsert_store_product(shop.id, "8", "Хлеб Бородинский 400 г", weight_g=400,
+                                   unit="pcs", url=TVOROG)
+    repo.confirm_mapping(bread, sp, confirmed=True)
+
+    class Line:
+        product_id, qty, name = bread, 1, "Хлеб"
+
+    line = cartplan.build("magnit", [Line()], force=True).lines[0]
+    assert line.per == "pcs"
+    assert cart.pieces_of(line) == (1, "")
+
+
+def test_the_result_screen_asks_before_filling_the_same_cart_twice(web):
+    """С «Результата» повтор спрашивается ЗДЕСЬ, у позиций этой сети.
+
+    Раньше вопрос уводил на «Кабинеты», и «передать ещё раз» там собирало наряд
+    из всей корзины, а не из того, что расчёт отдал этой сети.
+    """
+    import datetime as dt
+
+    from app import store_accounts
+
+    enter(web)
+    basket_id = seed_basket()
+    save_login()
+    users.open_workspace(PHONE)
+    store_accounts.mark_connected("magnit", gives=[store_accounts.CART])
+    finished = (dt.datetime.now() - dt.timedelta(minutes=3)).isoformat(timespec="seconds")
+    cart._progress("magnit", started_at=finished, finished_at=finished, total=1, at=0, done=1,
+                   now="", items=[{"sku": "magnit-1", "name": "Молоко", "ok": True}])
+
+    page = text(web.get(f"/result?basket={basket_id}&mode=single"))
+    assert "уже передана" in page and "удвоит корзину" in page
+    assert 'name="again" value="1"' in page
+
+    answer = web.post("/result", data={"basket": basket_id, "do": "link:magnit"})
+    assert answer.status_code == 302
+    assert "/result?basket=" in answer.headers["Location"], "без «ещё раз» — назад к вопросу"

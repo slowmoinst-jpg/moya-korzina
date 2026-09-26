@@ -196,15 +196,27 @@ def _resolve_store_id(receipt: Receipt, store_code: str | None) -> tuple[int | N
     return None, receipt.store_name
 
 
-def _ensure_product(raw_name: str) -> tuple[int, bool]:
-    """Находит эталон по нормализованному названию или заводит новый. -> (id, создан ли)"""
+def _ensure_product(raw_name: str, qty: float | None = None) -> tuple[int, bool]:
+    """Находит эталон по нормализованному названию или заводит новый. -> (id, создан ли)
+
+    Весовым эталон заводится только по доводу: дробное количество в чеке или
+    слово «весовой»/«кг» в названии. Прежде весовым становилось любое название
+    без граммовки («Хлеб Бородинский нарезка», «Яйцо С1 10шт») — так отвечал
+    parse_weight, — и расчёт считал такую буханку килограммами.
+    """
+    from app.matcher.normalize import sold_by_weight
     from app.models import Product
 
     name = display_name(raw_name)
     existing = repo.find_product_by_name(name)
     if existing and existing.id:
         return existing.id, False
-    grams, unit = parse_weight(raw_name)
+    grams, _ = parse_weight(raw_name)
+    try:
+        fractional = qty is not None and abs(float(qty) - round(float(qty))) > 1e-9
+    except (TypeError, ValueError):
+        fractional = False
+    unit = "kg" if (fractional or sold_by_weight(raw_name)) and not grams else "pcs"
     pid = repo.upsert_product(Product(id=None, name=name, weight_g=grams, unit=unit))
     return pid, True
 

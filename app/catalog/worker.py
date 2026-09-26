@@ -154,7 +154,10 @@ def run_all(only: str | None = None, fresh: float | None = None) -> list[dict]:
             spots = places.points(code)
             if code in places.BY_POINT and not spots:
                 log.info("%s: точек по адресам рабочих мест нет — иду по запасной из config", code)
-            _remember(spots)
+            # Запоминаем точку КАЖДОГО адреса, а не только обходимые: два рабочих
+            # места у одного магазина дают одну точку обхода, но цену своей точки
+            # должны найти оба.
+            _remember(places.resolved(code) or spots)
             try:
                 crawler = make(code, spots)
             except KeyError as exc:
@@ -173,7 +176,7 @@ def run_all(only: str | None = None, fresh: float | None = None) -> list[dict]:
             # десять минут (журнал 22.09.2026: 09:52 — 10:02), а цена и наличие на
             # единые товары не влияют — они не ключи. Обход без новых, изменённых и
             # пропавших строк пересчитал бы ровно тот же каталог.
-            if _changed(result):
+            if _changed(result) or _unmatched():
                 summary = refresh.match_all(progress=lambda m: log.info("сопоставление: %s", m))
     if summary is not None:
         results.append({"chain": "match", **summary})
@@ -183,6 +186,14 @@ def run_all(only: str | None = None, fresh: float | None = None) -> list[dict]:
 def _changed(result: dict) -> bool:
     """Поменял ли обход сети состав каталога — то, от чего зависит сопоставление."""
     return bool(result.get("added") or result.get("updated") or result.get("gone"))
+
+
+def _unmatched() -> bool:
+    """Остались ли строки без единого товара — например, после оборванного обхода."""
+    try:
+        return store.unmatched_count() > 0
+    except Exception:  # noqa: BLE001 — не посчиталось: сопоставим по изменениям
+        return False
 
 
 def _remember(spots) -> None:
@@ -226,7 +237,7 @@ def run_address(address: str) -> list[dict]:
             # объявляется, и плановый обход сеть не пропустит (refresh.run_chain).
             results.append(refresh.run_chain(crawler, progress=lambda m, c=code: log.info("%s: %s", c, m),
                                              partial=True))
-        if any(_changed(r) for r in results):
+        if any(_changed(r) for r in results) or (results and _unmatched()):
             refresh.match_all(progress=lambda m: log.info("сопоставление: %s", m))
     return results
 

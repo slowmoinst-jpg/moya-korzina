@@ -325,11 +325,12 @@ def _price_matrix(items, stores) -> tuple[dict, dict]:
         pid = int(item["product_id"])
         qty = float(item.get("qty") or 0)
         unit = item.get("unit") or "pcs"
+        weighed = service.is_weighed(pid, unit, qty, item.get("name"))
         for store in stores:
             # Тот же расчёт, что у оптимизатора: цена килограмма не берётся из цены
             # фасовки, разные фасовки приводятся к весу эталона. Два расчёта цены
             # на двух экранах однажды разошлись бы, и строка корзины спорила бы с итогом.
-            found = service.line_price(pid, store, qty, unit, item.get("weight_g"))
+            found = service.line_price(pid, store, qty, unit, item.get("weight_g"), weighed)
             if not found:
                 continue
             value = found["value"]

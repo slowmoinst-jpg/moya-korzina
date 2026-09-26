@@ -789,7 +789,11 @@ def already_sent(chain: str, hours: float | None = None) -> dict | None:
     window = float(RESEND_HOURS if hours is None else hours) * 3600.0
     if (datetime.now() - when).total_seconds() > window:
         return None
-    landed = [i for i in (got.get("items") or []) if isinstance(i, dict) and i.get("ok")]
+    # «Неизвестно» (браузер не ответил вовремя) — тоже в счёт: поручение осталось в
+    # очереди и, скорее всего, дощёлкало товар. Считать его неположенным значило бы
+    # пустить полную передачу поверх него.
+    landed = [i for i in (got.get("items") or [])
+              if isinstance(i, dict) and (i.get("ok") or i.get("unknown"))]
     if not landed:
         return None
     return {"finished_at": str(got["finished_at"]), "landed": len(landed)}
@@ -1156,6 +1160,14 @@ def _metro(chain: str, lines: list, items: list, state: dict) -> dict:
     from types import SimpleNamespace
 
     counts = {str(ln.sku): pieces_of(ln)[0] for ln in lines}
+    # Что лежало ДО записи. Сеть кладёт поверх лежащего, и по одному итогу не
+    # понять, сколько положили сейчас: повтор «доложить одну» при двух лежащих
+    # видел бы в корзине две и отчитывался «легло», ничего не положив.
+    try:
+        had = _metro_counts(metro_cart.read(store_id, user_hash))
+    except Exception:  # noqa: BLE001 — не прочиталось: считаем от пустой, как раньше
+        log.info("%s: корзину до записи прочитать не вышло", chain, exc_info=True)
+        had = {}
     try:
         metro_cart.fill(store_id, user_hash,
                         [SimpleNamespace(sku=sku, qty=count) for sku, count in counts.items()])
@@ -1168,12 +1180,8 @@ def _metro(chain: str, lines: list, items: list, state: dict) -> dict:
         return _done(chain, [], [{"sku": str(ln.sku), "why": why} for ln in lines], items,
                      "METRO не приняла корзину. " + why)
 
-    # Что сеть засчитала, видно по самой корзине: артикул лежит — значит лёг.
-    inside: dict[str, int] = {}
-    for row in basket.lines:
-        key = str(row.get("article") or row.get("id") or "").strip()
-        if key:
-            inside[key] = inside.get(key, 0) + int(row.get("count") or row.get("quantity") or 1)
+    # Что сеть засчитала, видно по самой корзине: прибавилось — значит легло.
+    inside = _metro_counts(basket)
     missing = {str(r.get("article") or "").strip() for r in basket.unavailable}
 
     ok: list[str] = []
@@ -1181,7 +1189,7 @@ def _metro(chain: str, lines: list, items: list, state: dict) -> dict:
     for line in lines:
         sku = str(line.sku)
         mark = rounding_of(line)
-        put = inside.get(sku, 0)
+        put = max(0, inside.get(sku, 0) - had.get(sku, 0))
         wanted = counts.get(sku, 1)
         if put >= wanted:
             ok.append(sku)
@@ -1206,6 +1214,16 @@ def _metro(chain: str, lines: list, items: list, state: dict) -> dict:
     log.info("%s: корзина наполнена одним запросом, легло %d, не легло %d",
              chain, len(ok), len(failed))
     return _done(chain, ok, failed, items, verdict)
+
+
+def _metro_counts(basket) -> dict[str, int]:
+    """Сколько штук каждого артикула лежит в корзине METRO."""
+    inside: dict[str, int] = {}
+    for row in getattr(basket, "lines", None) or []:
+        key = str(row.get("article") or row.get("id") or "").strip()
+        if key:
+            inside[key] = inside.get(key, 0) + int(row.get("count") or row.get("quantity") or 1)
+    return inside
 
 
 def deliver(chain: str, phone: str, plan) -> dict:

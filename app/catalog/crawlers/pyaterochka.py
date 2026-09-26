@@ -21,7 +21,7 @@ from typing import Iterator
 from app import config, homeexit, repo
 from app.catalog.crawlers import Pace
 from app.catalog.model import ChainProduct, CrawlBlocked, Crawler, Progress
-from app.matcher.normalize import parse_weight
+from app.matcher.normalize import parse_weight, unit_from_name
 
 log = logging.getLogger(__name__)
 
@@ -84,12 +84,14 @@ def parse_card_text(text: str | None) -> dict | None:
     if not name or price <= 0:
         return None
 
-    weight_g, unit = parse_weight(name)
+    weight_g, _ = parse_weight(name)
     return {
         "name": name,
         "price": round(price, 2),
         "weight_g": weight_g,
-        "unit": unit or "pcs",
+        # «kg» только по слову «весовой»/«кг»: parse_weight отвечает «kg» на любое
+        # название без граммовки, и буханка становилась весовым товаром.
+        "unit": unit_from_name(name),
     }
 
 
@@ -114,16 +116,16 @@ def to_product(raw: dict) -> ChainProduct | None:
     weight_g = raw.get("weight_g")
     unit = raw.get("unit")
     if not weight_g:
-        weight_g, parsed_unit = parse_weight(name)
-        if not unit:
-            unit = parsed_unit
+        weight_g, _ = parse_weight(name)
+    if not unit:
+        unit = unit_from_name(name)
 
     return ChainProduct(
         sku=sku,
         name=name,
         brand=raw.get("brand") or None,
         weight_g=weight_g,
-        unit=unit or "pcs",
+        unit=unit,
         category=raw.get("category") or None,
         url=raw.get("url") or None,
         image=raw.get("image") or None,
@@ -269,21 +271,26 @@ class PyaterochkaCrawler(Crawler):
             return
         with repo.get_conn() as conn:
             rows = conn.execute(
-                "SELECT sp.sku, sp.raw_name, sp.barcode, sp.url, p.price "
+                "SELECT sp.sku, sp.raw_name, sp.ean AS barcode, sp.url, p.price "
                 "FROM store_products sp "
-                "LEFT JOIN (SELECT store_product_id, price FROM store_prices WHERE is_current=1) p "
+                # Последний снимок цены каждого товара. Колонки is_current в
+                # store_prices нет и не было, а штрихкод у store_products лежит в
+                # ean: запрос падал, и добор из чеков не работал вовсе (тест
+                # подменял базу целиком и этого не видел).
+                "LEFT JOIN (SELECT store_product_id, price, MAX(fetched_at) AS at "
+                "FROM store_prices GROUP BY store_product_id) p "
                 "ON p.store_product_id = sp.id "
                 "WHERE sp.store_id=?", (store.id,)
             ).fetchall()
         for r in rows:
             if not r["sku"] or not r["raw_name"]:
                 continue
-            weight_g, unit = parse_weight(r["raw_name"])
+            weight_g, _ = parse_weight(r["raw_name"])
             yield ChainProduct(
                 sku=str(r["sku"]),
                 name=r["raw_name"],
                 weight_g=weight_g,
-                unit=unit or "pcs",
+                unit=unit_from_name(r["raw_name"]),
                 barcode=str(r["barcode"]).strip() if r["barcode"] else None,
                 price=float(r["price"]) if r["price"] else None,
                 url=r["url"] or f"{SITE}/product/{r['sku']}/",

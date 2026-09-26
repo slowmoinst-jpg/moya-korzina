@@ -146,12 +146,23 @@ def _price(line, store_code: str) -> float | None:
 
 
 def _per(line, product_id) -> str | None:
-    """В чём корзина считает эту позицию: «kg» или «pcs». Не знаем — None."""
+    """В чём корзина считает эту позицию: «kg» или «pcs». Не знаем — None.
+
+    «kg» — только у товара, который и правда берут на вес (service.is_weighed):
+    отметка unit="kg" в базе бывает и у буханки, чьё название просто без
+    граммовки, и наряд переводил бы «1 буханку» в три упаковки по 400 г.
+    """
+    from app import service
+
     unit = getattr(line, "unit", None)
-    if unit in ("kg", "pcs"):
-        return unit
     product = repo.get_product(product_id) if product_id else None
-    return product.unit if product else None
+    if unit not in ("kg", "pcs"):
+        unit = product.unit if product else None
+    if unit is None:
+        return None
+    qty = getattr(line, "qty", 1) or 1
+    name = product.name if product else getattr(line, "name", None)
+    return "kg" if service.is_weighed(product_id, unit, qty, name) else "pcs"
 
 
 def _pack(mapping: dict | None) -> float | None:

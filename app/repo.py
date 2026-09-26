@@ -237,8 +237,8 @@ def latest_price(store_product_id: int) -> dict | None:
 def latest_price_for(product_id: int, store_id: int) -> dict | None:
     """Актуальная цена эталона в магазине по подтверждённому сопоставлению.
 
-    К снимку приложены единица и фасовка товара сети (sp_unit, sp_weight_g): без
-    них цену упаковки не отличить от цены килограмма.
+    К снимку приложены единица, фасовка и название товара сети (sp_unit,
+    sp_weight_g, sp_name): без них цену упаковки не отличить от цены килограмма.
     """
     sp = confirmed_mapping(product_id, store_id)
     if not sp:
@@ -248,6 +248,7 @@ def latest_price_for(product_id: int, store_id: int) -> dict | None:
         return None
     snap["sp_unit"] = sp.get("unit")
     snap["sp_weight_g"] = sp.get("weight_g")
+    snap["sp_name"] = sp.get("raw_name")
     return snap
 
 

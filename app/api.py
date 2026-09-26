@@ -289,15 +289,21 @@ def _priced(lines: list[BasketLine], store_code: str) -> list[BasketLine]:
     цен она равна нулю, а ноль в этом месте не «неизвестно», а «бесплатно»: он
     выглядит как ответ, и сверка по нему пройдёт успешно при любой ошибке.
     """
+    from app import service
+
     store = repo.get_store(store_code)
     if not store:
         return lines
     for line in lines:
         if not line.product_id:
             continue
-        price = repo.latest_price_for(line.product_id, store.id)
-        if price and price.get("price") is not None:
-            line.prices[store_code] = round(float(price["price"]) * line.qty, 2)
+        # Тот же счёт, что у расчёта: весовой товар — по килограммам или упаковкам,
+        # штучный — по цене полки. Иначе сумма наряда спорила бы с «Результатом».
+        product = repo.get_product(line.product_id)
+        found = service.line_price(line.product_id, store, line.qty, line.unit,
+                                   product.weight_g if product else None)
+        if found is not None:
+            line.prices[store_code] = found["value"]
     return lines
 
 

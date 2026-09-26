@@ -275,12 +275,29 @@
              не требует ничего (проверено гостем 18.09.2026). Что не нужно —
              предлагаем первым. #}
           {% if s.plan.can_fill %}
+            {% if not s.resend %}
             <form method="post" action="{{ screen.path }}" style="margin-top:10px">
               <input type="hidden" name="basket" value="{{ basket_id }}">
               <input type="hidden" name="mode" value="{{ mode or '' }}">
               <button class="btn wide" type="submit" name="do" value="link:{{ s.code }}">
                 Передать корзину в {{ s.name }} под моим входом</button>
             </form>
+            {% else %}
+            {# Корзина сюда уже уезжала: сеть кладёт поверх лежащего, и ещё одна
+               передача удвоит её. Не отказ, а вопрос — корзину могли очистить руками. #}
+            <div class="note warn" style="margin-top:10px">Корзина в {{ s.name }} уже передана
+              сегодня в {{ s.resend.at }}: там лежит {{ s.resend.landed }} позиц. Ещё одна
+              передача целиком удвоит корзину.
+              {% if s.resend.retry %}Доложить только то, что не легло ({{ s.resend.retry }}), можно
+                на экране <a href="/accounts">«Кабинеты»</a>.{% endif %}</div>
+            <form method="post" action="{{ screen.path }}" style="margin-top:10px" data-once>
+              <input type="hidden" name="basket" value="{{ basket_id }}">
+              <input type="hidden" name="mode" value="{{ mode or '' }}">
+              <input type="hidden" name="again" value="1">
+              <button class="btn wide" type="submit" name="do" value="link:{{ s.code }}">
+                Корзину очистил — передать в {{ s.name }} ещё раз</button>
+            </form>
+            {% endif %}
             <p class="dim" style="margin:8px 0 0">Передача пойдёт фоном, ход и итог — на экране
               «Кабинеты», туда же приложение вас и отправит. Второй раз нажимать не нужно:
               товары легли бы дважды.</p>

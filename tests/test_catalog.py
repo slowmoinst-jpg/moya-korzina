@@ -381,6 +381,15 @@ def test_a_crawl_that_changed_nothing_is_not_matched_again(quiet_run):
     assert all(r["chain"] != "match" for r in rows)
 
 
+def test_rows_left_unmatched_are_matched_on_the_next_crawl(quiet_run):
+    """Обход, оборванный выкладкой, сложил строки и не успел их сопоставить —
+    следующий обход сопоставит, даже если сам ничего не поменял."""
+    quiet_run["added"] = 0
+    store.upsert_products("magnit", [P("1", "Молоко 930 мл")])      # item_id пуст
+    worker.run_all()
+    assert quiet_run["matched"], "строки без единого товара остались бы такими навсегда"
+
+
 def test_nothing_crawled_means_nothing_to_match(quiet_run):
     _crawled("magnit")
     _crawled("metro")

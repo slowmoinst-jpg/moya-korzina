@@ -33,20 +33,34 @@ def shop(tmp_path, monkeypatch):
 
 
 def _mapped(store, name: str, unit: str, weight_g=None, sku="1", shop_unit=None,
-            shop_weight=None, price=100.0, per_kg=None, fetched_at=None) -> int:
+            shop_weight=None, price=100.0, per_kg=None, fetched_at=None,
+            shop_name=None) -> int:
     pid = repo.upsert_product(Product(id=None, name=name, unit=unit, weight_g=weight_g))
-    sp = repo.upsert_store_product(store.id, sku, name, weight_g=shop_weight, unit=shop_unit)
+    sp = repo.upsert_store_product(store.id, sku, shop_name or name, weight_g=shop_weight,
+                                   unit=shop_unit)
     repo.confirm_mapping(pid, sp, confirmed=True)
     repo.save_price(sp, price, per_kg, fetched_at=fetched_at)
     return pid
 
 
-def test_weight_item_takes_kilo_price_from_the_pack_weight(shop):
+def test_weight_item_is_priced_by_the_packs_that_land_in_the_cart(shop):
+    """0,7 кг сыра упаковками по 400 г — две упаковки за 600 ₽: столько и заплатят.
+
+    Раньше цена упаковки шла ценой килограмма (210 ₽), а промежуточная правка
+    считала 525 ₽ — меньше, чем стоят две упаковки, которые наряд положит.
+    """
     pid = _mapped(shop, "Сыр Российский 400 г", "kg", shop_unit="pcs", shop_weight=400,
                   price=300.0)
     found = service.line_price(pid, shop, 0.7, "kg")
-    assert found["value"] == 525.0
-    assert "400" in found["note"]
+    assert found["value"] == 600.0
+    assert "2 уп. по 400 г" in found["note"]
+
+
+def test_a_big_pack_does_not_win_on_a_small_need(shop):
+    """0,3 кг из пачки в 1 кг — это вся пачка, а не 30 % её цены."""
+    pid = _mapped(shop, "Сыр весовой", "kg", shop_unit="pcs", shop_weight=1000, price=700.0,
+                  shop_name="Сыр 1 кг")
+    assert service.line_price(pid, shop, 0.3, "kg")["value"] == 700.0
 
 
 def test_pack_of_unknown_weight_is_not_a_kilo_price(shop):
@@ -63,15 +77,39 @@ def test_weight_goods_of_the_shop_are_priced_per_kilo(shop):
 def test_price_per_kg_from_the_snapshot_wins(shop):
     pid = _mapped(shop, "Сыр 400 г", "kg", shop_unit="pcs", shop_weight=400, price=300.0,
                   per_kg=700.0)
-    assert service.line_price(pid, shop, 1.0, "kg")["value"] == 700.0
+    assert service.line_price(pid, shop, 1.5, "kg")["value"] == 1050.0
+
+
+def test_no_weight_in_the_name_is_not_a_weight_item(shop):
+    """«Хлеб Бородинский нарезка» — не весовой, хоть граммовки в названии и нет.
+
+    Разбор названия ставил таким товарам unit="kg", и честный пересчёт в кило
+    делал из буханки за 60 ₽ «150 ₽ за кг», а наряд клал три буханки.
+    """
+    bread = _mapped(shop, "Хлеб БОРОДИНСКИЙ нарезка", "kg", shop_unit="pcs", shop_weight=400,
+                    price=60.0, shop_name="Хлеб Бородинский 400 г")
+    assert service.line_price(bread, shop, 1, "kg")["value"] == 60.0
+    eggs = _mapped(shop, "Яйцо С1 10шт", "kg", sku="2", shop_unit="pcs", price=120.0)
+    assert service.line_price(eggs, shop, 2, "kg")["value"] == 240.0, "магазин не выпадает"
+
+
+def test_receipts_bought_by_weight_make_a_weight_item(shop):
+    """Дробное количество в чеках — довод: этот товар человек берёт на вес."""
+    pid = _mapped(shop, "Картофель", "kg", shop_unit="pcs", shop_weight=2500, price=150.0,
+                  shop_name="Картофель сетка 2,5 кг")
+    assert service.line_price(pid, shop, 2, "kg")["value"] == 300.0, "без довода — штуками"
+    repo.add_history_row(date="2026-09-01", store_id=shop.id, product_id=pid,
+                         raw_name="КАРТОФЕЛЬ ВЕС", qty=1.734, unit_price=40.0, total=69.36)
+    assert service.line_price(pid, shop, 2, "kg")["value"] == 150.0, "2 кг — одна сетка"
 
 
 def test_different_packs_are_compared_by_weight(shop):
-    """800 г за 90 ₽ против эталона 1 кг: килограмм у него 112,5 ₽, а не 90."""
+    """800 г за 90 ₽ против эталона 1 кг: платят 90, а сравнивают как 112,5."""
     pid = _mapped(shop, "Гречка 1 кг", "pcs", weight_g=1000, shop_unit="pcs",
                   shop_weight=800, price=90.0)
     found = service.line_price(pid, shop, 1.0, "pcs", 1000)
-    assert found["value"] == 112.5
+    assert found["value"] == 90.0, "в оплату — цена полки"
+    assert found["adjust"] == 22.5, "в выбор — разница с приведённой к килограмму"
     assert "800" in found["note"] and "1000" in found["note"]
 
 
@@ -81,12 +119,21 @@ def test_same_pack_keeps_the_shelf_price(shop):
                   shop_weight=930, price=89.0)
     found = service.line_price(pid, shop, 2.0, "pcs", 930)
     assert found["value"] == 178.0
-    assert found["note"] is None
+    assert found["note"] is None and found["adjust"] == 0.0
 
 
 def test_piece_sold_by_weight_in_the_shop(shop):
-    pid = _mapped(shop, "Колбаса 300 г", "pcs", weight_g=300, shop_unit="kg", price=900.0)
+    pid = _mapped(shop, "Колбаса 300 г", "pcs", weight_g=300, shop_unit="kg", price=900.0,
+                  shop_name="Колбаса докторская весовая")
     assert service.line_price(pid, shop, 1.0, "pcs", 300)["value"] == 270.0
+
+
+def test_a_kilo_mark_without_a_word_is_not_a_kilo_price(shop):
+    """unit="kg" у товара сети без слова «весовой» — не довод: так метили сборщики
+    любую строку без граммовки. Цена буханки не делится на 0,4 кг."""
+    pid = _mapped(shop, "Хлеб 400 г", "pcs", weight_g=400, shop_unit="kg", price=60.0,
+                  shop_name="Хлеб Бородинский")
+    assert service.line_price(pid, shop, 1.0, "pcs", 400)["value"] == 60.0
 
 
 def test_old_price_is_marked_stale(shop):
@@ -149,3 +196,42 @@ def test_absent_in_the_baseline_store_is_not_a_zero_baseline(shop):
     basket = repo.create_basket("проверка")
     repo.set_basket_item(basket, pid, 1)
     assert service.baseline_by_product(basket)[pid] == 300.0
+
+
+def test_a_name_without_weight_is_not_a_weight_word():
+    """«На вес» — только по слову, а не по отсутствию граммовки в названии."""
+    from app.matcher.normalize import sold_by_weight, unit_from_name
+
+    assert unit_from_name("Хлеб БОРОДИНСКИЙ нарезка") is None
+    assert unit_from_name("Яйцо С1 10шт") is None
+    assert unit_from_name("Мука 1 кг") == "pcs", "«1 кг» — фасовка, а не развес"
+    assert unit_from_name("Бананы, кг") == "kg"
+    assert sold_by_weight("ЯБЛОКИ ГАЛА ВЕС") and sold_by_weight("Огурцы весовые")
+
+
+def test_receipts_make_weight_items_only_by_evidence(shop):
+    """Чек заводит весовой эталон по дробному количеству или слову, а не по молчанию."""
+    from app.importers.ofd_pdf import _ensure_product
+
+    bread, _ = _ensure_product("Хлеб БОРОДИНСКИЙ нарезка", 1)
+    apples, _ = _ensure_product("ЯБЛОКИ ГАЛА ВЕС", 1)
+    cheese, _ = _ensure_product("Сыр Российский", 0.354)
+    milk, _ = _ensure_product("Молоко 930 мл", 2)
+    units = {pid: repo.get_product(pid).unit for pid in (bread, apples, cheese, milk)}
+    assert units == {bread: "pcs", apples: "kg", cheese: "kg", milk: "pcs"}
+
+
+def test_pyaterochka_adds_known_goods_from_a_real_base(shop):
+    """Добор товаров Пятёрочки из чеков — на НАСТОЯЩЕЙ базе, а не подменённой.
+
+    Запрос ссылался на колонку is_current, которой в store_prices нет, и падал;
+    тест подменял соединение целиком и этого не видел.
+    """
+    from app.catalog.crawlers.pyaterochka import PyaterochkaCrawler
+
+    five = repo.get_store("pyaterochka")
+    sp = repo.upsert_store_product(five.id, "111", "Хлеб Бородинский")
+    repo.save_price(sp, 45.0, fetched_at="2026-09-01T10:00:00")
+    repo.save_price(sp, 49.0, fetched_at="2026-09-20T10:00:00")
+    got = list(PyaterochkaCrawler(sections=[])._from_store_products())
+    assert [(p.sku, p.price, p.unit) for p in got] == [("111", 49.0, None)]

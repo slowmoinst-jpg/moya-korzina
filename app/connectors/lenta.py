@@ -223,6 +223,26 @@ def _where(location: Location | None = None) -> dict:
     return {}
 
 
+def _per_kg(item: dict, price: float, name: str | None) -> float | None:
+    """Цена килограмма развесного товара. Не развесной или не посчитать — None.
+
+    У Ленты `price` развесного товара — цена ФАСОВКИ, а не килограмма:
+    price = pricePerKg × weightGrams / 1000 (замер 19.09.2026, см. _weight_rules).
+    Раньше цена фасовки уходила ценой килограмма, и полшара сыра в 300 г считались
+    втрое дешевле, чем стоят.
+    """
+    if not (item.get("isWeight") or _unit(name) == "kg"):
+        return None
+    direct = _number(item.get("pricePerKg"))
+    if direct:
+        return direct
+    pack = _number(item.get("weightGrams")) or 0
+    if pack > 0:
+        return round(price * 1000.0 / pack, 2)
+    # Фасовки карточка не назвала — остаётся прежнее прочтение: цена за килограмм.
+    return price
+
+
 def _weight_rules(sku: int, location: Location | None) -> dict | None:
     """Как считается количество у развесного товара. None — сеть не ответила.
 
@@ -420,7 +440,7 @@ class LentaConnector(Connector):
                 store_code=self.code,
                 sku=str(sku),
                 price=price,
-                price_per_kg=price if _unit(name) == "kg" else None,
+                price_per_kg=_per_kg(item, price, name),
                 in_stock=stock > 0,
                 name=name,
             ))

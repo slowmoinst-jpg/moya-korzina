@@ -186,8 +186,11 @@ def price_for_me(row: dict) -> tuple[float, bool, str | None] | None:
     if row.get("price") is None:
         return None
     stock = row.get("in_stock")
+    # Даты цены нет (каталог прежней версии) — берём самую раннюю: last_seen
+    # продлевает и ночной проход по карте сайта, который цену не перечитывает,
+    # и старая цена выдала бы себя за вчерашнюю.
     return (float(row["price"]), True if stock is None else bool(stock),
-            row.get("price_seen") or row.get("last_seen"))
+            row.get("price_seen") or row.get("first_seen"))
 
 
 def resolve(name: str, brand: str | None = None, weight_g: float | None = None,

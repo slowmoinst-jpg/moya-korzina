@@ -178,6 +178,19 @@ def test_lenta_weight_goods_get_price_per_kg(monkeypatch, lenta_address):
     assert snap.price_per_kg == 50.0
 
 
+def test_lenta_weight_pack_price_is_not_a_kilo_price(monkeypatch, lenta_address):
+    """У развесного товара Лента отдаёт цену ФАСОВКИ: 300 г сыра за 150 ₽ — 500 ₽/кг.
+
+    Раньше цена фасовки уходила ценой килограмма, и сыр считался втрое дешевле.
+    """
+    answer = _details(150.0, 5, name="Сыр NATURA сливочный 45%, весовой")
+    answer["data"]["item"].update({"isWeight": True, "weightGrams": 300})
+    monkeypatch.setattr(mcp_client, "call_tool", fake_tool({"storefront_product_details": answer}))
+    snap = get_connector("lenta").get_prices(["11993"])[0]
+
+    assert snap.price_per_kg == 500.0
+
+
 def test_lenta_without_address_does_not_ask_for_prices(monkeypatch):
     """Без адреса цена у Ленты бессмысленна: у каждой точки она своя."""
     called = []

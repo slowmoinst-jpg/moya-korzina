@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime
 
 from app import config, location, repo
+from app.matcher.normalize import sold_by_weight
 from app.models import BasketLine, Offer, Store, Variant
 
 log = logging.getLogger(__name__)
@@ -49,25 +51,80 @@ def _grams(value) -> float | None:
     return grams if grams > 0 else None
 
 
+def is_weighed(product_id: int, unit: str | None, qty: float, name: str | None = None) -> bool:
+    """Весовой ли эталон НА САМОМ ДЕЛЕ. unit="kg" в базе — ещё не довод.
+
+    Разбор названия (normalize.parse_weight) отвечал «kg» на любое название без
+    граммовки, и «Хлеб Бородинский нарезка» или «Яйцо С1 10шт» числились
+    весовыми. Пока цена бралась как «цена × количество», это сходило с рук; с
+    честным пересчётом в килограммы и упаковки буханка превращалась бы в три
+    (ревизия 26.09.2026). Поэтому весовым эталон считается только по признаку:
+    дробное количество, слово «весовой» / «на развес» / «кг» в названии или
+    дробные количества в его же чеках.
+    """
+    if (unit or "pcs") != "kg":
+        return False
+    try:
+        amount = float(qty)
+    except (TypeError, ValueError):
+        amount = 1.0
+    if abs(amount - round(amount)) > 1e-9:
+        return True
+    if name is None:
+        product = repo.get_product(product_id)
+        name = product.name if product else ""
+    if sold_by_weight(name or ""):
+        return True
+    return _bought_by_weight(product_id)
+
+
+def _bought_by_weight(product_id: int) -> bool:
+    """Покупал ли человек этот товар дробным количеством — то есть на вес."""
+    try:
+        with repo.get_conn() as c:
+            row = c.execute("SELECT 1 FROM purchase_history WHERE product_id=?"
+                            " AND ABS(qty - ROUND(qty)) > 0.0001 LIMIT 1", (product_id,)).fetchone()
+    except Exception:  # noqa: BLE001 — нет истории — нет и довода
+        return False
+    return row is not None
+
+
+def _shop_by_weight(snap: dict) -> bool:
+    """Цена сети — за килограмм? Только если сеть это сказала.
+
+    Довод один из двух: цена за килограмм в самом снимке или слово «весовой» /
+    «на развес» / «кг» в названии товара сети. Одна отметка unit="kg" не довод:
+    её ставили и сборщики, разбиравшие название через parse_weight, — любому
+    товару без граммовки в названии.
+    """
+    if snap.get("price_per_kg"):
+        return True
+    return (snap.get("sp_unit") or "").lower() == "kg" and sold_by_weight(snap.get("sp_name") or "")
+
+
 def line_price(product_id: int, store: Store, qty: float, unit: str,
-               ref_weight_g: float | None = None) -> dict | None:
+               ref_weight_g: float | None = None, weighed: bool | None = None) -> dict | None:
     """Во что обойдётся позиция корзины в магазине. None — сравнимой цены нет.
 
-    Возвращает {"value", "in_stock", "fetched_at", "stale", "stale_label", "note"}.
-    stale_label — дата несвежего снимка или «справочная цена» для цены из CSV.
+    Возвращает {"value", "adjust", "in_stock", "fetched_at", "stale", "stale_label", "note"}:
+      value   — ДЕНЬГИ: столько заплатит человек за то, что ляжет в корзину;
+      adjust  — поправка ТОЛЬКО ДЛЯ ВЫБОРА (разная фасовка), в оплату не входит;
+      stale_label — дата несвежего снимка или «справочная цена» для цены из CSV.
 
-    ЦЕНА ФАСОВКИ — НЕ ЦЕНА КИЛОГРАММА. Раньше весовой товар без price_per_kg
-    брал цену упаковки как цену килограмма: сыр 400 г за 300 ₽ на 0,7 кг выходил
-    в 210 ₽ вместо 525 ₽, и сеть ложно выигрывала. Теперь цена килограмма берётся
-    из снимка, из единицы товара сети (весовой товар сеть и так называет в рублях
-    за кг) или пересчитывается по фасовке; а если ничего из этого не известно,
-    честнее сказать «сравнить нечем», чем подставить неправду.
+    ВЕСОВОЙ ЭТАЛОН (weighed — см. is_weighed; None — выяснить здесь):
+      * сеть продаёт на вес — цена её килограмма × килограммы;
+      * сеть продаёт упаковками известного веса — СТОЛЬКО УПАКОВОК, СКОЛЬКО ЛЯЖЕТ
+        В КОРЗИНУ (вверх, как app/shopbrowser/cart._pieces), × цена упаковки. Раньше
+        цена упаковки считалась ценой килограмма (сыр 400 г за 300 ₽ на 0,7 кг —
+        210 ₽ вместо двух упаковок за 600 ₽), а большая упаковка выигрывала на
+        малом весе: 0,3 кг из пачки в 1 кг — это вся пачка;
+      * упаковка неизвестного веса — сравнить нечем, None.
 
-    РАЗНЫЕ ФАСОВКИ СРАВНИВАЮТСЯ ПО ВЕСУ. Сопоставление допускает разницу в
-    граммовке (weight_tolerance_pct), и «800 г за 90 ₽» выигрывало у «1 кг за
-    100 ₽», хотя килограмм у него на 12 % дороже. Если вес известен у обеих
-    сторон и заметно разнится, цена приводится к весу эталона, а строка несёт
-    пояснение — на полке будет своя цена.
+    ШТУЧНЫЙ ЭТАЛОН С ДРУГОЙ ФАСОВКОЙ. Сопоставление допускает разницу в граммовке
+    (weight_tolerance_pct), и «800 г за 90 ₽» выигрывало у «1 кг за 100 ₽», хотя
+    килограмм у него на 12 % дороже. В value остаётся цена полки — её и заплатят,
+    от неё считаются пороги доставки и минимального заказа, — а разница с ценой,
+    приведённой к весу эталона, идёт в adjust: по ней выбирается вариант.
     """
     snap = repo.latest_price_for(product_id, store.id)
     if not snap:
@@ -76,39 +133,44 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
     if price is None:
         return None
     price = float(price)
+    qty = float(qty)
     per_kg = snap.get("price_per_kg")
     shop_unit = (snap.get("sp_unit") or "").lower()
+    by_weight = _shop_by_weight(snap)
     pack_g = _grams(snap.get("sp_weight_g"))
     ref_g = _grams(ref_weight_g)
+    if weighed is None:
+        weighed = is_weighed(product_id, unit, qty)
     note = None
+    adjust = 0.0
 
-    if unit == "kg":
+    if weighed:
         if per_kg:
-            base = float(per_kg)
-        elif shop_unit == "kg":
-            base = price                      # весовой товар сеть называет в рублях за кг
+            value = float(per_kg) * qty
+        elif by_weight:
+            value = price * qty                       # весовой товар сеть называет в рублях за кг
         elif pack_g:
-            base = price * 1000.0 / pack_g
-            note = f"цена за кг из фасовки {pack_g:g} г за {price:.2f} ₽"
+            packs = max(1, math.ceil(qty * 1000.0 / pack_g - 1e-9))
+            value = packs * price
+            note = (f"{qty:g} кг — {packs} уп. по {pack_g:g} г "
+                    f"({packs * pack_g / 1000.0:g} кг) по {price:.2f} ₽")
         elif shop_unit == "pcs":
-            return None                       # цена упаковки неизвестного веса
+            return None                               # упаковка неизвестного веса
         else:
             # Про товар сети не известно ничего — ни единицы, ни фасовки (старые
-            # сопоставления, прайс, чек). Чек и прайс весовой товар называют в рублях
-            # за кг, поэтому так и читаем.
-            base = price
-    elif shop_unit == "kg":
-        # Эталон — штука, а сеть продаёт на вес: цена у неё за килограмм.
-        if not ref_g:
-            return None
-        base = price * ref_g / 1000.0
-        note = f"на вес: {price:.2f} ₽/кг, взято на {ref_g:g} г"
-    elif ref_g and pack_g and abs(pack_g - ref_g) / ref_g > PACK_SAME:
-        base = price * ref_g / pack_g
-        note = (f"на полке {pack_g:g} г за {price:.2f} ₽, "
-                f"цена приведена к {ref_g:g} г")
+            # сопоставления, прайс, чек). Чек и прайс весовой товар называют в
+            # рублях за кг, поэтому так и читаем.
+            value = price * qty
+    elif by_weight and ref_g:
+        # Эталон — штука известного веса, а сеть продаёт на вес.
+        value = price * ref_g / 1000.0 * qty
+        note = f"на вес: {price:.2f} ₽/кг, взято по {ref_g:g} г"
     else:
-        base = price
+        value = price * qty
+        if ref_g and pack_g and abs(pack_g - ref_g) / ref_g > PACK_SAME:
+            adjust = price * (ref_g / pack_g - 1.0) * qty
+            note = (f"фасовка {pack_g:g} г вместо {ref_g:g} г: для сравнения цена "
+                    f"приведена к {ref_g:g} г ({price * ref_g / pack_g:.2f} ₽ за штуку)")
 
     age = _days(snap.get("fetched_at"))
     reference = snap.get("source") == "fallback"
@@ -120,7 +182,8 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
     else:
         label = None
     return {
-        "value": round(base * float(qty), 2),
+        "value": round(value, 2),
+        "adjust": round(adjust, 2),
         "in_stock": bool(snap.get("in_stock", 1)),
         "fetched_at": snap.get("fetched_at"),
         "stale": stale,
@@ -130,9 +193,10 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
 
 
 def _price_for_line(product_id: int, store: Store, qty: float, unit: str,
-                    ref_weight_g: float | None = None) -> tuple[float | None, bool]:
-    """Стоимость позиции целиком в магазине: (цена * qty, в наличии)."""
-    found = line_price(product_id, store, qty, unit, ref_weight_g)
+                    ref_weight_g: float | None = None,
+                    weighed: bool | None = None) -> tuple[float | None, bool]:
+    """Стоимость позиции целиком в магазине: (деньги, в наличии)."""
+    found = line_price(product_id, store, qty, unit, ref_weight_g, weighed)
     if not found:
         return None, False
     return found["value"], found["in_stock"]
@@ -149,12 +213,16 @@ def build_basket_lines(basket_id: int) -> list[BasketLine]:
             unit=item["unit"] or "pcs",
             qty=float(item["qty"]),
         )
+        weighed = is_weighed(line.product_id, line.unit, line.qty, item.get("name"))
         for store in stores:
-            found = line_price(line.product_id, store, line.qty, line.unit, item.get("weight_g"))
+            found = line_price(line.product_id, store, line.qty, line.unit, item.get("weight_g"),
+                               weighed)
             if found is None:
                 continue
             line.prices[store.code] = found["value"]
             line.in_stock[store.code] = found["in_stock"]
+            if found["adjust"]:
+                line.adjust[store.code] = found["adjust"]
             if found["stale"]:
                 line.stale[store.code] = found["stale_label"] or ""
             if found["note"]:
@@ -188,9 +256,10 @@ def baseline_by_product(basket_id: int) -> dict[int, float]:
     for item in repo.basket_items(basket_id):
         qty, unit, pid = float(item["qty"]), item["unit"] or "pcs", item["product_id"]
         grams = item.get("weight_g")
+        weighed = is_weighed(pid, unit, qty, item.get("name"))
         price = None
         if base_store:
-            found = line_price(pid, base_store, qty, unit, grams)
+            found = line_price(pid, base_store, qty, unit, grams, weighed)
             # Товара нет в базовом магазине — его «цена» там не база: Магнит на
             # отсутствующий товар пишет справочную цену или ноль с пометкой «нет».
             if found and found["in_stock"] and found["value"] > 0:
@@ -201,7 +270,7 @@ def baseline_by_product(basket_id: int) -> dict[int, float]:
         if price is None:
             others = []
             for store in repo.list_stores():
-                p, _ = _price_for_line(pid, store, qty, unit, grams)
+                p, _ = _price_for_line(pid, store, qty, unit, grams, weighed)
                 if p:
                     others.append(p)
             price = min(others) if others else 0.0

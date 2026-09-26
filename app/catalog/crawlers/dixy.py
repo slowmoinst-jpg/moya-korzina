@@ -41,7 +41,7 @@ import requests
 from app import config, homeexit
 from app.catalog.crawlers import BACKOFF_SEC, RETRIES, USER_AGENT, Pace, sitemap_locs
 from app.catalog.model import ChainProduct, CrawlBlocked, Crawler, Progress
-from app.matcher.normalize import parse_weight
+from app.matcher.normalize import parse_weight, sold_by_weight
 
 log = logging.getLogger(__name__)
 
@@ -117,10 +117,17 @@ def shelf_product(card: dict) -> ChainProduct | None:
     path = str(card.get("url") or "").strip()
     symbol = str(card.get("symbol") or card.get("realSymbol") or "").strip().lower()
     can_buy = card.get("canBuy")
-    weight_g, parsed_unit = parse_weight(name)
+    weight_g, _ = parse_weight(name)
     if weight_g is None and card.get("weight"):
-        weight_g, parsed_unit = parse_weight(str(card.get("weight")))
-    unit = "kg" if symbol in ("кг", "kg") or parsed_unit == "kg" else "pcs"
+        weight_g, _ = parse_weight(str(card.get("weight")))
+    # Единица — из символа сети («кг»/«шт») или слова «весовой» в названии. Не из
+    # отсутствия граммовки: parse_weight называет «kg» любое название без неё.
+    if symbol in ("кг", "kg") or sold_by_weight(name):
+        unit = "kg"
+    elif symbol or weight_g:
+        unit = "pcs"
+    else:
+        unit = None
     return ChainProduct(
         sku=sku, name=name,
         brand=(str(card.get("brand") or "").strip() or None),

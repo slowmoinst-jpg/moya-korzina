@@ -564,10 +564,16 @@ class MagnitConnector(HttpCatalogConnector):
         quantity = card.get("quantity") if card else None
         if price is None or (not price and not quantity):
             return None
+        # Весовой товар шлюз называет в рублях за килограмм (тот же признак
+        # weighted.isWeighted, по которому каталог ставит unit="kg"). Сказать это
+        # снимку явно — значит дать расчёту довод: одна отметка «kg» у товара
+        # сети доводом не считается (service._shop_by_weight).
+        weighted = card.get("weighted") if isinstance(card.get("weighted"), dict) else {}
         return PriceSnapshot(
             store_code=self.code,
             sku=sku,
             price=price,
+            price_per_kg=price if weighted.get("isWeighted") else None,
             in_stock=bool(quantity) if isinstance(quantity, (int, float)) else True,
             name=(card.get("name") or "").strip() or None,
         )

@@ -105,6 +105,8 @@ class BasketLine:
     in_stock: dict[str, bool] = field(default_factory=dict)
     stale: dict[str, str] = field(default_factory=dict)        # store_code -> дата несвежей цены
     notes: dict[str, str] = field(default_factory=dict)        # store_code -> как получена цена
+    # store_code -> поправка ТОЛЬКО ДЛЯ ВЫБОРА (другая фасовка), в оплату не входит
+    adjust: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -146,6 +148,9 @@ class Variant:
     penalty: float = 0.0
     handover: float = 0.0      # во что обходится завести эту корзину в магазины руками
     missing_products: list[str] = field(default_factory=list)
+    # Поправка на фасовку: штучные позиции с другой граммовкой, приведённые к весу
+    # эталона. Как и handover, в оплату не входит — только в сравнение вариантов.
+    pack_extra: float = 0.0
 
     @property
     def savings_rub(self) -> float:
@@ -171,8 +176,10 @@ class Variant:
         Наружу как «сколько заплатить» НЕ показывается: рубли за перебивание корзины
         человек никому не отдаёт. Но и не учитывать их нельзя — иначе расчёт бодро
         отправит в третий магазин ради сорока рублей, где уйдёт четверть часа.
+        Туда же поправка на фасовку (pack_extra): 800 г вместо килограмма дешевле на
+        полке, но не за килограмм.
         """
-        return round(self.total + self.handover, 2)
+        return round(self.total + self.handover + self.pack_extra, 2)
 
 
 @dataclass(frozen=True)

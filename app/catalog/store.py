@@ -249,6 +249,22 @@ def upsert_products(chain: str, products: Iterable[ChainProduct], seen_at: str |
     return seen, added, updated
 
 
+def unmatched_count() -> int:
+    """Живые строки каталога, ещё не отнесённые к единому товару.
+
+    Обход, оборванный выкладкой, успевает сложить строки и не успевает их
+    сопоставить; следующий обход той же сети может ничего не поменять — и без
+    этого счёта строки остались бы без единого товара до случайной правки.
+    """
+    try:
+        with connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS n FROM chain_products"
+                               " WHERE active=1 AND item_id IS NULL").fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int(row["n"] or 0)
+
+
 def point_prices(chain: str, sku: str) -> dict[str, dict]:
     """Цена и наличие артикула по точкам: код точки -> {price, in_stock, seen_at}."""
     try:
