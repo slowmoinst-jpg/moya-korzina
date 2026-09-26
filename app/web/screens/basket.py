@@ -325,7 +325,7 @@ def _price_matrix(items, stores) -> tuple[dict, dict]:
         pid = int(item["product_id"])
         qty = float(item.get("qty") or 0)
         unit = item.get("unit") or "pcs"
-        weighed = service.is_weighed(pid, unit, qty, item.get("name"))
+        weighed = service.is_weighed(pid, unit, item.get("name"))
         for store in stores:
             # Тот же расчёт, что у оптимизатора: цена килограмма не берётся из цены
             # фасовки, разные фасовки приводятся к весу эталона. Два расчёта цены
@@ -336,7 +336,8 @@ def _price_matrix(items, stores) -> tuple[dict, dict]:
             value = found["value"]
             in_stock = found["in_stock"]
             cell[(pid, store.code)] = {"value": value, "in_stock": in_stock,
-                                       "stale": found["stale"], "note": found["note"]}
+                                       "stale": found["stale"], "note": found["note"],
+                                       "adjust": found.get("adjust", 0.0)}
             if in_stock:
                 # Складывать цену отсутствующего товара — значит обещать корзину,
                 # которую не соберут. Поэтому в сумму сети идёт только то, что есть.
@@ -352,11 +353,17 @@ def _prices_of(pid: int, stores, cell) -> list[dict]:
     нет». Второе для сборки корзины важнее цены: в такой магазин ехать незачем.
     """
     known = [(store, cell[(pid, store.code)]) for store in stores if (pid, store.code) in cell]
-    available = [found["value"] for _, found in known if found["in_stock"]]
+    # «Лучшая» — по цене, приведённой к весу эталона (value + adjust), как выбирает
+    # расчёт: иначе строка корзины хвалила бы 800 г за 90 ₽, а «Результат» брал
+    # килограмм за 100 ₽ — и оба были бы по-своему правы.
+    fair = {store.code: found["value"] + float(found.get("adjust") or 0.0)
+            for store, found in known}
+    available = [fair[store.code] for store, found in known if found["in_stock"]]
     best = min(available) if available else None
     return [{"code": store.code, "name": store.name, "value": found["value"],
+             "fair": round(fair[store.code], 2),
              "in_stock": found["in_stock"],
-             "best": best is not None and found["in_stock"] and abs(found["value"] - best) < 0.005}
+             "best": best is not None and found["in_stock"] and abs(fair[store.code] - best) < 0.005}
             for store, found in known]
 
 
@@ -367,12 +374,15 @@ def _best_of(prices: list[dict]) -> dict | None:
     отвечает на вопрос «а если взять не там», и ответ на него — следующая цена,
     а не худшая из возможных.
     """
-    order = sorted((p for p in prices if p["in_stock"]), key=lambda p: p["value"])
+    def fair(p: dict) -> float:
+        return float(p.get("fair", p["value"]))
+
+    order = sorted((p for p in prices if p["in_stock"]), key=fair)
     if not order:
         return None
     first = order[0]
     return {"code": first["code"], "store": first["name"], "value": first["value"],
-            "diff": round(order[1]["value"] - first["value"], 2) if len(order) > 1 else 0.0,
+            "diff": round(fair(order[1]) - fair(first), 2) if len(order) > 1 else 0.0,
             "count": len(order)}
 
 

@@ -378,12 +378,18 @@ class LentaConnector(Connector):
         sku, name = item.get("id"), (item.get("name") or "").strip()
         if not sku or not name:
             return None
+        price = _number(item.get("price")) or None   # 0 у Ленты — «в этой точке не продаётся», а не цена
+        unit = _unit(name)
+        if unit == "kg" and price:
+            # Развесное: в выдаче цена порции, а кандидат с единицей «kg» несёт цену
+            # килограмма — из неё корзина считает price_per_kg (basket._remember).
+            price = _per_kg(item, price, name) or price
         return Candidate(
             store_code=self.code,
             sku=str(sku),
             name=name,
-            price=_number(item.get("price")) or None,   # 0 у Ленты — «в этой точке не продаётся», а не цена
-            unit=_unit(name),
+            price=price,
+            unit=unit,
             url=item.get("url") or f"{SITE_URL}/product/{item.get('slug', '')}-{sku}/",
         )
 

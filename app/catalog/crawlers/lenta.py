@@ -28,7 +28,7 @@ from app import config
 from app.catalog.crawlers import Pace, sitemap_locs
 from app.catalog.model import ChainProduct, Crawler, Progress
 from app.connectors import mcp_client
-from app.connectors.lenta import MCP_URL, _number, _unit
+from app.connectors.lenta import MCP_URL, _number, _per_kg, _unit
 from app.matcher.normalize import parse_weight
 
 log = logging.getLogger(__name__)
@@ -47,8 +47,13 @@ def to_product(item: dict) -> ChainProduct | None:
     weight, _ = parse_weight(package or name)
     price = _number(item.get("price"))
     stock = _number(item.get("stock"))
+    unit = _unit(name)
+    if unit == "kg" and price:
+        # У развесного Лента отдаёт цену ПОРЦИИ (price = pricePerKg × weightGrams / 1000),
+        # а строка каталога с единицей «kg» хранит цену килограмма.
+        price = _per_kg(item, price, name) or price
     return ChainProduct(
-        sku=str(sku), name=name, weight_g=weight or None, unit=_unit(name),
+        sku=str(sku), name=name, weight_g=weight or None, unit=unit,
         url=item.get("url") or f"https://lenta.com/product/{item.get('slug', '')}-{sku}/",
         price=price if price and price > 0 else None,
         in_stock=(stock > 0) if stock is not None else None,

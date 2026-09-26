@@ -215,6 +215,62 @@ def _add_late_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
 
+# Сети, чьи сборщики ставили unit="kg" по ОТСУТСТВИЮ граммовки в названии (так
+# отвечал normalize.parse_weight): Пятёрочка и Самокат (витрина и кабинет), Fix Price,
+# Дикси. У Магнита, Ленты, ВкусВилла и METRO единица шла от самой сети — её не трогаем.
+FALSE_KG_CHAINS = ("pyaterochka", "samokat", "fixprice", "dixy")
+
+SCHEMA_VERSION = 1
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Разовые исправления данных, записанных прежними версиями. По PRAGMA user_version.
+
+    Версия 1 (ревизия 26.09.2026) — ложные «весовые»:
+      * у товаров сетей из FALSE_KG_CHAINS без слова «весовой»/«кг» в названии
+        единица «kg» снимается (NULL — «сеть не сказала»): её поставил разбор
+        названия, а не сеть;
+      * эталоны с единицей «kg», которые по доводам штучные (service.is_weighed:
+        чеки целыми штуками, везде фасовка или штука), становятся «pcs». Иначе
+        «Хлеб Бородинский нарезка» так и показывался бы «1 кг», а расчёт и
+        наряд считали бы его килограммами.
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= SCHEMA_VERSION:
+        return
+    from app.matcher.normalize import sold_by_weight
+
+    placeholders = ",".join("?" * len(FALSE_KG_CHAINS))
+    rows = conn.execute(
+        "SELECT sp.id, sp.raw_name FROM store_products sp JOIN stores s ON s.id = sp.store_id"
+        f" WHERE sp.unit='kg' AND s.code IN ({placeholders})", FALSE_KG_CHAINS).fetchall()
+    reset = [(r["id"],) for r in rows if not sold_by_weight(r["raw_name"] or "")]
+    conn.executemany("UPDATE store_products SET unit=NULL WHERE id=?", reset)
+
+    from app.service import weighed_by_evidence
+
+    flipped = []
+    for product in conn.execute("SELECT id, name FROM products WHERE unit='kg'").fetchall():
+        bought = [(r["qty"], r["raw_name"]) for r in conn.execute(
+            "SELECT qty, raw_name FROM purchase_history WHERE product_id=?", (product["id"],))]
+        sold = [(r["unit"], r["weight_g"], r["raw_name"]) for r in conn.execute(
+            "SELECT sp.unit, sp.weight_g, sp.raw_name FROM product_mapping m"
+            " JOIN store_products sp ON sp.id = m.store_product_id"
+            " WHERE m.product_id=? AND m.confirmed=1", (product["id"],))]
+        if not bought and not sold:
+            continue                  # ни чеков, ни сетей — судить не по чему, верим отметке
+        if not weighed_by_evidence(product["name"] or "", bought, sold):
+            flipped.append((product["id"],))
+    conn.executemany("UPDATE products SET unit='pcs' WHERE id=?", flipped)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    if reset or flipped:
+        import logging
+
+        logging.getLogger(__name__).info(
+            "миграция %d: у %d товаров сетей снята ложная единица «кг», %d эталонов стали штучными",
+            SCHEMA_VERSION, len(reset), len(flipped))
+
+
 def init_db(conn: sqlite3.Connection | None = None) -> None:
     """Создаёт схему и справочник магазинов. Идемпотентно."""
     own = conn is None
@@ -222,6 +278,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
     try:
         conn.executescript(SCHEMA_SQL)
         _add_late_columns(conn)
+        _migrate(conn)
         for row in SEED_STORES:
             conn.execute(
                 "INSERT INTO stores (code, name, delivery_fee, free_delivery_from, min_order, connector_type)"

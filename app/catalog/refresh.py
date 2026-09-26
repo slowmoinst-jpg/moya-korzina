@@ -119,10 +119,18 @@ def adopt(item_id: int, product_id: int | None = None) -> int:
     from app import repo
     from app.models import Product
 
+    from app.matcher.normalize import sold_by_weight
+
     data = store.item(item_id)
     if not data:
         raise KeyError(f"нет единого товара {item_id}")
-    unit = data.get("unit") or "pcs"
+    # Единица — по строкам сетей, а не по сохранённой единице единого товара: та
+    # пересчитывается только при сопоставлении и могла остаться от ложных «kg»
+    # прежних сборщиков. Весовой — если хоть одна сеть продаёт его на вес.
+    rows = data.get("chains") or []
+    by_weight = any((r.get("unit") or "").lower() == "kg" or sold_by_weight(r.get("name") or "")
+                    for r in rows) or sold_by_weight(data.get("name") or "")
+    unit = "kg" if by_weight and not data.get("weight_g") else "pcs"
     if product_id is None:
         existing = repo.find_product_by_name(data["name"])
         product_id = existing.id if existing else repo.upsert_product(Product(
@@ -140,7 +148,10 @@ def adopt(item_id: int, product_id: int | None = None) -> int:
         found = price_for_me(row)
         if found is not None:
             price, in_stock, seen = found
-            repo.save_price(sp_id, price, in_stock=in_stock, fetched_at=seen)
+            # Весовой товар сети каталог хранит в рублях за кг — снимку это надо
+            # сказать явно, иначе расчёт не отличит цену килограмма от цены пачки.
+            per_kg = price if (row.get("unit") or "").lower() == "kg" else None
+            repo.save_price(sp_id, price, price_per_kg=per_kg, in_stock=in_stock, fetched_at=seen)
     return product_id
 
 

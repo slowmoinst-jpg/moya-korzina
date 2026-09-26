@@ -709,3 +709,34 @@ def test_perekrestok_reads_a_price_from_the_feed():
     assert _price_of({"price": 100}) is None
     assert _price_of({"plu": "1"}) is None
     assert _price_of({"plu": "1", "price": 0}) is None
+
+
+def test_the_catalog_migration_takes_false_kilos_off(catalog):
+    """Строки Пятёрочки с «kg» от разбора названия — без единицы; «весовые» — с ней.
+
+    Без миграции ложное «kg» жило бы вечно: обновление берёт единицу через COALESCE,
+    и новое «не сказано» старое «kg» не перетирает.
+    """
+    store.upsert_products("pyaterochka", [P("1", "Хлеб Бородинский", unit="kg"),
+                                          P("2", "Огурцы весовые", unit="kg")])
+    store.upsert_products("magnit", [P("3", "Креветки Королевские", unit="kg")])
+    with store.connect() as conn:
+        conn.execute("PRAGMA user_version = 0")
+        conn.commit()
+    store.init()
+    rows = {r["sku"]: r["unit"] for chain in ("pyaterochka", "magnit")
+            for r in store.products_of_chain(chain)}
+    assert rows == {"1": None, "2": "kg", "3": "kg"}
+
+
+def test_adopt_takes_the_unit_from_the_chains_not_a_stale_one(catalog, user_db):
+    """Единица эталона — по строкам сетей: «на вес» хоть в одной — весовой."""
+    store.upsert_products("lenta", [P("1", "Бананы, весовые", unit="kg", price=120.0)])
+    store.upsert_products("magnit", [P("2", "Хлеб Бородинский 400 г", unit="pcs", price=60.0)])
+    refresh.match_all()
+    bananas = refresh.adopt(store.search_items("бананы")[0]["id"])
+    bread = refresh.adopt(store.search_items("хлеб")[0]["id"])
+    assert repo.get_product(bananas).unit == "kg"
+    assert repo.get_product(bread).unit == "pcs"
+    lenta_id = repo.get_store("lenta").id
+    assert repo.latest_price_for(bananas, lenta_id)["price_per_kg"] == 120.0

@@ -208,15 +208,22 @@ def _ensure_product(raw_name: str, qty: float | None = None) -> tuple[int, bool]
     from app.models import Product
 
     name = display_name(raw_name)
-    existing = repo.find_product_by_name(name)
-    if existing and existing.id:
-        return existing.id, False
     grams, _ = parse_weight(raw_name)
     try:
         fractional = qty is not None and abs(float(qty) - round(float(qty))) > 1e-9
     except (TypeError, ValueError):
         fractional = False
-    unit = "kg" if (fractional or sold_by_weight(raw_name)) and not grams else "pcs"
+    weighed = (fractional or sold_by_weight(raw_name)) and not grams
+    existing = repo.find_product_by_name(name)
+    if existing and existing.id:
+        if weighed and existing.unit == "pcs" and not existing.weight_g:
+            # Товар, заведённый штучным по первому чеку, пришёл дробным количеством —
+            # значит его берут на вес. Отметка обязана это узнать: расчёт и корзина
+            # считают по ней (service.is_weighed).
+            existing.unit = "kg"
+            repo.upsert_product(existing)
+        return existing.id, False
+    unit = "kg" if weighed else "pcs"
     pid = repo.upsert_product(Product(id=None, name=name, weight_g=grams, unit=unit))
     return pid, True
 

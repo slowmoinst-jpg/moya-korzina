@@ -160,9 +160,8 @@ def _per(line, product_id) -> str | None:
         unit = product.unit if product else None
     if unit is None:
         return None
-    qty = getattr(line, "qty", 1) or 1
-    name = product.name if product else getattr(line, "name", None)
-    return "kg" if service.is_weighed(product_id, unit, qty, name) else "pcs"
+    name = product.name if product else None
+    return "kg" if service.is_weighed(product_id, unit, name) else "pcs"
 
 
 def _pack(mapping: dict | None) -> float | None:

@@ -154,11 +154,15 @@ class Variant:
 
     @property
     def savings_rub(self) -> float:
-        return round(self.baseline - self.total, 2)
+        """Экономия при СРАВНИМОМ количестве: база и вариант приведены к весу эталона.
+
+        Без поправки на фасовку (pack_extra = 0) — просто база минус итог.
+        """
+        return round(self.baseline - self.total - self.pack_extra, 2)
 
     @property
     def savings_pct(self) -> float:
-        return round((self.baseline - self.total) / self.baseline * 100, 2) if self.baseline else 0.0
+        return round(self.savings_rub / self.baseline * 100, 2) if self.baseline else 0.0
 
     @property
     def title(self) -> str:

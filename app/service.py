@@ -5,10 +5,9 @@
 from __future__ import annotations
 
 import logging
-import math
 from datetime import datetime
 
-from app import config, location, repo
+from app import config, location, purchase, repo
 from app.matcher.normalize import sold_by_weight
 from app.models import BasketLine, Offer, Store, Variant
 
@@ -51,55 +50,67 @@ def _grams(value) -> float | None:
     return grams if grams > 0 else None
 
 
-def is_weighed(product_id: int, unit: str | None, qty: float, name: str | None = None) -> bool:
-    """Весовой ли эталон НА САМОМ ДЕЛЕ. unit="kg" в базе — ещё не довод.
+def is_weighed(product_id: int, unit: str | None, name: str | None = None) -> bool:
+    """Весовой ли эталон: по его единице в базе — и ни по чему больше.
 
-    Разбор названия (normalize.parse_weight) отвечал «kg» на любое название без
-    граммовки, и «Хлеб Бородинский нарезка» или «Яйцо С1 10шт» числились
-    весовыми. Пока цена бралась как «цена × количество», это сходило с рук; с
-    честным пересчётом в килограммы и упаковки буханка превращалась бы в три
-    (ревизия 26.09.2026). Поэтому весовым эталон считается только по признаку:
-    дробное количество, слово «весовой» / «на развес» / «кг» в названии или
-    дробные количества в его же чеках.
+    Не по количеству в корзине: весовое хранится в килограммах, и «2,0 кг бананов»
+    — такие же килограммы, как «1,9»; решение от дробной части давало на 1,9 кг
+    четыре упаковки, а на 2,0 кг — две. И не по чужим доводам поверх отметки:
+    единицу эталона человек видит на экране и может поправить сам, и расчёт обязан
+    считать в ней, а не в своей догадке.
+
+    Честность отметки держат источники: чек заводит весовой эталон только по
+    доводу (importers/ofd_pdf._ensure_product), каталог — по строкам сетей
+    (catalog/refresh.adopt), а ложные «kg» прежних версий сняла миграция базы
+    (app/db._migrate, доводы — weighed_by_evidence ниже).
     """
-    if (unit or "pcs") != "kg":
-        return False
-    try:
-        amount = float(qty)
-    except (TypeError, ValueError):
-        amount = 1.0
-    if abs(amount - round(amount)) > 1e-9:
-        return True
-    if name is None:
-        product = repo.get_product(product_id)
-        name = product.name if product else ""
-    if sold_by_weight(name or ""):
-        return True
-    return _bought_by_weight(product_id)
+    return (unit or "pcs") == "kg"
 
 
-def _bought_by_weight(product_id: int) -> bool:
-    """Покупал ли человек этот товар дробным количеством — то есть на вес."""
-    try:
-        with repo.get_conn() as c:
-            row = c.execute("SELECT 1 FROM purchase_history WHERE product_id=?"
-                            " AND ABS(qty - ROUND(qty)) > 0.0001 LIMIT 1", (product_id,)).fetchone()
-    except Exception:  # noqa: BLE001 — нет истории — нет и довода
+def weighed_by_evidence(name: str, bought: list[tuple], sold: list[tuple]) -> bool:
+    """Весовой ли эталон по доводам — для миграции базы (app/db._migrate).
+
+    bought — строки его чеков (количество, название в чеке), sold — товары сетей,
+    с которыми он сопоставлен (единица, фасовка, название). Порядок доводов:
+      * слово «весовой» / «на развес» / «кг» в названии эталона или в чеках — весовой;
+      * дробное количество в чеках — весовой;
+      * чеки есть, и все целыми штуками — штучный;
+      * чеков нет — как его продают сети: хоть одна на вес — весовой; везде штукой
+        или фасовкой известного веса — штучный;
+      * иначе — весовой (отметку не трогаем).
+    """
+    if sold_by_weight(name) or any(sold_by_weight(raw or "") for _qty, raw in bought):
+        return True
+    amounts = []
+    for qty, _raw in bought:
+        try:
+            amounts.append(float(qty))
+        except (TypeError, ValueError):
+            continue
+    if any(abs(a - round(a)) > 1e-9 for a in amounts):
+        return True
+    if amounts:
         return False
-    return row is not None
+    if any((unit or "").lower() == "kg" or sold_by_weight(raw or "") for unit, _w, raw in sold):
+        return True
+    # Ни одна сеть не продаёт его на вес: везде фасовка известного веса или штука.
+    if sold and all(_grams(weight) or (unit or "").lower() == "pcs" for unit, weight, _raw in sold):
+        return False
+    return True
 
 
 def _shop_by_weight(snap: dict) -> bool:
     """Цена сети — за килограмм? Только если сеть это сказала.
 
-    Довод один из двух: цена за килограмм в самом снимке или слово «весовой» /
-    «на развес» / «кг» в названии товара сети. Одна отметка unit="kg" не довод:
-    её ставили и сборщики, разбиравшие название через parse_weight, — любому
-    товару без граммовки в названии.
+    Доводы: цена за килограмм в самом снимке, единица «kg» у товара сети или
+    слово «весовой» / «на развес» / «кг» в его названии. Ложные «kg» от сборщиков,
+    разбиравших название через parse_weight, сняты миграцией базы (app/db.py,
+    _migrate), а сами сборщики больше их не ставят.
     """
     if snap.get("price_per_kg"):
         return True
-    return (snap.get("sp_unit") or "").lower() == "kg" and sold_by_weight(snap.get("sp_name") or "")
+    return ((snap.get("sp_unit") or "").lower() == "kg"
+            or sold_by_weight(snap.get("sp_name") or ""))
 
 
 def line_price(product_id: int, store: Store, qty: float, unit: str,
@@ -111,20 +122,25 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
       adjust  — поправка ТОЛЬКО ДЛЯ ВЫБОРА (разная фасовка), в оплату не входит;
       stale_label — дата несвежего снимка или «справочная цена» для цены из CSV.
 
+    Количество — по тому же правилу, по которому его положат в корзину
+    (app/purchase.pieces): расчёт и корзина не спорят.
+
     ВЕСОВОЙ ЭТАЛОН (weighed — см. is_weighed; None — выяснить здесь):
-      * сеть продаёт на вес — цена её килограмма × килограммы;
       * сеть продаёт упаковками известного веса — СТОЛЬКО УПАКОВОК, СКОЛЬКО ЛЯЖЕТ
-        В КОРЗИНУ (вверх, как app/shopbrowser/cart._pieces), × цена упаковки. Раньше
-        цена упаковки считалась ценой килограмма (сыр 400 г за 300 ₽ на 0,7 кг —
-        210 ₽ вместо двух упаковок за 600 ₽), а большая упаковка выигрывала на
-        малом весе: 0,3 кг из пачки в 1 кг — это вся пачка;
+        В КОРЗИНУ, × цена упаковки. Раньше цена упаковки считалась ценой килограмма
+        (сыр 400 г за 300 ₽ на 0,7 кг — 210 ₽ вместо двух упаковок за 600 ₽), а
+        большая упаковка выигрывала на малом весе: 0,3 кг из пачки в 1 кг — это
+        вся пачка. Фасовка проверяется ПЕРВОЙ: цена за кг рядом с ней (так бывает
+        в справочнике) не отменяет того, что купить можно только пачку;
+      * сеть продаёт на вес — цена её килограмма × килограммы;
       * упаковка неизвестного веса — сравнить нечем, None.
 
-    ШТУЧНЫЙ ЭТАЛОН С ДРУГОЙ ФАСОВКОЙ. Сопоставление допускает разницу в граммовке
-    (weight_tolerance_pct), и «800 г за 90 ₽» выигрывало у «1 кг за 100 ₽», хотя
-    килограмм у него на 12 % дороже. В value остаётся цена полки — её и заплатят,
-    от неё считаются пороги доставки и минимального заказа, — а разница с ценой,
-    приведённой к весу эталона, идёт в adjust: по ней выбирается вариант.
+    ШТУЧНЫЙ ЭТАЛОН:
+      * сеть продаёт на вес — нужен вес штуки эталона; его нет — None (три лимона
+        по цене трёх килограммов — не цена);
+      * другая фасовка (800 г вместо 1 кг) — в value цена полки: её и заплатят, от
+        неё считаются пороги доставки и минимального заказа; разница с ценой,
+        приведённой к весу эталона, идёт в adjust — по ней выбирается вариант.
     """
     snap = repo.latest_price_for(product_id, store.id)
     if not snap:
@@ -135,25 +151,24 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
     price = float(price)
     qty = float(qty)
     per_kg = snap.get("price_per_kg")
+    rate = float(per_kg) if per_kg else price           # цена килограмма, если сеть на вес
     shop_unit = (snap.get("sp_unit") or "").lower()
-    by_weight = _shop_by_weight(snap)
     pack_g = _grams(snap.get("sp_weight_g"))
     ref_g = _grams(ref_weight_g)
     if weighed is None:
-        weighed = is_weighed(product_id, unit, qty)
+        weighed = is_weighed(product_id, unit)
     note = None
     adjust = 0.0
+    packed = bool(pack_g) and shop_unit != "kg"
+    by_weight = not packed and _shop_by_weight(snap)
 
     if weighed:
-        if per_kg:
-            value = float(per_kg) * qty
+        if packed:
+            count, note = purchase.pieces(qty, shop_unit, pack_g, "kg")
+            value = count * price
+            note = f"{note} по {price:.2f} ₽"
         elif by_weight:
-            value = price * qty                       # весовой товар сеть называет в рублях за кг
-        elif pack_g:
-            packs = max(1, math.ceil(qty * 1000.0 / pack_g - 1e-9))
-            value = packs * price
-            note = (f"{qty:g} кг — {packs} уп. по {pack_g:g} г "
-                    f"({packs * pack_g / 1000.0:g} кг) по {price:.2f} ₽")
+            value = rate * qty
         elif shop_unit == "pcs":
             return None                               # упаковка неизвестного веса
         else:
@@ -161,16 +176,19 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
             # сопоставления, прайс, чек). Чек и прайс весовой товар называют в
             # рублях за кг, поэтому так и читаем.
             value = price * qty
-    elif by_weight and ref_g:
-        # Эталон — штука известного веса, а сеть продаёт на вес.
-        value = price * ref_g / 1000.0 * qty
-        note = f"на вес: {price:.2f} ₽/кг, взято по {ref_g:g} г"
     else:
-        value = price * qty
-        if ref_g and pack_g and abs(pack_g - ref_g) / ref_g > PACK_SAME:
-            adjust = price * (ref_g / pack_g - 1.0) * qty
-            note = (f"фасовка {pack_g:g} г вместо {ref_g:g} г: для сравнения цена "
-                    f"приведена к {ref_g:g} г ({price * ref_g / pack_g:.2f} ₽ за штуку)")
+        count, _ = purchase.pieces(qty, shop_unit, None, "pcs")
+        if by_weight:
+            if not ref_g:
+                return None                           # штука неизвестного веса
+            value = rate * ref_g / 1000.0 * count
+            note = f"на вес: {rate:.2f} ₽/кг, взято по {ref_g:g} г"
+        else:
+            value = price * count
+            if ref_g and pack_g and abs(pack_g - ref_g) / ref_g > PACK_SAME:
+                adjust = price * (ref_g / pack_g - 1.0) * count
+                note = (f"фасовка {pack_g:g} г вместо {ref_g:g} г: для сравнения цена "
+                        f"приведена к {ref_g:g} г ({price * ref_g / pack_g:.2f} ₽ за штуку)")
 
     age = _days(snap.get("fetched_at"))
     reference = snap.get("source") == "fallback"
@@ -213,7 +231,7 @@ def build_basket_lines(basket_id: int) -> list[BasketLine]:
             unit=item["unit"] or "pcs",
             qty=float(item["qty"]),
         )
-        weighed = is_weighed(line.product_id, line.unit, line.qty, item.get("name"))
+        weighed = is_weighed(line.product_id, line.unit, item.get("name"))
         for store in stores:
             found = line_price(line.product_id, store, line.qty, line.unit, item.get("weight_g"),
                                weighed)
@@ -256,14 +274,16 @@ def baseline_by_product(basket_id: int) -> dict[int, float]:
     for item in repo.basket_items(basket_id):
         qty, unit, pid = float(item["qty"]), item["unit"] or "pcs", item["product_id"]
         grams = item.get("weight_g")
-        weighed = is_weighed(pid, unit, qty, item.get("name"))
+        weighed = is_weighed(pid, unit, item.get("name"))
         price = None
         if base_store:
             found = line_price(pid, base_store, qty, unit, grams, weighed)
             # Товара нет в базовом магазине — его «цена» там не база: Магнит на
             # отсутствующий товар пишет справочную цену или ноль с пометкой «нет».
+            # База — в сравнимом количестве (с поправкой на фасовку), как и вариант:
+            # иначе вариант, выбранный за цену килограмма, показывал бы «минус».
             if found and found["in_stock"] and found["value"] > 0:
-                price = found["value"]
+                price = found["value"] + found["adjust"]
         if price is None:
             hp = _history_price(pid)
             price = round(hp * qty, 2) if hp is not None else None
@@ -453,14 +473,28 @@ def cart_link(store_code: str, lines) -> str | None:
     # товар считается в ГРАММАХ (её собственное описание storefront_cart_link_create),
     # и без единицы 0,7 кг сыра уезжали как «1» — то есть один грамм. Корзина
     # выглядела собранной, а сумма не сходилась с расчётом.
+    #
+    # И КОЛИЧЕСТВО — ТО ЖЕ, ЧТО В РАСЧЁТЕ (app/purchase.pieces). Сеть получает
+    # килограммы только за весовой товар, который она сама продаёт на вес: тогда
+    # фасовки считает она (Лента — своими порциями). Всё остальное уезжает целыми
+    # штуками и упаковками: 0,7 кг сыра упаковками по 400 г — две, а не «0,7»
+    # (ВкусВилл) и не одна (Лента), как было, пока ссылка брала количество корзины.
     items: list[tuple[int, float, str | None]] = []
     for line in lines or []:
-        mapping = repo.confirmed_mapping(getattr(line, "product_id", 0), store.id)
+        product_id = getattr(line, "product_id", 0)
+        mapping = repo.confirmed_mapping(product_id, store.id)
         sku = (mapping or {}).get("sku")
         if not sku or not str(sku).isdigit():
             continue
-        items.append((int(sku), float(getattr(line, "qty", 1) or 1),
-                      (mapping or {}).get("unit")))
+        qty = float(getattr(line, "qty", 1) or 1)
+        shop_unit = ((mapping or {}).get("unit") or "").lower() or None
+        per = "kg" if _weighed_line(product_id) else "pcs"
+        if per == "kg" and shop_unit == "kg":
+            items.append((int(sku), qty, "kg"))
+            continue
+        pack = _grams((mapping or {}).get("weight_g")) if shop_unit != "kg" else None
+        count, _ = purchase.pieces(qty, shop_unit, pack, per)
+        items.append((int(sku), float(count), None))
     if not items:
         return None
     try:
@@ -471,6 +505,16 @@ def cart_link(store_code: str, lines) -> str | None:
     except Exception as exc:  # noqa: BLE001  — магазин недоступен, это не повод ронять экран
         log.warning("Ссылку на корзину %s получить не удалось: %s", store_code, exc)
         return None
+
+
+def _weighed_line(product_id) -> bool:
+    """Весовой ли эталон строки. Не узнать (нет базы, нет товара) — считаем штучным:
+    штука уедет одной штукой, а «весовая» догадка превратила бы её в килограммы."""
+    try:
+        product = repo.get_product(int(product_id)) if product_id else None
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(product) and is_weighed(product.id, product.unit, product.name)
 
 
 # ---------- насколько можно верить цифре ----------

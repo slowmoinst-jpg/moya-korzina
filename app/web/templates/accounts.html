@@ -62,7 +62,7 @@
 {% if resend %}
   {# Вторая полная передача кладёт поверх лежащего — корзина удваивается. Не
      отказываем, а спрашиваем: корзину могли очистить руками. #}
-  <div class="note warn" style="margin:12px 0">Корзина в {{ resend.name }} уже передана сегодня
+  <div class="note warn" style="margin:12px 0">Корзина в {{ resend.name }} уже передана
     в {{ resend.at }}: там лежит {{ resend.landed }} позиц. Сеть кладёт товар поверх лежащего,
     поэтому ещё одна передача целиком удвоит корзину.
     <form method="post" style="margin-top:8px" data-once>

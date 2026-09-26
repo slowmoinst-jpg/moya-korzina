@@ -43,17 +43,24 @@ def _mapped(store, name: str, unit: str, weight_g=None, sku="1", shop_unit=None,
     return pid
 
 
+def _bought_by_weight(shop, pid, raw="СЫР РОССИЙСКИЙ"):
+    """Чек с дробным количеством — довод, что товар берут на вес."""
+    repo.add_history_row(date="2026-09-01", store_id=shop.id, product_id=pid,
+                         raw_name=raw, qty=0.354, unit_price=700.0, total=247.8)
+
+
 def test_weight_item_is_priced_by_the_packs_that_land_in_the_cart(shop):
     """0,7 кг сыра упаковками по 400 г — две упаковки за 600 ₽: столько и заплатят.
 
     Раньше цена упаковки шла ценой килограмма (210 ₽), а промежуточная правка
     считала 525 ₽ — меньше, чем стоят две упаковки, которые наряд положит.
     """
-    pid = _mapped(shop, "Сыр Российский 400 г", "kg", shop_unit="pcs", shop_weight=400,
-                  price=300.0)
+    pid = _mapped(shop, "Сыр Российский", "kg", shop_unit="pcs", shop_weight=400,
+                  price=300.0, shop_name="Сыр Российский 400 г")
+    _bought_by_weight(shop, pid)
     found = service.line_price(pid, shop, 0.7, "kg")
     assert found["value"] == 600.0
-    assert "2 уп. по 400 г" in found["note"]
+    assert "400 г" in found["note"] and "2 упаковки" in found["note"]
 
 
 def test_a_big_pack_does_not_win_on_a_small_need(shop):
@@ -63,9 +70,19 @@ def test_a_big_pack_does_not_win_on_a_small_need(shop):
     assert service.line_price(pid, shop, 0.3, "kg")["value"] == 700.0
 
 
+def test_the_pack_wins_over_a_kilo_price_next_to_it(shop):
+    """Цена за кг рядом с фасовкой (так бывает в справочнике) не отменяет того,
+    что купить можно только пачку: 1,5 кг по 400 г — четыре пачки, как положит наряд."""
+    pid = _mapped(shop, "Сыр Российский", "kg", shop_unit="pcs", shop_weight=400, price=300.0,
+                  per_kg=700.0, shop_name="Сыр Российский 400 г")
+    _bought_by_weight(shop, pid)
+    assert service.line_price(pid, shop, 1.5, "kg")["value"] == 1200.0
+
+
 def test_pack_of_unknown_weight_is_not_a_kilo_price(shop):
     """Упаковка неизвестного веса — сравнить не с чем, и это честнее выдумки."""
     pid = _mapped(shop, "Сыр в упаковке", "kg", shop_unit="pcs", price=300.0)
+    _bought_by_weight(shop, pid)
     assert service.line_price(pid, shop, 0.7, "kg") is None
 
 
@@ -74,33 +91,86 @@ def test_weight_goods_of_the_shop_are_priced_per_kilo(shop):
     assert service.line_price(pid, shop, 0.5, "kg")["value"] == 400.0
 
 
-def test_price_per_kg_from_the_snapshot_wins(shop):
-    pid = _mapped(shop, "Сыр 400 г", "kg", shop_unit="pcs", shop_weight=400, price=300.0,
-                  per_kg=700.0)
-    assert service.line_price(pid, shop, 1.5, "kg")["value"] == 1050.0
+def test_price_per_kg_from_the_snapshot_wins_for_goods_by_weight(shop):
+    """Лента отдаёт у развесного цену порции, а цену килограмма — отдельно: берём её."""
+    pid = _mapped(shop, "Сыр весовой", "kg", shop_unit="kg", price=225.0, per_kg=750.0)
+    assert service.line_price(pid, shop, 1.5, "kg")["value"] == 1125.0
+
+
+def _migrate_again():
+    """Прогнать разовую миграцию базы ещё раз — как на базе прежней версии."""
+    from app.db import get_conn, init_db
+
+    with get_conn() as conn:
+        conn.execute("PRAGMA user_version = 0")
+        conn.commit()
+    init_db()
 
 
 def test_no_weight_in_the_name_is_not_a_weight_item(shop):
     """«Хлеб Бородинский нарезка» — не весовой, хоть граммовки в названии и нет.
 
-    Разбор названия ставил таким товарам unit="kg", и честный пересчёт в кило
-    делал из буханки за 60 ₽ «150 ₽ за кг», а наряд клал три буханки.
+    Разбор названия ставил таким эталонам unit="kg", и честный пересчёт в кило
+    делал из буханки за 60 ₽ «150 ₽ за кг», а наряд клал три буханки. Миграция
+    базы переводит их в штучные по доводам: сети продают их штукой или пачкой.
     """
     bread = _mapped(shop, "Хлеб БОРОДИНСКИЙ нарезка", "kg", shop_unit="pcs", shop_weight=400,
                     price=60.0, shop_name="Хлеб Бородинский 400 г")
-    assert service.line_price(bread, shop, 1, "kg")["value"] == 60.0
     eggs = _mapped(shop, "Яйцо С1 10шт", "kg", sku="2", shop_unit="pcs", price=120.0)
-    assert service.line_price(eggs, shop, 2, "kg")["value"] == 240.0, "магазин не выпадает"
+    bananas = _mapped(shop, "Бананы", "kg", sku="3", shop_unit="kg", price=90.0)
+    _migrate_again()
+    assert repo.get_product(bread).unit == "pcs" and repo.get_product(eggs).unit == "pcs"
+    assert repo.get_product(bananas).unit == "kg", "сеть продаёт на вес — весовой"
+    assert service.line_price(bread, shop, 1, "pcs")["value"] == 60.0
+    assert service.line_price(eggs, shop, 2, "pcs")["value"] == 240.0
 
 
-def test_receipts_bought_by_weight_make_a_weight_item(shop):
-    """Дробное количество в чеках — довод: этот товар человек берёт на вес."""
+def test_the_migration_takes_false_kilos_off_the_crawled_goods(shop):
+    """Сборщики Пятёрочки, Самоката, Fix Price и Дикси ставили «kg» по отсутствию
+    граммовки. Миграция снимает его — кроме товаров со словом «весовой»."""
+    five = repo.get_store("pyaterochka")
+    loaf = repo.upsert_store_product(five.id, "1", "Хлеб Бородинский", unit="kg")
+    cucumbers = repo.upsert_store_product(five.id, "2", "Огурцы весовые", unit="kg")
+    magnit_meat = repo.upsert_store_product(shop.id, "9", "Креветки Королевские", unit="kg")
+    _migrate_again()
+    from app.db import get_conn
+
+    with get_conn() as conn:
+        units = {r["id"]: r["unit"] for r in conn.execute("SELECT id, unit FROM store_products")}
+    assert units[loaf] is None, "«kg» от разбора названия — не единица сети"
+    assert units[cucumbers] == "kg"
+    assert units[magnit_meat] == "kg", "у Магнита единица шла от самой сети"
+
+
+def test_the_decision_does_not_depend_on_the_amount(shop):
+    """1,9 кг и 2,0 кг — одинаково килограммы: упаковок 4 и 4, а не 4 и 2."""
+    pid = _mapped(shop, "Бананы", "kg", shop_unit="pcs", shop_weight=500, price=60.0,
+                  shop_name="Бананы 500 г")
+    _bought_by_weight(shop, pid, raw="БАНАНЫ ВЕС")
+    assert service.line_price(pid, shop, 1.9, "kg")["value"] == 240.0
+    assert service.line_price(pid, shop, 2.0, "kg")["value"] == 240.0
+
+
+def test_receipts_bought_in_pieces_make_a_piece_item(shop):
+    """Чеки целыми штуками — довод, что это штуки, как бы ни звался эталон."""
     pid = _mapped(shop, "Картофель", "kg", shop_unit="pcs", shop_weight=2500, price=150.0,
                   shop_name="Картофель сетка 2,5 кг")
-    assert service.line_price(pid, shop, 2, "kg")["value"] == 300.0, "без довода — штуками"
     repo.add_history_row(date="2026-09-01", store_id=shop.id, product_id=pid,
-                         raw_name="КАРТОФЕЛЬ ВЕС", qty=1.734, unit_price=40.0, total=69.36)
-    assert service.line_price(pid, shop, 2, "kg")["value"] == 150.0, "2 кг — одна сетка"
+                         raw_name="КАРТОФЕЛЬ СЕТКА", qty=1, unit_price=150.0, total=150.0)
+    _migrate_again()
+    assert repo.get_product(pid).unit == "pcs"
+    assert service.line_price(pid, shop, 2, "pcs")["value"] == 300.0, "две сетки, как в чеке"
+
+
+def test_a_receipt_bought_by_weight_turns_a_piece_item_into_a_weight_one(shop):
+    """Заведён штучным по первому чеку, а потом пришёл дробным — значит на вес."""
+    from app.importers.ofd_pdf import _ensure_product
+
+    pid, _ = _ensure_product("ПОМИДОРЫ", 1)
+    assert repo.get_product(pid).unit == "pcs"
+    again, created = _ensure_product("ПОМИДОРЫ", 0.812)
+    assert again == pid and not created
+    assert repo.get_product(pid).unit == "kg"
 
 
 def test_different_packs_are_compared_by_weight(shop):
@@ -128,12 +198,18 @@ def test_piece_sold_by_weight_in_the_shop(shop):
     assert service.line_price(pid, shop, 1.0, "pcs", 300)["value"] == 270.0
 
 
-def test_a_kilo_mark_without_a_word_is_not_a_kilo_price(shop):
-    """unit="kg" у товара сети без слова «весовой» — не довод: так метили сборщики
-    любую строку без граммовки. Цена буханки не делится на 0,4 кг."""
-    pid = _mapped(shop, "Хлеб 400 г", "pcs", weight_g=400, shop_unit="kg", price=60.0,
-                  shop_name="Хлеб Бородинский")
-    assert service.line_price(pid, shop, 1.0, "pcs", 400)["value"] == 60.0
+def test_a_piece_of_unknown_weight_is_not_priced_by_the_kilo(shop):
+    """Три лимона по цене трёх килограммов — не цена: веса штуки мы не знаем."""
+    pid = _mapped(shop, "Лимоны", "pcs", shop_unit="kg", price=250.0,
+                  shop_name="Лимоны весовые")
+    assert service.line_price(pid, shop, 3, "pcs") is None
+
+
+def test_the_piece_rate_is_the_kilo_price_not_the_portion(shop):
+    """Штука на весовой полке Ленты: цена килограмма, а не цена её порции."""
+    pid = _mapped(shop, "Сыр 200 г", "pcs", weight_g=200, shop_unit="kg", price=225.0,
+                  per_kg=750.0, shop_name="Сыр NATURA весовой")
+    assert service.line_price(pid, shop, 1, "pcs", 200)["value"] == 150.0
 
 
 def test_old_price_is_marked_stale(shop):
@@ -235,3 +311,35 @@ def test_pyaterochka_adds_known_goods_from_a_real_base(shop):
     repo.save_price(sp, 49.0, fetched_at="2026-09-20T10:00:00")
     got = list(PyaterochkaCrawler(sections=[])._from_store_products())
     assert [(p.sku, p.price, p.unit) for p in got] == [("111", 49.0, None)]
+
+
+def test_the_cart_link_asks_for_the_same_amount_the_calculation_paid_for(shop, monkeypatch):
+    """Ссылка на корзину берёт количество по тому же правилу, что и расчёт.
+
+    0,7 кг сыра упаковками по 400 г — две упаковки (Лента клала одну, ВкусВилл —
+    «0,7»); весовой товар, который сеть сама продаёт на вес, уезжает килограммами;
+    штука на весовой полке — одной штукой, а не «килограммом».
+    """
+    from app.connectors import lenta
+
+    sent = {}
+    monkeypatch.setattr(lenta, "cart_link", lambda items, location=None: sent.setdefault("items", items) and "https://lenta.com/x")
+    monkeypatch.setattr(service.location, "for_store", lambda code: None)
+    store = repo.get_store("lenta")
+
+    def mapped(name, unit, sku, shop_unit, shop_weight=None):
+        pid = repo.upsert_product(Product(id=None, name=name, unit=unit))
+        sp = repo.upsert_store_product(store.id, sku, name, weight_g=shop_weight, unit=shop_unit)
+        repo.confirm_mapping(pid, sp, confirmed=True)
+        return pid
+
+    cheese = mapped("Сыр Российский", "kg", "101", "pcs", 400)
+    loose = mapped("Сыр NATURA весовой", "kg", "102", "kg")
+    piece = mapped("Сыр Ламбер 230 г", "pcs", "103", "kg")
+
+    class Line:
+        def __init__(self, pid, qty):
+            self.product_id, self.qty = pid, qty
+
+    assert service.cart_link("lenta", [Line(cheese, 0.7), Line(loose, 0.7), Line(piece, 1)])
+    assert sent["items"] == [(101, 2.0, None), (102, 0.7, "kg"), (103, 1.0, None)]

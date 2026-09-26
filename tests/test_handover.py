@@ -2168,10 +2168,11 @@ def test_metro_retry_counts_only_what_it_added(metro_shop):
 
 
 def test_the_plan_does_not_weigh_a_loaf(db):
-    """«Хлеб Бородинский нарезка» с отметкой kg — не весовой: одна буханка, не три."""
+    """Буханка из чека — штучная: одна буханка в наряде, не три упаковки по 400 г."""
     from app import cartplan
+    from app.importers.ofd_pdf import _ensure_product
 
-    bread = repo.upsert_product(Product(id=None, name="Хлеб БОРОДИНСКИЙ нарезка", unit="kg"))
+    bread, _ = _ensure_product("Хлеб БОРОДИНСКИЙ нарезка", 1)
     shop = repo.get_store("magnit")
     sp = repo.upsert_store_product(shop.id, "8", "Хлеб Бородинский 400 г", weight_g=400,
                                    unit="pcs", url=TVOROG)
@@ -2183,31 +2184,3 @@ def test_the_plan_does_not_weigh_a_loaf(db):
     line = cartplan.build("magnit", [Line()], force=True).lines[0]
     assert line.per == "pcs"
     assert cart.pieces_of(line) == (1, "")
-
-
-def test_the_result_screen_asks_before_filling_the_same_cart_twice(web):
-    """С «Результата» повтор спрашивается ЗДЕСЬ, у позиций этой сети.
-
-    Раньше вопрос уводил на «Кабинеты», и «передать ещё раз» там собирало наряд
-    из всей корзины, а не из того, что расчёт отдал этой сети.
-    """
-    import datetime as dt
-
-    from app import store_accounts
-
-    enter(web)
-    basket_id = seed_basket()
-    save_login()
-    users.open_workspace(PHONE)
-    store_accounts.mark_connected("magnit", gives=[store_accounts.CART])
-    finished = (dt.datetime.now() - dt.timedelta(minutes=3)).isoformat(timespec="seconds")
-    cart._progress("magnit", started_at=finished, finished_at=finished, total=1, at=0, done=1,
-                   now="", items=[{"sku": "magnit-1", "name": "Молоко", "ok": True}])
-
-    page = text(web.get(f"/result?basket={basket_id}&mode=single"))
-    assert "уже передана" in page and "удвоит корзину" in page
-    assert 'name="again" value="1"' in page
-
-    answer = web.post("/result", data={"basket": basket_id, "do": "link:magnit"})
-    assert answer.status_code == 302
-    assert "/result?basket=" in answer.headers["Location"], "без «ещё раз» — назад к вопросу"

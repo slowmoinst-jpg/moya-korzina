@@ -150,6 +150,11 @@ def connect() -> sqlite3.Connection:
 LATE_COLUMNS = (("chain_products", "price_seen", "TEXT"),)
 
 
+# Версия данных каталога (PRAGMA user_version). 1 — сняты ложные «kg» у строк сетей,
+# чьи сборщики ставили единицу по отсутствию граммовки (app/db.FALSE_KG_CHAINS).
+SCHEMA_VERSION = 1
+
+
 def init() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
@@ -157,7 +162,27 @@ def init() -> None:
             have = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             if column not in have:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+        _migrate(conn)
         conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Разовые исправления строк, записанных прежними сборщиками.
+
+    Без этого ложное «kg» жило бы вечно: обновление строки берёт единицу через
+    COALESCE, и новая «не сказано» (None) старую «kg» не перетирает.
+    """
+    if conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+        return
+    from app.db import FALSE_KG_CHAINS
+    from app.matcher.normalize import sold_by_weight
+
+    placeholders = ",".join("?" * len(FALSE_KG_CHAINS))
+    rows = conn.execute(f"SELECT id, name FROM chain_products WHERE unit='kg'"
+                        f" AND chain IN ({placeholders})", FALSE_KG_CHAINS).fetchall()
+    conn.executemany("UPDATE chain_products SET unit=NULL WHERE id=?",
+                     [(r["id"],) for r in rows if not sold_by_weight(r["name"] or "")])
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 # ---------- запись обхода ----------

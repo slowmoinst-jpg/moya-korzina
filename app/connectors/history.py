@@ -26,6 +26,7 @@ import logging
 
 from app import pricelist, repo
 from app.connectors.base import Connector, register, similarity
+from app.matcher.normalize import sold_by_weight
 from app.models import Candidate, PriceSnapshot
 
 log = logging.getLogger(__name__)
@@ -64,6 +65,22 @@ def last_prices(store_code: str) -> dict[int, dict]:
     return out
 
 
+def _bought_unit(row: dict) -> str:
+    """Как куплена строка чека: «kg» — на вес (дробное количество или слово
+    «весовой»/«кг»), иначе «pcs».
+
+    Не по отметке эталона: products.unit="kg" ставил разбор названия любому товару
+    без граммовки, и цена буханки из чека становилась «ценой за килограмм».
+    """
+    try:
+        qty = float(row.get("qty"))
+    except (TypeError, ValueError):
+        qty = 1.0
+    if abs(qty - round(qty)) > 1e-9 or sold_by_weight(row.get("raw_name") or ""):
+        return "kg"
+    return "pcs"
+
+
 class HistoryConnector(Connector):
     """Магазин без доступного каталога: цены из прайса человека и из его чеков."""
 
@@ -92,7 +109,7 @@ class HistoryConnector(Connector):
                 sku=f"{PREFIX}{pid}",
                 name=name,
                 price=round(float(row["unit_price"]), 2),
-                unit=row.get("unit") or "pcs",
+                unit=_bought_unit(row),
             ))
         return found
 
@@ -135,7 +152,7 @@ class HistoryConnector(Connector):
                 store_code=self.code,
                 sku=str(sku),
                 price=price,
-                price_per_kg=price if (row.get("unit") == "kg") else None,
+                price_per_kg=price if _bought_unit(row) == "kg" else None,
                 in_stock=True,          # чек говорит, что товар был. Что он есть сейчас — не говорит
                 fetched_at=str(row.get("date") or ""),
                 name=(row.get("product_name") or row.get("raw_name") or "").strip() or None,
