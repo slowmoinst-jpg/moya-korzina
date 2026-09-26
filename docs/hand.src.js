@@ -82,6 +82,13 @@
     setTimeout(function () { box.remove(); }, 9000);
   }
 
+  var APP = "__APP_URL__";
+
+  function pack(s) {
+    return btoa(unescape(encodeURIComponent(s)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
   var chain = chainOf(location.hostname);
   if (!chain) {
     say("Это не магазин из «Моей корзины». Откройте сайт сети и нажмите закладку там.", true);
@@ -99,6 +106,13 @@
     at: new Date().toISOString().slice(0, 19),
     cookies: cookies
   });
+
+  if (APP.indexOf("http") === 0) {
+    say("Вход найден (" + cookies.length + " кук). Подключаю к «Моей корзине»...");
+    var target = APP + (APP.indexOf("?") < 0 ? "?" : "&") + "store=" + encodeURIComponent(chain) + "&vhod=" + encodeURIComponent(pack(text));
+    location.replace(target);
+    return;
+  }
 
   /* Буфер обмена есть не везде: он требует https и разрешения, а на старых
      телефонах его нет вовсе. Запасной путь — окно с выделенным текстом: его

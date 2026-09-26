@@ -375,7 +375,7 @@ def test_the_screens_do_not_promise_a_stock_that_nobody_reports(web):
     # 19.09.2026 к ним добавилась METRO: цена у неё своя по городу, остаток — свой
     # в каждом торговом центре, значит «ближайшая точка» для неё значит ровно то же,
     # что для Магнита и Ленты.
-    assert set(places.BY_POINT) == {"magnit", "lenta", "metro"}, \
+    assert set(places.BY_POINT) == {"magnit", "lenta", "metro", "pyaterochka", "samokat"}, \
         "список сетей «по вашей точке» изменился — перечитайте оба экрана"
 
     for path in ("/about", "/stores"):

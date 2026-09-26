@@ -29,9 +29,10 @@ from typing import Iterator
 
 import requests
 
-from app import config
+from app import config, homeexit
 from app.catalog.crawlers import USER_AGENT, Pace, http_get
 from app.catalog.model import ChainProduct, CrawlBlocked, Crawler, Progress
+from app.matcher.normalize import parse_weight
 
 log = logging.getLogger(__name__)
 
@@ -66,10 +67,11 @@ def to_product(item: dict, category: str | None) -> ChainProduct | None:
     gallery = item.get("gallery") or []
     image = next((g.get("url") for g in gallery if isinstance(g, dict) and g.get("url")), None)
     quantity = item.get("quantity")
+    weight_g, _ = parse_weight(name)
     return ChainProduct(
         sku=str(sku), name=name, category=category,
         unit="kg" if is_weighted else "pcs",
-        weight_g=None,                      # фасовку разберёт сопоставление из названия
+        weight_g=None if is_weighted else weight_g,
         url=f"{BASE}/product/{sku}-{item.get('seoCode')}" if item.get("seoCode") else f"{BASE}/product/{sku}",
         image=image,
         price=round(price / 100.0, 2) if isinstance(price, (int, float)) else None,
@@ -96,7 +98,8 @@ class MagnitCrawler(Crawler):
     def _tree(self, store: str) -> list[dict]:
         url = (f"{BASE}/webgate/v3/categories/store/{store}"
                f"?storetype={self.store_type}&catalogtype={self.catalog_type}")
-        response = http_get(url, self.pace, accept="application/json")
+        proxies = homeexit.requests_proxies(self.code)
+        response = http_get(url, self.pace, accept="application/json", proxies=proxies)
         if "json" not in (response.headers.get("Content-Type") or ""):
             raise CrawlBlocked("дерево категорий пришло не JSON — похоже на страницу защиты")
         return response.json().get("items") or []
@@ -108,9 +111,11 @@ class MagnitCrawler(Crawler):
                 "sort": {"order": "desc", "type": "popularity"}, "term": "",
                 "storeCode": store, "storeType": self.store_type,
                 "catalogType": self.catalog_type}
+        proxies = homeexit.requests_proxies(self.code)
         response = requests.post(f"{BASE}/webgate/v2/goods/search", json=body, timeout=60,
                                  headers={"User-Agent": USER_AGENT, "Accept": "application/json",
-                                          "Content-Type": "application/json"})
+                                          "Content-Type": "application/json"},
+                                 proxies=proxies)
         if response.status_code in (401, 403, 429):
             raise CrawlBlocked(f"поиск по категории {leaf_id}: ответ {response.status_code}")
         if "json" not in (response.headers.get("Content-Type") or ""):

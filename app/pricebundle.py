@@ -97,6 +97,7 @@ def _item(raw: Any) -> dict | None:
     if not sku or not name or not price or price <= 0:
         return None
     unit = str(raw.get("unit") or "pcs").strip().lower()
+    barcode = str(raw.get("barcode") or raw.get("ean") or "").strip() or None
     return {
         "sku": sku,
         "name": name,
@@ -105,6 +106,7 @@ def _item(raw: Any) -> dict | None:
         "in_stock": bool(raw.get("in_stock", True)),
         "unit": "kg" if unit.startswith("kg") or unit.startswith("кг") else "pcs",
         "weight_g": _weight(raw.get("weight_g")),
+        "barcode": barcode,
         "url": (str(raw.get("url") or "").strip() or None),
     }
 
@@ -170,7 +172,8 @@ def import_prices(payload: str | bytes | dict) -> dict:
     for item in bundle["items"]:
         store_product_id = repo.upsert_store_product(
             store.id, item["sku"], item["name"],
-            weight_g=item["weight_g"], unit=item["unit"], url=item["url"])
+            weight_g=item["weight_g"], unit=item["unit"], url=item["url"],
+            ean=item.get("barcode"))
         repo.save_price(store_product_id, item["price"],
                         in_stock=item["in_stock"], fetched_at=stamp)
         saved += 1

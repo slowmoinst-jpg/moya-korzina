@@ -70,7 +70,7 @@ import math
 import re
 from typing import Any
 
-from app import config, geo
+from app import config, geo, homeexit
 from app.connectors.base import (
     HttpCatalogConnector,
     USER_AGENT,
@@ -199,10 +199,12 @@ def _fetch_stores(lat: float, lon: float, radius_km: float) -> list[dict] | None
                                 "rightBottomPoint": {"latitude": lat - dlat, "longitude": lon + dlon}}},
             "pagination": {"offset": 0, "size": 100}}
     timeout = float(config.get("connectors.timeout_sec", 10) or 10)
+    proxies = homeexit.requests_proxies("magnit")
     try:
         resp = requests.post(STORES_URL, json=body, timeout=timeout,
                              headers={"User-Agent": USER_AGENT, "Accept": "application/json",
-                                      "Content-Type": "application/json"})
+                                      "Content-Type": "application/json"},
+                             proxies=proxies)
         if resp.status_code != 200 or "json" not in (resp.headers.get("Content-Type") or ""):
             log.warning("магнит: справочник магазинов ответил %s", resp.status_code)
             return None
@@ -360,12 +362,14 @@ class MagnitConnector(HttpCatalogConnector):
             return None, 0
         timeout = float(config.get("connectors.timeout_sec", 10) or 10)
         headers = {**self._headers(), "Accept": "application/json"}
+        proxies = homeexit.requests_proxies(self.code)
         try:
             if body is None:
-                resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+                resp = requests.get(url, params=params, headers=headers, timeout=timeout, proxies=proxies)
             else:
                 resp = requests.post(url, json=body, timeout=timeout,
-                                     headers={**headers, "Content-Type": "application/json"})
+                                     headers={**headers, "Content-Type": "application/json"},
+                                     proxies=proxies)
             if resp.status_code in (404, 422):
                 note_success(self.code)          # шлюз ответил, просто товара у него нет
                 return None, resp.status_code
@@ -436,9 +440,11 @@ class MagnitConnector(HttpCatalogConnector):
         except ImportError:  # pragma: no cover
             return None, 0
         timeout = float(config.get("connectors.timeout_sec", 10) or 10)
+        proxies = homeexit.requests_proxies(self.code)
         try:
             resp = requests.get(url, params=params, headers=self._headers(),
-                                cookies=self._shop_cookies(), timeout=timeout)
+                                cookies=self._shop_cookies(), timeout=timeout,
+                                proxies=proxies)
             if resp.status_code == 404:
                 note_success(self.code)          # магазин ответил, просто товара у него нет
                 return None, 404

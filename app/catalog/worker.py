@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from app import api, config
@@ -40,6 +42,69 @@ log = logging.getLogger("catalog")
 
 
 QUEUE_POLL_SEC = 30.0          # как часто заглядывать в очередь адресов
+
+# Сколько часов обход сети считается свежим для ПЛАНОВОГО обхода (config
+# catalog.fresh_hours). Сутки между плановыми обходами больше этого срока, поэтому
+# в обычную ночь не пропускается ничего; пропуск случается только после
+# внеочередного обхода, пущенного вечером руками.
+FRESH_HOURS = 12.0
+
+
+def _lock_path() -> str:
+    return os.path.join(os.path.dirname(store.path()), "crawl.lock")
+
+
+@contextmanager
+def one_crawler():
+    """Сети обходит один процесс за раз, сколько бы обходов ни пустили.
+
+    ЗАЧЕМ. Обход пускают с трёх сторон: плановый в korzina-jobs, внеочередной
+    отдельным контейнером korzina-crawl (его не сносит выкладка) и руками
+    `worker --once`. До 22.09.2026 они друг о друге не знали, и внеочередной обход,
+    пущенный вечером, встретился бы с плановым в 03:30 на METRO: два потока в одну
+    сеть — ровно то, от чего предостерегает рамка сбора (CLAUDE.md, «один поток на
+    сеть»). Вдобавок сопоставление держит запись в каталог дольше, чем соседний
+    процесс готов её ждать (store.connect, timeout 30 с).
+
+    ПОЧЕМУ flock, А НЕ ОТМЕТКА В БАЗЕ. Отметку «идёт» пережил бы убитый процесс —
+    обход, снесённый выкладкой, оставил бы её навсегда, и следующий ждал бы вечно.
+    Замок ядра отпускается вместе с процессом сам. Том korzina-data у контейнеров
+    общий, ядро одно, так что замок видят все.
+
+    Второй обход ЖДЁТ первого, а не отказывается: плановый, упёршийся во
+    внеочередной, дождётся его конца и дальше пропустит свежие сети (run_all,
+    fresh_hours).
+
+    На Windows fcntl нет, и замок ничего не делает: там идут тесты, а два обхода
+    разом не запускают.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    if fcntl is None:
+        yield
+        return
+    path = _lock_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log.info("каталог обходит другой процесс — жду, пока он закончит")
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            log.info("другой обход закончился, продолжаю")
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def fresh_hours() -> float:
+    try:
+        return float(config.get("catalog.fresh_hours") or FRESH_HOURS)
+    except (TypeError, ValueError):
+        return FRESH_HOURS
 
 
 def chains() -> list[str]:
@@ -56,10 +121,10 @@ def chains() -> list[str]:
     # ценами идут первыми. Проверено 20.09.2026 — vprok и monetka стояли в хвосте и
     # не собрались ни разу.
     return ["magnit", "metro", "fixprice", "vkusvill", "lenta", "dixy",
-            "perekrestok", "vprok", "monetka"]
+            "perekrestok", "vprok", "monetka", "pyaterochka", "samokat"]
 
 
-def run_all(only: str | None = None) -> list[dict]:
+def run_all(only: str | None = None, fresh: float | None = None) -> list[dict]:
     """Обойти сети по очереди, потом сопоставить. Одна упавшая сеть не мешает остальным.
 
     Обход идёт ПО ТОЧКАМ ЛЮДЕЙ (app/places.py): магазины подбираются к адресам
@@ -67,28 +132,47 @@ def run_all(only: str | None = None) -> list[dict]:
     16.09.2026 — так и объём работы, и содержимое каталога определяет тот, кто им
     пользуется. У сетей без точек (ВкусВилл, Дикси) обход прежний: их каталог один
     на страну, и делить его нечего.
+
+    `fresh` передаёт только ПЛАНОВЫЙ обход: сеть, обойденная без ошибок за
+    последние столько часов, пропускается — второй проход по ней за вечер нагрузил
+    бы источник и не дал бы новых цен. Ручной `--once` его не передаёт: человек
+    попросил обойти сейчас, значит сейчас.
     """
     results: list[dict] = []
-    for code in chains():
-        if only and code != only:
-            continue
-        spots = places.points(code)
-        if code in places.BY_POINT and not spots:
-            log.info("%s: точек по адресам рабочих мест нет — иду по запасной из config", code)
-        try:
-            crawler = make(code, spots)
-        except KeyError as exc:
-            log.warning("%s", exc)
-            continue
-        where = ", ".join(str(p) for p in spots) or "запасная точка из config.yaml"
-        log.info("%s: обход начат, точки: %s", code, where)
-        results.append(refresh.run_chain(crawler, progress=lambda m, c=code: log.info("%s: %s", c, m)))
-        # Сопоставляем после КАЖДОЙ сети, а не только в конце: первый обход длится часы
-        # (карточки Ленты и ВкусВилла по одной в секунду), и без этого каталог в
-        # интерфейсе был бы пустым до самого конца, хотя Магнит и Дикси уже собраны.
-        refresh.match_all(progress=lambda m: log.info("сопоставление: %s", m))
-    summary = refresh.match_all(progress=lambda m: log.info("сопоставление: %s", m))
-    results.append({"chain": "match", **summary})
+    summary: dict | None = None
+    with one_crawler():
+        # Свежесть спрашиваем ПОСЛЕ замка: плановый обход мог прождать внеочередной
+        # несколько часов, и спроси он раньше — счёл бы несвежим только что обойденное.
+        recent = store.fresh_chains(fresh) if fresh else {}
+        for code in chains():
+            if only and code != only:
+                continue
+            if code in recent:
+                log.info("%s: обойдена %s — плановый обход её пропускает", code,
+                         recent[code][:16].replace("T", " "))
+                continue
+            spots = places.points(code)
+            if code in places.BY_POINT and not spots:
+                log.info("%s: точек по адресам рабочих мест нет — иду по запасной из config", code)
+            try:
+                crawler = make(code, spots)
+            except KeyError as exc:
+                log.warning("%s", exc)
+                continue
+            where = ", ".join(str(p) for p in spots) or "запасная точка из config.yaml"
+            log.info("%s: обход начат, точки: %s", code, where)
+            results.append(refresh.run_chain(crawler, progress=lambda m, c=code: log.info("%s: %s", c, m)))
+            # Сопоставляем после КАЖДОЙ сети, а не только в конце: первый обход длится часы
+            # (карточки Ленты и ВкусВилла по одной в секунду), и без этого каталог в
+            # интерфейсе был бы пустым до самого конца, хотя Магнит и Дикси уже собраны.
+            #
+            # Итог последнего сопоставления и есть итог обхода. Здесь стоял ещё один
+            # match_all после цикла, и он ничего не менял: каталог с прошлого прохода
+            # не трогали, а стоил он десять минут счёта (журнал 22.09.2026: 09:52 —
+            # 10:02, те же 252 685 единых товаров).
+            summary = refresh.match_all(progress=lambda m: log.info("сопоставление: %s", m))
+    if summary is not None:
+        results.append({"chain": "match", **summary})
     return results
 
 
@@ -109,19 +193,20 @@ def run_address(address: str) -> list[dict]:
     один на страну, и адрес его не меняет; они обновляются по расписанию.
     """
     results: list[dict] = []
-    for code in chains():
-        spots = places.points_for(address, code)
-        if not spots:
-            continue
-        try:
-            crawler = make(code, spots)
-        except KeyError as exc:
-            log.warning("%s", exc)
-            continue
-        log.info("%s: загрузка по адресу «%s», точка %s", code, address, spots[0])
-        results.append(refresh.run_chain(crawler, progress=lambda m, c=code: log.info("%s: %s", c, m)))
-    if results:
-        refresh.match_all(progress=lambda m: log.info("сопоставление: %s", m))
+    with one_crawler():
+        for code in chains():
+            spots = places.points_for(address, code)
+            if not spots:
+                continue
+            try:
+                crawler = make(code, spots)
+            except KeyError as exc:
+                log.warning("%s", exc)
+                continue
+            log.info("%s: загрузка по адресу «%s», точка %s", code, address, spots[0])
+            results.append(refresh.run_chain(crawler, progress=lambda m, c=code: log.info("%s: %s", c, m)))
+        if results:
+            refresh.match_all(progress=lambda m: log.info("сопоставление: %s", m))
     return results
 
 
@@ -179,7 +264,7 @@ def serve() -> None:
             left = (planned - datetime.now()).total_seconds()
             time.sleep(max(1.0, min(QUEUE_POLL_SEC, left)))
         try:
-            run_all()
+            run_all(fresh=fresh_hours())
         except Exception:  # noqa: BLE001 — служба не должна умирать от одного обхода
             log.exception("обход не удался, следующая попытка по расписанию")
 
@@ -203,7 +288,8 @@ def main(argv: list[str] | None = None) -> int:
         api.serve()
         return 0
     if args.match:
-        print(refresh.match_all(progress=print))
+        with one_crawler():
+            print(refresh.match_all(progress=print))
         return 0
     if args.address:
         for row in run_address(args.address):

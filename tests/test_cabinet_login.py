@@ -890,5 +890,29 @@ def test_the_screen_hands_over_the_bookmarklet_itself(web):
     page = web.get("/cabinet?store=magnit").data.decode("utf-8")
 
     assert "javascript:" in page, "строки закладки на экране нет"
-    assert "перетащите на панель закладок" in page.lower()
-    assert "На телефоне перетащить некуда" in page, "телефон остался без своего пути"
+    assert "перетащите" in page.lower()
+    assert "__APP_URL__" not in page, "адрес приложения обязан подставляться в закладку"
+
+
+def test_cabinet_accepts_vhod_via_url_query_parameter(web):
+    """Закладка передаёт вход через параметр vhod в адресе (как в ФНС)."""
+    import base64
+    from app.shopbrowser import store as shopstore
+
+    enter(web)
+    raw_json = _handed(cookies=[{"name": "mg_at", "value": "TOKEN123"}])
+    packed = base64.urlsafe_b64encode(raw_json.encode("utf-8")).decode("ascii").rstrip("=")
+
+    resp = web.get(f"/cabinet?store=magnit&vhod={packed}")
+    assert resp.status_code == 303
+    assert resp.headers["Location"].endswith("/cabinet?store=magnit")
+
+    users.activate(PHONE)
+    try:
+        saved = shopstore.load("magnit")
+        assert saved is not None, "вход через URL обязан сохраниться"
+        names = [c["name"] for c in saved.get("cookies", [])]
+        assert "mg_at" in names
+    finally:
+        users.deactivate()
+

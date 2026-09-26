@@ -134,3 +134,15 @@ def test_out_of_stock_is_kept_out_of_stock(db):
     store = repo.get_store("pyaterochka")
     product = repo.upsert_store_product(store.id, "4306830", ITEM["name"])
     assert repo.latest_price(product)["in_stock"] == 0
+
+
+def test_import_saves_weight_and_barcode(db):
+    item = {**ITEM, "sku": "999888", "barcode": "4607025141234", "weight_g": 350.0, "unit": "pcs"}
+    pricebundle.import_prices(bundle([item]))
+    store = repo.get_store("pyaterochka")
+    with repo.get_conn() as c:
+        row = c.execute("SELECT weight_g, unit, ean FROM store_products WHERE store_id=? AND sku=?",
+                        (store.id, "999888")).fetchone()
+    assert row["weight_g"] == 350.0
+    assert row["unit"] == "pcs"
+    assert row["ean"] == "4607025141234"

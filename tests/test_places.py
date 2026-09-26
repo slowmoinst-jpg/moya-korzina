@@ -190,3 +190,49 @@ def test_without_points_the_crawler_falls_back_to_config():
     from app.catalog.crawlers.magnit import MagnitCrawler
 
     assert make("magnit", []).stores == [MagnitCrawler._spare()]
+
+
+def test_pyaterochka_and_samokat_in_by_point():
+    """Пятёрочка и Самокат включены в BY_POINT и зарегистрированы в _RESOLVERS."""
+    assert "pyaterochka" in places.BY_POINT
+    assert "samokat" in places.BY_POINT
+    assert "pyaterochka" in places._RESOLVERS
+    assert "samokat" in places._RESOLVERS
+
+
+def test_pyaterochka_point_resolved(workspaces, monkeypatch):
+    workspaces("79990000001", "Москва, Ходынский бульвар 4")
+    from app.connectors import pyaterochka
+
+    monkeypatch.setattr(pyaterochka, "nearest_store",
+                        lambda addr: {"code": "5ka-1234", "address": "Москва, Ходынка, 2"})
+    found = places.points("pyaterochka")
+    assert len(found) == 1
+    assert found[0].code == "5ka-1234"
+    assert found[0].chain == "pyaterochka"
+    assert found[0].label == "Москва, Ходынка, 2"
+
+
+def test_samokat_point_resolved(workspaces, monkeypatch):
+    workspaces("79990000001", "Санкт-Петербург, Невский проспект, 28")
+    from app.connectors import samokat
+
+    monkeypatch.setattr(samokat, "nearest_store",
+                        lambda addr: {"code": "showcase-spb-1", "address": "СПб, Невский, 30"})
+    found = places.points("samokat")
+    assert len(found) == 1
+    assert found[0].code == "showcase-spb-1"
+    assert found[0].chain == "samokat"
+    assert found[0].label == "СПб, Невский, 30"
+
+
+def test_crawler_gets_pyaterochka_and_samokat_points():
+    from app.catalog.crawlers import make
+
+    p5_spots = [places.Point("pyaterochka", "5ka-1", "Москва", "Москва"),
+                places.Point("pyaterochka", "5ka-2", "СПб", "СПб")]
+    assert make("pyaterochka", p5_spots).stores == ["5ka-1", "5ka-2"]
+
+    sam_spots = [places.Point("samokat", "sam-1", "Москва", "Москва")]
+    assert make("samokat", sam_spots).stores == ["sam-1"]
+

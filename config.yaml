@@ -18,6 +18,11 @@ connectors:
                                       # подсмотреть в адресе magnit.ru после выбора магазина
                                       # (параметр shopCode). Пусто и без адреса — краснодарский
                                       # магазин 992301, тот же, на котором стоит общий каталог.
+  home_exit:                          # выход через домашний интернет владельца (app/homeexit.py):
+    proxy: socks5://172.17.0.1:1080   # туннель с его ноутбука (tools/tunnel) через мост
+    chains: [dixy, pyaterochka, samokat, magnit] # из дома отдаёт витрину с ценами (замер 25.09.2026).
+                                          # Магнит блокирует серверный IP (timeout) — ходит через дом.
+                                      # Туннеля нет — сеть идёт как раньше, без цен с витрины.
   magnit_shop_type: ME                # формат точки: MM, ME, GM, MK, MM_MINI. При подобранном
                                       # по адресу магазине приходит от самого Магнита.
   magnit_delivery: true               # true — цены доставки, false — цены самовывоза. Они разные.
@@ -123,7 +128,7 @@ api:
 catalog:
   db_path: data/catalog.db
   refresh_at: "03:30"                # время суток по часам сервера
-  chains: [magnit, metro, fixprice, vkusvill, lenta, dixy, perekrestok, vprok, monetka]
+  chains: [magnit, metro, fixprice, vkusvill, lenta, dixy, perekrestok, vprok, monetka, pyaterochka, samokat]
                                      # ПОРЯДОК ЗДЕСЬ ЗНАЧИМ: обход идёт по очереди и его
                                      # обрывает любая выкладка, поэтому сети С ЦЕНАМИ стоят
                                      # первыми. Проверено на vprok и monetka: они стояли в
@@ -136,6 +141,10 @@ catalog:
                                      # карта сайта и закрыта карточка; нужны, чтобы опознавать
                                      # строки их чеков. У Пятёрочки и Самоката нет и этого.
   rate_limit_rps: 1.0
+  fresh_hours: 12                    # плановый обход пропускает сеть, обойденную без ошибок
+                                     # за столько часов: так внеочередной вечерний обход не
+                                     # удваивается ночным. Обходы разных процессов к тому же
+                                     # не идут разом — ждут друг друга (worker.one_crawler).
   fixprice:
     max_sections: 40                 # разделов с витрины за обход
     max_pages: 60                    # страниц на раздел, по 24 товара
@@ -161,3 +170,14 @@ catalog:
     details_per_run: 2000
   dixy:
     max_brand_queries: 400
+    max_shelf_pages: 80              # страниц на раздел витрины (по 30 товаров) через домашний выход
+    shelf_skip: [skidki-po-karte, vygodno-dlya-lyudey, novinki, vitaminiziruysya, olife,
+                 igray-i-vyigryvay, zakazyvay-onlayn, posuda-za-nakleyki, davay-soberis,
+                 vyigryvay-kurs, uchastvuy-v-rozygryshe]
+                                     # подборки, а не разделы: их товары лежат и в обычных
+                                     # разделах, а обход подборок только удвоил бы запросы через дом
+  pyaterochka:
+    max_pages: 30
+  samokat:
+    max_pages: 30
+

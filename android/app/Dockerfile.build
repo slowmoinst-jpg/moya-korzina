@@ -1,0 +1,35 @@
+# Сборщик приложения «Моя корзина». На машине владельца Android SDK нет,
+# поэтому сборка идёт в одноразовом контейнере на сервере.
+#
+# Использование:
+#   docker build -f Dockerfile.build -t korzina-apk .
+#   docker run --rm -v "$PWD:/src" korzina-apk
+#
+# APK появится в app/build/outputs/apk/debug/app-debug.apk
+FROM eclipse-temurin:17-jdk
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends unzip curl \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV ANDROID_HOME=/sdk
+ENV ANDROID_SDK_ROOT=/sdk
+
+RUN mkdir -p /sdk/cmdline-tools \
+    && curl -sSLo /tmp/tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+    && unzip -q /tmp/tools.zip -d /sdk/cmdline-tools \
+    && mv /sdk/cmdline-tools/cmdline-tools /sdk/cmdline-tools/latest \
+    && rm /tmp/tools.zip
+
+ENV PATH="${PATH}:/sdk/cmdline-tools/latest/bin:/sdk/platform-tools"
+
+RUN yes | sdkmanager --licenses > /dev/null \
+    && sdkmanager --install "platforms;android-34" "build-tools;34.0.0" > /dev/null
+
+RUN curl -sSLo /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip \
+    && unzip -q /tmp/gradle.zip -d /opt \
+    && rm /tmp/gradle.zip
+ENV PATH="${PATH}:/opt/gradle-8.7/bin"
+
+WORKDIR /src
+CMD ["gradle", "--no-daemon", "assembleDebug"]

@@ -142,12 +142,14 @@ def registry() -> dict[str, type[Crawler]]:
     from app.catalog.crawlers.metro import MetroCrawler
     from app.catalog.crawlers.monetka import MonetkaCrawler
     from app.catalog.crawlers.perekrestok import PerekrestokCrawler
+    from app.catalog.crawlers.pyaterochka import PyaterochkaCrawler
+    from app.catalog.crawlers.samokat import SamokatCrawler
     from app.catalog.crawlers.vkusvill import VkusvillCrawler
     from app.catalog.crawlers.vprok import VprokCrawler
 
     return {c.code: c for c in (MagnitCrawler, DixyCrawler, VkusvillCrawler, LentaCrawler,
                                 MetroCrawler, PerekrestokCrawler, VprokCrawler, MonetkaCrawler,
-                                FixPriceCrawler)}
+                                FixPriceCrawler, PyaterochkaCrawler, SamokatCrawler)}
 
 
 def make(code: str, points: list | None = None) -> Crawler:
@@ -168,8 +170,8 @@ def make(code: str, points: list | None = None) -> Crawler:
     codes = [p.code for p in (points or [])]
     if not codes:
         return cls()
-    if code in ("magnit", "metro"):
-        # У обоих ассортимент и остаток свои в каждой точке, значит обойти надо каждую.
+    if code in ("magnit", "metro", "pyaterochka", "samokat"):
+        # У них ассортимент и остаток свои в каждой точке, значит обойти надо каждую.
         return cls(codes)
     if code == "lenta":
         return cls(codes[0])

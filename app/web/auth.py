@@ -84,6 +84,16 @@ def install(flask_app: Flask) -> None:
         if g.phone:
             users.open_workspace(g.phone)       # заводит папку и схему, если их нет
             return None
+
+        # Вход, переданный из Android-приложения или закладки с явным номером телефона
+        phone_param = (request.args.get("phone") or request.form.get("phone") or "").strip()
+        if phone_param and (request.args.get("vhod") or request.args.get("keys")):
+            norm = users.normalize_phone(phone_param)
+            if norm:
+                g.phone = norm
+                users.open_workspace(norm)
+                return None
+
         if endpoint in OPEN_ENDPOINTS or endpoint.startswith(API_PREFIX):
             return None
         # На запрос данных отвечаем отказом, на обычную страницу — переводом ко

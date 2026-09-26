@@ -66,6 +66,17 @@ docker run -d --name "$NAME-jobs" --restart unless-stopped \
     -p "$API_PORT:8765" -v "$VOLUME:/app/data" "${ENV_ARG[@]}" "$IMAGE" \
     python -m app.catalog.worker >/dev/null
 
+# Мост к домашнему выходу (app/homeexit.py, tools/tunnel). Туннель с ноутбука
+# владельца слушает только 127.0.0.1:1080 хоста, а контейнеры сидят в своей сети;
+# мост слушает 172.17.0.1:1080 — адрес хоста в сети docker, из интернета он не
+# виден — и перекладывает байты на туннель. Туннеля нет — мост просто закрывает
+# соединение, и сборщик идёт без домашнего выхода.
+echo "== мост к домашнему выходу =="
+docker rm -f "$NAME-tunnel-relay" >/dev/null 2>&1 || true
+docker run -d --name "$NAME-tunnel-relay" --restart unless-stopped --network host \
+    --entrypoint python "$IMAGE" tools/tunnel/relay.py \
+    --listen 172.17.0.1:1080 --to 127.0.0.1:1080 >/dev/null
+
 echo "== ожидание приложения =="
 for i in $(seq 1 30); do
     # Своя страница входа вместо прежнего /_stcore/health: интерфейс переехал

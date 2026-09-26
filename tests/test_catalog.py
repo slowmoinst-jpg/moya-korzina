@@ -178,10 +178,11 @@ def test_magnit_tree_and_item():
             "weighted": {"isWeighted": False}, "gallery": [{"type": "IMAGE", "url": "https://img/1.jpeg"}]}
     p = magnit.to_product(item, "Рыба / Крабовые палочки")
     assert p.sku == "1000483001" and p.price == 139.99 and p.in_stock and p.unit == "pcs"
+    assert p.weight_g == 170.0
     assert p.url == "https://magnit.ru/product/1000483001-vici_krab" and p.image == "https://img/1.jpeg"
     weighed = magnit.to_product({"id": "7", "name": "Креветки Королевские", "price": 24999, "quantity": 0,
                                  "weighted": {"isWeighted": True, "shelfWeight": 500}}, None)
-    assert weighed.unit == "kg" and weighed.in_stock is False
+    assert weighed.unit == "kg" and weighed.in_stock is False and weighed.weight_g is None
 
 
 def test_lenta_item():
@@ -217,7 +218,8 @@ def test_worker_defaults():
     # штрихкоды одним ответом, у Перекрёстка — каталог без цен из карты сайта.
     # Fix Price добавлен 20.09.2026: цены и наличие, но только через наш браузер.
     assert set(worker.chains()) == {"magnit", "dixy", "vkusvill", "lenta", "metro",
-                                    "perekrestok", "vprok", "monetka", "fixprice"}
+                                    "perekrestok", "vprok", "monetka", "fixprice",
+                                    "pyaterochka", "samokat"}
     # Порядок здесь не косметика. Обход идёт по очереди и обрывается любой выкладкой,
     # поэтому сети С ЦЕНАМИ обязаны стоять раньше бесценных. Замер 20.09.2026: vprok и
     # monetka стояли в хвосте и не собрались НИ РАЗУ, в базе у обоих было по нулям.
@@ -227,6 +229,96 @@ def test_worker_defaults():
     assert withprices < nameonly, "сети с ценами должны обходиться раньше бесценных"
     planned = worker._next_run("03:30")
     assert (planned.hour, planned.minute) == (3, 30)
+
+
+@pytest.fixture
+def quiet_run(catalog, monkeypatch):
+    """Обход без сетей: две сети, поддельные сборщики, счёт обходов и сопоставлений."""
+    seen: dict[str, list] = {"crawled": [], "matched": []}
+    monkeypatch.setattr(worker, "chains", lambda: ["magnit", "metro"])
+    monkeypatch.setattr(worker.places, "points", lambda code: [])
+    monkeypatch.setattr(worker, "make", lambda code, spots: code)
+    monkeypatch.setattr(worker.refresh, "run_chain", lambda crawler, progress=None: (
+        seen["crawled"].append(crawler) or {"chain": crawler, "status": "ok", "seen": 1}))
+    monkeypatch.setattr(worker.refresh, "match_all", lambda progress=None: (
+        seen["matched"].append(1) or {"items": 1}))
+    return seen
+
+
+def _crawled(chain: str, status: str = "ok") -> None:
+    store.finish_run(store.start_run(chain), status, seen=5)
+
+
+def test_planned_run_skips_a_chain_crawled_this_evening(quiet_run):
+    """Внеочередной обход вечером — плановый в 03:30 не идёт по той же сети второй раз."""
+    _crawled("magnit")
+
+    worker.run_all(fresh=12)
+
+    assert quiet_run["crawled"] == ["metro"]
+
+
+def test_manual_run_crawls_even_a_fresh_chain(quiet_run):
+    """Человек попросил обойти сейчас — значит сейчас, свежесть тут не довод."""
+    _crawled("magnit")
+
+    worker.run_all()
+
+    assert quiet_run["crawled"] == ["magnit", "metro"]
+
+
+def test_a_failed_or_blocked_crawl_is_not_fresh(quiet_run):
+    """Упавший обход оставил сеть с прежними ценами — плановый обязан попробовать снова."""
+    _crawled("magnit", "failed")
+    _crawled("metro", "blocked")
+
+    worker.run_all(fresh=12)
+
+    assert quiet_run["crawled"] == ["magnit", "metro"]
+
+
+def test_matching_runs_once_per_crawled_chain_and_not_again_at_the_end(quiet_run):
+    """Лишний match_all после цикла стоил десять минут и не менял ничего (22.09.2026)."""
+    rows = worker.run_all()
+
+    assert len(quiet_run["matched"]) == 2
+    assert rows[-1] == {"chain": "match", "items": 1}
+
+
+def test_nothing_crawled_means_nothing_to_match(quiet_run):
+    _crawled("magnit")
+    _crawled("metro")
+
+    assert worker.run_all(fresh=12) == []
+    assert quiet_run["matched"] == []
+
+
+def test_a_second_crawler_waits_for_the_first(quiet_run, monkeypatch):
+    """Обходы разных процессов не идут разом: второй ждёт замка, а потом отпускает его.
+
+    fcntl на рабочей машине нет (Windows), поэтому ядро здесь подменено: оно
+    отвечает «занято» на попытку без ожидания, как ответило бы при живом первом.
+    """
+    import sys
+
+    calls: list[str] = []
+
+    class Kernel:
+        LOCK_EX, LOCK_NB, LOCK_UN = 2, 4, 8
+
+        def flock(self, fd, op):
+            if op == self.LOCK_EX | self.LOCK_NB:
+                calls.append("попробовал")
+                raise BlockingIOError
+            calls.append({self.LOCK_EX: "дождался", self.LOCK_UN: "отпустил"}[op])
+
+    monkeypatch.setitem(sys.modules, "fcntl", Kernel())
+    monkeypatch.setattr(worker.refresh, "run_chain", lambda crawler, progress=None: (
+        calls.append(f"обход {crawler}") or {"chain": crawler, "status": "ok"}))
+
+    worker.run_all()
+
+    assert calls == ["попробовал", "дождался", "обход magnit", "обход metro", "отпустил"]
 
 
 def test_link_products_recognises_receipt_items(catalog, user_db):

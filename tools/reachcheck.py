@@ -18,6 +18,9 @@
     python tools/reachcheck.py                    весь список ниже
     python tools/reachcheck.py fixprice           одну цель
     python tools/reachcheck.py --url <адрес>      произвольный адрес
+    python tools/reachcheck.py dixy --proxy socks5://127.0.0.1:1080
+                                                  через туннель с ноутбука владельца
+                                                  (tools/tunnel; контейнеру нужен --network host)
 
 Запросов на запись нет: только открываем и читаем.
 """
@@ -45,7 +48,24 @@ TARGETS = {
 BY_ADDRESS = ("доступ к сайту", "forbidden", "включён впн", "включен впн",
               "используете vpn", "проверьте настройки интернета")
 BY_CHECK = ("я не робот", "проверка браузера", "checking your browser",
-            "enable javascript", "ddos-guard", "qrator")
+            "enable javascript", "ddos-guard", "qrator",
+            "пройдите проверку", "не с ботом")
+
+
+def wall_of(text: str) -> str:
+    """Какая стена на странице: «по проверке», «по адресу» или никакой.
+
+    ПРОВЕРКА СМОТРИТСЯ ПЕРВОЙ. Страница ServicePipe у Самоката и Пятёрочки пишет
+    «пройдите проверку, чтобы получить доступ к сайту», и «доступ к сайту» из списка
+    адресных слов называл её стеной по адресу (замер 23.09.2026). Разница не
+    словесная: проверку проходит человек, а адрес лечится только другим выходом.
+    """
+    low = (text or "").lower()
+    if any(word in low for word in BY_CHECK):
+        return "по проверке"
+    if any(word in low for word in BY_ADDRESS):
+        return "по адресу"
+    return ""
 
 RUB = re.compile(r"[₽]|руб\.")
 PRICE = re.compile(r"\d{1,5}[.,]\d{2}\s*(?:₽|руб)|(?:₽|руб)\s*\d{1,5}")
@@ -56,6 +76,10 @@ def main() -> int:
     parser.add_argument("target", nargs="?", help="имя цели из списка")
     parser.add_argument("--url", help="произвольный адрес вместо списка")
     parser.add_argument("--wait", type=float, default=6.0, help="сколько ждать отрисовки, с")
+    parser.add_argument("--proxy", help="выход через прокси, например socks5://127.0.0.1:1080")
+    parser.add_argument("--headed", action="store_true",
+                        help="обычный режим с окном (нужен DISPLAY — в контейнере его даёт Xvfb) "
+                             "и родная подпись браузера, как у окна магазина app/shopbrowser")
     args = parser.parse_args()
 
     if args.url:
@@ -74,23 +98,32 @@ def main() -> int:
         print("playwright не установлен — проверять нечем")
         return 1
 
+    # С ОКНОМ — ПОТОМУ ЧТО ТАК ХОДИТ ОКНО МАГАЗИНА. Замер 25.09.2026: 5ka.ru через
+    # домашний интернет владельца отказал безоконному браузеру («Проблемы со связью»),
+    # а обычный браузер на том же ноутбуке открыл витрину. Безоконный режим сам
+    # сообщает странице, что за ним никто не смотрит (app/shopbrowser/driver._headless),
+    # и проверка без окна меряет не то, с чем придёт сборщик.
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
+        browser = pw.chromium.launch(headless=not args.headed, args=["--no-sandbox"],
+                                     proxy={"server": args.proxy} if args.proxy else None)
         try:
             for name, url in jobs:
-                _one(browser, name, url, args.wait)
+                _one(browser, name, url, args.wait, own_agent=args.headed)
         finally:
             browser.close()
     return 0
 
 
-def _one(browser, name: str, url: str, wait: float) -> None:
+def _one(browser, name: str, url: str, wait: float, own_agent: bool = False) -> None:
     print(f"\n=== {name} ===\n  {url}")
+    # Подпись «Windows» ставится только безоконному: его родная подпись содержит
+    # «HeadlessChrome». Браузеру с окном подменять нечего — он представляется собой.
+    agent = {} if own_agent else {"user_agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")}
     context = browser.new_context(
         locale="ru-RU", timezone_id="Europe/Moscow",
-        viewport={"width": 1366, "height": 900},
-        user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"))
+        viewport={"width": 1366, "height": 900}, **agent)
     page = context.new_page()
     try:
         response = page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -103,9 +136,7 @@ def _one(browser, name: str, url: str, wait: float) -> None:
         context.close()
         return
 
-    low = text.lower()
-    wall = ("по адресу" if any(w in low for w in BY_ADDRESS) else
-            "по проверке" if any(w in low for w in BY_CHECK) else "")
+    wall = wall_of(text)
     prices = PRICE.findall(text)
     print(f"  HTTP {status}, разметки {len(html)} знаков, текста {len(text)}")
     print(f"  заголовок: {page.title()[:90]}")

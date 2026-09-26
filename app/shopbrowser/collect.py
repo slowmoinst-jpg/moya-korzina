@@ -38,6 +38,7 @@ import re
 import time
 
 from app import pricebundle, repo
+from app.matcher.normalize import parse_weight
 from app.shopbrowser import driver, signals
 from app.shopbrowser import store as shopstore
 
@@ -62,8 +63,8 @@ def _number(value) -> float | None:
     return pricebundle._number(value)
 
 
-def price_in_ld(blocks) -> float | None:
-    """Цена из блоков JSON-LD: то, что магазин САМ объявил ценой товара.
+def product_in_ld(blocks) -> dict | None:
+    """Данные о товаре, цене, наличии и фасовке из блоков JSON-LD.
 
     Отдельной чистой функцией нарочно — чтобы её проверял обычный тест, без
     браузера и без похода в сеть: именно здесь ошибка стоит дороже всего. Взять
@@ -85,12 +86,38 @@ def price_in_ld(blocks) -> float | None:
         kind = node.get("@type")
         kinds = kind if isinstance(kind, list) else [kind]
         if any(str(k).lower() == "product" for k in kinds if k):
+            name = str(node.get("name") or "").strip() or None
+            barcode = str(node.get("gtin13") or node.get("gtin") or node.get("barcode") or node.get("isbn") or "").strip() or None
             offers = node.get("offers")
+            price = None
+            base_price = None
+            in_stock = True
             for offer in (offers if isinstance(offers, list) else [offers]):
                 if isinstance(offer, dict):
-                    price = _number(offer.get("price") or offer.get("lowPrice"))
-                    if price:
-                        return price
+                    p = _number(offer.get("price") or offer.get("lowPrice"))
+                    if p:
+                        price = p
+                        bp = _number(offer.get("highPrice") or offer.get("oldPrice") or offer.get("standardPrice"))
+                        if bp and bp > p:
+                            base_price = bp
+                        avail = str(offer.get("availability") or "").lower()
+                        if "outofstock" in avail or "discontinued" in avail:
+                            in_stock = False
+                        elif "instock" in avail:
+                            in_stock = True
+                        break
+            if price:
+                weight_raw = str(node.get("weight") or node.get("netWeight") or "").strip()
+                weight_g, unit = parse_weight(weight_raw or name or "")
+                return {
+                    "price": price,
+                    "base_price": base_price,
+                    "in_stock": in_stock,
+                    "name": name,
+                    "weight_g": weight_g,
+                    "unit": unit,
+                    "barcode": barcode,
+                }
         for key in ("@graph", "mainEntity", "itemListElement"):
             got = dig(node.get(key))
             if got is not None:
@@ -107,21 +134,28 @@ def price_in_ld(blocks) -> float | None:
     return None
 
 
-def _from_ld(page) -> float | None:
+def price_in_ld(blocks) -> float | None:
+    """Цена из блоков JSON-LD: то, что магазин САМ объявил ценой товара."""
+    got = product_in_ld(blocks)
+    return got["price"] if got else None
+
+
+def _from_ld(page) -> dict | None:
     """Те же блоки, но со страницы."""
     try:
         blocks = page.eval_on_selector_all(
             "script[type='application/ld+json']", "nodes => nodes.map(n => n.textContent)")
     except Exception:  # noqa: BLE001
         return None
-    return price_in_ld(blocks)
+    return product_in_ld(blocks)
 
 
-def _from_micro(page) -> float | None:
-    """Цена из микроразметки: <meta itemprop="price"> и og:price / product:price."""
+def _from_micro(page) -> dict | None:
+    """Товар из микроразметки: <meta itemprop="price"> и og:price / product:price."""
     selectors = ("[itemprop='price']",
                  "meta[property='product:price:amount']",
                  "meta[property='og:price:amount']")
+    price = None
     for selector in selectors:
         try:
             node = page.query_selector(selector)
@@ -135,13 +169,58 @@ def _from_micro(page) -> float | None:
             except Exception:  # noqa: BLE001
                 price = None
             if price:
-                return price
-    return None
+                break
+        if price:
+            break
+    if not price:
+        return None
+
+    in_stock = True
+    try:
+        avail_node = page.query_selector("[itemprop='availability'], meta[property='og:availability']")
+        if avail_node:
+            for attr in ("href", "content", "value"):
+                val = str(avail_node.get_attribute(attr) or "").lower()
+                if "outofstock" in val or "discontinued" in val:
+                    in_stock = False
+                    break
+    except Exception:  # noqa: BLE001
+        pass
+
+    name = None
+    try:
+        name_node = page.query_selector("[itemprop='name'], meta[property='og:title']")
+        if name_node:
+            for attr in ("content", "value"):
+                name = str(name_node.get_attribute(attr) or "").strip()
+                if name:
+                    break
+            if not name:
+                name = str(name_node.text_content() or "").strip()
+    except Exception:  # noqa: BLE001
+        pass
+
+    weight_g, unit = parse_weight(name or "")
+    return {
+        "price": price,
+        "base_price": None,
+        "in_stock": in_stock,
+        "name": name or None,
+        "weight_g": weight_g,
+        "unit": unit,
+        "barcode": None,
+    }
+
+
+def read_card(page) -> dict | None:
+    """Товар со страницы: цена, фасовка, наличие, штрихкод."""
+    return _from_ld(page) or _from_micro(page)
 
 
 def read_price(page) -> float | None:
     """Цена товара со страницы. Не нашли разметку — None, и это ответ."""
-    return _from_ld(page) or _from_micro(page)
+    card = read_card(page)
+    return card["price"] if card else None
 
 
 # ---------- что обходим ----------
@@ -208,9 +287,7 @@ def refresh(chain: str, phone: str, *, limit: int = PAGE_LIMIT) -> dict:
 
     plan = targets(chain, limit)
     if not plan:
-        return {"saved": 0, "read": 0, "note":
-                "В этой сети пока не опознан ни один ваш товар — собирать нечего. "
-                "Загляните в «Связи»."}
+        return _discover_from_showcase(chain, phone, limit)
 
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
     _progress(chain, started_at=started, finished_at=None, done=0,
@@ -231,13 +308,31 @@ def refresh(chain: str, phone: str, *, limit: int = PAGE_LIMIT) -> dict:
             unread += 1
             continue
         try:
-            price = driver.run(chain, phone, lambda page, u=url: _one(page, u))
+            card = driver.run(chain, phone, lambda page, u=url: _one(page, u))
         except driver.BrowserUnavailable as err:
             _progress(chain, note=str(err))
             break
-        if price:
-            items.append({"sku": row["sku"], "name": row.get("name") or row["sku"],
-                          "price": price, "url": url, "in_stock": True})
+        if isinstance(card, dict) and card.get("price"):
+            name = card.get("name") or row.get("name") or row["sku"]
+            items.append({
+                "sku": row["sku"],
+                "name": name,
+                "price": card["price"],
+                "base_price": card.get("base_price"),
+                "in_stock": card.get("in_stock", True),
+                "weight_g": card.get("weight_g"),
+                "unit": card.get("unit") or "pcs",
+                "barcode": card.get("barcode"),
+                "url": url,
+            })
+        elif isinstance(card, (int, float)) and card > 0:
+            items.append({
+                "sku": row["sku"],
+                "name": row.get("name") or row["sku"],
+                "price": float(card),
+                "url": url,
+                "in_stock": True,
+            })
         else:
             unread += 1
         _progress(chain, done=done, note=row.get("name") or row["sku"])
@@ -264,11 +359,11 @@ def refresh(chain: str, phone: str, *, limit: int = PAGE_LIMIT) -> dict:
     return _done(chain, items, len(plan), note, saved=summary["saved"])
 
 
-def _one(page, url: str) -> float | None:
-    """Открыть карточку и прочитать цену. Проверка вместо магазина — тоже ответ."""
+def _one(page, url: str) -> dict | None:
+    """Открыть карточку и прочитать товар: цену, фасовку, наличие. Проверка вместо магазина — тоже ответ."""
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=LOAD_TIMEOUT)
-    except Exception:  # noqa: BLE001 — страница не открылась, цены нет
+    except Exception:  # noqa: BLE001 — страница не открылась, цен/товара нет
         return None
     driver._settle(page, 0.5)
     try:
@@ -276,7 +371,82 @@ def _one(page, url: str) -> float | None:
             return None
     except Exception:  # noqa: BLE001
         pass
-    return read_price(page)
+    return read_card(page)
+
+
+def _discover_from_showcase(chain: str, phone: str, limit: int = PAGE_LIMIT) -> dict:
+    """Собрать товары напрямую с витрины каталога, когда нет подтверждённых связей."""
+    started = time.strftime("%Y-%m-%dT%H:%M:%S")
+    _progress(chain, started_at=started, finished_at=None,
+              done=0, total=limit, note="открываю витрину каталога")
+    driver.open_store(chain, phone, state=shopstore.load(chain))
+    seen = driver.look(chain, phone)
+    if seen.get("guarded"):
+        return _done(chain, [], 0,
+                     "Сеть встретила проверкой «я не робот». Откройте её кабинет, "
+                     "пройдите проверку и повторите сбор.")
+
+    def _extract_from_page(page):
+        items = []
+        try:
+            cards = page.evaluate("""() => {
+                const out = [];
+                const links = document.querySelectorAll('a[href*="/product/"]');
+                for (const a of links) {
+                    out.push({ url: a.getAttribute('href'), text: a.innerText });
+                }
+                return out;
+            }""")
+        except Exception:
+            cards = []
+
+        for card in cards:
+            url = card.get("url") or ""
+            text = card.get("text") or ""
+            sku_match = re.search(r"(?:--|/product/(?:.*-)?)([a-zA-Z0-9_-]+)/?", url)
+            if not sku_match:
+                continue
+            sku = sku_match.group(1)
+            p_match = re.search(r"^(?:[\d,]+\s+)?(.+?)\s+(\d+(?:[.,]\d+)?)\s*₽", text.replace("\n", " ").strip())
+            if p_match:
+                name = p_match.group(1).strip()
+                try:
+                    price = float(p_match.group(2).replace(",", "."))
+                except ValueError:
+                    price = None
+                if name and price and price > 0:
+                    w, u = parse_weight(name)
+                    items.append({
+                        "sku": sku,
+                        "name": name,
+                        "price": price,
+                        "weight_g": w,
+                        "unit": u or "pcs",
+                        "url": url if url.startswith("http") else f"{driver.HOME_URL.get(chain, '').rstrip('/')}{url}",
+                        "in_stock": True,
+                    })
+        return items
+
+    discovered = []
+    try:
+        discovered = driver.run(chain, phone, _extract_from_page) or []
+    except Exception as exc:
+        log.warning("%s: сбор с витрины не удался: %s", chain, exc)
+
+    if not discovered:
+        return _done(chain, [], 0,
+                     "В этой сети пока не опознан ни один ваш товар и на открытой странице "
+                     "не нашлось карточек. Откройте витрину в кабинете и перейдите в каталог.")
+
+    summary = pricebundle.import_prices({
+        "store": chain,
+        "address": None,
+        "collected_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "items": discovered[:limit],
+    })
+    note = f"Загружено новых товаров с витрины: {summary['saved']}."
+    log.info("%s: обнаружено и загружено %d товаров с витрины", chain, summary["saved"])
+    return _done(chain, discovered[:limit], len(discovered[:limit]), note, saved=summary["saved"])
 
 
 def _done(chain: str, items: list, total: int, note: str, saved: int = 0) -> dict:

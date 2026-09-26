@@ -331,6 +331,51 @@ def test_a_price_is_cleaned_the_same_way_the_receiver_cleans_it():
         assert one == pricebundle._number(raw), f"расхождение на «{raw}»"
 
 
+def test_product_in_ld_reads_full_card_data():
+    """Сборщик читает не только цену, но и фасовку, наличие, базовую цену и штрихкод."""
+    from app.shopbrowser import collect
+
+    raw = json.dumps({
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "name": "Сметана 15% 300 г",
+        "gtin13": "4607025141234",
+        "offers": {
+            "@type": "Offer",
+            "price": "79.90",
+            "highPrice": "99.90",
+            "availability": "https://schema.org/InStock",
+            "priceCurrency": "RUB",
+        },
+    })
+    got = collect.product_in_ld([raw])
+    assert got is not None
+    assert got["price"] == 79.9
+    assert got["base_price"] == 99.9
+    assert got["in_stock"] is True
+    assert got["name"] == "Сметана 15% 300 г"
+    assert got["weight_g"] == 300.0
+    assert got["unit"] == "pcs"
+    assert got["barcode"] == "4607025141234"
+
+
+def test_product_in_ld_detects_out_of_stock():
+    from app.shopbrowser import collect
+
+    raw = json.dumps({
+        "@type": "Product",
+        "name": "Молоко 1 л",
+        "offers": {
+            "price": "65.00",
+            "availability": "https://schema.org/OutOfStock",
+        },
+    })
+    got = collect.product_in_ld([raw])
+    assert got["price"] == 65.0
+    assert got["in_stock"] is False
+    assert got["weight_g"] == 1000.0
+
+
 def test_prices_are_collected_only_where_the_receiver_takes_them():
     """Сбор браузером — ровно для тех сетей, чьи пакеты принимает приёмник.
 

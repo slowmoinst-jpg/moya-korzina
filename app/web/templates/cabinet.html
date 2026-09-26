@@ -3,6 +3,20 @@
 {% block body %}
 
 {% if not chain %}
+  <div class="card" style="background: #f8fafc; border-left: 4px solid #2563eb; margin-bottom: 16px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+      <div>
+        <b style="font-size: 1.05rem;">📱 Android-приложение «Моя корзина»</b>
+        <p class="dim" style="margin: 4px 0 0; font-size: 0.9rem;">
+          Открывает все 8 магазинов на телефоне без блокировок фрейма и таймаутов, и автоматически передаёт вход в Корзину.
+        </p>
+      </div>
+      <a class="btn main" href="{{ url_for('static', filename='moya-korzina.apk') }}" download style="font-weight: 600;">
+        ⬇ Скачать APK (14 КБ)
+      </a>
+    </div>
+  </div>
+
   <p class="muted">Выберите сеть — её страница откроется прямо здесь, и вы войдёте в свой
     кабинет, не выходя из приложения.</p>
   <div class="card">
@@ -141,149 +155,119 @@
      Коротко нарочно. Прежний абзац был вдвое длиннее и на телефоне занимал целый
      экран: до окна магазина человек добирался, пролистав две страницы объяснений,
      а до шагов — три. Сказано то же самое, только без повторов. #}
-  <p class="muted">Ниже — настоящая страница сети <b>{{ chain_name }}</b>, открытая браузером на
-    нашем сервере: нажимайте по ней как обычно. Проверку «я не робот» и код из СМС вводите вы сами.
-    Набранное уходит прямо в страницу магазина;
-    у нас остаётся только сам вход, и только когда вы нажмёте «Запомнить вход».</p>
-
-  {% if saved %}
-    <div class="note ok" style="margin:10px 0">Вход в эту сеть уже сохранён
-      {% if saved.saved_at %}({{ saved.saved_at }}){% endif %}. Он подставлен в окно ниже —
-      если сеть его ещё помнит, вы уже внутри.</div>
-  {% endif %}
-
-  {% if entrance %}
-    {# Шаги приходят данными из app/shopbrowser/signals.py — это знание о чужой
-       странице, и живёт оно рядом с признаками входа, а не здесь. Шаблон только
-       раскладывает их по строчкам и ничего не знает про то, где у какой сети
-       кнопка: иначе правка вёрстки сети требовала бы правки в двух местах, и
-       второе однажды забыли бы. #}
-    <div class="card">
-      {# «Где искать вход» стоит СНАРУЖИ складки: на телефоне шаги свёрнуты, чтобы
-         окно магазина было видно сразу, — а эта строка отвечает на первый вопрос
-         человека и свёрнутой быть не должна. #}
-      <p class="cab-where muted" style="margin:0">{{ entrance.where }}</p>
-      <details class="cab-steps" id="steps" open>
-        {# Имя сети стоит ПЕРЕД двоеточием, а не после предлога, и числа шагов здесь
-           нет вовсе. «Войти в Пятёрочка» и «5 шага» — те самые мелочи, по которым
-           видно, что текст собран из кусков машиной: имена сетей не склоняются
-           подстановкой, а числительные не согласуются сами. #}
-        <summary>{{ chain_name }}: как войти, по шагам</summary>
-        <ol>
-          {% for step in entrance.steps %}<li>{{ step }}</li>{% endfor %}
-        </ol>
-        <p class="dim" style="margin:8px 0 0">{{ entrance.sign }}</p>
-        {% if entrance.trouble %}
-          <p class="note info" style="margin:10px 0 0">{{ entrance.trouble }}</p>
+  {# ГЛАВНОЕ: ОКНО МАГАЗИНА ПРЯМО НА СТРАНИЦЕ (Web View) #}
+  <div class="card" style="padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; margin: 12px 0;">
+    {# Верхняя панель окна #}
+    <div style="background: var(--surface); padding: 10px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span class="dot" style="background: var(--green);"></span>
+        <b style="font-size: 1.05rem;">{{ chain_name }}</b>
+        <span class="dim" style="font-size: 0.85rem;">{{ store_url }}</span>
+      </div>
+      <div class="row" style="gap: 8px; align-items: center;">
+        <button class="btn" onclick="const f=document.getElementById('store-frame'); if(f) f.src=f.src;" style="padding: 6px 12px; font-size: 0.88rem;" title="Перезагрузить страницу магазина">
+          ⟳ Обновить
+        </button>
+        {% if bookmarklet %}
+          <a class="btn main" href="{{ bookmarklet }}" draggable="true" onclick="return false;"
+             title="Перетащите на панель закладок или нажмите после входа в аккаунт"
+             style="padding: 6px 16px; font-weight: 600; font-size: 0.88rem;">
+            Сохранить вход
+          </a>
         {% endif %}
-        <p class="dim" style="margin:8px 0 0">Кнопки ▲ и ▼ листают саму страницу магазина,
-          «Крупнее» — показывает снимок в натуральную величину, когда буквы мелкие.</p>
-      </details>
+      </div>
     </div>
-  {% endif %}
 
-  <div class="card">
-    {# НАД СНИМКОМ НЕТ НИЧЕГО МЕНЯЮЩЕГОСЯ, И ЭТО НЕ СЛУЧАЙНОСТЬ.
-       Строка состояния стояла здесь — и каждый её ответ съезжал на строку короче
-       или длиннее прежнего, сдвигая снимок вверх-вниз на десяток точек. Человек
-       метит пальцем туда, где картинка была секунду назад, а она уже уехала.
-       Теперь всё изменчивое — ниже снимка, в панели под пальцем, и место снимка
-       не зависит от длины сообщения. #}
-    <div id="frame" class="cab-frame">
-      <img id="screen" class="cab-shot" alt="Страница магазина"
-           width="{{ width }}" height="{{ height }}">
-      <div id="veil" class="cab-veil">работаю…</div>
-      {# НЕВИДИМОЕ ПОЛЕ — ЕДИНСТВЕННЫЙ СПОСОБ ПОДНЯТЬ КЛАВИАТУРУ НА ТЕЛЕФОНЕ.
-         Телефон показывает клавиатуру только тому, у кого фокус, а фокус бывает
-         лишь у поля; картинка его принять не может. Поле живёт ПРЯМО В РАМКЕ со
-         снимком нарочно: телефон подкручивает страницу к тому, что получило
-         фокус, и поле, стоящее где-то ещё, уволокло бы человека от окна магазина
-         ровно в тот миг, когда он собрался печатать.
-         pointer-events:none — чтобы оно не перехватывало нажатия по снимку:
-         фокус ему даём мы сами, в обработчике нажатия. #}
-      <input id="keeper" class="cab-keeper" type="text" autocomplete="one-time-code"
-             inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false"
-             aria-label="Набранное уходит прямо в страницу магазина">
-    </div>
-    <p class="dim" id="where" style="margin:8px 0 0;word-break:break-all"></p>
+    {# Встроенное окно магазина #}
+    <iframe id="store-frame" src="{{ store_url }}"
+            style="width: 100%; height: 800px; border: 0; display: block; background: #fff;"
+            title="Кабинет {{ chain_name }}"
+            allow="clipboard-read; clipboard-write; geolocation"
+            loading="eager"></iframe>
   </div>
 
-  {# ПАНЕЛЬ СТОИТ ОТДЕЛЬНО ОТ КАРТОЧКИ СО СНИМКОМ, И ЭТО ЕДИНСТВЕННОЕ, ЧТО ЕЙ
-     ПОЗВОЛЯЕТ ДЕРЖАТЬСЯ ВНИЗУ ЭКРАНА. Липкий край действует только внутри своего
-     родителя: сидя в карточке со снимком, панель упиралась в её верх и повисала
-     ПОВЕРХ снимка, пока человек не пролистает до самой карточки, — то есть
-     закрывала собою ровно то, ради чего экран и сделан. Родителем стал весь
-     разворот страницы, и теперь панель стоит там, где ей положено: у нижнего
-     края, над разделами приложения. #}
-  <div class="cab-bar">
-    <p class="dim" id="status" style="margin:0 0 8px">Открываю страницу магазина…</p>
-
-    <div class="row">
-      <button class="btn cab-icon" data-scroll="-500" title="Пролистать страницу магазина вверх">▲</button>
-      <button class="btn cab-icon" data-scroll="500" title="Пролистать страницу магазина вниз">▼</button>
-      <button class="btn" id="zoom" title="Показать снимок в натуральную величину">Крупнее</button>
-      <button class="btn cab-icon" data-do="reload" title="Обновить страницу магазина">⟳</button>
-      <button class="btn cab-icon" data-key="backspace" title="Стереть знак в поле магазина">⌫</button>
-    </div>
-
-    {# ОТДЕЛЬНОГО ПОЛЯ ЗДЕСЬ БОЛЬШЕ НЕТ, И УБРАНО ОНО ПО СЛОВАМ ВЛАДЕЛЬЦА:
-       «такой вариант с полем отдельным очень неудобный». Он был прав. Набрать в
-       одном месте, нажать «Набрать», чтобы уехало в другое, посмотреть, доехало
-       ли, — это три действия там, где в обычном окне ноль. Теперь окно магазина
-       принимает набор само: нажали по снимку — печатаете прямо в страницу.
-       Строка ниже говорит, принимает ли оно набор прямо сейчас: без неё человек
-       печатал бы в пустоту, не понимая, почему буквы не появляются. #}
-    <div class="row" style="margin-top:6px">
-      <p class="dim cab-armed" id="armed" style="margin:0">
-        Нажмите по снимку — и печатайте прямо в страницу магазина.</p>
-      <button class="btn js-keep cab-icon" data-key="enter" title="Нажать «Ввод» в странице магазина">⏎</button>
-    </div>
-
-    {# КНОПКА «ЗАПОМНИТЬ ВХОД» НА ЭКРАНЕ ОДНА, И ЭТО НЕ ПРИДИРКА К ПОРЯДКУ.
-       Их было две: эта, спрятанная до появления признаков входа, и вторая — в
-       карточке ниже, видимая всегда. Вторая сводила первую на нет: гость нажимал
-       её, сеть отдавала свои гостевые куки (у Магнита это mg_udi и shopCode),
-       кабинет помечался подключённым, на «Кабинетах» вставало ✓ — и наряд корзины
-       уезжал в сеанс, где никто не входил. Сторож, который можно обойти соседней
-       кнопкой, — это не сторож. #}
-    <div class="row cab-save-row" id="saverow">
-      <button class="btn main wide js-save">Запомнить вход</button>
-    </div>
+  <div class="note info" style="margin: 8px 0 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+    <span>📱 <b>Не открывается в браузере?</b> В Android-приложении сайт {{ chain_name }} открывается напрямую с телефона без блокировок и таймаутов.</span>
+    <a class="btn" href="{{ url_for('static', filename='moya-korzina.apk') }}" download style="padding: 4px 12px; font-size: 0.85rem; font-weight: 600;">
+      ⬇ Скачать APK (14 КБ)
+    </a>
   </div>
 
-  {# ВТОРАЯ ДОРОГА, И НУЖНА ОНА ТАМ, ГДЕ ПЕРВАЯ УПЁРЛАСЬ.
-     Окно выше входит в магазин НАШИМ сервером, и по его адресу сети пускают
-     не всех: 20.09.2026 Магнит встретил вход проверкой «я не робот», а после
-     неё ответил «Аккаунт заблокирован». Тот же аккаунт с телефона человека
-     открывается как обычно. Значит вход надо не добывать здесь, а перенести
-     оттуда — закладкой «Передать вход» (docs/hand.html). #}
-  <div class="card">
-    <p style="margin:0 0 8px"><b>Вход с телефона</b></p>
-    <p class="dim" style="margin:0 0 10px">Если сеть не пускает наш сервер, войдите в неё
-      на телефоне, нажмите там закладку <b>«Передать вход»</b> и вставьте сюда то, что она
-      скопировала. Пароль и код из СМС при этом остаются у сети — в буфер они не попадают.</p>
-    {% if bookmarklet %}
-      <p style="margin:0 0 10px"><a class="btn" href="{{ bookmarklet }}" draggable="true"
-         onclick="return false;" title="Перетащите на панель закладок">Передать вход</a>
-        <span class="dim">— перетащите на панель закладок браузера.</span></p>
-      <details style="margin:0 0 10px">
-        <summary class="dim" style="cursor:pointer">На телефоне перетащить некуда — взять строкой</summary>
-        <p class="dim" style="margin:8px 0">Заведите любую закладку, откройте её правку и
-          вставьте в адрес эту строку:</p>
-        <textarea readonly rows="3" onclick="this.select()"
-                  style="width:100%;box-sizing:border-box;font:11px/1.35 monospace;padding:8px"
-        >{{ bookmarklet }}</textarea>
-      </details>
-    {% else %}
-      <div class="note bad">Закладка не собрана — выполните
-        <code>python tools/build_bookmarklet.py vhod</code></div>
-    {% endif %}
-    <textarea id="pasted" rows="3" placeholder="Вставьте сюда то, что скопировала закладка"
-              style="width:100%;box-sizing:border-box;font:12px/1.4 monospace;padding:8px"></textarea>
-    <div class="row" style="margin-top:8px">
-      <button class="btn main wide js-paste">Вставить вход с телефона</button>
+  <p class="dim" style="margin: 8px 0 16px; font-size: 0.88rem;">
+    💡 <b>Как войти:</b> Войдите в свой личный кабинет прямо в окне выше (телефон, капча, код из СМС).
+    После входа нажмите кнопку <b>«Сохранить вход»</b> (или перетащите её на панель закладок) —
+    сессия сохранится в приложении, и корзина сможет наполняться автоматически.
+  </p>
+
+  {# Запасные варианты в свёрнутом виде для совместимости и особых случаев #}
+  <details class="card" style="margin-top: 24px; opacity: 0.8;">
+    <summary style="cursor: pointer;" class="dim">Запасной способ входа (серверные снимки и ручная вставка)</summary>
+    <div style="margin-top: 14px;">
+      <p class="muted">Ниже — альтернативный режим: показ через снимки с сервера, если сайт не открывается в окне вашего браузера. Проверку «я не робот» и код из СМС вводите вы сами.</p>
+
+      {% if entrance %}
+        <div class="card">
+          <p class="cab-where muted" style="margin:0">{{ entrance.where }}</p>
+          <details class="cab-steps" id="steps" open>
+            <summary>{{ chain_name }}: как войти, по шагам</summary>
+            <ol>
+              {% for step in entrance.steps %}<li>{{ step }}</li>{% endfor %}
+            </ol>
+            <p class="dim" style="margin:8px 0 0">{{ entrance.sign }}</p>
+            {% if entrance.trouble %}
+              <p class="note info" style="margin:10px 0 0">{{ entrance.trouble }}</p>
+            {% endif %}
+          </details>
+        </div>
+      {% endif %}
+
+      <div class="card">
+        <div id="frame" class="cab-frame">
+          <img id="screen" class="cab-shot" alt="Страница магазина"
+               width="{{ width }}" height="{{ height }}">
+          <div id="veil" class="cab-veil">работаю…</div>
+          <input id="keeper" class="cab-keeper" type="text" autocomplete="one-time-code"
+                 inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false"
+                 aria-label="Набранное уходит прямо в страницу магазина">
+        </div>
+        <p class="dim" id="where" style="margin:8px 0 0;word-break:break-all"></p>
+      </div>
+
+      <div class="cab-bar">
+        <p class="dim" id="status" style="margin:0 0 8px">Открываю страницу магазина…</p>
+        <div class="row">
+          <button class="btn cab-icon" data-scroll="-500" title="Пролистать страницу магазина вверх">▲</button>
+          <button class="btn cab-icon" data-scroll="500" title="Пролистать страницу магазина вниз">▼</button>
+          <button class="btn" id="zoom" title="Показать снимок в натуральную величину">Крупнее</button>
+          <button class="btn cab-icon" data-do="reload" title="Обновить страницу магазина">⟳</button>
+          <button class="btn cab-icon" data-key="backspace" title="Стереть знак в поле магазина">⌫</button>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <p class="dim cab-armed" id="armed" style="margin:0">Нажмите по снимку — и печатайте прямо в страницу магазина.</p>
+          <button class="btn js-keep cab-icon" data-key="enter" title="Нажать «Ввод» в странице магазина">⏎</button>
+        </div>
+        <div class="row cab-save-row" id="saverow">
+          <button class="btn main wide js-save">Запомнить вход</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <p style="margin:0 0 8px"><b>Вход с телефона</b></p>
+        <p class="dim" style="margin:0 0 10px">Если сеть не пускает наш сервер, войдите в неё на телефоне, нажмите там закладку <b>«Передать вход»</b> и вставьте сюда то, что она скопировала.</p>
+        <details style="margin:0 0 10px">
+          <summary class="dim" style="cursor:pointer">На телефоне перетащить некуда — взять строкой</summary>
+          <textarea readonly rows="3" onclick="this.select()"
+                    style="width:100%;box-sizing:border-box;font:11px/1.35 monospace;padding:8px"
+          >{{ bookmarklet }}</textarea>
+        </details>
+        <textarea id="pasted" rows="3" placeholder="Вставьте сюда то, что скопировала закладка"
+                  style="width:100%;box-sizing:border-box;font:12px/1.4 monospace;padding:8px"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button class="btn main wide js-paste">Вставить вход с телефона</button>
+        </div>
+      </div>
     </div>
-  </div>
+  </details>
 
   <div class="card">
     <div class="row" style="gap:6px">
@@ -609,6 +593,86 @@
       say(data.note || "окно закрыто");
     }
   });
+
+  const btnLiveStart = document.getElementById("btn-live-start");
+  const btnLiveSave = document.getElementById("btn-live-save");
+  const btnLiveStop = document.getElementById("btn-live-stop");
+  const livePanel = document.getElementById("live-panel");
+  const liveStatusText = document.getElementById("live-status-text");
+  let livePollTimer = null;
+
+  async function livePost(body) {
+    try {
+      const res = await fetch("/cabinet/act?store=" + encodeURIComponent(CHAIN), {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      return await res.json();
+    } catch (err) {
+      return {ok: false, error: "Ошибка связи с сервером"};
+    }
+  }
+
+  async function pollLiveStatus() {
+    const res = await livePost({ do: "live_status" });
+    if (!res) return;
+    if (res.status === "running" || res.status === "starting") {
+      livePanel.style.display = "block";
+      liveStatusText.textContent = res.note || "Окно браузера запущено на вашем экране...";
+      livePollTimer = setTimeout(pollLiveStatus, 1500);
+    } else if (res.status === "saved") {
+      livePanel.style.display = "block";
+      liveStatusText.textContent = res.note || "Вход успешно сохранён!";
+      say(res.note || "Вход успешно сохранён!", "ok");
+      setTimeout(() => { location.reload(); }, 1200);
+    } else if (res.status === "closed") {
+      livePanel.style.display = "none";
+      if (livePollTimer) clearTimeout(livePollTimer);
+    } else if (res.status === "error") {
+      livePanel.style.display = "block";
+      liveStatusText.textContent = res.error || "Ошибка живого окна";
+      if (livePollTimer) clearTimeout(livePollTimer);
+    }
+  }
+
+  if (btnLiveStart) {
+    btnLiveStart.addEventListener("click", async () => {
+      btnLiveStart.disabled = true;
+      btnLiveStart.textContent = "Запускаю окно...";
+      const res = await livePost({ do: "live_start" });
+      btnLiveStart.disabled = false;
+      btnLiveStart.textContent = "Запустить окно Chrome";
+      if (res && res.ok) {
+        livePanel.style.display = "block";
+        pollLiveStatus();
+      } else if (res && res.error) {
+        say(res.error, "bad");
+      }
+    });
+    // Проверим, не открыто ли окно уже
+    pollLiveStatus();
+  }
+
+  if (btnLiveSave) {
+    btnLiveSave.addEventListener("click", async () => {
+      const res = await livePost({ do: "live_save" });
+      if (res && res.ok) {
+        say("Вход успешно сохранён!", "ok");
+        setTimeout(() => { location.reload(); }, 1000);
+      } else if (res && res.error) {
+        say(res.error, "bad");
+      }
+    });
+  }
+
+  if (btnLiveStop) {
+    btnLiveStop.addEventListener("click", async () => {
+      await livePost({ do: "live_stop" });
+      livePanel.style.display = "none";
+      if (livePollTimer) clearTimeout(livePollTimer);
+    });
+  }
 
   act({do: "ensure"});
 })();

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable
 
 from app import config
@@ -143,6 +143,19 @@ def finish_run(run_id: int, status: str, *, seen: int = 0, added: int = 0, updat
                      " gone=?, note=? WHERE id=?",
                      (now(), status, seen, added, updated, gone, note, run_id))
         conn.commit()
+
+
+def fresh_chains(hours: float) -> dict[str, str]:
+    """Сети, обойденные без ошибок за последние `hours` часов: код -> конец обхода.
+
+    Упавший или заблокированный обход свежим не считается: его сеть осталась с
+    прежними ценами, и плановый обход обязан попробовать её снова.
+    """
+    since = (datetime.now() - timedelta(hours=hours)).isoformat(timespec="microseconds")
+    with connect() as conn:
+        rows = conn.execute("SELECT chain, MAX(finished_at) AS at FROM crawl_runs"
+                            " WHERE status = 'ok' AND finished_at >= ? GROUP BY chain", (since,))
+        return {row["chain"]: row["at"] for row in rows}
 
 
 def upsert_products(chain: str, products: Iterable[ChainProduct], seen_at: str | None = None

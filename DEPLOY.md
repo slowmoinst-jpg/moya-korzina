@@ -127,6 +127,56 @@ ssh korzina docker exec korzina python -m app.catalog.worker --match            
 
 Устройство каталога, сборщики по сетям и границы — docs/design/catalog-2026-09-16.md.
 
+**Внеочередной обход всех сетей** — отдельным контейнером: выкладка сносит `korzina` и
+`korzina-jobs`, а его не трогает.
+
+```bash
+ssh korzina 'docker run -d --name korzina-crawl-$(date +%d%m) -v korzina-data:/app/data \
+    --env-file /opt/korzina/llm.env korzina:latest python -m app.catalog.worker --once'
+ssh korzina docker logs -f korzina-crawl-$(date +%d%m)
+```
+
+С двумя обходами разом ничего не случится: они ждут друг друга на замке
+`data/crawl.lock` (`worker.one_crawler`), а плановый обход пропускает сети, обойденные
+без ошибок за последние `catalog.fresh_hours` часов (12). Поэтому вечерний внеочередной
+обход не удваивается ночным.
+
+### Домашний выход: сети, которые не пускают сервер
+
+Серверу Дикси отказывает по адресу дата-центра, а через домашний интернет владельца
+отдаёт витрину с ценами (замер 25.09.2026). Устройство:
+
+- на ноутбуке владельца служба пользователя `korzina-tunnel` держит
+  `ssh -N -R 127.0.0.1:1080 korzina-tunnel@<сервер>` — SOCKS-выход на сервере
+  ([tools/tunnel/laptop-setup.sh](tools/tunnel/laptop-setup.sh));
+- на сервере пользователь `korzina-tunnel` без оболочки, его ключ умеет только держать
+  туннель ([tools/tunnel/server-setup.sh](tools/tunnel/server-setup.sh)); заводит его владелец;
+- мост `korzina-tunnel-relay` (его поднимает `server-deploy.sh`) пускает к туннелю
+  контейнеры: `172.17.0.1:1080` → `127.0.0.1:1080`;
+- какие сети ходят через дом — `connectors.home_exit` в config.yaml, сейчас Дикси, Пятёрочка, Самокат, Магнит.
+
+```bash
+ssh korzina 'ss -ltn | grep :1080'     # туннель жив; пусто — ноутбук выключен, спит или вход не выполнен
+```
+
+Нет туннеля — сборщик идёт как раньше, без цен с витрины, и пишет в журнал почему.
+
+### Корзины — в кабинеты магазинов
+
+Пачка проходит кнопки «Результата» за человека: по каждому рабочему месту (кроме демо)
+берёт последнюю корзину, вариант, который экран показывает первым, и кладёт его в
+кабинеты сетей тем же пускателем, что кнопка «Передать». Лента и ВкусВилл отдают
+корзину ссылкой — пачка печатает её. Сети, куда корзину не положить, названы с причиной.
+
+```bash
+ssh korzina docker run --rm --name korzina-carts -v korzina-data:/app/data korzina:latest \
+    python -m app.cartfill --dry-run     # что будет сделано; ничего не кладёт
+ssh korzina docker run --rm --name korzina-carts -v korzina-data:/app/data korzina:latest \
+    python -m app.cartfill               # положить (--phone, --basket — сузить)
+```
+
+По расписанию её не пускают: каждый прогон кладёт товары в корзину заново.
+
 ### Ключ модели
 
 Запасной разбор страницы языковой моделью (`app/connectors/smart_extract.py`) включён в

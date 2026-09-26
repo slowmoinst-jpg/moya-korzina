@@ -12,20 +12,36 @@
 filter=brands:<бренд>. Итого 40–60 страниц плюс бренды, около минуты-двух при одном
 запросе в секунду; индекс один на всю сеть, регион роли не играет.
 
-Чего здесь нет и не будет: цены (всегда 0.0), наличия (всегда true), веса отдельным
-полем (только в названии), штрихкода. Цена Дикси по-прежнему берётся из чеков и прайса.
+Чего в движке и карте нет: цены (всегда 0.0), веса отдельным полем (только в
+названии), штрихкода.
+
+ЦЕНЫ — С ВИТРИНЫ, ЧЕРЕЗ ДОМАШНИЙ ВЫХОД (25.09.2026). Сам dixy.ru серверу отказывает по
+адресу, а через интернет владельца (app/homeexit.py) отдаёт витрину целиком. Товары
+раздела витрина берёт своим запросом ajax/listing-json.php?block=product-list, и
+ответ — не вёрстка, а JSON: у товара артикул (xml_id — тот же, что в движке и в
+карте), название по-русски, правильная ссылка /product/<название>-<артикул>/,
+priceSimple (цена сейчас), oldPriceSimple (зачёркнутая), canBuy, единица.
+Страниц по 30 товаров, pagenData говорит, сколько их. Проход идёт тем же запросом
+изнутри открытой витрины, раз в секунду и без картинок: через этот выход идёт адрес
+владельца. Выхода нет — сеть обходится как раньше, без цен.
+
+Цена — та, что витрина показывает гостю, без выбранного адреса («Укажи адрес, чтобы
+посмотреть актуальный каталог»). Привязка к магазину владельца — следующий шаг.
 """
 from __future__ import annotations
 
+import dataclasses
+import json
 import logging
 import re
 from typing import Iterator
 
 import requests
 
-from app import config
-from app.catalog.crawlers import USER_AGENT, Pace, sitemap_locs
+from app import config, homeexit
+from app.catalog.crawlers import BACKOFF_SEC, RETRIES, USER_AGENT, Pace, sitemap_locs
 from app.catalog.model import ChainProduct, CrawlBlocked, Crawler, Progress
+from app.matcher.normalize import parse_weight
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +82,94 @@ def from_address(url: str) -> ChainProduct | None:
     return ChainProduct(sku=sku, name=name, url=url) if name else None
 
 
+# Разделы витрины верхнего уровня: /catalog/<раздел>/.
+SECTIONS_JS = """() => [...new Set([...document.querySelectorAll('a[href^="/catalog/"]')]
+    .map(a => a.getAttribute('href')))].filter(h => h.split('/').filter(Boolean).length === 2)"""
+
+# Страница раздела — тем же запросом, каким её берёт сама витрина, из неё же: с её
+# куками и её адресом. Ответ — [статус, текст].
+FETCH_JS = """async (u) => { const r = await fetch(u, {credentials: 'include'});
+    return [r.status, await r.text()]; }"""
+
+SETTLE_MS = 4000               # столько витрина дорисовывает разделы после разметки
+LISTING = "block=product-list"
+
+
+def _price(raw) -> float | None:
+    try:
+        value = round(float(str(raw).replace(",", ".")), 2)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def shelf_product(card: dict) -> ChainProduct | None:
+    """Товар из ответа витрины (listing-json, поле cards). Образец — в tests/test_dixy_shelf.py.
+
+    Цена — priceSimple, то есть та, что человек заплатит сейчас: у акционного товара
+    это цена по акции, а зачёркнутая лежит в oldPriceSimple. hidePrice означает, что
+    витрина цену не показывает (так бывает у алкоголя), — тогда цены нет, а не ноль.
+    """
+    sku = str(card.get("xml_id") or "").strip()
+    name = " ".join(str(card.get("title") or "").split())
+    if not sku or not name:
+        return None
+    path = str(card.get("url") or "").strip()
+    symbol = str(card.get("symbol") or card.get("realSymbol") or "").strip().lower()
+    can_buy = card.get("canBuy")
+    weight_g, parsed_unit = parse_weight(name)
+    if weight_g is None and card.get("weight"):
+        weight_g, parsed_unit = parse_weight(str(card.get("weight")))
+    unit = "kg" if symbol in ("кг", "kg") or parsed_unit == "kg" else "pcs"
+    return ChainProduct(
+        sku=sku, name=name,
+        brand=(str(card.get("brand") or "").strip() or None),
+        category=(str(card.get("section") or "").strip() or None),
+        weight_g=weight_g,
+        unit=unit,
+        url=(SITE + path) if path.startswith("/") else (path or None),
+        price=None if card.get("hidePrice") else _price(card.get("priceSimple")),
+        in_stock=bool(can_buy) if isinstance(can_buy, bool) else None,
+    )
+
+
+def listing(text: str) -> tuple[list[dict], dict]:
+    """Ответ listing-json: (товары, сведения о страницах). Витрина ставит перевод строки перед JSON."""
+    data = json.loads((text or "").lstrip("﻿ \r\n\t"))
+    top = data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else {}
+    cards = [c for c in (top.get("cards") or []) if isinstance(c, dict)]
+    return cards, (top.get("pagenData") or {})
+
+
+def page_url(first: str, number: int) -> str:
+    """Адрес n-й страницы из адреса первой, которым её спросила сама витрина."""
+    return re.sub(r"([?&])page=1(?=&|$)", rf"\g<1>page={number}", first)
+
+
+def with_shelf(product: ChainProduct, shelf: dict[str, ChainProduct]) -> ChainProduct:
+    """Товар из карты или движка, дополненный тем, что про него сказала витрина.
+
+    Витрина главнее: у неё название по-русски (в карте сайта оно латиницей, из адреса),
+    ссылка, которая открывается (движок собирает /product/<артикул> — это 404), цена и
+    «можно купить». Картинку и бренд берём оттуда, где они есть.
+    """
+    hit = shelf.pop(product.sku, None)
+    if hit is None:
+        return product
+    return dataclasses.replace(
+        hit, brand=hit.brand or product.brand, category=hit.category or product.category,
+        image=product.image, weight_g=hit.weight_g or product.weight_g,
+        in_stock=hit.in_stock if hit.in_stock is not None else product.in_stock)
+
+
+def _no_media(route) -> None:
+    """Картинки, видео и шрифты через домашний интернет владельца не качаем."""
+    if route.request.resource_type in ("image", "media", "font"):
+        route.abort()
+    else:
+        route.continue_()
+
+
 def to_product(item: dict) -> ChainProduct | None:
     sku, name = item.get("id"), (item.get("name") or "").strip()
     if not sku or not name:
@@ -92,7 +196,106 @@ class DixyCrawler(Crawler):
     def __init__(self) -> None:
         self.api_key = str(config.get("connectors.dixy_api_key") or DEFAULT_API_KEY)
         self.brand_cap = int(config.get("catalog.dixy.max_brand_queries") or 400)
+        self.max_shelf_pages = int(config.get("catalog.dixy.max_shelf_pages") or 80)
+        self.shelf_skip = set(config.get("catalog.dixy.shelf_skip") or [])
         self.pace = Pace()
+
+    # ---------- витрина через домашний выход ----------
+    def _shelf(self, say: Progress) -> dict[str, ChainProduct]:
+        """Цены с витрины dixy.ru: артикул -> товар. Нет выхода или витрина не далась — пусто.
+
+        Витрина не должна ронять каталог: что бы с ней ни случилось, карта сайта и
+        движок обходятся своим чередом, а собранное до обрыва остаётся.
+        """
+        proxy = homeexit.for_chain(self.code)
+        if not proxy:
+            return {}
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            log.warning("dixy: playwright не установлен — цены с витрины не взять")
+            return {}
+        found: dict[str, ChainProduct] = {}
+        try:
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True, args=["--no-sandbox"],
+                                             proxy={"server": proxy})
+                try:
+                    context = browser.new_context(locale="ru-RU", timezone_id="Europe/Moscow",
+                                                  viewport={"width": 1366, "height": 900})
+                    context.route("**/*", _no_media)
+                    self._shelf_walk(context.new_page(), found, say)
+                finally:
+                    browser.close()
+        except Exception:  # noqa: BLE001 — витрина не повод терять каталог
+            log.warning("dixy: проход по витрине оборвался, беру собранное (%d)", len(found),
+                        exc_info=True)
+        priced = sum(1 for product in found.values() if product.price is not None)
+        say(f"витрина через домашний выход: товаров {len(found)}, с ценой {priced}")
+        return found
+
+    def _shelf_walk(self, page, found: dict[str, ChainProduct], say: Progress) -> None:
+        self.pace.wait()
+        page.goto(f"{SITE}/catalog/", wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(SETTLE_MS)
+        sections = [href for href in page.evaluate(SECTIONS_JS)
+                    if href.strip("/").split("/")[-1] not in self.shelf_skip]
+        if not sections:
+            log.warning("dixy: витрина не отдала ни одного раздела — цен с неё не будет")
+            return
+        say(f"витрина: разделов {len(sections)}")
+        for href in sections:
+            try:
+                self._shelf_section(page, href, found)
+            except Exception:  # noqa: BLE001 — один раздел не стоит остальных
+                log.warning("dixy: раздел %s витрины не дался", href, exc_info=True)
+            say(f"витрина: {href} — всего {len(found)}")
+
+    def _shelf_section(self, page, href: str, found: dict[str, ChainProduct]) -> None:
+        """Раздел: первую страницу спрашивает сама витрина, остальные — мы, её же запросом."""
+        self.pace.wait()
+        with page.expect_response(lambda r: LISTING in r.url and re.search(r"[?&]page=1(&|$)", r.url),
+                                  timeout=45000) as caught:
+            page.goto(SITE + href, wait_until="domcontentloaded", timeout=60000)
+        first = caught.value
+        cards, pages = listing(first.text())
+        self._keep(cards, found)
+        total = min(int(pages.get("pages_count") or 1), self.max_shelf_pages)
+        for number in range(2, total + 1):
+            body = self._fetch(page, page_url(first.url, number))
+            if body is None:
+                log.warning("dixy: %s страница %d не далась — РАЗДЕЛ ВИТРИНЫ НЕПОЛНЫЙ", href, number)
+                return
+            cards, pages = listing(body)
+            self._keep(cards, found)
+            if pages.get("isLastPage") or not cards:
+                return
+
+    def _fetch(self, page, url: str) -> str | None:
+        """Страница раздела с повтором: отказ бывает просьбой сбавить темп, а не запретом."""
+        last = ""
+        for attempt in range(RETRIES):
+            self.pace.wait()
+            try:
+                status, body = page.evaluate(FETCH_JS, url)
+            except Exception as exc:  # noqa: BLE001 — сеть молчит: подождём и повторим
+                status, body, last = 0, "", f"{type(exc).__name__}: {str(exc)[:100]}"
+            if status == 200:
+                return body
+            last = last or f"ответ {status}"
+            if attempt < RETRIES - 1:
+                pause = BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)]
+                log.info("dixy: витрина — %s, жду %.0f с", last, pause)
+                page.wait_for_timeout(int(pause * 1000))
+        log.warning("dixy: %s за %d попыток: %s", url[:120], RETRIES, last)
+        return None
+
+    @staticmethod
+    def _keep(cards: list[dict], found: dict[str, ChainProduct]) -> None:
+        for card in cards:
+            product = shelf_product(card)
+            if product and product.sku not in found:
+                found[product.sku] = product
 
     def _page(self, term: str, offset: int, extra: dict | None = None) -> dict:
         self.pace.wait()
@@ -177,7 +380,22 @@ class DixyCrawler(Crawler):
         say(f"из карты сайта добрано {found} товаров")
 
     def crawl(self, progress: Progress | None = None) -> Iterator[ChainProduct]:
+        """Витрина (если есть домашний выход), потом карта сайта и движок, дополненные ею.
+
+        Витрину спрашиваем ПЕРВОЙ: её ответ — справочник «артикул → цена», которым
+        дополняется каждый товар карты и движка по мере обхода. Товары, которые есть
+        только на витрине, идут последними — это тоже каталог сети.
+        """
         say = progress or (lambda msg: None)
+        shelf = self._shelf(say)
+        for product in self._listed(say):
+            yield with_shelf(product, shelf)
+        if shelf:
+            say(f"только на витрине: {len(shelf)} товаров")
+        yield from shelf.values()
+
+    def _listed(self, say: Progress) -> Iterator[ChainProduct]:
+        """Перечень сети: карта сайта и поисковый движок, как было до витрины."""
         seen: set[str] = set()
         brands: set[str] = set()
         # Карта сайта идёт первой: она дешевле (один запрос против сотен) и

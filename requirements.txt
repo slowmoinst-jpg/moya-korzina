@@ -8,6 +8,7 @@ waitress>=3.0
 # экранов переехали на app/web, файлы app/ui, streamlit_app.py, .streamlit и
 # tests/test_screens.py удалены с разрешения владельца.
 requests>=2.31
+PySocks>=1.7.1
 pdfplumber>=0.11
 PyYAML>=6.0
 pandas>=2.2

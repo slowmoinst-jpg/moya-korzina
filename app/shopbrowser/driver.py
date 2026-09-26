@@ -32,6 +32,8 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from app import homeexit
+
 log = logging.getLogger(__name__)
 
 
@@ -436,10 +438,13 @@ def open_store(chain: str, phone: str, *, state: dict | None = None,
                 _drop(st, oldest)
                 log.info("сеанс %s закрыт: больше %d сеансов сервер не держит",
                          oldest, MAX_SESSIONS)
+            proxy_url = homeexit.for_chain(chain)
+            proxy_opts = {"server": proxy_url} if proxy_url else None
             context = st["browser"].new_context(
                 locale="ru-RU", timezone_id="Europe/Moscow",
                 viewport={"width": WIDTH, "height": HEIGHT},
-                storage_state=state or None)
+                storage_state=state or None,
+                proxy=proxy_opts)
             page = context.new_page()
             now = time.time()
             live = _Live(chain=chain, context=context, page=page,

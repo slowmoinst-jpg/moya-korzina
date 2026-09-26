@@ -39,6 +39,8 @@ def test_live_product_is_read_whole():
     assert got.name == "Сахар белый кристаллический, «Русский сахар», 1 кг"
     assert got.price == 79.0
     assert got.in_stock is True
+    assert got.weight_g == 1000.0
+    assert got.unit == "pcs"
     assert got.brand == "Русский Сахар"
     assert got.category == "Продукты и напитки"
     assert got.url == ("https://fix-price.com/catalog/produkty-i-napitki/"
@@ -159,6 +161,100 @@ def test_a_page_that_never_opens_is_not_silently_an_empty_section(monkeypatch):
         TimeoutError("Page.goto: Timeout")))
 
     assert crawler._page(object(), "odezhda", 11) is None
+
+
+def test_the_first_page_of_the_catalog_is_retried_too(monkeypatch):
+    """Ночной обход 22.09.2026: /catalog не отрисовался за 30 с, и сеть выпала целиком.
+
+    Повтор стоял только на страницах разделов, а первая страница — список разделов —
+    падала с первого таймаута: «увидено 0» через полминуты после начала.
+    """
+    crawler = FixPriceCrawler()
+    tries: list[str] = []
+    monkeypatch.setattr("app.catalog.crawlers.fixprice.time.sleep", lambda s: None)
+
+    def flaky_open(page, url):
+        tries.append(url)
+        if len(tries) < 2:
+            raise TimeoutError("Page.inner_text: Timeout 30000ms exceeded.")
+
+    monkeypatch.setattr(crawler, "_open", flaky_open)
+
+    class Page:
+        def evaluate(self, js):
+            return ["/catalog/produkty-i-napitki", "/catalog/rasprodazha", "/catalog/igrushki"]
+
+    assert crawler._sections(Page()) == ["produkty-i-napitki", "igrushki"]
+    assert tries == ["https://fix-price.com/catalog"] * 2
+
+
+def test_a_catalog_without_sections_is_asked_again(monkeypatch):
+    """25.09.2026: /catalog открылся без ссылок на разделы, и сеть потеряла сутки."""
+    crawler = FixPriceCrawler()
+    opened: list[str] = []
+    answers = [[], ["/catalog/igrushki"]]
+    monkeypatch.setattr("app.catalog.crawlers.fixprice.time.sleep", lambda s: None)
+    monkeypatch.setattr(crawler, "_open", lambda page, url: opened.append(url))
+
+    class Page:
+        def evaluate(self, js):
+            return answers.pop(0)
+
+    assert crawler._sections(Page()) == ["igrushki"]
+    assert len(opened) == 2
+
+
+def test_a_catalog_that_stays_empty_is_given_up_after_the_retries(monkeypatch):
+    """Пусто на каждой попытке — тогда уже «не отдала ни одного раздела», как раньше."""
+    from app.catalog.crawlers import RETRIES
+
+    crawler = FixPriceCrawler()
+    opened: list[str] = []
+    monkeypatch.setattr("app.catalog.crawlers.fixprice.time.sleep", lambda s: None)
+    monkeypatch.setattr(crawler, "_open", lambda page, url: opened.append(url))
+
+    class Page:
+        def evaluate(self, js):
+            return []
+
+    assert crawler._sections(Page()) == []
+    assert len(opened) == RETRIES
+
+
+def test_a_catalog_that_never_opens_names_the_reason(monkeypatch):
+    """Не открылся за все попытки — обход падает со словами, а не с голым таймаутом."""
+    import pytest
+
+    crawler = FixPriceCrawler()
+    monkeypatch.setattr("app.catalog.crawlers.fixprice.time.sleep", lambda s: None)
+    monkeypatch.setattr(crawler, "_open", lambda page, url: (_ for _ in ()).throw(
+        TimeoutError("Page.inner_text: Timeout 30000ms exceeded.")))
+
+    with pytest.raises(RuntimeError) as caught:
+        crawler._sections(object())
+
+    assert "каталог" in str(caught.value) and "Timeout" in str(caught.value)
+
+
+def test_a_guard_on_the_first_page_is_not_waited_out(monkeypatch):
+    """Проверка «я не робот» — состояние витрины, а не заминка: ждать её нечего."""
+    import pytest
+
+    from app.catalog.model import CrawlBlocked
+
+    crawler = FixPriceCrawler()
+    tries: list[str] = []
+    monkeypatch.setattr("app.catalog.crawlers.fixprice.time.sleep", lambda s: None)
+
+    def guarded(page, url):
+        tries.append(url)
+        raise CrawlBlocked("витрина встретила проверкой")
+
+    monkeypatch.setattr(crawler, "_open", guarded)
+
+    with pytest.raises(CrawlBlocked):
+        crawler._sections(object())
+    assert len(tries) == 1
 
 
 def test_a_short_page_ends_the_section(monkeypatch):

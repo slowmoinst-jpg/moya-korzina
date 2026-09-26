@@ -1214,8 +1214,13 @@ def _done(chain: str, ok: list, failed: list, items: list, note: str) -> dict:
     return {"ok": ok, "failed": failed, "note": note}
 
 
-def start(chain: str, phone: str, plan, *, only=None) -> bool:
+def start(chain: str, phone: str, plan, *, only=None, wait: bool = False) -> bool:
     """Пустить передачу фоном. Ждать её в запросе нельзя: она идёт минутами.
+
+    `wait` — для пачки (app/cartfill.py), а не для экрана: ей возвращаться некуда,
+    пока корзина не наполнится, а фоновый поток умер бы вместе с её процессом.
+    Путь при этом тот же самый — та же отметка о ходе, тот же отчёт, — и
+    рабочее место после передачи так же закрыто, как в фоновом потоке.
 
     Отвечает, пошла ли передача. `False` значит «в эту сеть уже идёт другая» — и
     это НЕ мелочь: второй заход положил бы всё в корзину человека повторно.
@@ -1289,7 +1294,10 @@ def start(chain: str, phone: str, plan, *, only=None) -> bool:
                 log.warning("%s: отметку о ходе не закрыть", chain, exc_info=True)
             users.deactivate()
 
-    threading.Thread(target=work, name=f"handover-{chain}", daemon=True).start()
+    if wait:
+        work()
+    else:
+        threading.Thread(target=work, name=f"handover-{chain}", daemon=True).start()
     return True
 
 

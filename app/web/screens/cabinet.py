@@ -35,9 +35,11 @@ import base64
 import logging
 import os
 
-from flask import g, jsonify, render_template, request
+import urllib.parse
 
-from app import collector, repo, store_accounts
+from flask import flash, g, jsonify, redirect, render_template, request
+
+from app import collector, repo, store_accounts, users
 from app.shopbrowser import driver, handoff, signals, store as shopstore
 from app.web import auth
 from app.web.views import SCREEN_BY_KEY
@@ -61,18 +63,22 @@ BOOKMARKLET = os.path.join(
 
 
 def _bookmarklet() -> str:
-    """Строка закладки. Пусто — не собрана, и экран скажет это вслух.
+    """Строка закладки с подставленным адресом приложения.
 
-    Без неё вся дорога «вход с телефона» остаётся описанием: поле для вставки
-    есть, а взять вставляемое человеку негде. Молчаливое отсутствие здесь хуже
-    любой ошибки — оно выглядит как работающая возможность.
+    По аналогии с закладкой ФНС (app/web/screens/receipts.py), адрес приложения
+    подставляется прямо в закладку, чтобы по нажатию на сайте магазина она
+    автоматически возвращала человека в приложение с сохранёнными куками сессии.
     """
     try:
         with open(BOOKMARKLET, encoding="utf-8") as fh:
-            return fh.read().strip()
+            href = fh.read().strip()
     except OSError:
         log.warning("закладка «Передать вход» не собрана: %s", BOOKMARKLET)
         return ""
+    if "__APP_URL__" not in href:
+        return href
+    target = request.url_root.rstrip("/") + PATH
+    return href.replace("__APP_URL__", urllib.parse.quote(target, safe=""))
 
 
 def _chain() -> str:
@@ -182,6 +188,29 @@ def _answer(chain: str, shot: driver.Shot | None, *, note: str = "",
     return body
 
 
+def _take_vhod(chain: str, phone: str, packed: str):
+    """Принять вход, переданный закладкой через адрес (как в ФНС) или из Android-приложения."""
+    user_phone = (request.args.get("phone") or phone or "").strip()
+    if user_phone:
+        users.activate(user_phone)
+    import base64
+    try:
+        padded = packed + "=" * ((4 - len(packed) % 4) % 4)
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    except Exception:
+        decoded = packed
+
+    res = _paste(chain, decoded)
+    if res.get("ok"):
+        flash(res.get("note") or f"Вход в «{chain}» успешно сохранён!", "ok")
+    else:
+        flash(res.get("error") or "Не удалось распознать вход из закладки.", "bad")
+
+    if request.args.get("format") == "json" or request.accept_mimetypes.best == "application/json":
+        return jsonify(res), (200 if res.get("ok") else 400)
+    return redirect(f"{PATH}?store={chain}", 303)
+
+
 def page():
     """Рамка экрана. Саму страницу магазина в неё приносит уже JavaScript.
 
@@ -190,6 +219,11 @@ def page():
     посреди ввода кода из СМС это особенно обидно.
     """
     chain = _chain()
+    phone = _phone()
+    vhod_raw = (request.args.get("vhod") or request.args.get("keys") or "").strip()
+    if vhod_raw and chain:
+        return _take_vhod(chain, phone, vhod_raw)
+
     # Сети берём из справочника человека, а не из LOGIN_URL: там коды («vkusvill»),
     # и сеть, которой в справочнике не нашлось, попадала на кнопку сырым кодом.
     # Раньше здесь стояло `if code in known or True` — условие, которое всегда
@@ -200,6 +234,10 @@ def page():
              "saved": shopstore.about(code) is not None}
             for code in driver.LOGIN_URL if code in known]
 
+    from app.shopbrowser import live
+
+    store_url = driver.LOGIN_URL.get(chain) or ""
+
     return render_template(
         "cabinet.html",
         screen=SCREEN_BY_KEY["accounts"],
@@ -209,7 +247,9 @@ def page():
         width=driver.WIDTH,
         height=driver.HEIGHT,
         have_browser=driver.available(),
+        have_live=live.is_live_available(),
         saved=shopstore.about(chain) if chain else None,
+        store_url=store_url,
         # Шаги входа приходят из разбора чужих страниц, а не из шаблона: они —
         # знание о вёрстке сети и меняются вместе с ней (app/shopbrowser/signals.py).
         entrance=signals.entrance(chain) if chain else None,
@@ -233,6 +273,22 @@ def _act():
     do = str(body.get("do") or "shot")
 
     try:
+        if do == "live_start":
+            from app.shopbrowser import live
+            return jsonify(live.start_live_login(chain, phone))
+
+        if do == "live_status":
+            from app.shopbrowser import live
+            return jsonify(live.get_live_status(chain, phone))
+
+        if do == "live_save":
+            from app.shopbrowser import live
+            return jsonify(live.save_live_login(chain, phone))
+
+        if do == "live_stop":
+            from app.shopbrowser import live
+            return jsonify(live.stop_live_login(chain, phone))
+
         if do == "ensure":
             # Сеанс уже открыт — не трогаем: человек мог дойти до ввода кода.
             if driver.session(chain, phone):

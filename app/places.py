@@ -43,7 +43,7 @@ log = logging.getLogger(__name__)
 
 # Сети, у которых каталог и цены зависят от точки. Остальные отвечают одинаково
 # по всей стране, и «ближайшая точка» для них ничего не значит.
-BY_POINT = ("magnit", "lenta", "metro")
+BY_POINT = ("magnit", "lenta", "metro", "pyaterochka", "samokat")
 
 DEFAULT_MAX_POINTS = 3
 
@@ -183,16 +183,15 @@ def _lenta(address: str) -> Point | None:
     бывает в десяти километрах, тогда как магазин стоит в двухстах метрах и на
     доставке пуст (app/connectors/lenta.py, _where).
     """
-    from app.connectors.lenta import delivery_hub, resolve_address
+    from app.connectors.lenta import delivery_hub, hub_info
 
     hub = delivery_hub(address)
     if not hub:
         return None
+    info = hub_info(address)
     name = ""
-    suggested = (resolve_address(address) or {}).get("suggested") or {}
-    delivery = suggested.get("delivery") if isinstance(suggested, dict) else None
-    if isinstance(delivery, dict):
-        name = delivery.get("address") or delivery.get("name") or ""
+    if isinstance(info, dict):
+        name = info.get("address") or info.get("name") or ""
     return Point(chain="lenta", code=str(hub), label=name, address=address)
 
 
@@ -212,4 +211,32 @@ def _metro(address: str) -> Point | None:
                  label=store.get("address") or "", address=address)
 
 
-_RESOLVERS = {"magnit": _magnit, "lenta": _lenta, "metro": _metro}
+def _pyaterochka(address: str) -> Point | None:
+    """Ближайший магазин Пятёрочки: цены и наличие на витрине зависят от точки."""
+    from app.connectors.pyaterochka import nearest_store
+
+    store = nearest_store(address)
+    if not store or not store.get("code"):
+        return None
+    return Point(chain="pyaterochka", code=str(store["code"]),
+                 label=store.get("address") or "", address=address)
+
+
+def _samokat(address: str) -> Point | None:
+    """Ближайший даркстор (витрина) Самоката: ассортимент и цены привязаны к точке."""
+    from app.connectors.samokat import nearest_store
+
+    store = nearest_store(address)
+    if not store or not store.get("code"):
+        return None
+    return Point(chain="samokat", code=str(store["code"]),
+                 label=store.get("address") or "", address=address)
+
+
+_RESOLVERS = {
+    "magnit": _magnit,
+    "lenta": _lenta,
+    "metro": _metro,
+    "pyaterochka": _pyaterochka,
+    "samokat": _samokat,
+}

@@ -95,14 +95,80 @@ def resolve_address(address: str) -> dict:
 
 
 def delivery_hub(address: str) -> int | None:
-    """Код хаба доставки для адреса: suggested.delivery.aliasId из resolve_store.
+    """Код хаба доставки для адреса из storefront_resolve_store.
+
+    До ~сентября 2026 ответ содержал ``suggested.delivery.aliasId``. После
+    обновления MCP поле ``suggested`` исчезло — вместо него массив ``hubs``
+    с типами магазинов (shopType / format). Формат DY (delivery) каталог не
+    отдаёт (поиск возвращает 0 позиций), рабочие форматы — HM (гипермаркет),
+    SM (супермаркет), EC (эконом). Берём первый подходящий.
 
     Единственный код, который стоит отдавать витрине как storeId (почему — в _where).
     None — адрес не разобран или сервер молчит; тогда спрашивают самим адресом.
     """
-    suggested = resolve_address(address).get("suggested")
-    delivery = suggested.get("delivery") if isinstance(suggested, dict) else None
-    return _code(delivery.get("aliasId")) if isinstance(delivery, dict) else None
+    data = resolve_address(address)
+
+    # --- старый формат: suggested.delivery ---
+    suggested = data.get("suggested")
+    if isinstance(suggested, dict):
+        delivery = suggested.get("delivery")
+        if isinstance(delivery, dict):
+            code = _code(delivery.get("aliasId"))
+            if code is not None:
+                return code
+
+    # --- новый формат: hubs[] ---
+    hubs = data.get("hubs")
+    if isinstance(hubs, list) and hubs:
+        return _best_hub(hubs)
+
+    return None
+
+
+# Форматы, каталог которых проверен поиском (search с storeId).
+# DY (delivery) возвращает 0 позиций, поэтому не включён.
+_HUB_PRIORITY = ("HM", "SM", "EC")
+
+
+def _best_hub(hubs: list[dict]) -> int | None:
+    """Выбрать рабочий хаб из массива hubs[]. Приоритет: HM > SM > EC."""
+    by_type: dict[str, dict] = {}
+    for hub in hubs:
+        shop_type = hub.get("shopType") or ""
+        if shop_type not in by_type:
+            by_type[shop_type] = hub
+    for preferred in _HUB_PRIORITY:
+        hub = by_type.get(preferred)
+        if hub is not None:
+            code = _code(hub.get("aliasId"))
+            if code is not None:
+                return code
+    return None
+
+
+def hub_info(address: str) -> dict | None:
+    """Полная запись хаба доставки: aliasId, name, address, shopType, distance.
+
+    Нужна подбору точки (app/places.py) для label.
+    """
+    data = resolve_address(address)
+    hubs = data.get("hubs")
+    if not isinstance(hubs, list) or not hubs:
+        # старый формат
+        suggested = data.get("suggested")
+        if isinstance(suggested, dict):
+            return suggested.get("delivery")
+        return None
+    by_type: dict[str, dict] = {}
+    for hub in hubs:
+        shop_type = hub.get("shopType") or ""
+        if shop_type not in by_type:
+            by_type[shop_type] = hub
+    for preferred in _HUB_PRIORITY:
+        hub = by_type.get(preferred)
+        if hub is not None and _code(hub.get("aliasId")) is not None:
+            return hub
+    return None
 
 
 def _where(location: Location | None = None) -> dict:

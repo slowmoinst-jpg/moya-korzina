@@ -1,0 +1,4 @@
+// Корень приложения «Моя корзина». Плагин объявлен здесь, применяется в :app.
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+}

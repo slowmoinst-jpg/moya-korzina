@@ -43,6 +43,7 @@ import time
 from app import config
 from app.catalog.crawlers import BACKOFF_SEC, RETRIES, Pace
 from app.catalog.model import ChainProduct, CrawlBlocked, Crawler, Progress
+from app.matcher.normalize import parse_weight
 
 log = logging.getLogger(__name__)
 
@@ -120,6 +121,7 @@ def to_product(item: dict) -> ChainProduct | None:
     if not sku or not name:
         return None
     url = str(item.get("url") or "").strip()
+    weight_g, unit = parse_weight(name)
     return ChainProduct(
         sku=sku,
         name=name,
@@ -129,6 +131,8 @@ def to_product(item: dict) -> ChainProduct | None:
         image=item.get("_image") or None,
         price=_price(item),
         in_stock=_stock(item),
+        weight_g=weight_g,
+        unit=unit,
     )
 
 
@@ -202,10 +206,34 @@ class FixPriceCrawler(Crawler):
                         ", ".join(partial[:10]))
 
     def _sections(self, page) -> list[str]:
-        self._open(page, f"{SITE}/catalog")
-        found = [h.strip("/").split("/")[-1] for h in page.evaluate(SECTIONS_JS)]
-        clean = [s for s in dict.fromkeys(found) if s and s not in SKIP_SECTIONS]
-        return clean[:self.max_sections]
+        """Разделы каталога. Первая страница обхода переживает таймаут так же, как все.
+
+        НОЧНОЙ ОБХОД 22.09.2026 ПОТЕРЯЛ СЕТЬ ЦЕЛИКОМ ИЗ-ЗА ОДНОЙ СТРАНИЦЫ. /catalog не
+        отрисовал body за 30 с («Page.inner_text: Timeout 30000ms exceeded»), повтора
+        на этом шаге не было, и обход кончился через полминуты: увидено 0. Страницы
+        разделов к тому времени таймаут уже переживали — накануне семь из них не
+        дались с первого раза, и все семь дались со второго. Первая ничем не особенней.
+
+        ПУСТОЙ СПИСОК РАЗДЕЛОВ — ТОЖЕ ЗАМИНКА. 25.09.2026 /catalog открылся, а ссылок
+        на разделы в нём не нашлось: «витрина не отдала ни одного раздела», сеть
+        записана заблокированной и потеряла сутки. Через два часа та же страница
+        открылась серверу обычной витриной. Поэтому пустоту пережидаем теми же
+        паузами, что и таймаут, и только потом сдаёмся.
+        """
+        url = f"{SITE}/catalog"
+        for attempt in range(RETRIES):
+            last = self._open_patiently(page, url, "каталог")
+            if last:
+                raise RuntimeError(f"витрина не открыла каталог за {RETRIES} попыток ({last})")
+            found = [h.strip("/").split("/")[-1] for h in page.evaluate(SECTIONS_JS)]
+            clean = [s for s in dict.fromkeys(found) if s and s not in SKIP_SECTIONS]
+            if clean:
+                return clean[:self.max_sections]
+            if attempt < RETRIES - 1:
+                pause = BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)]
+                log.info("fixprice: каталог открылся без разделов, жду %.0f с", pause)
+                time.sleep(pause)
+        return []
 
     def _page(self, page, section: str, number: int) -> list[dict] | None:
         """Товары страницы, [] — раздел кончился, None — страница не далась.
@@ -223,26 +251,35 @@ class FixPriceCrawler(Crawler):
         url = f"{SITE}/catalog/{section}"
         if number > 1:
             url = f"{url}?page={number}"
-        last = ""
-        for attempt in range(RETRIES):
-            try:
-                self._open(page, url)
-            except CrawlBlocked:
-                raise
-            except Exception as exc:  # noqa: BLE001 — сеть молчит: подождём и повторим
-                last = f"{type(exc).__name__}: {str(exc).splitlines()[0][:100]}"
-                if attempt < RETRIES - 1:
-                    pause = BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)]
-                    log.info("fixprice: %s страница %s не далась (%s), жду %.0f с",
-                             section, number, last, pause)
-                    time.sleep(pause)
-                continue
+        last = self._open_patiently(page, url, f"{section} страница {number}")
+        if not last:
             items = page.evaluate(PRODUCTS_JS)
             return [i for i in items if isinstance(i, dict)]
 
         log.warning("fixprice: %s страница %s не далась за %s попыток (%s) — "
                     "РАЗДЕЛ ОСТАЛСЯ НЕПОЛНЫМ", section, number, RETRIES, last)
         return None
+
+    def _open_patiently(self, page, url: str, what: str) -> str:
+        """Открыть адрес, переждав таймауты. Пусто — открылся, иначе последняя причина.
+
+        Проверку «я не робот» не пережидаем: CrawlBlocked уходит наружу сразу, это
+        состояние витрины, а не заминка сети.
+        """
+        last = ""
+        for attempt in range(RETRIES):
+            try:
+                self._open(page, url)
+                return ""
+            except CrawlBlocked:
+                raise
+            except Exception as exc:  # noqa: BLE001 — сеть молчит: подождём и повторим
+                last = f"{type(exc).__name__}: {str(exc).splitlines()[0][:100]}"
+                if attempt < RETRIES - 1:
+                    pause = BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)]
+                    log.info("fixprice: %s — не открылось (%s), жду %.0f с", what, last, pause)
+                    time.sleep(pause)
+        return last
 
     def _open(self, page, url: str) -> None:
         """Открыть адрес в своём темпе и убедиться, что пришла витрина, а не проверка."""
