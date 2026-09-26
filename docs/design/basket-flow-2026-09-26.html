@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Пользовательский сценарий Моя Корзина</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    .step-fade { transition: opacity 0.25s ease, transform 0.25s ease; }
+    .card-hover { transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease; }
+    .card-hover:hover { transform: translateY(-2px); }
+  </style>
+</head>
+<body class="bg-transparent text-[var(--foreground)] antialiased p-2 sm:p-4 font-sans">
+
+  <div class="max-w-md mx-auto bg-[var(--card)] border border-[var(--border)] rounded-2xl shadow-xl overflow-hidden p-4 sm:p-5 flex flex-col space-y-4">
+    
+    <!-- Шапка и индикатор 3 шагов -->
+    <div class="border-b border-[var(--border)] pb-3">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="text-xl">🧺</span>
+          <span class="font-extrabold text-base text-[var(--foreground)] tracking-tight">Моя корзина</span>
+        </div>
+        <span id="step-badge" class="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+          Шаг 1 из 3: Сборка
+        </span>
+      </div>
+
+      <!-- Полоса прогресса шагов -->
+      <div class="grid grid-cols-3 gap-1.5 mt-3">
+        <div id="prog-1" class="h-1 rounded-full bg-emerald-500"></div>
+        <div id="prog-2" class="h-1 rounded-full bg-[var(--border)]"></div>
+        <div id="prog-3" class="h-1 rounded-full bg-[var(--border)]"></div>
+      </div>
+    </div>
+
+    <!-- ==================== ШАГ 1: ВЫБОР ФОРМАТА И СБОРКА КОРЗИНЫ ==================== -->
+    <div id="screen-step-1" class="space-y-4">
+      
+      <!-- Переключатель: Как обычно vs Вручную -->
+      <div>
+        <label class="text-xs font-bold text-[var(--muted-foreground)] block mb-1.5 uppercase tracking-wider">
+          Как собираем корзину:
+        </label>
+        <div class="grid grid-cols-2 gap-2">
+          <button onclick="setMode('usual')" id="mode-usual"
+                  class="p-2.5 rounded-xl border-2 border-emerald-500 bg-emerald-500/10 text-left card-hover">
+            <div class="flex items-center gap-1.5">
+              <span class="text-base">🔁</span>
+              <span class="text-xs font-bold text-[var(--foreground)]">«Как обычно»</span>
+            </div>
+            <p class="text-[10px] text-[var(--muted-foreground)] mt-1">Привычный заказ на неделю (10 товаров)</p>
+          </button>
+
+          <button onclick="setMode('manual')" id="mode-manual"
+                  class="p-2.5 rounded-xl border border-[var(--border)] bg-[var(--background)] text-left card-hover hover:border-[var(--muted-foreground)]">
+            <div class="flex items-center gap-1.5">
+              <span class="text-base">✏️</span>
+              <span class="text-xs font-bold text-[var(--foreground)]">Собрать вручную</span>
+            </div>
+            <p class="text-[10px] text-[var(--muted-foreground)] mt-1">Выбрать товары или категории</p>
+          </button>
+        </div>
+      </div>
+
+      <!-- Инновация: Автоподстановка любимого бренда -->
+      <div class="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-[var(--foreground)] space-y-1">
+        <div class="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
+          <span>⚡</span>
+          <span>Умный подбор экономит кучу времени:</span>
+        </div>
+        <p class="text-[11px] text-[var(--muted-foreground)] leading-relaxed">
+          Выберите категорию (например, <i>Молоко 2.5%</i>) — система <b>автоматически подставит ваш любимый бренд</b>. Не нужно листать 40 видов молока!
+        </p>
+      </div>
+
+      <!-- Список позиций с авто-подстановкой -->
+      <div class="space-y-2">
+        <div class="flex items-center justify-between text-xs">
+          <span class="font-bold text-[var(--foreground)]">Товары в корзине:</span>
+          <span class="text-[11px] text-[var(--muted-foreground)]" id="items-count-text">4 товара</span>
+        </div>
+
+        <div class="space-y-2" id="cart-items-list">
+          
+          <!-- Товар 1 с любимым брендом -->
+          <div class="p-2.5 rounded-xl bg-[var(--background)] border border-[var(--border)] space-y-1.5">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="text-lg">🥛</span>
+                <div>
+                  <div class="text-xs font-bold text-[var(--foreground)]">Молоко 2.5%</div>
+                  <div class="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
+                    <span>❤️ Подставлено любимое:</span>
+                    <b id="brand-milk" class="underline cursor-pointer" onclick="toggleBrand('milk')">Простоквашино 930 мл</b>
+                  </div>
+                </div>
+              </div>
+              <div class="text-right">
+                <span id="price-milk" class="text-xs font-mono font-bold text-[var(--foreground)]">89 ₽</span>
+                <span class="text-[10px] text-[var(--muted-foreground)] block">1 шт</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Товар 2 с любимым брендом -->
+          <div class="p-2.5 rounded-xl bg-[var(--background)] border border-[var(--border)] space-y-1.5">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="text-lg">🥚</span>
+                <div>
+                  <div class="text-xs font-bold text-[var(--foreground)]">Яйца куриные С0</div>
+                  <div class="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
+                    <span>❤️ Подставлено любимое:</span>
+                    <b id="brand-eggs" class="underline cursor-pointer" onclick="toggleBrand('eggs')">Селянские С0 (10 шт)</b>
+                  </div>
+                </div>
+              </div>
+              <div class="text-right">
+                <span id="price-eggs" class="text-xs font-mono font-bold text-[var(--foreground)]">119 ₽</span>
+                <span class="text-[10px] text-[var(--muted-foreground)] block">2 уп</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Товар 3 -->
+          <div class="p-2.5 rounded-xl bg-[var(--background)] border border-[var(--border)]">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="text-lg">🍗</span>
+                <div>
+                  <div class="text-xs font-bold text-[var(--foreground)]">Филе индейки</div>
+                  <div class="text-[11px] text-[var(--muted-foreground)]">Индилайт 800 г</div>
+                </div>
+              </div>
+              <div class="text-right">
+                <span class="text-xs font-mono font-bold text-[var(--foreground)]">380 ₽</span>
+                <span class="text-[10px] text-[var(--muted-foreground)] block">1 уп</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Товар 4 -->
+          <div class="p-2.5 rounded-xl bg-[var(--background)] border border-[var(--border)]">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="text-lg">🍞</span>
+                <div>
+                  <div class="text-xs font-bold text-[var(--foreground)]">Хлеб Бородинский</div>
+                  <div class="text-[11px] text-[var(--muted-foreground)]">Нарезка 400 г</div>
+                </div>
+              </div>
+              <div class="text-right">
+                <span class="text-xs font-mono font-bold text-[var(--foreground)]">45 ₽</span>
+                <span class="text-[10px] text-[var(--muted-foreground)] block">1 шт</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Кнопка перехода к Шагу 2 -->
+      <button onclick="goToStep(2)"
+              class="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm shadow-md flex items-center justify-center gap-2">
+        <span>Найти максимальную выгоду</span>
+        <span>→</span>
+      </button>
+    </div>
+
+    <!-- ==================== ШАГ 2: ВЫБОР ИЗ 3 ВАРИАНТОВ ==================== -->
+    <div id="screen-step-2" class="space-y-3.5 hidden">
+      
+      <div>
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold text-[var(--foreground)]">3 лучших варианта сборки:</h2>
+          <button onclick="goToStep(1)" class="text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
+            ← изменить список
+          </button>
+        </div>
+        <p class="text-[11px] text-[var(--muted-foreground)] mt-0.5">
+          Проверили 5 сетей в вашем районе с учётом цен, акций и доставки.
+        </p>
+      </div>
+
+      <!-- ВАРИАНТ 1: Один магазин (Без суеты) -->
+      <div onclick="selectVariantAndGo(1)"
+           class="p-3.5 rounded-xl border border-[var(--border)] bg-[var(--background)] card-hover cursor-pointer hover:border-blue-500">
+        <div class="flex items-start justify-between">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="w-6 h-6 rounded-full bg-red-600 text-white text-xs font-bold flex items-center justify-center">М</span>
+              <span class="font-bold text-sm text-[var(--foreground)]">1. Всё в Магните</span>
+            </div>
+            <div class="text-[11px] text-[var(--muted-foreground)] mt-1 space-x-1.5">
+              <span>🚚 1 курьер</span>
+              <span>•</span>
+              <span>Доставка 0 ₽</span>
+              <span>•</span>
+              <span class="text-blue-600 dark:text-blue-400 font-semibold">Без суеты</span>
+            </div>
+          </div>
+          <div class="text-right">
+            <span class="text-base font-extrabold font-mono text-[var(--foreground)]">3 850 ₽</span>
+            <div class="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">Экономия 750 ₽</div>
+          </div>
+        </div>
+        <button class="w-full mt-2.5 py-1.5 text-xs font-semibold rounded-lg bg-[var(--card)] border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--primary)] hover:text-[var(--primary-foreground)]">
+          Выбрать этот вариант →
+        </button>
+      </div>
+
+      <!-- ВАРИАНТ 2: Максимальная выгода (Рекомендуем!) -->
+      <div onclick="selectVariantAndGo(2)"
+           class="p-3.5 rounded-xl border-2 border-emerald-500 bg-emerald-500/10 card-hover cursor-pointer relative shadow-sm">
+        <div class="absolute top-2 right-2">
+          <span class="text-[9px] uppercase tracking-wider font-extrabold px-2 py-0.5 rounded-full bg-emerald-600 text-white shadow-xs">
+            Рекомендуем
+          </span>
+        </div>
+        <div class="flex items-start justify-between pr-20">
+          <div>
+            <div class="flex items-center gap-1.5">
+              <span class="w-5 h-5 rounded-full bg-red-600 text-white text-[10px] font-bold flex items-center justify-center">М</span>
+              <span class="text-xs text-[var(--muted-foreground)]">+</span>
+              <span class="w-5 h-5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">5</span>
+              <span class="font-extrabold text-sm text-[var(--foreground)] ml-1">2. Макс. выгода</span>
+            </div>
+            <div class="text-[11px] text-[var(--muted-foreground)] mt-1 space-x-1">
+              <span>Магнит (7 шт) + Пятёрочка (5 шт)</span>
+              <span>•</span>
+              <span>2 курьера</span>
+            </div>
+          </div>
+        </div>
+        <div class="flex items-baseline justify-between mt-2 pt-2 border-t border-emerald-500/20">
+          <div>
+            <span class="text-[11px] text-emerald-700 dark:text-emerald-300 font-bold">
+              🔥 Рекордная экономия: 1 310 ₽!
+            </span>
+          </div>
+          <span class="text-lg font-extrabold font-mono text-emerald-600 dark:text-emerald-400">3 290 ₽</span>
+        </div>
+        <button class="w-full mt-2.5 py-2 text-xs font-bold rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 shadow-xs">
+          Выбрать максимум выгоды (3 290 ₽) →
+        </button>
+      </div>
+
+      <!-- ВАРИАНТ 3: Экспресс доставка (Самокат) -->
+      <div onclick="selectVariantAndGo(3)"
+           class="p-3.5 rounded-xl border border-[var(--border)] bg-[var(--background)] card-hover cursor-pointer hover:border-pink-500">
+        <div class="flex items-start justify-between">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="w-6 h-6 rounded-full bg-pink-500 text-white text-xs font-bold flex items-center justify-center">С</span>
+              <span class="font-bold text-sm text-[var(--foreground)]">3. Экспресс (Самокат)</span>
+            </div>
+            <div class="text-[11px] text-[var(--muted-foreground)] mt-1 space-x-1.5">
+              <span class="text-pink-600 dark:text-pink-400 font-semibold">⚡ За 15 минут</span>
+              <span>•</span>
+              <span>1 курьер</span>
+            </div>
+          </div>
+          <div class="text-right">
+            <span class="text-base font-extrabold font-mono text-[var(--foreground)]">4 200 ₽</span>
+            <div class="text-[10px] text-[var(--muted-foreground)]">Чуть дороже, но сразу</div>
+          </div>
+        </div>
+        <button class="w-full mt-2.5 py-1.5 text-xs font-semibold rounded-lg bg-[var(--card)] border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--primary)] hover:text-[var(--primary-foreground)]">
+          Выбрать экспресс →
+        </button>
+      </div>
+
+    </div>
+
+    <!-- ==================== ШАГ 3: АВТОМАТИЧЕСКОЕ НАПОЛНЕНИЕ И ОПЛАТА ==================== -->
+    <div id="screen-step-3" class="space-y-4 hidden">
+      
+      <div class="text-center py-2">
+        <div class="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-2xl flex items-center justify-center mx-auto mb-2">
+          ✓
+        </div>
+        <h2 class="text-base font-bold text-[var(--foreground)]">Корзины собраны автоматически!</h2>
+        <p class="text-xs text-[var(--muted-foreground)] mt-0.5">
+          Вам не нужно искать ни одного товара руками.
+        </p>
+      </div>
+
+      <!-- Статус наполнения магазинов -->
+      <div class="space-y-2 bg-[var(--background)] p-3.5 rounded-xl border border-[var(--border)]">
+        <div class="text-xs font-bold text-[var(--foreground)] mb-2">Сформированные заказы:</div>
+
+        <!-- Магазин 1 -->
+        <div class="p-2.5 rounded-lg bg-[var(--card)] border border-[var(--border)] flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="w-6 h-6 rounded-full bg-red-600 text-white text-xs font-bold flex items-center justify-center">М</span>
+            <div>
+              <div class="text-xs font-bold text-[var(--foreground)]">Магнит (7 товаров)</div>
+              <div class="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">● Корзина наполнена в вашем аккаунте</div>
+            </div>
+          </div>
+          <div class="text-right">
+            <span class="text-xs font-mono font-bold text-[var(--foreground)]">2 100 ₽</span>
+          </div>
+        </div>
+
+        <!-- Магазин 2 -->
+        <div class="p-2.5 rounded-lg bg-[var(--card)] border border-[var(--border)] flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="w-6 h-6 rounded-full bg-red-500 text-white text-xs font-bold flex items-center justify-center">5</span>
+            <div>
+              <div class="text-xs font-bold text-[var(--foreground)]">Пятёрочка (5 товаров)</div>
+              <div class="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">● Корзина наполнена в вашем аккаунте</div>
+            </div>
+          </div>
+          <div class="text-right">
+            <span class="text-xs font-mono font-bold text-[var(--foreground)]">1 190 ₽</span>
+          </div>
+        </div>
+
+        <div class="pt-2 border-t border-[var(--border)] flex items-center justify-between text-xs font-bold">
+          <span>Итого за 2 заказа:</span>
+          <span class="text-emerald-600 dark:text-emerald-400 font-mono text-sm">3 290 ₽ (Сэкономлено 1 310 ₽)</span>
+        </div>
+      </div>
+
+      <!-- Кнопки перехода к оплате -->
+      <div class="space-y-2">
+        <button onclick="alert('Открывается приложение Магнит с уже готовой корзиной...')"
+                class="w-full py-2.5 px-4 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs shadow-md flex items-center justify-center gap-2">
+          <span>🛍️ Оплатить в Магните (2 100 ₽)</span>
+        </button>
+
+        <button onclick="alert('Открывается приложение Пятёрочка с уже готовой корзиной...')"
+                class="w-full py-2.5 px-4 rounded-xl bg-red-500 hover:bg-red-400 text-white font-bold text-xs shadow-md flex items-center justify-center gap-2">
+          <span>🛍️ Оплатить в Пятёрочке (1 190 ₽)</span>
+        </button>
+      </div>
+
+      <button onclick="goToStep(1)" class="w-full py-2 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] text-center">
+        ← Собрать другую корзину
+      </button>
+
+    </div>
+
+  </div>
+
+  <script>
+    let currentStep = 1;
+    let milkBrand = 'Простоквашино 930 мл';
+    let eggsBrand = 'Селянские С0 (10 шт)';
+
+    function goToStep(step) {
+      currentStep = step;
+      document.getElementById('screen-step-1').classList.add('hidden');
+      document.getElementById('screen-step-2').classList.add('hidden');
+      document.getElementById('screen-step-3').classList.add('hidden');
+
+      document.getElementById('screen-step-' + step).classList.remove('hidden');
+
+      // Обновляем бейджи прогресса
+      document.getElementById('step-badge').textContent = `Шаг ${step} из 3: ` + 
+        (step === 1 ? 'Сборка' : step === 2 ? 'Выбор варианта' : 'Оформление');
+
+      document.getElementById('prog-1').className = 'h-1 rounded-full ' + (step >= 1 ? 'bg-emerald-500' : 'bg-[var(--border)]');
+      document.getElementById('prog-2').className = 'h-1 rounded-full ' + (step >= 2 ? 'bg-emerald-500' : 'bg-[var(--border)]');
+      document.getElementById('prog-3').className = 'h-1 rounded-full ' + (step >= 3 ? 'bg-emerald-500' : 'bg-[var(--border)]');
+    }
+
+    function setMode(mode) {
+      const u = document.getElementById('mode-usual');
+      const m = document.getElementById('mode-manual');
+      if (mode === 'usual') {
+        u.className = 'p-2.5 rounded-xl border-2 border-emerald-500 bg-emerald-500/10 text-left card-hover';
+        m.className = 'p-2.5 rounded-xl border border-[var(--border)] bg-[var(--background)] text-left card-hover hover:border-[var(--muted-foreground)]';
+        document.getElementById('items-count-text').textContent = '10 товаров из истории';
+      } else {
+        m.className = 'p-2.5 rounded-xl border-2 border-emerald-500 bg-emerald-500/10 text-left card-hover';
+        u.className = 'p-2.5 rounded-xl border border-[var(--border)] bg-[var(--background)] text-left card-hover hover:border-[var(--muted-foreground)]';
+        document.getElementById('items-count-text').textContent = '4 выбранных товара';
+      }
+    }
+
+    function toggleBrand(type) {
+      if (type === 'milk') {
+        milkBrand = milkBrand.includes('Простоквашино') ? 'Село Зелёное 950 мл' : 'Простоквашино 930 мл';
+        document.getElementById('brand-milk').textContent = milkBrand;
+        document.getElementById('price-milk').textContent = milkBrand.includes('Зелёное') ? '95 ₽' : '89 ₽';
+      } else if (type === 'eggs') {
+        eggsBrand = eggsBrand.includes('Селянские') ? 'Окское С0 (10 шт)' : 'Селянские С0 (10 шт)';
+        document.getElementById('brand-eggs').textContent = eggsBrand;
+        document.getElementById('price-eggs').textContent = eggsBrand.includes('Окское') ? '135 ₽' : '119 ₽';
+      }
+    }
+
+    function selectVariantAndGo(variantId) {
+      goToStep(3);
+    }
+  </script>
+</body>
+</html>
