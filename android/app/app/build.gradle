@@ -10,8 +10,17 @@ android {
         applicationId "ru.moyakorzina.app"
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.1"
+
+        // Адрес сервера — при сборке, а не в коде: -PkorzinaServer=https://… или
+        // переменная KORZINA_SERVER. Пусто — приложение скажет об этом на экране.
+        def server = project.findProperty("korzinaServer") ?: System.getenv("KORZINA_SERVER") ?: ""
+        buildConfigField "String", "KORZINA_SERVER", "\"${server}\""
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     compileOptions {

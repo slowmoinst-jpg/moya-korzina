@@ -62,11 +62,16 @@ def is_fresh(fetched_at: str | None, now: datetime | None = None) -> bool:
 
 
 def price_for(product_id: int, store_id: int, now: datetime | None = None) -> dict | None:
-    """Действующая цена эталона в магазине или None, если свежей цены нет."""
+    """Действующая цена эталона в магазине или None, если свежей цены нет.
+
+    Действующая — значит свежая и с личными акциями человека (app/personal.py):
+    это та цена, которую он заплатит, а не та, что висит на витрине для всех.
+    """
     snap = repo.latest_price_for(product_id, store_id)
     if not snap or not is_fresh(snap.get("fetched_at"), now):
         return None
-    return snap
+    from app import personal
+    return personal.apply(snap, product_id, store_id)
 
 
 __all__ = ["max_age_hours", "is_fresh", "price_for"]

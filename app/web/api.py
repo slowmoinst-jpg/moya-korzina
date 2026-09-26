@@ -129,5 +129,43 @@ def store_sync():
             jsonify({"ok": False, "error": str(exc)}), 500))
 
 
+@bp.route("/handoff", methods=["POST"])
+def handoff_login():
+    """Вход в магазин, снятый приложением на телефоне: {store, cookies: [{name, value}]}.
+
+    Раньше телефон слал куки входа в АДРЕСЕ (/cabinet?vhod=…&phone=…): адрес оседает
+    в журналах сервера и прокси, то есть сессия магазина хранилась бы там открытым
+    текстом, а номер из адреса переключал базу — чужой вход можно было положить в
+    чужое рабочее место. Теперь куки едут телом, а рабочее место — только то, чья
+    сессия (приложение на телефоне входит в «Мою корзину» тем же номером) или чей
+    секрет пришёл.
+    """
+    import json as _json
+
+    from app.web.screens import cabinet
+
+    body = request.get_json(silent=True) if request.is_json else None
+    if not isinstance(body, dict):
+        return _cors_response(make_response(
+            jsonify({"ok": False, "error": "Тело запроса должно быть объектом JSON"}), 400))
+    chain = str(body.get("store") or "").strip().lower()
+    if not chain or not isinstance(body.get("cookies"), list):
+        return _cors_response(make_response(
+            jsonify({"ok": False, "error": "Нужны магазин (store) и куки входа (cookies)"}), 400))
+    try:
+        _authenticate(body)
+        payload = {k: v for k, v in body.items() if k not in api.AUTH_FIELDS}
+        res = cabinet._paste(chain, _json.dumps(payload, ensure_ascii=False))
+        return _cors_response(make_response(jsonify(res), 200 if res.get("ok") else 400))
+    except api.Refused as err:
+        log.warning("отказ API /api/handoff: %s (%s)", err.reason, request.remote_addr)
+        return _cors_response(make_response(
+            jsonify({"ok": False, "error": err.message}), err.status))
+    except Exception:  # noqa: BLE001
+        log.exception("ошибка при обработке /api/handoff")
+        return _cors_response(make_response(
+            jsonify({"ok": False, "error": "Вход не сохранился — попробуйте ещё раз."}), 500))
+
+
 def install(flask_app):
     flask_app.register_blueprint(bp)
