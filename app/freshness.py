@@ -14,8 +14,9 @@
 НЕ УВЕРЕН — НЕ ПОКАЗЫВАЙ. Снимок старше `prices.fresh_hours` не отдаётся вовсе.
 Расчёт тогда просто не видит этот магазин по этой позиции и считает без него —
 это честнее, чем предложить заказ по цене, которой на полке уже нет. Свежую цену
-приносит обновление (matcher.refresh_prices) перед расчётом и проверка перед
-оформлением (cartplan.verify).
+приносит дозор цен (app/pricewatch.py) — круглые сутки, по корзинам всех рабочих мест, —
+а ещё обновление (matcher.refresh_prices) перед расчётом и проверка перед оформлением
+(cartplan.verify).
 
 По той же причине не отдаются, как бы недавно ни были сняты:
   * справочная цена из data/fallback_prices.csv (source="fallback") — её подставляет
@@ -62,13 +63,23 @@ def _parse(stamp: str | None) -> datetime | None:
     return moment
 
 
-def is_fresh(fetched_at: str | None, now: datetime | None = None) -> bool:
-    """Снимок взят не раньше чем `max_age_hours` назад. Непонятная дата — не свежий."""
-    moment = _parse(fetched_at)
-    if moment is None:
+def moment(stamp: str | None) -> datetime | None:
+    """Когда снят снимок — местным временем, как пишет repo.NOW. None — дата непонятна."""
+    return _parse(stamp)
+
+
+def is_fresh(fetched_at: str | None, now: datetime | None = None,
+             hours: float | None = None) -> bool:
+    """Снимок взят не раньше чем `hours` (по умолчанию `max_age_hours`) назад.
+
+    Непонятная дата — не свежий. `hours` задаёт дозор цен (app/pricewatch.py): свою
+    цену он обновляет заранее, задолго до того, как расчёт перестанет ей верить.
+    """
+    taken = _parse(fetched_at)
+    if taken is None:
         return False
     now = now or datetime.now()
-    return now - moment <= timedelta(hours=max_age_hours())
+    return now - taken <= timedelta(hours=max_age_hours() if hours is None else hours)
 
 
 def before_move(fetched_at: str | None, store_code: str | None) -> bool:
@@ -101,4 +112,4 @@ def price_for(product_id: int, store_id: int, now: datetime | None = None) -> di
     return personal.apply(snap, product_id, store_id)
 
 
-__all__ = ["max_age_hours", "is_fresh", "before_move", "price_for", "REFERENCE"]
+__all__ = ["max_age_hours", "moment", "is_fresh", "before_move", "price_for", "REFERENCE"]

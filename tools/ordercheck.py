@@ -40,10 +40,11 @@ log = logging.getLogger("ordercheck")
 # Сеанс окна магазина у проверки свой: окно человека в приложении она не трогает.
 PROBE = "ordercheck"
 
-# Сети, чьи коннекторы отдают настоящий остаток по точке. У остальных «в наличии»
-# в снимке — умолчание, а не знание (ВкусВилл остатков не отдаёт, у Дикси цены за
-# защитой, Пятёрочка и Самокат живут на прайсе и чеках).
-STOCK_CHAINS = ("magnit", "lenta", "metro")
+# Сети, чьи коннекторы отдают наличие. У остальных «в наличии» в снимке — умолчание,
+# а не знание (ВкусВилл остатков не отдаёт, Пятёрочка и Самокат живут на прайсе и
+# чеках). Дикси говорит «можно купить» в карточке (canBuy) — с 27.09.2026, когда
+# карточка пошла через домашний выход; считается только живая цена, не чек.
+STOCK_CHAINS = ("magnit", "lenta", "metro", "dixy")
 # Сети, где живой цены у приложения нет вовсе: прайс человека и его чеки.
 RECEIPT_CHAINS = ("pyaterochka", "samokat")
 
@@ -135,16 +136,18 @@ def _prices(report: ChainReport, code: str, mapped: list[tuple[dict, dict]]) -> 
         if snap is None:
             report.no_price += 1
             continue
-        if stock_known:
+        reference = getattr(snap, "source", None) == "fallback"
+        if stock_known and not reference:
             # «Нет в этой точке» сеть говорит и нулевой ценой (Магнит, Лента), и это
-            # ответ про наличие, а не отсутствие цены.
+            # ответ про наличие, а не отсутствие цены. Справочная цена из CSV о наличии
+            # не знает ничего — её «есть» было бы выдумкой.
             if snap.in_stock:
                 report.in_stock += 1
             else:
                 report.out_of_stock += 1
         if not snap.price:
             report.no_price += 1
-        elif getattr(snap, "source", None) == "fallback":
+        elif reference:
             report.reference += 1
         elif code in RECEIPT_CHAINS or str(sku).startswith("hist-"):
             report.receipts += 1

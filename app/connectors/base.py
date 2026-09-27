@@ -9,6 +9,7 @@ from __future__ import annotations
 import difflib
 import logging
 import re
+import time
 from abc import ABC, abstractmethod
 
 from app import config
@@ -153,32 +154,58 @@ class Connector(ABC):
 
 
 # ---------- предохранитель: не ждём таймаут на каждом SKU, если API магазина мёртв ----------
+#
+# ПАУЗА, А НЕ «ДО КОНЦА СЕАНСА». Пока приложение жило в Streamlit, сеанс был сеансом
+# человека. Теперь экран и служба korzina-jobs — долгие процессы от выкладки до
+# выкладки, и сеть, выключенная тремя неудачами, оставалась выключенной сутками. А
+# неудачи бывают временными: ноутбук владельца уснул, и домашний выход (app/homeexit.py)
+# пропал на ночь. Поэтому сеть выключается на connectors.failure_cooldown_min минут, а
+# потом получает одну попытку: удалась — снова в строю, нет — ещё одна пауза.
 _FAILS: dict[str, int] = {}
+_FAILED_AT: dict[str, float] = {}
 FAIL_LIMIT_DEFAULT = 3
+COOLDOWN_MIN_DEFAULT = 15.0
 
 
 def _fail_limit() -> int:
     return int(config.get("connectors.failure_threshold", FAIL_LIMIT_DEFAULT) or FAIL_LIMIT_DEFAULT)
 
 
+def _cooldown_sec() -> float:
+    try:
+        return float(config.get("connectors.failure_cooldown_min", COOLDOWN_MIN_DEFAULT)
+                     or COOLDOWN_MIN_DEFAULT) * 60.0
+    except (TypeError, ValueError):
+        return COOLDOWN_MIN_DEFAULT * 60.0
+
+
 def api_disabled(store_code: str) -> bool:
-    """API магазина отключён на сеанс после серии подряд идущих неудач."""
-    return _FAILS.get(store_code, 0) >= _fail_limit()
+    """API магазина выключен на паузу после серии подряд идущих неудач."""
+    if _FAILS.get(store_code, 0) < _fail_limit():
+        return False
+    if time.time() - _FAILED_AT.get(store_code, 0.0) < _cooldown_sec():
+        return True
+    # Пауза вышла — одна попытка. Не удастся — note_failure сразу выключит сеть снова.
+    _FAILS[store_code] = _fail_limit() - 1
+    return False
 
 
 def note_failure(store_code: str) -> None:
     _FAILS[store_code] = _FAILS.get(store_code, 0) + 1
+    _FAILED_AT[store_code] = time.time()
     if _FAILS[store_code] == _fail_limit():
-        log.warning("%s: API не ответил %d раза подряд — до конца сеанса беру data/fallback_prices.csv",
-                    store_code, _fail_limit())
+        log.warning("%s: API не ответил %d раза подряд — %.0f мин беру цены без него",
+                    store_code, _fail_limit(), _cooldown_sec() / 60.0)
 
 
 def note_success(store_code: str) -> None:
     _FAILS.pop(store_code, None)
+    _FAILED_AT.pop(store_code, None)
 
 
 def reset_failures() -> None:
     _FAILS.clear()
+    _FAILED_AT.clear()
 
 
 # ---------- коннектор поверх сайта магазина ----------

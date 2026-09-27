@@ -8,18 +8,24 @@
 раньше каждый держал свой темп, так что вместе они ходили в одну сеть вдвое чаще
 разрешённого. Слот сети записан в файле data/pace/<сеть> под замком ядра; ждут —
 уже отпустив замок, поэтому пауза одной сети не держит запросы к остальным.
+
+Срок кэша можно сузить на время одной работы (max_age): дозор цен (app/pricewatch.py)
+приходит за СВЕЖЕЙ ценой, и ответ шестичасовой давности, отданный ему из кэша, обновил
+бы снимок одной видимостью. Сужение живёт в контексте потока и других не касается.
 """
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import logging
 import os
 import threading
 import time
-from typing import Any, Callable
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator
 
-from app import config
+from app import config, homeexit
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +36,9 @@ PRUNE_EVERY_SEC = 3600.0
 _lock = threading.Lock()
 _last_request: dict[str, float] = {}          # store_code -> time.time() занятого слота
 _last_prune = 0.0
+# Срок кэша, суженный для текущей работы (секунды); None — срок из config.
+_MAX_AGE: contextvars.ContextVar[float | None] = contextvars.ContextVar("korzina_cache_max_age",
+                                                                        default=None)
 
 
 # ---------- троттлинг ----------
@@ -96,9 +105,13 @@ def throttle(store_code: str) -> None:
 
     Спим ВНЕ общего замка: раньше time.sleep стоял под ним, и ожидание Магнита
     держало живой поиск во ВкусВилле и Ленте, хотя им ждать было нечего.
+
+    Сети домашнего выхода — реже: через него идёт адрес владельца (app/homeexit.py,
+    connectors.home_exit.rate_limit_rps).
     """
     rps = float(config.get("connectors.rate_limit_rps", 1.0) or 1.0)
     interval = 1.0 / rps if rps > 0 else 0.0
+    interval = max(interval, homeexit.pace_interval(store_code))
     wait = reserve(store_code, interval)
     if wait > 0:
         time.sleep(wait)
@@ -126,6 +139,28 @@ def _ttl_seconds() -> float:
     return float(config.get("connectors.cache_ttl_hours", 6) or 0) * 3600.0
 
 
+@contextmanager
+def max_age(seconds: float) -> Iterator[None]:
+    """Кэш старше `seconds` в этом контексте не берётся: за ним идут в сеть.
+
+    Записывается ответ как обычно и достаётся потом остальным со сроком из config.
+    """
+    token = _MAX_AGE.set(float(seconds))
+    try:
+        yield
+    finally:
+        _MAX_AGE.reset(token)
+
+
+def _read_ttl() -> float:
+    """Срок, с которым читаем сейчас: из config, суженный max_age, если он задан."""
+    ttl = _ttl_seconds()
+    limit = _MAX_AGE.get()
+    if limit is None:
+        return ttl
+    return limit if ttl <= 0 else min(ttl, limit)
+
+
 def _path(store_code: str, key: str) -> str:
     digest = hashlib.md5(f"{store_code}|{key}".encode("utf-8")).hexdigest()[:16]
     return os.path.join(CACHE_DIR, f"{store_code}_{digest}.json")
@@ -137,7 +172,7 @@ def cache_get(store_code: str, key: str) -> Any | None:
     try:
         if not os.path.exists(path):
             return None
-        ttl = _ttl_seconds()
+        ttl = _read_ttl()
         if ttl > 0 and time.time() - os.path.getmtime(path) > ttl:
             return None
         with open(path, encoding="utf-8") as fh:

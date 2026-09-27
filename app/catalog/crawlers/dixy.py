@@ -23,7 +23,9 @@ filter=brands:<бренд>. Итого 40–60 страниц плюс брен�
 priceSimple (цена сейчас), oldPriceSimple (зачёркнутая), canBuy, единица.
 Страниц по 30 товаров, pagenData говорит, сколько их. Проход идёт тем же запросом
 изнутри открытой витрины, раз в секунду и без картинок: через этот выход идёт адрес
-владельца. Выхода нет — сеть обходится как раньше, без цен.
+владельца. Выхода нет — сеть обходится как раньше, без цен. Вместо витрины пришла
+проверка «я не робот» — пауза для всех, кто ходит к Дикси через дом
+(homeexit.note_refusal), и пока она идёт, витрину не листаем: стук продлил бы метку.
 
 Цена — та, что витрина показывает гостю, без выбранного адреса («Укажи адрес, чтобы
 посмотреть актуальный каталог»). Привязка к магазину владельца — следующий шаг.
@@ -217,6 +219,11 @@ class DixyCrawler(Crawler):
         proxy = homeexit.for_chain(self.code)
         if not proxy:
             return {}
+        if homeexit.paused_until(self.code):
+            # Через дом сеть недавно показала проверку «я не робот» (коннектор или прошлый
+            # обход): стучать в помеченный адрес владельца значит продлевать метку.
+            say("витрина: через дом сеть недавно показала проверку — цены возьмёт следующий обход")
+            return {}
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -242,9 +249,16 @@ class DixyCrawler(Crawler):
         return found
 
     def _shelf_walk(self, page, found: dict[str, ChainProduct], say: Progress) -> None:
+        from app.shopbrowser import signals
+
         self.pace.wait()
         page.goto(f"{SITE}/catalog/", wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(SETTLE_MS)
+        if signals.guard_kind(page.inner_text("body")[:6000]):
+            # Вместо витрины — проверка: пауза для всех, кто ходит к Дикси через дом.
+            homeexit.note_refusal(self.code)
+            say("витрина: через дом сеть показала проверку «я не робот» — цен с неё не будет")
+            return
         sections = [href for href in page.evaluate(SECTIONS_JS)
                     if href.strip("/").split("/")[-1] not in self.shelf_skip]
         if not sections:

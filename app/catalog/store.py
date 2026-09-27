@@ -306,6 +306,28 @@ def unmatched_count() -> int:
     return int(row["n"] or 0)
 
 
+def product_url(chain: str, sku: str) -> str | None:
+    """Адрес товара сети в каталоге. None — каталога нет или товара в нём нет.
+
+    Спрашивает его коннектор попутно, за ценой (app/connectors/dixy.py), поэтому базу
+    не создаёт: в установке без каталога — тесты, первый запуск — пустой файл был бы
+    лишним. Не открылась — адреса просто нет.
+    """
+    file = path()
+    if not os.path.exists(file):
+        return None
+    try:
+        conn = sqlite3.connect(file, timeout=5)
+        try:
+            row = conn.execute("SELECT url FROM chain_products WHERE chain=? AND sku=?",
+                               (chain, str(sku))).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return (row[0] or None) if row else None
+
+
 def point_prices(chain: str, sku: str) -> dict[str, dict]:
     """Цена и наличие артикула по точкам: код точки -> {price, in_stock, seen_at}."""
     try:

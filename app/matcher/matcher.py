@@ -208,12 +208,43 @@ def auto_match(product_ids: list[int], store_codes: list[str], threshold: float 
 
 # --- цены ------------------------------------------------------------------
 
-def refresh_prices(product_ids: list[int], store_codes: list[str], progress=None) -> dict:
+def refresh_prices(product_ids: list[int], store_codes: list[str], progress=None,
+                   fresh_within: float | None = None) -> dict:
     """Тянет цены по ПОДТВЕРЖДЁННЫМ сопоставлениям и пишет снимки в store_prices.
 
     progress(сделано, всего, сеть) — ход по сетям: обновление идёт минутами, и без
     хода экран «Корзина» стоял бы на «0 из N», неотличимо от зависания.
+
+    fresh_within (секунды) — для дозора цен (app/pricewatch.py), кнопка его не передаёт.
+    Ответ сети берётся не старше этого: кэш коннекторов старее не отдаёт
+    (cache.max_age), иначе снимок обновился бы одной видимостью. Пишутся только снимки,
+    снятые за это время: коннектор, не дозвонившись до сети, отдаёт цену из чека, прайса
+    или справочника, и дозор, записывая её каждые два часа, плодил бы копии вчерашних
+    цен. Место человека (магазин Магнита к адресу) ищется со своим обычным сроком кэша:
+    за два часа оно не меняется, и гонять справочник магазинов незачем.
     """
+    from contextlib import nullcontext
+    from datetime import datetime, timedelta
+
+    from app import freshness
+
+    since = datetime.now() - timedelta(seconds=fresh_within) if fresh_within else None
+
+    def held_to_fresh():
+        """Кэш не старше fresh_within — только для дозора; кнопке — обычный срок."""
+        if not fresh_within:
+            return nullcontext()
+        from app.connectors import cache       # noqa: PLC0415 — коннекторов может не быть
+        return cache.max_age(fresh_within)
+
+    def taken_in_time(snap) -> bool:
+        if since is None:
+            return True
+        if getattr(snap, "source", None) == freshness.REFERENCE:
+            return False
+        taken = freshness.moment(getattr(snap, "fetched_at", None))
+        return taken is not None and taken >= since
+
     updated = 0
     errors: list[str] = []
 
@@ -241,14 +272,15 @@ def refresh_prices(product_ids: list[int], store_codes: list[str], progress=None
             continue
 
         try:
-            snapshots = connector.get_prices(list(by_sku)) or []
+            with held_to_fresh():
+                snapshots = connector.get_prices(list(by_sku)) or []
         except Exception as exc:                        # коннектор изолирован (раздел 9)
             errors.append(f"{store_code}: {exc}")
             continue
 
         for snap in snapshots:
             sp_id = by_sku.get(getattr(snap, "sku", None))
-            if sp_id is None or getattr(snap, "price", None) is None:
+            if sp_id is None or getattr(snap, "price", None) is None or not taken_in_time(snap):
                 continue
             repo.save_price(sp_id, snap.price, getattr(snap, "price_per_kg", None),
                             bool(getattr(snap, "in_stock", True)),
