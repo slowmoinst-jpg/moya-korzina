@@ -22,6 +22,10 @@
 пересекается — у них разные базы (каталог общий, дверь пишет в базу человека) и
 общего состояния нет. Не открылась (занят порт, выключена настройкой) — служба
 продолжает работать без неё: ночной обход важнее того, что к нему прицеплено.
+
+И ДОЗОР ЦЕН (app/pricewatch.py) — по той же причине, в своём потоке. Ночной обход
+держит основной поток часами, а цены корзин должны оставаться свежими всё это время.
+Сеть у них общая, но темп общий тоже: слот сети лежит в data/pace и один на всех.
 """
 from __future__ import annotations
 
@@ -33,7 +37,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 
-from app import api, config
+from app import api, config, pricewatch
 from app.catalog import refresh, store
 from app import places
 from app.catalog.crawlers import make
@@ -276,6 +280,9 @@ def serve() -> None:
     # длится часы, и расширение, постучавшееся в это время, не должно услышать
     # «нет такого адреса» только потому, что служба занята Магнитом.
     api.serve_in_background()
+    # Дозор цен — тоже своим потоком: обход держит этот поток часами, а цены корзин
+    # за это время протухли бы (app/freshness.py).
+    pricewatch.serve_in_background()
     revived = store.revive_stuck()
     if revived:
         log.info("возвращено в очередь после перезапуска: %d адрес(ов)", revived)

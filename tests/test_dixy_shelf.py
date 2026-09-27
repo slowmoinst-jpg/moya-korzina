@@ -132,6 +132,42 @@ def test_goods_only_on_the_shelf_are_catalogue_too(monkeypatch):
     assert got["2000999999"].name == "Кефир 1%"
 
 
+def test_a_paused_home_exit_is_not_knocked(monkeypatch):
+    """Сеть через дом недавно показала «я не робот» — витрину не листаем, браузер не поднимаем."""
+    monkeypatch.setattr(homeexit, "for_chain", lambda chain: "socks5://127.0.0.1:1080")
+    monkeypatch.setattr(homeexit, "paused_until", lambda chain: 9e9)
+    said: list[str] = []
+
+    assert dixy.DixyCrawler()._shelf(said.append) == {}
+    assert "проверку" in said[0]
+
+
+def test_a_check_instead_of_the_shelf_pauses_the_chain(monkeypatch, tmp_path):
+    """Вместо витрины — проверка: пауза для коннектора и дозора, а не листание дальше."""
+    monkeypatch.setattr(homeexit, "STATE_DIR", str(tmp_path))
+
+    class Page:
+        def goto(self, *args, **kwargs):
+            pass
+
+        def wait_for_timeout(self, ms):
+            pass
+
+        def inner_text(self, selector):
+            return "Поставь галочку в поле «Я не робот» И продолжай пользоваться сайтом."
+
+        def evaluate(self, *args):
+            raise AssertionError("разделы со страницы проверки не читаем")
+
+    crawler = dixy.DixyCrawler()
+    monkeypatch.setattr(crawler.pace, "wait", lambda: None)
+    found: dict = {}
+
+    crawler._shelf_walk(Page(), found, lambda message: None)
+
+    assert found == {} and homeexit.paused_until("dixy")
+
+
 def test_promo_collections_are_not_walked():
     """Подборки дублируют разделы теми же товарами — через дом их не гоняем."""
     assert "skidki-po-karte" in dixy.DixyCrawler().shelf_skip
