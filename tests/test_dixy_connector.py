@@ -114,7 +114,7 @@ def browser(monkeypatch):
     изнутри страницы, world["answers"] — что на них ответить (по умолчанию живая карточка),
     world["home"] — видимый текст главной.
     """
-    world: dict = {"launch": [], "goto": [], "fetch": [], "answers": [], "closed": 0,
+    world: dict = {"launch": [], "goto": [], "fetch": [], "limits": [], "answers": [], "closed": 0,
                    "home": "Дикси — продукты рядом с домом. Каталог. Акции."}
 
     class Page:
@@ -127,8 +127,11 @@ def browser(monkeypatch):
         def inner_text(self, selector):
             return world["home"]
 
-        def evaluate(self, script, url):
+        def evaluate(self, script, arg):
+            url, limit = arg
             world["fetch"].append(url)
+            world["limits"].append(limit)
+            world["script"] = script
             return list(world["answers"].pop(0)) if world["answers"] else [200, _read(CARD)]
 
     class Context:
@@ -221,6 +224,8 @@ def test_the_card_goes_through_the_home_exit_in_a_real_browser(db, home_exit, si
         "выход — из homeexit.for_chain, тот же, что у сборщика каталога"
     assert browser["goto"] == ["https://dixy.ru/"], "сначала главная: скрипты Qrator ставят куки"
     assert browser["fetch"] == [URL], "карточка — запросом изнутри страницы"
+    assert browser["limits"] == [dixy.CARD_TIMEOUT_MS] and "abort()" in browser["script"], \
+        "запрос с пределом по времени: повисший в туннеле не держит дозор вечно"
     assert calls == [], "простым запросом через дом не ходим: Qrator метит им адрес"
     assert browser["closed"] == 1, "браузер живёт один заход"
     snap = snaps[0]

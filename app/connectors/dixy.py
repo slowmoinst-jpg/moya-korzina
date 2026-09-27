@@ -202,6 +202,14 @@ def is_bare_url(url: str | None, sku: str) -> bool:
 
 # Столько ждать после главной: скрипты Qrator ставят куки, витрина дорисовывается.
 SETTLE_MS = 3000
+# Карточка изнутри страницы — с пределом по времени. У page.evaluate своего предела нет:
+# запрос, повисший в туннеле, держал бы поток дозора и открытый браузер вечно.
+CARD_TIMEOUT_MS = 30000
+FETCH_CARD_JS = """async ([u, ms]) => { const c = new AbortController();
+    const t = setTimeout(() => c.abort(), ms);
+    try { const r = await fetch(u, {credentials: 'include', signal: c.signal});
+          return [r.status, await r.text()]; }
+    finally { clearTimeout(t); } }"""
 
 
 class _Browser:
@@ -236,10 +244,12 @@ class _Browser:
             raise
 
     def get(self, url: str) -> tuple[str | None, int]:
-        """Страница и код — как у DixyConnector._get: не 200 — страницы нет."""
-        from app.catalog.crawlers.dixy import FETCH_JS
+        """Страница и код — как у DixyConnector._get: не 200 — страницы нет.
 
-        status, body = self._page.evaluate(FETCH_JS, url)
+        Не уложился запрос в CARD_TIMEOUT_MS — evaluate бросает, и заход кончается как
+        сбой связи: без паузы, остальное из прайса и чеков.
+        """
+        status, body = self._page.evaluate(FETCH_CARD_JS, [url, CARD_TIMEOUT_MS])
         status = int(status or 0)
         return (body if status == 200 else None), status
 
