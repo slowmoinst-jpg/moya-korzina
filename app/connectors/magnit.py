@@ -112,6 +112,11 @@ SHELF_FORMATS = ("MM", "ME", "GM", "MK", "MM_MINI")
 # три вида молока), поэтому он идёт после магазинов, но лучше, чем ничего.
 HUB_FORMATS = ("DARKSTORE",)
 STORE_FORMATS = SHELF_FORMATS + HUB_FORMATS
+# Форматы, где у Магнита есть интернет-витрина: из них можно заказать. Замер
+# 20.09.2026 — в app/shopbrowser/point.py (SERVED_FORMATS, там же таблица): «Магнит
+# у дома мини» карточек не открывает вовсе. Как и приложение сети, точку расчёта
+# берём из них, а магазин без витрины — только если других рядом нет.
+ONLINE_FORMATS = ("ME", "MM", "GM", "DARKSTORE")
 
 SEARCH_RADIUS_KM = 5.0     # дальше пяти километров «ближайший магазин» уже не ближайший
 
@@ -122,8 +127,14 @@ _ARTICLE = re.compile(
     re.S,
 )
 _LINK = re.compile(r'<a title="([^"]*)"[^>]*href="/product/(\d+)-([^"?]*)', re.S)
-_CARD_PRICE = re.compile(
-    r'prices__(?:regular|sale)"[^>]*>.*?<span[^>]*>([\d\s  ,.]+)&#8202;₽', re.S
+# Цена в карточке выдачи: сначала акционная, потом обычная. Одним выражением
+# «regular|sale» бралось ПЕРВОЕ совпадение в разметке, и зачёркнутая обычная цена,
+# стоящая раньше акционной, выдавалась за текущую.
+_CARD_SALE = re.compile(
+    r'prices__sale"[^>]*>.*?<span[^>]*>([\d\s  ,.]+)&#8202;₽', re.S
+)
+_CARD_REGULAR = re.compile(
+    r'prices__regular"[^>]*>.*?<span[^>]*>([\d\s  ,.]+)&#8202;₽', re.S
 )
 # цена на странице самого товара: основная разметка и запасной вариант из описания
 _PAGE_PRICE = re.compile(
@@ -270,7 +281,28 @@ def nearest_store(address: str) -> dict | None:
     if not found:
         log.info("магнит: рядом с адресом «%s» магазинов не нашлось", address)
         return None
-    return found[0]
+    return pick_store(found)
+
+
+def pick_store(found: list[dict]) -> dict:
+    """Какой магазин из ближайших считать точкой клиента — так, как выбрало бы приложение сети.
+
+    Раньше брался просто первый, и им оказывался «Магнит у дома мини»: полка у
+    него есть, а интернет-витрины нет. Расчёт показывал экономию, а корзину
+    собрать было негде, и человеку советовали сменить адрес руками.
+
+    Порядок: магазин с витриной и доставкой (если считаем цены доставки) →
+    магазин с витриной → любой. Внутри — порядок stores_near: полка, потом
+    склад, по расстоянию.
+    """
+    want_delivery = bool(config.get("connectors.magnit_delivery", True))
+
+    def rank(store: dict) -> int:
+        online = store.get("format") in ONLINE_FORMATS
+        delivers = store.get("delivery", True) or not want_delivery
+        return 0 if online and delivers else 1 if online else 2
+
+    return sorted(found, key=rank)[0]
 
 
 def _money(value: Any) -> float | None:
@@ -468,7 +500,7 @@ class MagnitConnector(HttpCatalogConnector):
             if not link:
                 continue
             name = html.unescape(link.group(1)).strip()
-            price_match = _CARD_PRICE.search(body)
+            price_match = _CARD_SALE.search(body) or _CARD_REGULAR.search(body)
             weight_g, unit = _weight_of(name)
             out.append(Candidate(
                 store_code=self.code,
@@ -532,10 +564,16 @@ class MagnitConnector(HttpCatalogConnector):
         quantity = card.get("quantity") if card else None
         if price is None or (not price and not quantity):
             return None
+        # Весовой товар шлюз называет в рублях за килограмм (тот же признак
+        # weighted.isWeighted, по которому каталог ставит unit="kg"). Сказать это
+        # снимку явно — значит дать расчёту довод: одна отметка «kg» у товара
+        # сети доводом не считается (service._shop_by_weight).
+        weighted = card.get("weighted") if isinstance(card.get("weighted"), dict) else {}
         return PriceSnapshot(
             store_code=self.code,
             sku=sku,
             price=price,
+            price_per_kg=price if weighted.get("isWeighted") else None,
             in_stock=bool(quantity) if isinstance(quantity, (int, float)) else True,
             name=(card.get("name") or "").strip() or None,
         )
@@ -569,6 +607,7 @@ class MagnitConnector(HttpCatalogConnector):
             match = _LD_PRICE.search(page) or _PAGE_PRICE.search(page) or _META_PRICE.search(page)
             price = _to_float(match.group(1)) if match else None
             in_stock = True
+            per_kg = None
             if price is None:
                 # страницу мы получили, а прочесть не смогли: похоже, сменилась вёрстка.
                 # прежде чем подсунуть справочную цену, спросим модель — если она включена
@@ -577,11 +616,15 @@ class MagnitConnector(HttpCatalogConnector):
                     missing.append(sku)
                     continue
                 price, in_stock = guess["price"], guess["in_stock"]
+                # Модель сказала «за кг» — это цена килограмма, и расчёт должен это знать:
+                # иначе весовой товар посчитался бы по ней как штучный.
+                per_kg = price if guess.get("unit") == "kg" else None
             title = re.search(r"<title>(.*?)(?:\s*–|</title>)", page, re.S)
             out.append(PriceSnapshot(
                 store_code=self.code,
                 sku=sku,
                 price=price,
+                price_per_kg=per_kg,
                 in_stock=in_stock,
                 name=html.unescape(title.group(1)).strip() if title else None,
             ))

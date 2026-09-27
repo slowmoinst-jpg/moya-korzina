@@ -30,7 +30,7 @@ import logging
 
 from flask import render_template
 
-from app import collector, repo, store_accounts
+from app import collector, location, repo, store_accounts
 from app.web.views import SCREEN_BY_KEY
 
 log = logging.getLogger(__name__)
@@ -199,6 +199,10 @@ def page():
             "catalog": catalog.get(store.code),
             "point": "; ".join(p.label or p.address for p in spots) if spots else None,
             "needs_point": store.code in points and not spots,
+            # Точка есть, а живые цены по ней расчёт не спрашивает (Пятёрочка,
+            # Самокат: прайс, чеки, кабинет). Без этой отметки строка «загружается
+            # по точке» читалась обещанием местных цен, которого код не выполняет.
+            "point_prices": store.code in location.ADDRESS_STORES,
             "account": conn,
             "coupons": store_coupons,
             "coupons_updated_at": collector.coupons_updated_at(store.code),

@@ -154,6 +154,10 @@ def run_all(only: str | None = None, fresh: float | None = None) -> list[dict]:
             spots = places.points(code)
             if code in places.BY_POINT and not spots:
                 log.info("%s: точек по адресам рабочих мест нет — иду по запасной из config", code)
+            # Запоминаем точку КАЖДОГО адреса, а не только обходимые: два рабочих
+            # места у одного магазина дают одну точку обхода, но цену своей точки
+            # должны найти оба.
+            _remember(places.resolved(code) or spots)
             try:
                 crawler = make(code, spots)
             except KeyError as exc:
@@ -161,19 +165,43 @@ def run_all(only: str | None = None, fresh: float | None = None) -> list[dict]:
                 continue
             where = ", ".join(str(p) for p in spots) or "запасная точка из config.yaml"
             log.info("%s: обход начат, точки: %s", code, where)
-            results.append(refresh.run_chain(crawler, progress=lambda m, c=code: log.info("%s: %s", c, m)))
+            result = refresh.run_chain(crawler, progress=lambda m, c=code: log.info("%s: %s", c, m))
+            results.append(result)
             # Сопоставляем после КАЖДОЙ сети, а не только в конце: первый обход длится часы
             # (карточки Ленты и ВкусВилла по одной в секунду), и без этого каталог в
             # интерфейсе был бы пустым до самого конца, хотя Магнит и Дикси уже собраны.
+            # И выкладка обрывает обход — сопоставление в конце не случилось бы вовсе.
             #
-            # Итог последнего сопоставления и есть итог обхода. Здесь стоял ещё один
-            # match_all после цикла, и он ничего не менял: каталог с прошлого прохода
-            # не трогали, а стоил он десять минут счёта (журнал 22.09.2026: 09:52 —
-            # 10:02, те же 252 685 единых товаров).
-            summary = refresh.match_all(progress=lambda m: log.info("сопоставление: %s", m))
+            # Но ТОЛЬКО если обход сети что-то поменял в составе: сопоставление стоит
+            # десять минут (журнал 22.09.2026: 09:52 — 10:02), а цена и наличие на
+            # единые товары не влияют — они не ключи. Обход без новых, изменённых и
+            # пропавших строк пересчитал бы ровно тот же каталог.
+            if _changed(result) or _unmatched():
+                summary = refresh.match_all(progress=lambda m: log.info("сопоставление: %s", m))
     if summary is not None:
         results.append({"chain": "match", **summary})
     return results
+
+
+def _changed(result: dict) -> bool:
+    """Поменял ли обход сети состав каталога — то, от чего зависит сопоставление."""
+    return bool(result.get("added") or result.get("updated") or result.get("gone"))
+
+
+def _unmatched() -> bool:
+    """Остались ли строки без единого товара — например, после оборванного обхода."""
+    try:
+        return store.unmatched_count() > 0
+    except Exception:  # noqa: BLE001 — не посчиталось: сопоставим по изменениям
+        return False
+
+
+def _remember(spots) -> None:
+    """Точки к адресам — в каталог: по ним перенос товара берёт цену СВОЕЙ точки."""
+    try:
+        store.remember_points(spots)
+    except Exception:  # noqa: BLE001 — запомнить не вышло, обход от этого не зависит
+        log.warning("точки к адресам не запомнились", exc_info=True)
 
 
 def _next_run(at: str) -> datetime:
@@ -198,14 +226,18 @@ def run_address(address: str) -> list[dict]:
             spots = places.points_for(address, code)
             if not spots:
                 continue
+            _remember(spots)
             try:
                 crawler = make(code, spots)
             except KeyError as exc:
                 log.warning("%s", exc)
                 continue
             log.info("%s: загрузка по адресу «%s», точка %s", code, address, spots[0])
-            results.append(refresh.run_chain(crawler, progress=lambda m, c=code: log.info("%s: %s", c, m)))
-        if results:
+            # ЧАСТИЧНЫЙ обход: одна точка сети, а не все. Пропавшими по нему ничего не
+            # объявляется, и плановый обход сеть не пропустит (refresh.run_chain).
+            results.append(refresh.run_chain(crawler, progress=lambda m, c=code: log.info("%s: %s", c, m),
+                                             partial=True))
+        if any(_changed(r) for r in results) or (results and _unmatched()):
             refresh.match_all(progress=lambda m: log.info("сопоставление: %s", m))
     return results
 

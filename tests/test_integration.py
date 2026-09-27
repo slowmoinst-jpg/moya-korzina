@@ -17,36 +17,44 @@ BASELINE = 3690.40
 
 @pytest.fixture(scope="module")
 def demo_db(tmp_path_factory):
-    """Поднимает чистую БД, накатывает сиды, сопоставления и цены."""
+    """Поднимает чистую БД, накатывает сиды, сопоставления и цены.
+
+    Сети в тестах нет (tests/conftest.py), и коннекторы отдают запас из
+    data/fallback_prices.csv. В приложении такая справочная цена в расчёт не идёт
+    (app/freshness.py), а здесь она играет роль живой: проверяется сквозной путь
+    «чек → сопоставление → цены → расчёт», а не ответ сетей.
+    """
     db_file = tmp_path_factory.mktemp("db") / "test_basket.db"
 
-    from app import config
+    from app import config, freshness
 
-    config.load_config.cache_clear()
-    cfg = config.load_config()
-    cfg["db_path"] = str(db_file)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(freshness, "REFERENCE", "запас из CSV в этом тесте — живая цена")
+        config.load_config.cache_clear()
+        cfg = config.load_config()
+        cfg["db_path"] = str(db_file)
 
-    from app.db import init_db
+        from app.db import init_db
 
-    init_db()
+        init_db()
 
-    sys.path.insert(0, os.path.join(ROOT, "tools"))
-    import seed
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import seed
 
-    seed.main()
+        seed.main()
 
-    try:
-        import bootstrap_demo
+        try:
+            import bootstrap_demo
 
-        bootstrap_demo.main()
-    except Exception as exc:  # noqa: BLE001 — коннекторы могут быть недоступны
-        print("bootstrap_demo:", exc)
+            bootstrap_demo.main()
+        except Exception as exc:  # noqa: BLE001 — коннекторы могут быть недоступны
+            print("bootstrap_demo:", exc)
 
-    from app import repo
+        from app import repo
 
-    baskets = repo.list_baskets()
-    assert baskets, "корзина не создана"
-    return baskets[0]["id"]
+        baskets = repo.list_baskets()
+        assert baskets, "корзина не создана"
+        yield baskets[0]["id"]
 
 
 def test_history_imported(demo_db):

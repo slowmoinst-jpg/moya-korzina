@@ -61,7 +61,7 @@ class MonetkaCrawler(Crawler):
     name = "Монетка"
 
     def __init__(self) -> None:
-        self.pace = Pace()
+        self.pace = Pace(chain=self.code)
         self.cap = int(config.get("catalog.monetka.max_products") or 0)
 
     def crawl(self, progress: Progress | None = None) -> Iterator[ChainProduct]:

@@ -81,7 +81,7 @@ from urllib.parse import quote
 
 from flask import g, redirect, render_template, request
 
-from app import freshness, repo
+from app import repo
 from app.web import auth
 from app.web.views import SCREEN_BY_KEY
 
@@ -213,6 +213,25 @@ def _start_job(basket_id: int, kind: str, items: list[dict]) -> None:
     worker.start()
 
 
+def refresh_after_move() -> int | None:
+    """Адрес сменился — обновить цены последней корзины по новому. Номер корзины или None.
+
+    Цены прежнего адреса «Результат» помечает, но помечать мало: человек сменил
+    адрес ради цен нового, и ждать, пока он догадается нажать «Обновить цены»,
+    значит показывать ему прежний магазин. Обновление идёт фоном, ход — на
+    экране «Корзина».
+    """
+    baskets = repo.list_baskets()
+    if not baskets:
+        return None
+    basket_id = int(baskets[0]["id"])
+    items = repo.basket_items(basket_id)
+    if not items:
+        return None
+    _start_job(basket_id, "fresh", items)
+    return basket_id
+
+
 def _mark(key, **fields) -> None:
     with _JOBS_LOCK:
         job = _JOBS.get(key)
@@ -230,7 +249,12 @@ def _run_job(key, phone: str, basket_id: int, kind: str, items: list[dict]) -> N
             note = "Цены обновлены по всем позициям."
         else:
             from app import service
-            service.calculate(basket_id, True)   # нужны не варианты, а свежие снимки цен
+
+            def step(done: int, total: int, code: str) -> None:
+                store = repo.get_store(code)
+                _mark(key, done=done, total=total, what=store.name if store else code)
+
+            service.calculate(basket_id, True, progress=step)   # нужны свежие снимки цен
             note = "Цены обновлены — можно смотреть результат."
         _mark(key, status="ok", note=note, finished=time.time())
     except Exception as exc:  # noqa: BLE001 — фоновая работа не должна ронять сервер
@@ -319,20 +343,26 @@ def _price_matrix(items, stores) -> tuple[dict, dict]:
     """(product_id, store_code) -> стоимость позиции целиком; и сумма корзины по сети."""
     cell: dict[tuple[int, str], dict] = {}
     totals: dict[str, float] = {s.code: 0.0 for s in stores}
+    from app import service
+
     for item in items:
         pid = int(item["product_id"])
         qty = float(item.get("qty") or 0)
-        is_kg = (item.get("unit") or "pcs") == "kg"
+        unit = item.get("unit") or "pcs"
+        weighed = service.is_weighed(pid, unit, item.get("name"))
         for store in stores:
-            snap = freshness.price_for(pid, store.id)
-            if not snap:
+            # Тот же расчёт, что у оптимизатора: цена только действующая
+            # (app/freshness.py), цена килограмма не берётся из цены фасовки, разные
+            # фасовки приводятся к весу эталона. Два расчёта цены на двух экранах
+            # однажды разошлись бы, и строка корзины спорила бы с итогом.
+            found = service.line_price(pid, store, qty, unit, item.get("weight_g"), weighed)
+            if not found:
                 continue
-            base = (snap.get("price_per_kg") or snap.get("price")) if is_kg else snap.get("price")
-            if base is None:
-                continue
-            value = round(float(base) * qty, 2)
-            in_stock = bool(snap.get("in_stock", 1))
-            cell[(pid, store.code)] = {"value": value, "in_stock": in_stock}
+            value = found["value"]
+            in_stock = found["in_stock"]
+            cell[(pid, store.code)] = {"value": value, "in_stock": in_stock,
+                                       "note": found["note"],
+                                       "adjust": found.get("adjust", 0.0)}
             if in_stock:
                 # Складывать цену отсутствующего товара — значит обещать корзину,
                 # которую не соберут. Поэтому в сумму сети идёт только то, что есть.
@@ -348,11 +378,17 @@ def _prices_of(pid: int, stores, cell) -> list[dict]:
     нет». Второе для сборки корзины важнее цены: в такой магазин ехать незачем.
     """
     known = [(store, cell[(pid, store.code)]) for store in stores if (pid, store.code) in cell]
-    available = [found["value"] for _, found in known if found["in_stock"]]
+    # «Лучшая» — по цене, приведённой к весу эталона (value + adjust), как выбирает
+    # расчёт: иначе строка корзины хвалила бы 800 г за 90 ₽, а «Результат» брал
+    # килограмм за 100 ₽ — и оба были бы по-своему правы.
+    fair = {store.code: found["value"] + float(found.get("adjust") or 0.0)
+            for store, found in known}
+    available = [fair[store.code] for store, found in known if found["in_stock"]]
     best = min(available) if available else None
     return [{"code": store.code, "name": store.name, "value": found["value"],
+             "fair": round(fair[store.code], 2),
              "in_stock": found["in_stock"],
-             "best": best is not None and found["in_stock"] and abs(found["value"] - best) < 0.005}
+             "best": best is not None and found["in_stock"] and abs(fair[store.code] - best) < 0.005}
             for store, found in known]
 
 
@@ -363,12 +399,15 @@ def _best_of(prices: list[dict]) -> dict | None:
     отвечает на вопрос «а если взять не там», и ответ на него — следующая цена,
     а не худшая из возможных.
     """
-    order = sorted((p for p in prices if p["in_stock"]), key=lambda p: p["value"])
+    def fair(p: dict) -> float:
+        return float(p.get("fair", p["value"]))
+
+    order = sorted((p for p in prices if p["in_stock"]), key=fair)
     if not order:
         return None
     first = order[0]
     return {"code": first["code"], "store": first["name"], "value": first["value"],
-            "diff": round(order[1]["value"] - first["value"], 2) if len(order) > 1 else 0.0,
+            "diff": round(fair(order[1]) - fair(first), 2) if len(order) > 1 else 0.0,
             "count": len(order)}
 
 

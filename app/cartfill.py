@@ -55,7 +55,7 @@ def preferred_variant(basket_id: int):
     return _chosen(variants, None)[0]
 
 
-def fill_store(phone: str, store, *, dry_run: bool = False) -> str:
+def fill_store(phone: str, store, *, dry_run: bool = False, again: bool = False) -> str:
     """Одна сеть варианта: положить в кабинет, получить ссылку или сказать, почему нельзя."""
     from app import cartplan, handover, store_accounts, users
     from app.shopbrowser import cart, driver
@@ -90,10 +90,17 @@ def fill_store(phone: str, store, *, dry_run: bool = False) -> str:
     if why:
         return f"в кабинет не положить: {why}"
     unknown = f", незнакомых сети {len(plan.unknown)}" if plan.unknown else ""
+    # Корзина сюда уже уезжала недавно — сеть кладёт поверх лежащего, и второй
+    # заход удвоил бы её. Положить ещё раз можно только явно: --again.
+    sent = None if again else cart.already_sent(code)
+    if sent:
+        return (f"корзина уже передана в {sent['finished_at'][11:16]} "
+                f"({sent['landed']} поз.) — второй раз не кладу, иначе всё ляжет дважды; "
+                "очистили корзину — запустите с --again")
     if dry_run:
         return f"положу в корзину {len(plan.lines)} поз. на {plan.total:.2f} ₽{unknown}"
 
-    started = cart.start(code, phone, plan, wait=True)
+    started = cart.start(code, phone, plan, wait=True, again=again)
     # Передача с ожиданием закрывает рабочее место за собой, как её фоновый поток,
     # а пачке оно нужно дальше — под следующую сеть.
     users.open_workspace(phone)
@@ -106,7 +113,7 @@ def fill_store(phone: str, store, *, dry_run: bool = False) -> str:
 
 
 def run(phones: list[str] | None = None, basket: int | None = None,
-        dry_run: bool = False) -> list[str]:
+        dry_run: bool = False, again: bool = False) -> list[str]:
     """Пройти рабочие места и вернуть отчёт строками.
 
     Без номеров — все рабочие места, кроме демо: демо — витрина с выдуманной
@@ -148,7 +155,7 @@ def run(phones: list[str] | None = None, basket: int | None = None,
                        f"{best.title}, {best.total:.2f} ₽; {where}")
             for store in best.stores:
                 try:
-                    note = fill_store(phone, store, dry_run=dry_run)
+                    note = fill_store(phone, store, dry_run=dry_run, again=again)
                 except Exception as exc:  # noqa: BLE001 — одна сеть не должна ронять остальные
                     log.exception("%s: корзина не передалась", store.store_code)
                     users.open_workspace(phone)
@@ -169,8 +176,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--basket", type=int, help="номер корзины вместо последней")
     parser.add_argument("--dry-run", action="store_true",
                         help="показать, что будет сделано, ничего не кладя и не создавая")
+    parser.add_argument("--again", action="store_true",
+                        help="положить ещё раз, хотя корзина уже передавалась недавно "
+                             "(сеть кладёт поверх лежащего — только после очистки корзины)")
     args = parser.parse_args(argv)
-    report = run(args.phone, args.basket, args.dry_run)
+    report = run(args.phone, args.basket, args.dry_run, args.again)
     print("\n".join(report) if report else "рабочих мест нет")
     return 0
 

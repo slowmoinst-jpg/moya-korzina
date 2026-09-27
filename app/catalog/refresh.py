@@ -27,8 +27,15 @@ from app.catalog.model import CrawlBlocked, Crawler
 log = logging.getLogger(__name__)
 
 
-def run_chain(crawler: Crawler, progress: Callable[[str], None] | None = None) -> dict:
-    """Один обход одной сети. Возвращает сводку; исключения наружу не выпускает."""
+def run_chain(crawler: Crawler, progress: Callable[[str], None] | None = None,
+              partial: bool = False) -> dict:
+    """Один обход одной сети. Возвращает сводку; исключения наружу не выпускает.
+
+    partial=True — обход НЕ всей сети, а части её точек (загрузка по одному адресу).
+    Такой обход ничего не объявляет пропавшим и свежим не считается (статус
+    partial): иначе адрес в Новосибирске выключал бы все краснодарские товары
+    Магнита, а ночной обход, сочтя сеть свежей, их бы не вернул.
+    """
     say = progress or (lambda msg: log.info("%s: %s", crawler.code, msg))
     run_id = store.start_run(crawler.code)
     started = store.now()
@@ -53,6 +60,8 @@ def run_chain(crawler: Crawler, progress: Callable[[str], None] | None = None) -
         status, note = "failed", f"{type(exc).__name__}: {exc}"
 
     gone = 0
+    if status == "ok" and partial:
+        status = "partial"
     if status == "ok" and seen > 0:
         # пропавшими считаем только после ПОЛНОГО обхода: половинный обход пометил бы
         # пропавшей половину каталога
@@ -110,10 +119,18 @@ def adopt(item_id: int, product_id: int | None = None) -> int:
     from app import repo
     from app.models import Product
 
+    from app.matcher.normalize import sold_by_weight
+
     data = store.item(item_id)
     if not data:
         raise KeyError(f"нет единого товара {item_id}")
-    unit = data.get("unit") or "pcs"
+    # Единица — по строкам сетей, а не по сохранённой единице единого товара: та
+    # пересчитывается только при сопоставлении и могла остаться от ложных «kg»
+    # прежних сборщиков. Весовой — если хоть одна сеть продаёт его на вес.
+    rows = data.get("chains") or []
+    by_weight = any((r.get("unit") or "").lower() == "kg" or sold_by_weight(r.get("name") or "")
+                    for r in rows) or sold_by_weight(data.get("name") or "")
+    unit = "kg" if by_weight and not data.get("weight_g") else "pcs"
     if product_id is None:
         existing = repo.find_product_by_name(data["name"])
         product_id = existing.id if existing else repo.upsert_product(Product(
@@ -128,9 +145,63 @@ def adopt(item_id: int, product_id: int | None = None) -> int:
                                           weight_g=row.get("weight_g"), unit=row.get("unit"),
                                           url=row.get("url"))
         repo.confirm_mapping(product_id, sp_id, confirmed=True)
-        if row.get("price") is not None:
-            repo.save_price(sp_id, float(row["price"]), in_stock=bool(row.get("in_stock", 1)))
+        found = price_for_me(row)
+        if found is not None:
+            price, in_stock, seen = found
+            # Весовой товар сети каталог хранит в рублях за кг — снимку это надо
+            # сказать явно, иначе расчёт не отличит цену килограмма от цены пачки.
+            per_kg = price if (row.get("unit") or "").lower() == "kg" else None
+            repo.save_price(sp_id, price, price_per_kg=per_kg, in_stock=in_stock, fetched_at=seen)
     return product_id
+
+
+def _my_point(chain: str) -> str | None:
+    """Точка этой сети у текущего человека — та, что обход подобрал к его адресу."""
+    from app import location, places
+
+    if chain not in places.BY_POINT:
+        return None
+    try:
+        address = location.address()
+    except Exception:  # noqa: BLE001 — нет базы человека — нет и точки
+        return None
+    return store.point_of(address, chain) if address else None
+
+
+def price_for_me(row: dict) -> tuple[float, bool, str | None] | None:
+    """Цена строки каталога для текущего человека: (цена, в наличии, когда увидена).
+
+    None — цены для него нет, и выдумывать её не надо.
+
+    Цена своя в каждой точке. Если обход знает цены артикула по точкам, берётся
+    цена ТОЧКИ ЧЕЛОВЕКА, а нет её там — нет и цены: чужой город показал бы чужую
+    цену, ничем не отличимую от своей. Точек нет (сети без них, каталог прежней
+    версии) — берётся цена строки каталога, как раньше.
+
+    Наличие, о котором сеть промолчала (NULL), — не «нет»: Дикси и Перекрёсток
+    наличия не отдают вовсе, и bool(None) делал все их товары отсутствующими.
+    Время — когда увидена ИМЕННО ЦЕНА, а не строка: оно уходит в снимок, и расчёт
+    сам пометит несвежую.
+    """
+    by_point = store.point_prices(row["chain"], row["sku"])
+    if by_point:
+        mine = _my_point(row["chain"])
+        if mine is None and len(by_point) == 1:
+            mine = next(iter(by_point))
+        spot = by_point.get(mine) if mine else None
+        if spot is None or spot.get("price") is None:
+            return None
+        stock = spot.get("in_stock")
+        return (float(spot["price"]), True if stock is None else bool(stock),
+                spot.get("seen_at"))
+    if row.get("price") is None:
+        return None
+    stock = row.get("in_stock")
+    # Даты цены нет (каталог прежней версии) — берём самую раннюю: last_seen
+    # продлевает и ночной проход по карте сайта, который цену не перечитывает,
+    # и старая цена выдала бы себя за вчерашнюю.
+    return (float(row["price"]), True if stock is None else bool(stock),
+            row.get("price_seen") or row.get("first_seen"))
 
 
 def resolve(name: str, brand: str | None = None, weight_g: float | None = None,

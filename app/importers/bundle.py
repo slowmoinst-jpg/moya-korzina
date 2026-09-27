@@ -222,7 +222,7 @@ def store_receipts(items: list[dict], store_code: str | None = None,
 
         store_id, store_label = _resolve_store_id(receipt, chain)
         for row in receipt.rows:
-            product_id, is_new = _ensure_product(row.raw_name)
+            product_id, is_new = _ensure_product(row.raw_name, row.qty)
             created += int(is_new)
             if row.barcode:
                 _remember_barcode(product_id, row.barcode)

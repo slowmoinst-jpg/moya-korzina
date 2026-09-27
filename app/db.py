@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS purchase_history (
     total REAL NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_history_product ON purchase_history(product_id);
+
 CREATE TABLE IF NOT EXISTS store_products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
@@ -88,7 +90,8 @@ CREATE TABLE IF NOT EXISTS store_prices (
     price REAL NOT NULL,
     price_per_kg REAL,
     in_stock INTEGER NOT NULL DEFAULT 1,
-    fetched_at TEXT NOT NULL
+    fetched_at TEXT NOT NULL,
+    source TEXT                     -- NULL — живая цена; fallback — справочная из CSV
 );
 
 CREATE TABLE IF NOT EXISTS baskets (
@@ -202,6 +205,7 @@ LATE_COLUMNS: list[tuple[str, str, str]] = [
     ("products", "barcode", "TEXT"),
     ("store_products", "ean", "TEXT"),
     ("purchase_history", "receipt_key", "TEXT"),
+    ("store_prices", "source", "TEXT"),
 ]
 
 
@@ -213,6 +217,77 @@ def _add_late_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
 
+# Сети, чьи сборщики ставили unit="kg" по ОТСУТСТВИЮ граммовки в названии (так
+# отвечал normalize.parse_weight): Пятёрочка и Самокат (витрина и кабинет), Fix Price,
+# Дикси. У Магнита, Ленты, ВкусВилла и METRO единица шла от самой сети — её не трогаем.
+FALSE_KG_CHAINS = ("pyaterochka", "samokat", "fixprice", "dixy")
+
+SCHEMA_VERSION = 1
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Разовые исправления данных, записанных прежними версиями. По PRAGMA user_version.
+
+    Версия 1 (ревизия 26.09.2026) — ложные «весовые»:
+      * у товаров сетей из FALSE_KG_CHAINS без слова «весовой»/«кг» в названии
+        единица «kg» снимается (NULL — «сеть не сказала»): её поставил разбор
+        названия, а не сеть;
+      * эталоны с единицей «kg», которые по доводам штучные (service.is_weighed:
+        чеки целыми штуками, везде фасовка или штука), становятся «pcs». Иначе
+        «Хлеб Бородинский нарезка» так и показывался бы «1 кг», а расчёт и
+        наряд считали бы его килограммами.
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= SCHEMA_VERSION:
+        return
+    from app.matcher.normalize import sold_by_weight
+
+    placeholders = ",".join("?" * len(FALSE_KG_CHAINS))
+    rows = conn.execute(
+        "SELECT sp.id, sp.raw_name FROM store_products sp JOIN stores s ON s.id = sp.store_id"
+        f" WHERE sp.unit='kg' AND s.code IN ({placeholders})", FALSE_KG_CHAINS).fetchall()
+    reset = [(r["id"],) for r in rows if not sold_by_weight(r["raw_name"] or "")]
+    conn.executemany("UPDATE store_products SET unit=NULL WHERE id=?", reset)
+
+    from app.service import weighed_by_evidence
+
+    # Одним проходом по таблицам, а не запросом на каждый эталон: миграция идёт в
+    # первом запросе после выкладки, и на большой базе поштучные запросы держали
+    # запись секундами — соседний запрос падал с «database is locked».
+    kg = {r["id"]: r["name"] or "" for r in conn.execute("SELECT id, name FROM products WHERE unit='kg'")}
+    bought: dict[int, list] = {}
+    for r in conn.execute("SELECT product_id, qty, raw_name FROM purchase_history"
+                          " WHERE product_id IN (SELECT id FROM products WHERE unit='kg')"):
+        bought.setdefault(r["product_id"], []).append((r["qty"], r["raw_name"]))
+    sold: dict[int, list] = {}
+    for r in conn.execute("SELECT m.product_id, sp.unit, sp.weight_g, sp.raw_name"
+                          " FROM product_mapping m JOIN store_products sp ON sp.id = m.store_product_id"
+                          " WHERE m.confirmed=1 AND m.product_id IN"
+                          " (SELECT id FROM products WHERE unit='kg')"):
+        sold.setdefault(r["product_id"], []).append((r["unit"], r["weight_g"], r["raw_name"]))
+    # Дробное количество в корзине — тоже довод: человек набрал «0,7», видя «кг»,
+    # и перевод в штуки молча сделал бы из 0,7 кг одну пачку.
+    in_baskets = {r["product_id"] for r in conn.execute(
+        "SELECT DISTINCT product_id FROM basket_items WHERE ABS(qty - ROUND(qty)) > 0.0001")}
+
+    flipped = []
+    for pid, name in kg.items():
+        if pid in in_baskets:
+            continue
+        if not bought.get(pid) and not sold.get(pid):
+            continue                  # ни чеков, ни сетей — судить не по чему, верим отметке
+        if not weighed_by_evidence(name, bought.get(pid, []), sold.get(pid, [])):
+            flipped.append((pid,))
+    conn.executemany("UPDATE products SET unit='pcs' WHERE id=?", flipped)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    if reset or flipped:
+        import logging
+
+        logging.getLogger(__name__).info(
+            "миграция %d: у %d товаров сетей снята ложная единица «кг», %d эталонов стали штучными",
+            SCHEMA_VERSION, len(reset), len(flipped))
+
+
 def init_db(conn: sqlite3.Connection | None = None) -> None:
     """Создаёт схему и справочник магазинов. Идемпотентно."""
     own = conn is None
@@ -220,6 +295,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
     try:
         conn.executescript(SCHEMA_SQL)
         _add_late_columns(conn)
+        _migrate(conn)
         for row in SEED_STORES:
             conn.execute(
                 "INSERT INTO stores (code, name, delivery_fee, free_delivery_from, min_order, connector_type)"

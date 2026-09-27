@@ -47,6 +47,11 @@ BY_POINT = ("magnit", "lenta", "metro", "pyaterochka", "samokat")
 
 DEFAULT_MAX_POINTS = 3
 
+# Точки каждого адреса из последнего points(): без схлопывания и без потолка.
+# Обходу они не нужны — ему нужен один магазин на всех соседей, — а переносу
+# цены в базу человека нужны: цену своей точки ищет каждое рабочее место.
+_RESOLVED: dict[str, list] = {}
+
 
 @dataclass(frozen=True)
 class Point:
@@ -118,6 +123,7 @@ def points(chain: str) -> list[Point]:
         return []
 
     out: list[Point] = []
+    every: list[Point] = []
     seen: set[str] = set()
     cap = max_points()
     for addr in addresses():
@@ -126,6 +132,8 @@ def points(chain: str) -> list[Point]:
         except Exception as exc:  # noqa: BLE001 — сеть молчит, остальные адреса живут дальше
             log.warning("%s: точка для адреса «%s» не подобрана (%s)", chain, addr, exc)
             continue
+        if point:
+            every.append(point)
         if not point or point.code in seen:
             continue
         if len(out) >= cap:
@@ -134,7 +142,13 @@ def points(chain: str) -> list[Point]:
             continue
         seen.add(point.code)
         out.append(point)
+    _RESOLVED[chain] = every
     return out
+
+
+def resolved(chain: str) -> list[Point]:
+    """Точки каждого адреса из последнего points() этой сети — с повторами."""
+    return list(_RESOLVED.get(chain) or [])
 
 
 def points_for(address: str, chain: str) -> list[Point]:

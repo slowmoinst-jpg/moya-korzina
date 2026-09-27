@@ -10,10 +10,8 @@ import difflib
 import logging
 import re
 from abc import ABC, abstractmethod
-from typing import Any
 
 from app import config
-from app.connectors.cache import cached_call
 from app.models import Candidate, Location, PriceSnapshot
 
 log = logging.getLogger(__name__)
@@ -183,39 +181,25 @@ def reset_failures() -> None:
     _FAILS.clear()
 
 
-# ---------- коннектор поверх недокументированного HTTP-API магазина ----------
+# ---------- коннектор поверх сайта магазина ----------
 class HttpCatalogConnector(Connector):
-    """Общая механика Магнита и ВкусВилла: GET к внутреннему API, кэш, троттлинг, fallback на CSV.
+    """Коннектор, который ходит на сайт магазина сам (сегодня — Магнит).
 
-    API недокументированы (раздел 9): любой сбой, 403, каптча или непонятный JSON —
-    не ошибка, а штатный повод взять цены из data/fallback_prices.csv.
+    Здесь общее только то, что действительно общее: браузерные заголовки и
+    отметка синтетических артикулов резервного CSV. Поиск и цены у каждой сети
+    свои — у Магнита это JSON-шлюз и разбор вёрстки.
+
+    До 26.09.2026 тут жил ещё «универсальный» разбор любого JSON с угадыванием
+    копеек по порогу (цена больше 100 000 — значит копейки). Им не пользовался
+    никто: Магнит переопределял и поиск, и цены. Угадывание было и неверным —
+    12 990 копеек проходили как 12 990 ₽, — так что код удалён целиком, а не
+    исправлен: единица цены у каждой сети задаётся явно в её коннекторе.
     """
 
     api_url: str = ""
     site_url: str = ""
     fallback_sku_prefix: str = ""          # синтетические SKU из CSV, их в API искать бессмысленно
 
-    # --- переопределяют наследники ---
-    def _search_params(self, query: str, limit: int) -> dict[str, Any]:
-        return {"term": query, "limit": limit}
-
-    def _item_to_candidate(self, item: dict) -> Candidate | None:
-        name = _pick(item, ("name", "title", "productName", "goodsName", "product_name"))
-        if not name:
-            return None
-        price = _pick_price(item)
-        return Candidate(
-            store_code=self.code,
-            sku=str(_pick(item, ("id", "sku", "code", "productId", "article", "vendorCode")) or name),
-            name=str(name),
-            price=price,
-            weight_g=_pick_weight(item),
-            unit="kg" if _pick(item, ("isWeight", "is_weight")) else "pcs",
-            url=_build_url(self.site_url, _pick(item, ("url", "link", "seoUrl"))),
-            ean=_str_or_none(_pick(item, ("ean", "barcode", "gtin"))),
-        )
-
-    # --- сеть ---
     def _headers(self) -> dict[str, str]:
         return {
             "User-Agent": USER_AGENT,
@@ -223,144 +207,6 @@ class HttpCatalogConnector(Connector):
             "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
             "Referer": self.site_url or "https://ya.ru/",
         }
-
-    def _api_get(self, params: dict[str, Any]) -> Any | None:
-        """Один запрос к API магазина. None при любой проблеме — это ожидаемый сценарий."""
-        if api_disabled(self.code):
-            return None
-        try:
-            import requests
-        except ImportError:                                    # pragma: no cover
-            return None
-        timeout = float(config.get("connectors.timeout_sec", 10) or 10)
-        try:
-            resp = requests.get(self.api_url, params=params, headers=self._headers(), timeout=timeout)
-            if resp.status_code != 200:
-                log.warning("%s: %s ответил %s — ухожу в fallback", self.code, self.api_url, resp.status_code)
-                note_failure(self.code)
-                return None
-            note_success(self.code)
-            return resp.json()
-        except Exception as exc:
-            log.warning("%s: запрос к %s не удался (%s) — ухожу в fallback", self.code, self.api_url, exc)
-            note_failure(self.code)
-            return None
-
-    # --- контракт ---
-    def _search(self, query: str, limit: int) -> list[Candidate]:
-        payload = cached_call(
-            self.code,
-            f"search:{normalize(query)}:{limit}",
-            lambda: self._api_get(self._search_params(query, limit)),
-        )
-        candidates: list[Candidate] = []
-        for item in _extract_items(payload):
-            try:
-                cand = self._item_to_candidate(item)
-            except Exception:                                  # непонятная структура записи — пропускаем
-                cand = None
-            if cand:
-                candidates.append(cand)
-        if not candidates:
-            log.warning("%s: API не дал кандидатов по «%s» — беру data/fallback_prices.csv", self.code, query)
-            return self._fallback_search(query, limit)
-        for cand in candidates:
-            cand.score = similarity(query, cand.name)
-        candidates.sort(key=lambda c: c.score, reverse=True)
-        return candidates[:limit]
-
-    def _get_prices(self, skus: list[str]) -> list[PriceSnapshot]:
-        """Синтетические SKU (magnit-…, vkusvill-…) берём из CSV, остальные пробуем в API."""
-        live = [s for s in skus if self.fallback_sku_prefix and not str(s).startswith(self.fallback_sku_prefix)]
-        snapshots: list[PriceSnapshot] = []
-        for sku in live:
-            payload = cached_call(
-                self.code, f"sku:{sku}", lambda sku=sku: self._api_get(self._search_params(str(sku), 1))
-            )
-            for item in _extract_items(payload):
-                cand = self._item_to_candidate(item)
-                if cand and str(cand.sku) == str(sku) and cand.price:
-                    snapshots.append(PriceSnapshot(
-                        store_code=self.code, sku=str(sku), price=float(cand.price),
-                        price_per_kg=float(cand.price) if cand.unit == "kg" else None,
-                        in_stock=True, name=cand.name,
-                    ))
-                    break
-        got = {s.sku for s in snapshots}
-        missing = [s for s in skus if s not in got]
-        if missing:
-            snapshots.extend(self._fallback_prices(missing))
-        return snapshots
-
-
-# ---------- разбор непонятного JSON ----------
-_NAME_KEYS = ("name", "title", "productName", "goodsName", "product_name")
-
-
-def _extract_items(payload: Any, depth: int = 0) -> list[dict]:
-    """Ищет в произвольном JSON первый список словарей, похожих на товары."""
-    if payload is None or depth > 6:
-        return []
-    if isinstance(payload, list):
-        items = [x for x in payload if isinstance(x, dict) and any(k in x for k in _NAME_KEYS)]
-        if items:
-            return items
-        for x in payload:
-            found = _extract_items(x, depth + 1)
-            if found:
-                return found
-        return []
-    if isinstance(payload, dict):
-        for key in ("items", "products", "goods", "results", "data", "payload", "content", "hits"):
-            if key in payload:
-                found = _extract_items(payload[key], depth + 1)
-                if found:
-                    return found
-        for value in payload.values():
-            if isinstance(value, (list, dict)):
-                found = _extract_items(value, depth + 1)
-                if found:
-                    return found
-    return []
-
-
-def _pick(item: dict, keys: tuple[str, ...]) -> Any:
-    for key in keys:
-        if item.get(key) not in (None, ""):
-            return item[key]
-    return None
-
-
-def _pick_price(item: dict) -> float | None:
-    raw = _pick(item, ("price", "currentPrice", "priceRegular", "minPrice", "salePrice", "price_value"))
-    if isinstance(raw, dict):
-        raw = _pick(raw, ("value", "current", "amount", "price"))
-    try:
-        price = float(str(raw).replace(",", ".").replace(" ", ""))
-    except (TypeError, ValueError):
-        return None
-    if price > 100000:                       # копейки во внутренних API — обычное дело
-        price /= 100.0
-    return round(price, 2) if price > 0 else None
-
-
-def _pick_weight(item: dict) -> float | None:
-    raw = _pick(item, ("weight", "weight_g", "netWeight", "grams"))
-    try:
-        return float(str(raw).replace(",", "."))
-    except (TypeError, ValueError):
-        return None
-
-
-def _str_or_none(value: Any) -> str | None:
-    return str(value) if value not in (None, "") else None
-
-
-def _build_url(site: str, path: Any) -> str | None:
-    if not path:
-        return None
-    path = str(path)
-    return path if path.startswith("http") else f"{site.rstrip('/')}/{path.lstrip('/')}"
 
 
 # ---------- реестр ----------
@@ -377,8 +223,14 @@ def register(*codes: str):
 
 
 def _ensure_loaded() -> None:
-    if not _REGISTRY:
-        from app.connectors import dixy, history, lenta, magnit, stub, vkusvill  # noqa: F401  (регистрация при импорте)
+    """Регистрация коннекторов — импортом их модулей. Все сети, а не часть.
+
+    Здесь не хватало METRO: без импорта всего пакета get_connector("metro")
+    отвечал «нет коннектора», хотя он есть. Пятёрочка и Самокат живут в history.
+    """
+    if not _REGISTRY or "metro" not in _REGISTRY:
+        from app.connectors import (  # noqa: F401  (регистрация при импорте)
+            dixy, history, lenta, magnit, metro, stub, vkusvill)
 
 
 def available_codes() -> list[str]:

@@ -155,7 +155,7 @@ def test_run_address_asks_only_chains_that_have_points(db, monkeypatch):
     monkeypatch.setattr(places, "points_for", points_for)
     monkeypatch.setattr(worker, "make", lambda code, spots: crawled.append((code, spots)) or object())
     monkeypatch.setattr(worker.refresh, "run_chain",
-                        lambda crawler, progress=None: {"chain": "magnit", "status": "ok", "seen": 1})
+                        lambda crawler, progress=None, **kw: {"chain": "magnit", "status": "ok", "seen": 1})
     monkeypatch.setattr(worker.refresh, "match_all", lambda progress=None: {})
 
     worker.run_address("Москва, Ходынский бульвар 4")

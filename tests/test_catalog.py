@@ -166,7 +166,91 @@ def test_adopt_puts_item_into_the_persons_base(catalog, user_db):
     assert repo.latest_price_for(product_id, stores["lenta"])["price"] == 89.99
 
 
+def test_partial_run_retires_nothing_and_is_not_fresh(catalog):
+    """Загрузка по одному адресу — не весь Магнит: пропавших по ней не бывает.
+
+    Раньше обход одной новосибирской точки выключал все краснодарские товары
+    (active=0), а ночной обход, сочтя сеть свежей, их не возвращал.
+    """
+    refresh.run_chain(FakeCrawler([P("1", "Молоко"), P("2", "Хлеб")]))
+    part = refresh.run_chain(FakeCrawler([P("1", "Молоко")]), partial=True)
+    assert part["status"] == "partial" and part["gone"] == 0
+    assert len(store.products_of_chain("lenta")) == 2
+
+
+def test_partial_run_does_not_make_the_chain_fresh(catalog):
+    refresh.run_chain(FakeCrawler([P("1", "Молоко")]), partial=True)
+    assert "lenta" not in store.fresh_chains(12)
+
+
+def test_adopt_reads_unknown_stock_as_in_stock(catalog, user_db):
+    """Дикси и Перекрёсток о наличии молчат — молчание не «нет в наличии»."""
+    store.upsert_products("dixy", [P("5", "Молоко Простоквашино 930 мл", price=79.9)])
+    refresh.match_all()
+    product_id = refresh.adopt(store.search_items("молоко")[0]["id"])
+    dixy_id = repo.get_store("dixy").id
+    assert repo.latest_price_for(product_id, dixy_id)["in_stock"] == 1
+
+
+def test_carried_price_keeps_its_own_date(catalog, user_db):
+    """Цена, которой обход не принёс, остаётся — но со своей датой, а не с датой обхода."""
+    store.upsert_products("lenta", [P("1", "Молоко 930 мл", price=89.99)],
+                          seen_at="2026-09-01T00:00:00")
+    store.upsert_products("lenta", [P("1", "Молоко 930 мл")], seen_at="2026-09-20T00:00:00")
+    row = store.products_of_chain("lenta")[0]
+    assert row["price"] == 89.99 and row["price_seen"] == "2026-09-01T00:00:00"
+    refresh.match_all()
+    product_id = refresh.adopt(store.search_items("молоко")[0]["id"])
+    snap = repo.latest_price_for(product_id, repo.get_store("lenta").id)
+    assert snap["fetched_at"] == "2026-09-01T00:00:00"
+
+
+def test_adopt_takes_the_price_of_the_persons_own_point(catalog, user_db):
+    """Цена у Магнита своя в каждой точке: чужой город — не цена человека."""
+    from app import location, places
+
+    store.upsert_products("magnit", [
+        P("7", "Молоко Кубанский молочник 930 мл", price=159.0, in_stock=True, point="992301"),
+        P("7", "Молоко Кубанский молочник 930 мл", price=175.0, in_stock=False, point="264856",
+          seen_only=True),
+    ])
+    refresh.match_all()
+    item = store.search_items("молоко")[0]["id"]
+    magnit_id = repo.get_store("magnit").id
+
+    repo.set_setting(location.KEY_ADDRESS, "Москва, Микояна 12")
+    store.remember_points([places.Point("magnit", "264856", "Микояна 12", "Москва,  Микояна 12")])
+    product_id = refresh.adopt(item)
+    snap = repo.latest_price_for(product_id, magnit_id)
+    assert snap["price"] == 175.0 and snap["in_stock"] == 0
+
+    # точка человека обходом не подобрана, а точек у артикула две — цены нет,
+    # и это честнее, чем взять любую
+    repo.set_setting(location.KEY_ADDRESS, "Казань, Баумана 1")
+    assert refresh.price_for_me(store.item(item)["chains"][0]) is None
+
+
 # ---------- разбор ответов сетей (образцы разведки) ----------
+def test_magnit_carries_the_price_of_every_point(catalog, monkeypatch):
+    """Две точки — одна строка каталога и две цены: своя у каждой точки."""
+    crawler = magnit.MagnitCrawler(["992301", "264856"])
+    monkeypatch.setattr(crawler, "_tree", lambda store_code: [{"id": 1, "name": "Молоко"}])
+    prices = {"992301": (15900, 3), "264856": (17500, 0)}
+
+    def page(store_code, leaf_id, offset):
+        price, quantity = prices[store_code]
+        return {"items": [{"id": 7, "name": "Молоко Кубанский молочник 930 мл",
+                           "price": price, "quantity": quantity}],
+                "pagination": {"hasMore": False}}
+
+    monkeypatch.setattr(crawler, "_page", page)
+    refresh.run_chain(crawler)
+    assert len(store.products_of_chain("magnit")) == 1
+    by_point = store.point_prices("magnit", "7")
+    assert by_point["992301"]["price"] == 159.0 and by_point["992301"]["in_stock"] == 1
+    assert by_point["264856"]["price"] == 175.0 and by_point["264856"]["in_stock"] == 0
+
+
 def test_magnit_tree_and_item():
     tree = [{"id": 4998, "name": "Рыба, морепродукты", "children": [
         {"id": 38559, "name": "Дары моря", "children": []},
@@ -238,8 +322,9 @@ def quiet_run(catalog, monkeypatch):
     monkeypatch.setattr(worker, "chains", lambda: ["magnit", "metro"])
     monkeypatch.setattr(worker.places, "points", lambda code: [])
     monkeypatch.setattr(worker, "make", lambda code, spots: code)
-    monkeypatch.setattr(worker.refresh, "run_chain", lambda crawler, progress=None: (
-        seen["crawled"].append(crawler) or {"chain": crawler, "status": "ok", "seen": 1}))
+    monkeypatch.setattr(worker.refresh, "run_chain", lambda crawler, progress=None, **kw: (
+        seen["crawled"].append(crawler)
+        or {"chain": crawler, "status": "ok", "seen": 1, "added": seen.get("added", 1)}))
     monkeypatch.setattr(worker.refresh, "match_all", lambda progress=None: (
         seen["matched"].append(1) or {"items": 1}))
     return seen
@@ -285,6 +370,26 @@ def test_matching_runs_once_per_crawled_chain_and_not_again_at_the_end(quiet_run
     assert rows[-1] == {"chain": "match", "items": 1}
 
 
+def test_a_crawl_that_changed_nothing_is_not_matched_again(quiet_run):
+    """Цены и наличие на единые товары не влияют: без новых, изменённых и пропавших
+    строк сопоставление пересчитало бы ровно тот же каталог за десять минут."""
+    quiet_run["added"] = 0
+    rows = worker.run_all()
+
+    assert quiet_run["crawled"] == ["magnit", "metro"]
+    assert quiet_run["matched"] == []
+    assert all(r["chain"] != "match" for r in rows)
+
+
+def test_rows_left_unmatched_are_matched_on_the_next_crawl(quiet_run):
+    """Обход, оборванный выкладкой, сложил строки и не успел их сопоставить —
+    следующий обход сопоставит, даже если сам ничего не поменял."""
+    quiet_run["added"] = 0
+    store.upsert_products("magnit", [P("1", "Молоко 930 мл")])      # item_id пуст
+    worker.run_all()
+    assert quiet_run["matched"], "строки без единого товара остались бы такими навсегда"
+
+
 def test_nothing_crawled_means_nothing_to_match(quiet_run):
     _crawled("magnit")
     _crawled("metro")
@@ -313,7 +418,7 @@ def test_a_second_crawler_waits_for_the_first(quiet_run, monkeypatch):
             calls.append({self.LOCK_EX: "дождался", self.LOCK_UN: "отпустил"}[op])
 
     monkeypatch.setitem(sys.modules, "fcntl", Kernel())
-    monkeypatch.setattr(worker.refresh, "run_chain", lambda crawler, progress=None: (
+    monkeypatch.setattr(worker.refresh, "run_chain", lambda crawler, progress=None, **kw: (
         calls.append(f"обход {crawler}") or {"chain": crawler, "status": "ok"}))
 
     worker.run_all()
@@ -604,3 +709,49 @@ def test_perekrestok_reads_a_price_from_the_feed():
     assert _price_of({"price": 100}) is None
     assert _price_of({"plu": "1"}) is None
     assert _price_of({"plu": "1", "price": 0}) is None
+
+
+def test_the_catalog_migration_takes_false_kilos_off(catalog):
+    """Строки Пятёрочки с «kg» от разбора названия — без единицы; «весовые» — с ней.
+
+    Без миграции ложное «kg» жило бы вечно: обновление берёт единицу через COALESCE,
+    и новое «не сказано» старое «kg» не перетирает.
+    """
+    store.upsert_products("pyaterochka", [P("1", "Хлеб Бородинский", unit="kg"),
+                                          P("2", "Огурцы весовые", unit="kg")])
+    store.upsert_products("magnit", [P("3", "Креветки Королевские", unit="kg")])
+    with store.connect() as conn:
+        conn.execute("PRAGMA user_version = 0")
+        conn.commit()
+    store.init()
+    rows = {r["sku"]: r["unit"] for chain in ("pyaterochka", "magnit")
+            for r in store.products_of_chain(chain)}
+    assert rows == {"1": None, "2": "kg", "3": "kg"}
+
+
+def test_adopt_takes_the_unit_from_the_chains_not_a_stale_one(catalog, user_db):
+    """Единица эталона — по строкам сетей: «на вес» хоть в одной — весовой."""
+    store.upsert_products("lenta", [P("1", "Бананы, весовые", unit="kg", price=120.0)])
+    store.upsert_products("magnit", [P("2", "Хлеб Бородинский 400 г", unit="pcs", price=60.0)])
+    refresh.match_all()
+    bananas = refresh.adopt(store.search_items("бананы")[0]["id"])
+    bread = refresh.adopt(store.search_items("хлеб")[0]["id"])
+    assert repo.get_product(bananas).unit == "kg"
+    assert repo.get_product(bread).unit == "pcs"
+    lenta_id = repo.get_store("lenta").id
+    assert repo.latest_price_for(bananas, lenta_id)["price_per_kg"] == 120.0
+
+
+def test_old_lenta_portion_prices_become_kilo_prices(catalog):
+    """Развесное Ленты хранило цену порции: 300 г за 225 ₽ — это 750 ₽/кг."""
+    store.upsert_products("lenta", [P("1", "Сыр NATURA весовой", unit="kg", weight_g=300,
+                                      price=225.0),
+                                    P("2", "Огурцы весовые", unit="kg", price=40.0),
+                                    P("3", "Молоко 930 мл", unit="pcs", weight_g=930, price=90.0)],
+                          seen_at="2026-09-20T03:30:00")
+    with store.connect() as conn:
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+    store.init()
+    prices = {r["sku"]: r["price"] for r in store.products_of_chain("lenta")}
+    assert prices == {"1": 750.0, "2": None, "3": 90.0}

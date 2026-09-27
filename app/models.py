@@ -88,6 +88,10 @@ class PriceSnapshot:
     in_stock: bool = True
     fetched_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     name: str | None = None
+    # Откуда цена: None — с витрины сети сейчас; "fallback" — справочная из
+    # data/fallback_prices.csv. Без отметки справочная цена со временем «сейчас»
+    # неотличима от живой, и сбой сети молча подменял бы живую цену выдуманной.
+    source: str | None = None
 
 
 @dataclass
@@ -99,6 +103,9 @@ class BasketLine:
     qty: float
     prices: dict[str, float] = field(default_factory=dict)     # store_code -> цена позиции целиком
     in_stock: dict[str, bool] = field(default_factory=dict)
+    notes: dict[str, str] = field(default_factory=dict)        # store_code -> как получена цена
+    # store_code -> поправка ТОЛЬКО ДЛЯ ВЫБОРА (другая фасовка), в оплату не входит
+    adjust: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -112,6 +119,7 @@ class VariantLine:
     qty: float
     price: float               # стоимость позиции целиком (цена * qty)
     discount: float = 0.0      # доля кэшбэка, отнесённая на позицию
+    note: str | None = None    # как получена цена, если она не равна цене полки
 
 
 @dataclass
@@ -138,14 +146,22 @@ class Variant:
     penalty: float = 0.0
     handover: float = 0.0      # во что обходится завести эту корзину в магазины руками
     missing_products: list[str] = field(default_factory=list)
+    # Поправка на фасовку: штучные позиции с другой граммовкой, приведённые к весу
+    # эталона. Как и handover, в оплату не входит — только в сравнение вариантов.
+    pack_extra: float = 0.0
 
     @property
     def savings_rub(self) -> float:
+        """Экономия в рублях: база минус итог — разность двух чисел на экране.
+
+        Поправка на фасовку (pack_extra) сюда не входит: она про выбор варианта, а
+        экономия, которая не сходится с «Было бы» и «Заплатим», читается враньём.
+        """
         return round(self.baseline - self.total, 2)
 
     @property
     def savings_pct(self) -> float:
-        return round((self.baseline - self.total) / self.baseline * 100, 2) if self.baseline else 0.0
+        return round(self.savings_rub / self.baseline * 100, 2) if self.baseline else 0.0
 
     @property
     def title(self) -> str:
@@ -158,8 +174,10 @@ class Variant:
         Наружу как «сколько заплатить» НЕ показывается: рубли за перебивание корзины
         человек никому не отдаёт. Но и не учитывать их нельзя — иначе расчёт бодро
         отправит в третий магазин ради сорока рублей, где уйдёт четверть часа.
+        Туда же поправка на фасовку (pack_extra): 800 г вместо килограмма дешевле на
+        полке, но не за килограмм.
         """
-        return round(self.total + self.handover, 2)
+        return round(self.total + self.handover + self.pack_extra, 2)
 
 
 @dataclass(frozen=True)

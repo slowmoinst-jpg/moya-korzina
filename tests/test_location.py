@@ -87,7 +87,7 @@ def test_address_resolves_once_into_delivery_hub(db, monkeypatch):
 
     assert where == {"storeId": 203, "channel": "lo"}
     assert [c[0] for c in calls] == ["storefront_resolve_store"]
-    assert calls[0][2] == "stores:Екатеринбург, улица Щербакова 4", "без ключа кэша адрес разрешался бы каждый раз"
+    assert calls[0][2] == "stores:екатеринбург, улица щербакова 4", "без ключа кэша адрес разрешался бы каждый раз"
 
 
 def test_address_beats_store_code(monkeypatch):
@@ -145,7 +145,7 @@ def test_nearest_stores_and_hub_share_one_answer(monkeypatch):
 
     assert [h["aliasId"] for h in hubs] == [202138, 203]
     assert hub == 203
-    assert {c[2] for c in calls} == {"stores:Екатеринбург, улица Щербакова 4"}, "ключ кэша один — ответ один"
+    assert {c[2] for c in calls} == {"stores:екатеринбург, улица щербакова 4"}, "ключ кэша один — ответ один"
 
 
 # ---------- магазин Магнита по адресу ----------
@@ -192,6 +192,52 @@ def test_magnit_gets_the_shop_nearest_to_the_address(db, monkeypatch):
     assert place.store_id == "668596"
     assert place.shop_type == "MM"
     assert place.address is None, "Магнит адресов не понимает — в место кладём только код"
+
+
+MINI = {"code": "628425", "format": "MM_MINI", "address": "Екатеринбург, Ленина, 1",
+        "distance": 120.0, "delivery": True}
+ME_DELIVERS = {"code": "992301", "format": "ME", "address": "Екатеринбург, Ленина, 50",
+               "distance": 800.0, "delivery": True}
+
+
+def test_magnit_point_is_one_that_can_take_an_order(db, monkeypatch):
+    """Как в приложении сети: точка — магазин с интернет-витриной, а не «у дома мини».
+
+    «Мини» ближе, но карточек не открывает вовсе (замер 20.09.2026): расчёт по нему
+    показывал экономию, а корзину собрать было негде.
+    """
+    _magnit_stores(monkeypatch, [MINI, MM, ME_DELIVERS])
+    location.save_address("Екатеринбург, улица Малышева 51")
+
+    place = location.for_store("magnit")
+
+    assert place.store_id == "992301", "магазин с витриной и доставкой — первым"
+    assert place.delivery is True
+
+
+def test_magnit_shop_without_delivery_is_priced_as_pickup(db, monkeypatch):
+    """Магазин доставку не делает — цены и корзина самовывоза, а не доставки."""
+    _magnit_stores(monkeypatch, [MM])
+    location.save_address("Екатеринбург, улица Малышева 51")
+
+    place = location.for_store("magnit")
+
+    assert place.store_id == "668596" and place.delivery is False
+
+
+def test_only_a_mini_nearby_is_still_a_point(db, monkeypatch):
+    """Других рядом нет — точка всё равно есть: полка настоящая, а про корзину скажут отдельно."""
+    _magnit_stores(monkeypatch, [MINI])
+    location.save_address("Екатеринбург, улица Малышева 51")
+    assert location.for_store("magnit").store_id == "628425"
+
+
+def test_online_formats_agree_with_the_measured_ones():
+    """Список форматов с витриной в коннекторе и в наряде один и тот же — замеренный."""
+    from app.connectors import magnit
+    from app.shopbrowser import point
+
+    assert set(magnit.ONLINE_FORMATS) == set(point.SERVED_FORMATS["magnit"])
 
 
 def test_magnit_without_a_shop_nearby_says_so_instead_of_staying_silent(db, monkeypatch):

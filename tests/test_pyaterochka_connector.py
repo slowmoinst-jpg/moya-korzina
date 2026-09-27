@@ -41,3 +41,28 @@ def test_nearest_store_none_when_unresolved(monkeypatch):
     monkeypatch.setattr(geo, "coords", lambda addr: None)
     monkeypatch.setattr(config, "get", lambda key, default=None: None)
     assert pyaterochka.nearest_store("Неизвестный адрес") is None
+
+
+def test_a_store_without_coordinates_is_not_the_nearest(monkeypatch):
+    """Магазин без координат — расстояние неизвестно, а не ноль.
+
+    Раньше вместо его координат подставлялась точка запроса, расстояние выходило
+    нулевым, и такой магазин становился «ближайшим».
+    """
+    class Reply:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+
+        @staticmethod
+        def json():
+            return [{"sap_code": "far", "address": "без координат"},
+                    {"sap_code": "near", "address": "рядом", "lat": 55.7501, "lon": 37.6101}]
+
+    from app import homeexit
+
+    monkeypatch.setattr(homeexit, "requests_proxies", lambda chain: None)
+    monkeypatch.setattr(pyaterochka.requests, "get", lambda *a, **k: Reply())
+    found = pyaterochka._fetch_api_stores(55.75, 37.61, 3.0)
+    by_code = {s["code"]: s for s in found}
+    assert by_code["far"]["distance"] == float("inf")
+    assert by_code["near"]["distance"] < 100

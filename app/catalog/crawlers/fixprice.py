@@ -43,7 +43,7 @@ import time
 from app import config
 from app.catalog.crawlers import BACKOFF_SEC, RETRIES, Pace
 from app.catalog.model import ChainProduct, CrawlBlocked, Crawler, Progress
-from app.matcher.normalize import parse_weight
+from app.matcher.normalize import parse_weight, unit_from_name
 
 log = logging.getLogger(__name__)
 
@@ -121,7 +121,8 @@ def to_product(item: dict) -> ChainProduct | None:
     if not sku or not name:
         return None
     url = str(item.get("url") or "").strip()
-    weight_g, unit = parse_weight(name)
+    weight_g, _ = parse_weight(name)
+    unit = unit_from_name(name)          # «kg» — по слову, а не по отсутствию граммовки
     return ChainProduct(
         sku=sku,
         name=name,
@@ -143,7 +144,7 @@ class FixPriceCrawler(Crawler):
     name = "Fix Price"
 
     def __init__(self) -> None:
-        self.pace = Pace()
+        self.pace = Pace(chain=self.code)
         self.per_page = 24                     # столько витрина кладёт на страницу сама
         self.max_pages = int(config.get("catalog.fixprice.max_pages") or 60)
         self.max_sections = int(config.get("catalog.fixprice.max_sections") or 40)

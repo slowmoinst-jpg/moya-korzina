@@ -86,11 +86,13 @@ def resolve_address(address: str) -> dict:
     nearest_stores (проверка адреса на экране), и delivery_hub (код для цен).
     Пустой словарь — сервер не ответил или адрес не разобран.
     """
-    address = (address or "").strip()
+    # Пробелы схлопнуты, регистр в ключе кэша не важен: «Москва,  Ходынский» и
+    # «москва, ходынский» — один адрес, и второй раз спрашивать Ленту о нём незачем.
+    address = " ".join((address or "").split())
     if not address:
         return {}
     answer = mcp_client.call_tool(MCP_URL, "lenta", "storefront_resolve_store",
-                                  {"address": address}, cache_key=f"stores:{address}")
+                                  {"address": address}, cache_key=f"stores:{address.lower()}")
     return mcp_client.ok_payload(answer) or {}
 
 
@@ -219,6 +221,26 @@ def _where(location: Location | None = None) -> dict:
             return {"storeId": code, "channel": DEFAULT_CHANNEL}
         log.warning("lenta: код точки %r не число — спрашивать нечем", location.store_id)
     return {}
+
+
+def _per_kg(item: dict, price: float, name: str | None) -> float | None:
+    """Цена килограмма развесного товара. Не развесной или не посчитать — None.
+
+    У Ленты `price` развесного товара — цена ФАСОВКИ, а не килограмма:
+    price = pricePerKg × weightGrams / 1000 (замер 19.09.2026, см. _weight_rules).
+    Раньше цена фасовки уходила ценой килограмма, и полшара сыра в 300 г считались
+    втрое дешевле, чем стоят.
+    """
+    if not (item.get("isWeight") or _unit(name) == "kg"):
+        return None
+    direct = _number(item.get("pricePerKg"))
+    if direct:
+        return direct
+    pack = _number(item.get("weightGrams")) or 0
+    if pack > 0:
+        return round(price * 1000.0 / pack, 2)
+    # Фасовки карточка не назвала — остаётся прежнее прочтение: цена за килограмм.
+    return price
 
 
 def _weight_rules(sku: int, location: Location | None) -> dict | None:
@@ -356,12 +378,18 @@ class LentaConnector(Connector):
         sku, name = item.get("id"), (item.get("name") or "").strip()
         if not sku or not name:
             return None
+        price = _number(item.get("price")) or None   # 0 у Ленты — «в этой точке не продаётся», а не цена
+        unit = _unit(name)
+        if unit == "kg" and price:
+            # Развесное: в выдаче цена порции, а кандидат с единицей «kg» несёт цену
+            # килограмма — из неё корзина считает price_per_kg (basket._remember).
+            price = _per_kg(item, price, name) or price
         return Candidate(
             store_code=self.code,
             sku=str(sku),
             name=name,
-            price=_number(item.get("price")) or None,   # 0 у Ленты — «в этой точке не продаётся», а не цена
-            unit=_unit(name),
+            price=price,
+            unit=unit,
             url=item.get("url") or f"{SITE_URL}/product/{item.get('slug', '')}-{sku}/",
         )
 
@@ -418,7 +446,7 @@ class LentaConnector(Connector):
                 store_code=self.code,
                 sku=str(sku),
                 price=price,
-                price_per_kg=price if _unit(name) == "kg" else None,
+                price_per_kg=_per_kg(item, price, name),
                 in_stock=stock > 0,
                 name=name,
             ))

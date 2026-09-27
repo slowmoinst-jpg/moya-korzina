@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from app import repo, store_accounts
 
@@ -55,12 +55,19 @@ class PlanLine:
     unit: str | None = None
     price: float | None = None
     url: str | None = None
+    # В чём считано qty: «kg» — килограммы корзины, «pcs» — штуки. unit выше —
+    # единица ТОВАРА СЕТИ, и они расходятся: корзина просит 0,4 кг сыра, а сеть
+    # продаёт его упаковками по 200 г.
+    per: str | None = None
+    # Вес одной упаковки товара сети, граммы. С ним килограммы корзины переводятся
+    # в упаковки: 0,4 кг по 200 г — две, а не одна, как выходило из round(0,4).
+    pack_g: float | None = None
     product_id: int | None = None
 
     def as_dict(self) -> dict:
         return {"sku": self.sku, "qty": self.qty, "name": self.name,
                 "unit": self.unit, "price": self.price, "url": self.url,
-                "product_id": self.product_id}
+                "per": self.per, "pack_g": self.pack_g, "product_id": self.product_id}
 
 
 @dataclass
@@ -144,6 +151,34 @@ def _price(line, store_code: str) -> float | None:
     return None
 
 
+def _per(line, product_id) -> str | None:
+    """В чём корзина считает эту позицию: «kg» или «pcs». Не знаем — None.
+
+    «kg» — только у товара, который и правда берут на вес (service.is_weighed):
+    отметка unit="kg" в базе бывает и у буханки, чьё название просто без
+    граммовки, и наряд переводил бы «1 буханку» в три упаковки по 400 г.
+    """
+    from app import service
+
+    unit = getattr(line, "unit", None)
+    product = repo.get_product(product_id) if product_id else None
+    if unit not in ("kg", "pcs"):
+        unit = product.unit if product else None
+    if unit is None:
+        return None
+    name = product.name if product else None
+    return "kg" if service.is_weighed(product_id, unit, name) else "pcs"
+
+
+def _pack(mapping: dict | None) -> float | None:
+    """Вес упаковки товара сети в граммах, если он известен и осмыслен."""
+    try:
+        grams = float((mapping or {}).get("weight_g") or 0)
+    except (TypeError, ValueError):
+        return None
+    return grams if grams > 0 else None
+
+
 def build(store_code: str, lines, *, force: bool = False, verify_prices: bool = False) -> CartPlan:
     """Собрать наряд по позициям расчёта.
 
@@ -169,13 +204,16 @@ def build(store_code: str, lines, *, force: bool = False, verify_prices: bool = 
         if not sku:
             plan.unknown.append(name)
             continue
+        shop_unit = (mapping or {}).get("unit")
         plan.lines.append(PlanLine(
             sku=str(sku),
             qty=float(getattr(line, "qty", 1) or 1),
             name=(mapping or {}).get("raw_name") or name,
-            unit=(mapping or {}).get("unit"),
+            unit=shop_unit,
             price=_price(line, store_code),
             url=(mapping or {}).get("url"),
+            per=_per(line, product_id),
+            pack_g=_pack(mapping) if shop_unit != "kg" else None,
             product_id=product_id,
         ))
 
@@ -206,10 +244,14 @@ def verify(plan: CartPlan, refresh=None) -> CartPlan:
         свежей цены нет   → тоже `gone`: класть в корзину товар, цену которого
                             подтвердить не удалось, значит обещать сумму наугад.
 
+    Новая цена считается тем же правилом, что и в расчёте (service.line_price):
+    упаковки, порции развеса и вес штуки. Иначе «было» и «стало» сравнивали бы
+    разное — 0,7 кг сыра по 400 г у расчёта две пачки за 600 ₽, а «цена × кг» — 210 ₽.
+
     `refresh` — чем обновить цены (по умолчанию matcher.refresh_prices); падение
     магазина не роняет оформление, но и не пропускает непроверенное.
     """
-    from app import freshness
+    from app import service
 
     store = repo.get_store(plan.store_code)
     ids = [ln.product_id for ln in plan.lines if ln.product_id]
@@ -227,20 +269,17 @@ def verify(plan: CartPlan, refresh=None) -> CartPlan:
         if not ln.product_id:
             kept.append(ln)
             continue
-        snap = freshness.price_for(ln.product_id, store.id)
-        if not snap or not bool(snap.get("in_stock", 1)):
+        product = repo.get_product(ln.product_id)
+        unit = (product.unit if product else None) or ln.per or "pcs"
+        found = service.line_price(ln.product_id, store, ln.qty, unit,
+                                   product.weight_g if product else None)
+        if not found or not found["in_stock"]:
             plan.gone.append(ln.name)
             continue
-        is_kg = (ln.unit or "pcs") == "kg"
-        base = (snap.get("price_per_kg") or snap.get("price")) if is_kg else snap.get("price")
-        if base is None:
-            plan.gone.append(ln.name)
-            continue
-        now = round(float(base) * ln.qty, 2)
+        now = found["value"]
         if ln.price is not None and abs(now - ln.price) >= 0.01:
             plan.changes.append({"name": ln.name, "was": ln.price, "now": now})
-        kept.append(PlanLine(sku=ln.sku, qty=ln.qty, name=ln.name, unit=ln.unit,
-                             price=now, url=ln.url, product_id=ln.product_id))
+        kept.append(replace(ln, price=now))
     plan.lines = kept
     plan.checked = True
     if plan.gone and not plan.lines:

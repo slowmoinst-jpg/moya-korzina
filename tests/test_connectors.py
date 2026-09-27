@@ -1,6 +1,7 @@
 """Тесты слоя коннекторов цен. Сеть не трогаем: внутренний API подменяем monkeypatch."""
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -39,7 +40,6 @@ def offline(monkeypatch):
     """
     from app.connectors import mcp_client
 
-    monkeypatch.setattr(MagnitConnector, "_api_get", lambda self, params: None)
     monkeypatch.setattr(MagnitConnector, "_gateway",
                         lambda self, url, body=None, params=None: (None, 0))
     monkeypatch.setattr(MagnitConnector, "_get_html", lambda self, url, params=None: (None, 0))
@@ -193,6 +193,68 @@ def test_throttle_pauses_but_does_not_break_call():
     assert time.monotonic() - start < interval * 0.5
 
     assert get_connector("stub").search("хлебцы"), "после паузы вызов живой"
+
+
+def test_waiting_for_one_store_does_not_hold_another():
+    """Пауза Магнита не держит ВкусВилл: ждут вне общего замка.
+
+    Раньше time.sleep стоял под замком, и живой поиск по шести сетям в потоках
+    складывал задержки всех сетей в одну очередь.
+    """
+    import threading
+
+    interval = 1.0 / float(config.get("connectors.rate_limit_rps", 1.0))
+    cache.throttle("magnit")
+    waiting = threading.Thread(target=cache.throttle, args=("magnit",))
+    waiting.start()
+    time.sleep(0.05)                       # второй запрос Магнита уже ждёт свой слот
+    start = time.monotonic()
+    cache.throttle("vkusvill")
+    assert time.monotonic() - start < interval * 0.5
+    waiting.join()
+
+
+def test_the_pace_is_shared_between_processes(monkeypatch):
+    """Слот сети лежит в файле: другой процесс увидит, что сеть только что спрашивали."""
+    pytest.importorskip("fcntl")
+    interval = 1.0 / float(config.get("connectors.rate_limit_rps", 1.0))
+    assert cache.reserve("lenta", interval) == 0.0
+    cache._last_request.clear()            # как будто спрашивает другой процесс
+    assert cache.reserve("lenta", interval) > interval * 0.5
+
+
+def test_a_slot_from_the_future_does_not_put_a_request_to_sleep():
+    """Сбитые часы (метка на час вперёд) — не очередь: ждать час запрос не должен."""
+    interval = 1.0 / float(config.get("connectors.rate_limit_rps", 1.0))
+    cache._last_request["magnit"] = time.time() + 3600
+    assert cache.reserve("magnit", interval) < interval + 0.1
+
+
+def test_stale_cache_files_are_pruned(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "CACHE_DIR", str(tmp_path))
+    cache.cache_set("magnit", "old", {"a": 1})
+    cache.cache_set("magnit", "new", {"b": 2})
+    old = cache._path("magnit", "old")
+    os.utime(old, (time.time() - 10 * 86400, time.time() - 10 * 86400))
+    assert cache.prune() == 1
+    assert not os.path.exists(old) and cache.cache_get("magnit", "new") == {"b": 2}
+
+
+def test_fallback_price_is_marked_as_reference():
+    """Справочная цена из CSV не должна выглядеть живой."""
+    snaps = stub.fallback_prices("pyaterochka", ["pyaterochka-strachatella-200"]) or \
+        stub.fallback_prices("pyaterochka", [stub.rows_for("pyaterochka")[0]["sku"]])
+    assert snaps and all(s.source == stub.FALLBACK for s in snaps)
+
+
+def test_magnit_search_card_takes_the_sale_price_first():
+    """Зачёркнутая обычная цена в разметке раньше акционной — берётся акционная."""
+    page = ('<article class="unit-catalog-product-preview">'
+            '<a title="Молоко 930 мл" href="/product/1000-moloko">'
+            '<div class="prices__regular"><span>119&#8202;₽</span></div>'
+            '<div class="prices__sale"><span>89,99&#8202;₽</span></div></article></main>')
+    cards = MagnitConnector()._cards(page)
+    assert cards and cards[0].price == 89.99
 
 
 # ---------- магазин, регион и наличие ----------

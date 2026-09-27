@@ -162,10 +162,30 @@ def _chosen(variants, mode: str | None):
     if not split or not single:
         return variants[0], None
     if mode not in ("split", "single"):
-        mode = "split" if split.total <= single.total else "single"
+        # В ТОМ ПОРЯДКЕ, В КОТОРОМ ИХ РАСПОЛОЖИЛ РАСЧЁТ: сначала полные, потом не
+        # ниже минимального заказа, потом по итогу с ручной работой и фасовкой. По
+        # одним деньгам экран советовал дробить там, где расчёт счёл дробление хуже,
+        # а по одному итогу — брать магазин, где нет сыра, потому что без сыра дешевле.
+        mode = "split" if variants.index(split) < variants.index(single) else "single"
     switch = {"split": {"label": f"Разделить · {rub(split.total)}", "on": mode == "split"},
               "single": {"label": f"Один магазин · {rub(single.total)}", "on": mode == "single"}}
     return (split if mode == "split" else single), switch
+
+
+def _resent(code: str) -> dict | None:
+    """Недавняя удачная передача в эту сеть: когда и сколько легло. Не было — None."""
+    from app.shopbrowser import cart
+
+    try:
+        if cart.running(code):
+            return None
+        sent = cart.already_sent(code)
+    except Exception:  # noqa: BLE001 — подсказка не повод ронять экран
+        return None
+    if not sent:
+        return None
+    return {"at": sent["finished_at"][11:16], "landed": sent["landed"],
+            "retry": len(cart.failed_skus(code))}
 
 
 def _units() -> dict[int, str]:
@@ -217,7 +237,8 @@ def _store_card(store, units: dict[int, str], with_handover: bool, trouble: str 
         "lines": [{"name": getattr(ln, "product_name", "—"),
                    "qty": getattr(ln, "qty", 0),
                    "unit": unit_label(units.get(getattr(ln, "product_id", None))),
-                   "price": getattr(ln, "price", 0.0)} for ln in lines],
+                   "price": getattr(ln, "price", 0.0),
+                   "note": getattr(ln, "note", None)} for ln in lines],
         "kind": kind,
         "asks_link": kind == ho.LINK,
         "trouble": trouble == code,
@@ -228,6 +249,9 @@ def _store_card(store, units: dict[int, str], with_handover: bool, trouble: str 
         # Пока передача идёт, кнопка обязана быть погашена: второе нажатие кладёт
         # всё в корзину человека второй раз.
         "going": _going(code) if (with_handover and kind != ho.LINK) else None,
+        # Корзина сюда уже уезжала сегодня: сеть кладёт поверх лежащего, и ещё
+        # одна передача удвоит её. Спрашиваем здесь же, у тех же позиций.
+        "resend": _resent(code) if (with_handover and kind != ho.LINK) else None,
     }
 
     if not lines or not with_handover:
@@ -278,8 +302,9 @@ def _store_card(store, units: dict[int, str], with_handover: bool, trouble: str 
                 # сыра превращаются в одну упаковку у КОНКРЕТНОГО товара, и
                 # человек должен видеть это до передачи, а не потом в чеке.
                 card["plan"] = {"lines": [{"name": ln.name, "qty": ln.qty,
-                                           "unit": unit_label(ln.unit), "price": ln.price,
-                                           "rounded": cart.rounding(ln.qty, ln.unit)}
+                                           "unit": unit_label(ln.per or ln.unit),
+                                           "price": ln.price,
+                                           "rounded": cart.rounding_of(ln)}
                                           for ln in plan.lines],
                                 "unknown": list(plan.unknown), "total": plan.total,
                                 "note": plan.note,
@@ -422,10 +447,18 @@ def _act():
                             # Класть некуда, пока человек не вошёл. Ведём туда, где
                             # входят, — человеку нужен следующий шаг, а не диагноз.
                             return redirect(f"/cabinet?store={target}")
+                        # Корзина сюда уже уезжала сегодня — вторая полная
+                        # передача удвоит её. Спрашиваем ЗДЕСЬ ЖЕ: карточка сети
+                        # покажет вопрос у тех же позиций. На «Кабинетах» «ещё раз»
+                        # собрало бы наряд из всей корзины, а не из этой сети.
+                        again = bool(request.form.get("again"))
+                        if not again and not cart.running(target) and cart.already_sent(target):
+                            return redirect(f"{PATH}?basket={basket_id}"
+                                            + (f"&mode={mode}" if mode else ""))
                         # Пускатель сам не пустит вторую передачу в ту же сеть, и
                         # ответ «не пустил» надо донести: молча увести на «пошла»
                         # значило бы соврать человеку, который нажал дважды.
-                        if not cart.start(target, auth.current_phone() or "", cp):
+                        if not cart.start(target, auth.current_phone() or "", cp, again=again):
                             return redirect("/accounts?busy=" + target)
                         return redirect("/accounts?sent=" + target)
                 except Exception:  # noqa: BLE001

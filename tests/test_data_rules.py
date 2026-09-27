@@ -114,6 +114,28 @@ def test_verify_does_not_pass_an_unconfirmed_price(db, monkeypatch):
     assert plan.lines == [] and plan.gone == ["Сыр"]
 
 
+def test_verify_counts_packs_like_the_calculation(db, monkeypatch):
+    """Проверка перед оформлением считает цену тем же правилом, что и расчёт.
+
+    0,7 кг сыра в пачках по 400 г — две пачки за 600 ₽. «Цена × кг» дала бы 210 ₽ и
+    ложное «цена изменилась» на каждом весовом товаре в упаковках.
+    """
+    monkeypatch.setattr(cartplan, "available", lambda code: True)
+    store = repo.get_store("magnit")
+    pid = repo.upsert_product(Product(id=None, name="Сыр Российский", unit="kg"))
+    sp = repo.upsert_store_product(store.id, "m-40", "Сыр Российский 400 г", weight_g=400, unit="pcs")
+    repo.confirm_mapping(pid, sp, confirmed=True)
+    repo.save_price(sp, 300.0)
+    basket = repo.create_basket("проба")
+    repo.set_basket_item(basket, pid, 0.7)
+    lines = service.build_basket_lines(basket)
+    assert lines[0].prices["magnit"] == 600.0
+
+    plan = cartplan.verify(cartplan.build("magnit", lines), refresh=lambda ids, stores: None)
+    assert plan.checked and plan.changes == [] and plan.total == 600.0
+    assert (plan.lines[0].per, plan.lines[0].pack_g) == ("kg", 400.0), "наряд помнит, как класть"
+
+
 # ---------- 4. отсев чеков ----------
 @pytest.mark.parametrize("seller, code", [
     ("Пятёрочка", "pyaterochka"),

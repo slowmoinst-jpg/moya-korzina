@@ -38,7 +38,7 @@ import re
 import time
 
 from app import pricebundle, repo
-from app.matcher.normalize import parse_weight
+from app.matcher.normalize import parse_weight, unit_from_name
 from app.shopbrowser import driver, signals
 from app.shopbrowser import store as shopstore
 
@@ -108,7 +108,8 @@ def product_in_ld(blocks) -> dict | None:
                         break
             if price:
                 weight_raw = str(node.get("weight") or node.get("netWeight") or "").strip()
-                weight_g, unit = parse_weight(weight_raw or name or "")
+                weight_g, _ = parse_weight(weight_raw or name or "")
+                unit = unit_from_name(name or "") or ("pcs" if weight_g else None)
                 return {
                     "price": price,
                     "base_price": base_price,
@@ -200,7 +201,8 @@ def _from_micro(page) -> dict | None:
     except Exception:  # noqa: BLE001
         pass
 
-    weight_g, unit = parse_weight(name or "")
+    weight_g, _ = parse_weight(name or "")
+    unit = unit_from_name(name or "")
     return {
         "price": price,
         "base_price": None,
@@ -415,13 +417,13 @@ def _discover_from_showcase(chain: str, phone: str, limit: int = PAGE_LIMIT) -> 
                 except ValueError:
                     price = None
                 if name and price and price > 0:
-                    w, u = parse_weight(name)
+                    w, _ = parse_weight(name)
                     items.append({
                         "sku": sku,
                         "name": name,
                         "price": price,
                         "weight_g": w,
-                        "unit": u or "pcs",
+                        "unit": unit_from_name(name) or "pcs",
                         "url": url if url.startswith("http") else f"{driver.HOME_URL.get(chain, '').rstrip('/')}{url}",
                         "in_stock": True,
                     })

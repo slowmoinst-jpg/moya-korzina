@@ -42,6 +42,9 @@ from app.models import Location
 log = logging.getLogger(__name__)
 
 KEY_ADDRESS = "address"        # адрес клиента, общий для всех сетей
+# Когда адрес сменился в последний раз. Снимки цен сетей с ценами по точке, снятые
+# раньше, — цены ПРЕЖНЕГО адреса (service.line_price помечает их как несвежие).
+KEY_MOVED = "address.changed_at"
 
 # Сети, чьи цены считаются по адресу клиента. Остальные берут своё место из
 # config.yaml — то есть показывают всем одну и ту же точку.
@@ -53,7 +56,12 @@ KEY_ADDRESS = "address"        # адрес клиента, общий для в
 # До 16.09.2026 код магазина Магнита был настройкой установки, одной на всех:
 # человек из Москвы видел цены Краснодара и узнать об этом не мог — чужая цена
 # выглядит как своя.
-ADDRESS_STORES = ("lenta", "magnit")
+#
+# METRO добавлен 26.09.2026: ночной обход уже ходил по центру, подобранному к
+# адресу, а живые цены и корзина брали connectors.metro_store_id — пустой, то есть
+# «точка не задана» и ни одной цены. Центр по адресу подбирает сам коннектор
+# (app/connectors/metro.py, _store_id -> nearest_store).
+ADDRESS_STORES = ("lenta", "magnit", "metro")
 
 
 def address() -> str | None:
@@ -61,8 +69,8 @@ def address() -> str | None:
     return repo.get_setting(KEY_ADDRESS)
 
 
-def save_address(value: str | None) -> None:
-    """Сохранить адрес и поставить его в очередь на загрузку цен.
+def save_address(value: str | None) -> bool:
+    """Сохранить адрес и поставить его в очередь на загрузку цен. True — адрес сменился.
 
     Очередь, а не загрузка здесь же, по двум причинам. Подбор точек и обход сетей —
     это минуты сети, и держать на них экран нельзя: человек нажал «Сохранить» и
@@ -77,13 +85,25 @@ def save_address(value: str | None) -> None:
     repo.set_setting(KEY_ADDRESS, value)
     fresh = (value or "").strip()
     if not fresh or fresh == (previous or "").strip():
-        return
+        return False
+    # Отметка смены: цены, снятые по прежнему адресу, остаются в базе, и без неё
+    # «Результат» показывал бы их как свежие — чужую точку, а то и чужой город.
+    repo.set_setting(KEY_MOVED, repo.NOW())
     try:
         from app.catalog import store as catalog_store
         if catalog_store.enqueue_address(fresh):
             log.info("адрес «%s» поставлен в очередь на загрузку цен", fresh)
     except Exception as exc:  # noqa: BLE001 — очередь не повод не сохранить адрес
         log.warning("адрес «%s» сохранён, но в очередь не встал (%s)", fresh, exc)
+    return True
+
+
+def moved_at() -> str | None:
+    """Когда адрес сменился в последний раз. None — не менялся (или не задан)."""
+    try:
+        return repo.get_setting(KEY_MOVED)
+    except Exception:  # noqa: BLE001 — нет базы — нет и отметки
+        return None
 
 
 def nearby(addr: str | None = None) -> list[dict]:
@@ -168,10 +188,14 @@ def _magnit_place(addr: str) -> Location:
     if not store:
         return Location(address=addr)
     from app import config
+    # Доставка — если её хотят И если этот магазин её делает. Магазину без доставки
+    # цены и корзина доставки ни к чему: кука nmg_dt=DELIVERY уводила окно магазина
+    # не туда, и корзина могла не собраться.
+    wants = bool(config.get("connectors.magnit_delivery", True))
     return Location(
         store_id=store["code"],
         shop_type=store.get("format") or "ME",
-        delivery=bool(config.get("connectors.magnit_delivery", True)),
+        delivery=wants and bool(store.get("delivery", True)),
     )
 
 

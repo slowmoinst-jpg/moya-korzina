@@ -67,7 +67,7 @@ class MetroCrawler(Crawler):
         fallback = config.get("connectors.metro_store_id")
         self.stores = [str(s) for s in (stores or []) if str(s).strip()] or (
             [str(fallback)] if fallback else [])
-        self.pace = Pace()
+        self.pace = Pace(chain=self.code)
 
     # --- разбор одной карточки ---
     def _product(self, row: dict) -> ChainProduct | None:
@@ -96,6 +96,7 @@ class MetroCrawler(Crawler):
     # --- обход ---
     def _crawl_store(self, store: str, seen: set[str], say: Progress) -> Iterator[ChainProduct]:
         page, last = 1, None
+        here: set[str] = set()
         while True:
             response = http_get(_url(f"{store}/products"), self.pace,
                                 params={"page": page}, accept="application/json")
@@ -110,10 +111,17 @@ class MetroCrawler(Crawler):
                 say(f"точка {store}: товаров {total}, страниц {last or '?'} по {PAGE}")
             for row in rows:
                 product = self._product(row)
-                if not product or product.sku in seen:
+                if not product or product.sku in here:
                     continue
-                seen.add(product.sku)
-                yield product
+                here.add(product.sku)
+                product.point = store
+                if product.sku not in seen:
+                    seen.add(product.sku)
+                    yield product
+                else:
+                    # Артикул у METRO общий, а остаток и цена — свои в каждом центре.
+                    yield ChainProduct(sku=product.sku, name=product.name, price=product.price,
+                                       in_stock=product.in_stock, point=store, seen_only=True)
             if not rows or (last and page >= last):
                 break
             page += 1
@@ -127,7 +135,8 @@ class MetroCrawler(Crawler):
                                "а connectors.metro_store_id не задан")
         say(f"точек к обходу: {len(self.stores)} ({', '.join(self.stores)})")
         # Одно множество на все точки: артикул у METRO общий, а вот остаток свой в
-        # каждой. Каталог хранит товар один раз, поэтому повторы отсекаются здесь.
+        # каждой. Каталог хранит товар один раз, а цену и остаток — по точкам
+        # (chain_prices), поэтому повтор из второй точки несёт только их.
         seen: set[str] = set()
         for store in self.stores:
             yield from self._crawl_store(store, seen, say)

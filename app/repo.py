@@ -1,6 +1,7 @@
 """Доступ к данным. Единственный слой, через который UI и модули ходят в SQLite."""
 from __future__ import annotations
 
+import math
 from datetime import datetime
 
 from app.db import get_conn, init_db  # noqa: F401  (init_db реэкспортируется для UI)
@@ -205,11 +206,24 @@ def mapping_matrix() -> dict[tuple[int, int], bool]:
 
 
 def save_price(store_product_id: int, price: float, price_per_kg: float | None = None,
-               in_stock: bool = True, fetched_at: str | None = None) -> None:
-    """Снимок цены — только вставка, история не перезаписывается."""
+               in_stock: bool = True, fetched_at: str | None = None,
+               source: str | None = None) -> None:
+    """Снимок цены — только вставка, история не перезаписывается.
+
+    source — откуда цена: None для живой, "fallback" для справочной из CSV.
+    """
     with get_conn() as c:
-        c.execute("INSERT INTO store_prices (store_product_id, price, price_per_kg, in_stock, fetched_at)"
-                  " VALUES (?,?,?,?,?)", (store_product_id, price, price_per_kg, int(in_stock), fetched_at or NOW()))
+        if source is None:
+            # Живая цена пишется без новой колонки: так её примет и база, которую
+            # после обновления ещё не открывали (приёмная дверь не зовёт init_db).
+            c.execute("INSERT INTO store_prices (store_product_id, price, price_per_kg, in_stock,"
+                      " fetched_at) VALUES (?,?,?,?,?)",
+                      (store_product_id, price, price_per_kg, int(in_stock), fetched_at or NOW()))
+        else:
+            c.execute("INSERT INTO store_prices (store_product_id, price, price_per_kg, in_stock,"
+                      " fetched_at, source) VALUES (?,?,?,?,?,?)",
+                      (store_product_id, price, price_per_kg, int(in_stock), fetched_at or NOW(),
+                       source))
         c.commit()
 
 
@@ -221,9 +235,21 @@ def latest_price(store_product_id: int) -> dict | None:
 
 
 def latest_price_for(product_id: int, store_id: int) -> dict | None:
-    """Актуальная цена эталона в магазине по подтверждённому сопоставлению."""
+    """Актуальная цена эталона в магазине по подтверждённому сопоставлению.
+
+    К снимку приложены единица, фасовка и название товара сети (sp_unit,
+    sp_weight_g, sp_name): без них цену упаковки не отличить от цены килограмма.
+    """
     sp = confirmed_mapping(product_id, store_id)
-    return latest_price(sp["id"]) if sp else None
+    if not sp:
+        return None
+    snap = latest_price(sp["id"])
+    if snap is None:
+        return None
+    snap["sp_unit"] = sp.get("unit")
+    snap["sp_weight_g"] = sp.get("weight_g")
+    snap["sp_name"] = sp.get("raw_name")
+    return snap
 
 
 def price_history(product_id: int, store_id: int) -> list[dict]:
@@ -248,8 +274,25 @@ def list_baskets() -> list[dict]:
         return [dict(r) for r in c.execute("SELECT * FROM baskets ORDER BY created_at DESC")]
 
 
+def whole_pieces(qty: float) -> float:
+    """Штучный товар покупают целыми штуками: 1,3 → 1, 1,5 → 2, 0,3 → 1.
+
+    Дробная штука считалась ценой ×1,5, а в магазин уезжала округлённой —
+    итог расчёта и чек расходились. Округление к ближайшему, но не ниже одной
+    штуки: средняя корзина по истории даёт «1,3 батона в неделю», и это батон.
+    """
+    qty = float(qty)
+    if qty <= 0:
+        return 0.0
+    return float(max(1, math.floor(qty + 0.5)))
+
+
 def set_basket_item(basket_id: int, product_id: int, qty: float) -> None:
     with get_conn() as c:
+        if qty > 0:
+            row = c.execute("SELECT unit FROM products WHERE id=?", (product_id,)).fetchone()
+            if row is not None and (row["unit"] or "pcs") == "pcs":
+                qty = whole_pieces(qty)
         if qty <= 0:
             c.execute("DELETE FROM basket_items WHERE basket_id=? AND product_id=?", (basket_id, product_id))
         else:

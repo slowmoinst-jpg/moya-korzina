@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS chain_products (
     barcode TEXT,
     price REAL,                          -- последняя увиденная цена, для справки; история цен не здесь
     in_stock INTEGER,
+    price_seen TEXT,                     -- когда эта цена увидена: last_seen продлевается и без цены
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,   -- 0 — пропал из каталога сети
@@ -79,6 +80,30 @@ CREATE TABLE IF NOT EXISTS match_runs (
     note TEXT
 );
 
+-- Цена и наличие ПО ТОЧКАМ. У сетей они свои в каждом магазине, а строка каталога
+-- одна на артикул: без этой таблицы цена второго города затирала цену первого.
+CREATE TABLE IF NOT EXISTS chain_prices (
+    chain TEXT NOT NULL,
+    sku TEXT NOT NULL,
+    point TEXT NOT NULL,                 -- код точки в сети: storeCode Магнита, центр METRO
+    price REAL,
+    in_stock INTEGER,
+    seen_at TEXT NOT NULL,
+    PRIMARY KEY (chain, sku, point)
+);
+
+-- Какая точка сети досталась какому адресу. Пишет обход — он подбирает точки к
+-- адресам рабочих мест; читает перенос товара в базу человека (refresh.adopt),
+-- которому нужна цена ЕГО магазина, а спрашивать сеть ради этого незачем.
+CREATE TABLE IF NOT EXISTS address_points (
+    address TEXT NOT NULL,               -- адрес рабочего места, пробелы схлопнуты, строчными
+    chain TEXT NOT NULL,
+    point TEXT NOT NULL,
+    label TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (address, chain)
+);
+
 CREATE TABLE IF NOT EXISTS address_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     address TEXT NOT NULL,               -- адрес человека, по которому надо загрузить цены
@@ -120,10 +145,60 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+# Колонки, добавленные после первых выпусков: CREATE TABLE IF NOT EXISTS до уже
+# существующей базы их не донесёт.
+LATE_COLUMNS = (("chain_products", "price_seen", "TEXT"),)
+
+
+# Версия данных каталога (PRAGMA user_version). 1 — сняты ложные «kg» у строк сетей,
+# чьи сборщики ставили единицу по отсутствию граммовки (app/db.FALSE_KG_CHAINS).
+# 2 — у развесного Ленты цена порции заменена ценой килограмма.
+SCHEMA_VERSION = 2
+LENTA_PER_KG_SINCE = "2026-09-27"   # с этого дня сборщик Ленты пишет развесному цену за кг
+
+
 def init() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        for table, column, kind in LATE_COLUMNS:
+            have = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+        _migrate(conn)
         conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Разовые исправления строк, записанных прежними сборщиками.
+
+    Без этого ложное «kg» жило бы вечно: обновление строки берёт единицу через
+    COALESCE, и новая «не сказано» (None) старую «kg» не перетирает.
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= SCHEMA_VERSION:
+        return
+    if version < 1:
+        from app.db import FALSE_KG_CHAINS
+        from app.matcher.normalize import sold_by_weight
+
+        placeholders = ",".join("?" * len(FALSE_KG_CHAINS))
+        rows = conn.execute(f"SELECT id, name FROM chain_products WHERE unit='kg'"
+                            f" AND chain IN ({placeholders})", FALSE_KG_CHAINS).fetchall()
+        conn.executemany("UPDATE chain_products SET unit=NULL WHERE id=?",
+                         [(r["id"],) for r in rows if not sold_by_weight(r["name"] or "")])
+    if version < 2:
+        # Ленту сборщик перечитывает только по новым артикулам, и старые развесные
+        # строки хранили бы цену ПОРЦИИ как цену килограмма ещё долго. Фасовка
+        # известна — пересчитываем; нет — цену снимаем: перенос в базу человека
+        # тогда не запишет ложную, а живая придёт при первом расчёте.
+        # Только строки, заведённые до исправления сборщика: у новых цена уже за кг.
+        old = "chain='lenta' AND unit='kg' AND price IS NOT NULL AND first_seen < ?"
+        conn.execute("UPDATE chain_products SET price = ROUND(price * 1000.0 / weight_g, 2)"
+                     f" WHERE {old} AND weight_g > 0", (LENTA_PER_KG_SINCE,))
+        conn.execute("UPDATE chain_products SET price = NULL, price_seen = NULL"
+                     f" WHERE {old} AND (weight_g IS NULL OR weight_g <= 0)",
+                     (LENTA_PER_KG_SINCE,))
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 # ---------- запись обхода ----------
@@ -172,6 +247,13 @@ def upsert_products(chain: str, products: Iterable[ChainProduct], seen_at: str |
     with connect() as conn:
         for p in products:
             seen += 1
+            stock = None if p.in_stock is None else int(p.in_stock)
+            if p.point and (p.price is not None or stock is not None):
+                conn.execute(
+                    "INSERT INTO chain_prices (chain, sku, point, price, in_stock, seen_at)"
+                    " VALUES (?,?,?,?,?,?) ON CONFLICT(chain, sku, point) DO UPDATE SET"
+                    " price=excluded.price, in_stock=excluded.in_stock, seen_at=excluded.seen_at",
+                    (chain, str(p.sku), str(p.point), p.price, stock, stamp))
             row = conn.execute("SELECT id, name, weight_g, category, barcode FROM chain_products"
                                " WHERE chain=? AND sku=?", (chain, str(p.sku))).fetchone()
             if p.seen_only:
@@ -179,29 +261,93 @@ def upsert_products(chain: str, products: Iterable[ChainProduct], seen_at: str |
                     conn.execute("UPDATE chain_products SET last_seen=?, active=1 WHERE id=?",
                                  (stamp, row["id"]))
                 continue
+            price_seen = stamp if p.price is not None else None
             if row is None:
                 conn.execute(
                     "INSERT INTO chain_products (chain, sku, name, brand, weight_g, unit, category,"
-                    " url, image, barcode, price, in_stock, first_seen, last_seen, active)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
+                    " url, image, barcode, price, in_stock, price_seen, first_seen, last_seen, active)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
                     (chain, str(p.sku), p.name, p.brand, p.weight_g, p.unit, p.category, p.url,
-                     p.image, p.barcode, p.price, None if p.in_stock is None else int(p.in_stock),
-                     stamp, stamp))
+                     p.image, p.barcode, p.price, stock, price_seen, stamp, stamp))
                 added += 1
                 continue
             changed = (row["name"] != p.name or row["weight_g"] != p.weight_g
                        or row["category"] != p.category or (row["barcode"] or None) != (p.barcode or None))
+            # Цена, которой обход не принёс, остаётся прежней — но со СВОЕЙ датой
+            # (price_seen), а не с датой этого обхода: иначе недельная цена уезжала в
+            # базу человека как свежая.
             conn.execute(
                 "UPDATE chain_products SET name=?, brand=COALESCE(?, brand), weight_g=?, unit=COALESCE(?, unit),"
                 " category=?, url=COALESCE(?, url), image=COALESCE(?, image), barcode=COALESCE(?, barcode),"
-                " price=COALESCE(?, price), in_stock=COALESCE(?, in_stock), last_seen=?, active=1"
+                " price=COALESCE(?, price), in_stock=COALESCE(?, in_stock),"
+                " price_seen=COALESCE(?, price_seen), last_seen=?, active=1"
                 + (", item_id=NULL, link_method=NULL, link_score=NULL" if changed else "")
                 + " WHERE id=?",
                 (p.name, p.brand, p.weight_g, p.unit, p.category, p.url, p.image, p.barcode, p.price,
-                 None if p.in_stock is None else int(p.in_stock), stamp, row["id"]))
+                 stock, price_seen, stamp, row["id"]))
             updated += int(changed)
         conn.commit()
     return seen, added, updated
+
+
+def unmatched_count() -> int:
+    """Живые строки каталога, ещё не отнесённые к единому товару.
+
+    Обход, оборванный выкладкой, успевает сложить строки и не успевает их
+    сопоставить; следующий обход той же сети может ничего не поменять — и без
+    этого счёта строки остались бы без единого товара до случайной правки.
+    """
+    try:
+        with connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS n FROM chain_products"
+                               " WHERE active=1 AND item_id IS NULL").fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int(row["n"] or 0)
+
+
+def point_prices(chain: str, sku: str) -> dict[str, dict]:
+    """Цена и наличие артикула по точкам: код точки -> {price, in_stock, seen_at}."""
+    try:
+        with connect() as conn:
+            rows = conn.execute("SELECT point, price, in_stock, seen_at FROM chain_prices"
+                                " WHERE chain=? AND sku=?", (chain, str(sku))).fetchall()
+    except sqlite3.OperationalError:          # база прежней версии, таблицы ещё нет
+        return {}
+    return {row["point"]: dict(row) for row in rows}
+
+
+def _address_key(address: str) -> str:
+    return " ".join((address or "").split()).lower()
+
+
+def remember_points(points) -> None:
+    """Запомнить, какая точка сети досталась какому адресу (places.Point)."""
+    rows = [(_address_key(p.address), p.chain, str(p.code), p.label or None, now())
+            for p in points or () if getattr(p, "address", None) and getattr(p, "code", None)]
+    if not rows:
+        return
+    init()
+    with connect() as conn:
+        conn.executemany(
+            "INSERT INTO address_points (address, chain, point, label, updated_at) VALUES (?,?,?,?,?)"
+            " ON CONFLICT(address, chain) DO UPDATE SET point=excluded.point, label=excluded.label,"
+            " updated_at=excluded.updated_at", rows)
+        conn.commit()
+
+
+def point_of(address: str, chain: str) -> str | None:
+    """Точка сети, подобранная обходом к этому адресу. None — обход её ещё не подбирал."""
+    key = _address_key(address)
+    if not key:
+        return None
+    try:
+        with connect() as conn:
+            row = conn.execute("SELECT point FROM address_points WHERE address=? AND chain=?",
+                               (key, chain)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return str(row["point"]) if row else None
 
 
 def retire_unseen(chain: str, seen_at: str) -> int:
