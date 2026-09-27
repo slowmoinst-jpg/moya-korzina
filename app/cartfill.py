@@ -76,7 +76,7 @@ def fill_store(phone: str, store, *, dry_run: bool = False, again: bool = False)
             return f"корзина собрана по ссылке — откройте её, войдя в сеть: {got.link}"
         return f"ссылку сеть не выдала. {got.note}"
 
-    plan = cartplan.build(code, lines, force=True)
+    plan = cartplan.build(code, lines, force=True, verify_prices=True)
     if not plan.lines:
         return plan.note or "ни одна позиция этой сети не знакома — класть нечего"
     # Сеть, чью корзину мы умеем наполнять, без входа молчит о причине: умение

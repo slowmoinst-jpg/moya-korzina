@@ -476,13 +476,14 @@ def unavailable_receipt_keys() -> set[str]:
 def pending_receipts() -> list[dict]:
     """Чеки, которые в кабинете есть, у нас ещё нет и которые ещё можно взять.
 
-    Чеки с отметкой «состава нет» сюда не попадают: «не загружено» должно означать
-    «осталось работы», иначе счётчик навсегда замрёт на числе, которое не уменьшится.
+    Чеки с отметкой «состава нет» и чеки других магазинов сюда не попадают:
+    «не загружено» должно означать «осталось работы», иначе счётчик навсегда замрёт
+    на числе, которое не уменьшится.
     """
     with get_conn() as c:
         return [dict(r) for r in c.execute(
-            "SELECT * FROM receipts WHERE imported_at IS NULL AND (rows IS NULL OR rows <> ?)"
-            " ORDER BY date DESC, key", (NO_DATA,))]
+            "SELECT * FROM receipts WHERE imported_at IS NULL AND (rows IS NULL OR rows >= 0)"
+            " ORDER BY date DESC, key")]
 
 
 def unavailable_receipts() -> list[dict]:
@@ -490,6 +491,42 @@ def unavailable_receipts() -> list[dict]:
         return [dict(r) for r in c.execute(
             "SELECT * FROM receipts WHERE imported_at IS NULL AND rows = ? ORDER BY date DESC, key",
             (NO_DATA,))]
+
+
+OTHER_STORE = -2   # в поле rows: чек магазина, где мы не собираем заказы (app/chains.py)
+
+
+def mark_receipt_other_store(key: str, date: str | None, store: str | None,
+                             total: float | None, source: str = "lkdr") -> None:
+    """Чек из магазина, где приложение не собирает заказы: в заказы он не идёт.
+
+    Запоминаем его, а не выбрасываем: чтобы следующая загрузка не спрашивала его
+    состав у ФНС заново и чтобы человек видел, что чек не потерян, а отложен —
+    «Не добавлены: N чеков». Уже загруженный чек не трогаем.
+    """
+    if not key:
+        return
+    with get_conn() as c:
+        c.execute(
+            "INSERT INTO receipts (key, date, store, total, rows, source, seen_at, imported_at)"
+            " VALUES (?,?,?,?,?,?,?,NULL)"
+            " ON CONFLICT(key) DO UPDATE SET rows = excluded.rows,"
+            "   store = COALESCE(receipts.store, excluded.store)"
+            " WHERE receipts.imported_at IS NULL",
+            (key, date, store, total, OTHER_STORE, source, NOW()))
+        c.commit()
+
+
+def other_store_receipts() -> list[dict]:
+    """Отложенные чеки других магазинов — для строки «Не добавлены»."""
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM receipts WHERE imported_at IS NULL AND rows = ? ORDER BY date DESC, key",
+            (OTHER_STORE,))]
+
+
+def other_store_receipt_keys() -> set[str]:
+    return {r["key"] for r in other_store_receipts()}
 
 
 def imported_receipts() -> list[dict]:

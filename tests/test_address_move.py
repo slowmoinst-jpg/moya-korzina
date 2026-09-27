@@ -1,10 +1,13 @@
-"""Смена адреса: цены прежней точки не выдают себя за свежие, цены корзины обновляются сами.
+"""Смена адреса: цены прежней точки выпадают из расчёта, цены корзины обновляются сами.
 
 Пробел, найденный 26.09.2026 при ответе на вопрос владельца «подгрузит ли система
 актуальные наличия после указания адреса». Сохранённый адрес ставил в очередь
 только обход общего каталога. Снимки цен товаров, уже лежащих в корзине, оставались
 снятыми по ПРЕЖНЕЙ точке — а «Результат» в сеть не ходит и показывал их как свежие:
 чужой магазин, а то и чужой город, без единого предупреждения.
+
+По требованию «Не уверен — не показывай» (docs/design/nazvaniya-2026-09-26.md) такая
+цена не помечается, а не участвует в расчёте (app/freshness.py) — до обновления.
 """
 from __future__ import annotations
 
@@ -19,7 +22,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from app import location, repo, service, users  # noqa: E402
+from app import freshness, location, repo, service, users  # noqa: E402
 from app.models import Product  # noqa: E402
 
 PHONE = "79990000099"
@@ -55,7 +58,7 @@ def test_a_new_address_is_remembered_as_a_move(home):
     assert location.moved_at() == first
 
 
-def test_prices_of_the_old_point_are_marked_after_a_move(home):
+def test_prices_of_the_old_point_drop_out_after_a_move(home):
     """Цена Магнита, снятая до смены адреса, — цена прежнего магазина, как бы свежа ни была.
 
     ВкусВилл адресом не управляется: его цена одна на страну, и её не трогаем.
@@ -65,27 +68,26 @@ def test_prices_of_the_old_point_are_marked_after_a_move(home):
     kefir, vkusvill = _priced("vkusvill", "Кефир", 99.0, before)
     location.save_address("Екатеринбург, улица Малышева 51")
 
-    moved = service.line_price(milk, magnit, 1, "pcs")
-    assert moved["stale"] is True and moved["stale_label"] == "по прежнему адресу"
-    same = service.line_price(kefir, vkusvill, 1, "pcs")
-    assert same["stale"] is False
+    assert service.line_price(milk, magnit, 1, "pcs") is None
+    assert freshness.price_for(milk, magnit.id) is None, "каталог и «Где дешевле» — тоже"
+    assert service.line_price(kefir, vkusvill, 1, "pcs")["value"] == 99.0
 
     # Снятая после смены — снова своя.
     sp = repo.confirmed_mapping(milk, magnit.id)["id"]
     repo.save_price(sp, 91.0)
-    assert service.line_price(milk, magnit, 1, "pcs")["stale"] is False
+    assert service.line_price(milk, magnit, 1, "pcs")["value"] == 91.0
 
 
-def test_the_result_names_the_prices_of_the_old_address(home):
+def test_the_basket_waits_for_prices_of_the_new_address(home):
+    """Корзина не считается по цене прежней точки — ни в расчёте, ни на «Корзине»."""
     before = (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")
     milk, _ = _priced("magnit", "Молоко", 89.0, before)
     basket = repo.create_basket("Неделя")
     repo.set_basket_item(basket, milk, 1)
-    location.save_address("Екатеринбург, улица Малышева 51")
+    assert service.build_basket_lines(basket)[0].prices == {"magnit": 89.0}
 
-    variants, _ = service.calculate(basket, refresh=False)
-    stale = variants[0].stale_lines
-    assert [(ln.product_name, ln.stale_since) for ln in stale] == [("Молоко", "по прежнему адресу")]
+    location.save_address("Екатеринбург, улица Малышева 51")
+    assert service.build_basket_lines(basket)[0].prices == {}
 
 
 def test_refresh_reports_its_progress_by_chain(home, monkeypatch):

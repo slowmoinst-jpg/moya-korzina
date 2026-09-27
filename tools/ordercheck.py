@@ -59,7 +59,7 @@ class ChainReport:
     mapped: int = 0                     # из них опознаны в этой сети
     live: int = 0                       # цена пришла живая
     receipts: int = 0                   # цена из чеков и прайса
-    reference: int = 0                  # справочная цена из CSV
+    reference: int = 0                  # справочная цена из CSV — сеть не ответила; в расчёт не идёт
     no_price: int = 0                   # цены нет вовсе
     in_stock: int | None = None         # есть в точке (None — сеть остатков не отдаёт)
     out_of_stock: int | None = None
@@ -347,8 +347,8 @@ def as_text(answer: dict) -> str:
         mark = {True: "ДА", False: "НЕТ", None: "РУКАМИ"}[r["ok"]]
         out.append(f"{r['name'].upper()} — заказ: {mark}")
         out.append(f"  точка:    {r['point']}")
-        priced = (f"живых {r['live']}, из чеков {r['receipts']}, справочных {r['reference']}, "
-                  f"без цены {r['no_price']}")
+        priced = (f"живых {r['live']}, из чеков {r['receipts']}, "
+                  f"справочных {r['reference']} (в расчёт не идут), без цены {r['no_price']}")
         out.append(f"  цены:     опознано {r['mapped']} из {r['items']}; {priced}")
         if r["in_stock"] is None:
             out.append("  наличие:  сеть остатков не отдаёт")

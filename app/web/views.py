@@ -50,6 +50,7 @@ SCREENS: tuple[Screen, ...] = (
 
     Screen("basket", "/basket", "Корзина", "Что покупаем", "Корзина"),
     Screen("result", "/result", "Результат", "Разбиение и экономия", "Корзина"),
+    Screen("orders", "/orders", "Заказы", "Покупки из чеков ФНС и добавленные вручную", "Корзина"),
     Screen("history", "/history", "История", "Покупки семьи", "Корзина"),
 
     Screen("products", "/products", "Товары", "Что покупаем и где это лежит", "Каталог"),
@@ -85,6 +86,8 @@ def install(flask_app: Flask) -> None:
     # (отвечает данными, а не страницей), поэтому вешает её сам экран, а в SCREENS
     # её нет: иначе она встала бы в меню отдельным пунктом.
     basket.install(flask_app)
+    from app.web.screens import orders
+    ready["orders"] = orders.page
     from app.web.screens import accounts
     ready["accounts"] = accounts.page
     # Кабинет магазина в меню не стоит: в него заходят с «Кабинетов», по

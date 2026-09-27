@@ -103,7 +103,6 @@ class BasketLine:
     qty: float
     prices: dict[str, float] = field(default_factory=dict)     # store_code -> цена позиции целиком
     in_stock: dict[str, bool] = field(default_factory=dict)
-    stale: dict[str, str] = field(default_factory=dict)        # store_code -> дата несвежей цены
     notes: dict[str, str] = field(default_factory=dict)        # store_code -> как получена цена
     # store_code -> поправка ТОЛЬКО ДЛЯ ВЫБОРА (другая фасовка), в оплату не входит
     adjust: dict[str, float] = field(default_factory=dict)
@@ -121,7 +120,6 @@ class VariantLine:
     price: float               # стоимость позиции целиком (цена * qty)
     discount: float = 0.0      # доля кэшбэка, отнесённая на позицию
     note: str | None = None    # как получена цена, если она не равна цене полки
-    stale_since: str | None = None   # дата снимка, если цена несвежая
 
 
 @dataclass
@@ -168,11 +166,6 @@ class Variant:
     @property
     def title(self) -> str:
         return " + ".join(s.store_name for s in self.stores)
-
-    @property
-    def stale_lines(self) -> list[VariantLine]:
-        """Позиции, посчитанные по несвежей цене: акция могла кончиться, цена — вырасти."""
-        return [ln for sb in self.stores for ln in sb.lines if ln.stale_since is not None]
 
     @property
     def effort_total(self) -> float:

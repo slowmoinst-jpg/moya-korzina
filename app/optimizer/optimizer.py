@@ -333,7 +333,6 @@ def _build_variant(lines: list[BasketLine], combo: tuple[Store, ...], assign: li
                 product_id=line.product_id, product_name=line.name,
                 qty=line.qty, price=price, discount=share,
                 note=line.notes.get(store.code),
-                stale_since=line.stale.get(store.code),
             ))
         residue = round(discount - sum(v.discount for v in vlines), 2)
         if vlines and residue:

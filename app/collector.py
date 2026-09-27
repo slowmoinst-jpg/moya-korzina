@@ -281,12 +281,71 @@ def _coupon(raw: Any) -> dict | None:
     title = _text(raw.get("title") or raw.get("name"), TITLE_LIMIT)
     if not title:
         return None
-    return {
+    value = _text(raw.get("value") or raw.get("discount"), VALUE_LIMIT) or None
+    coupon = {
         "id": _text(raw.get("id"), ID_LIMIT) or None,
         "title": title,
         "ends_at": _day(raw.get("ends_at") or raw.get("expires_at") or raw.get("end")),
-        "value": _text(raw.get("value") or raw.get("discount"), VALUE_LIMIT) or None,
+        "value": value,
     }
+    # Цифры купона — то, что делает его частью расчёта (app/personal.py), а не только
+    # строкой на экране. Всё необязательное: купон без цифр по-прежнему показывается.
+    coupon.update(_coupon_terms(raw, value))
+    skus = raw.get("skus") if isinstance(raw.get("skus"), list) else [raw.get("sku")]
+    skus = [_text(s, ID_LIMIT) for s in skus if s not in (None, "")]
+    if skus:
+        coupon["skus"] = [s for s in skus if s][:50]
+    target = _text(raw.get("product") or raw.get("target"), TITLE_LIMIT)
+    if target:
+        coupon["product"] = target
+    if raw.get("activated") is not None or raw.get("active") is not None:
+        coupon["activated"] = bool(raw.get("activated", raw.get("active")))
+    return coupon
+
+
+_PERCENT = re.compile(r"(\d{1,2}(?:[.,]\d+)?)\s*%")
+_RUB = re.compile(r"(\d[\d\s]*(?:[.,]\d{1,2})?)\s*(?:₽|руб|р\.)", re.I)
+
+
+def _money(raw: Any) -> float | None:
+    if raw is None or raw == "" or isinstance(raw, bool):
+        return None
+    try:
+        number = float(str(raw).replace("\u00a0", "").replace(" ", "").replace(",", "."))
+    except ValueError:
+        return None
+    return number if 0 < number < 1_000_000 else None
+
+
+def _coupon_terms(raw: dict, value: str | None) -> dict:
+    """Что купон делает с ценой: личная цена, процент или рубли скидки.
+
+    Явные поля сборщика (price, percent, off_rub) главнее разбора подписи: подпись
+    «-30%» читается однозначно, а «до 500 ₽» — уже нет. Непонятное не угадывается:
+    купон без цифр остаётся на экране, но в расчёт не идёт.
+    """
+    terms: dict = {}
+    price = _money(raw.get("price") or raw.get("personal_price"))
+    percent = _money(raw.get("percent"))
+    off = _money(raw.get("off_rub"))
+    text = value or ""
+    if percent is None and price is None and off is None and text:
+        found = _PERCENT.search(text)
+        if found:
+            percent = _money(found.group(1))
+        else:
+            rub = _RUB.search(text)
+            if rub:
+                # «-50 ₽» — скидка рублями; «149 ₽» — личная цена
+                off, price = ((_money(rub.group(1)), None) if text.strip().startswith(("-", "−", "–"))
+                              else (None, _money(rub.group(1))))
+    if price is not None:
+        terms["price"] = round(price, 2)
+    if percent is not None and percent < 100:
+        terms["percent"] = round(percent, 2)
+    if off is not None:
+        terms["off_rub"] = round(off, 2)
+    return terms
 
 
 def _coupon_key(coupon: dict) -> str:

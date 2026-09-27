@@ -28,9 +28,25 @@ def _round_qty(qty: float, unit: str | None) -> float:
     return float(round(qty))
 
 
+def orderable_history(store_id: int | None = None) -> list[dict]:
+    """История для корзины «Как обычно» — без покупок в сетях, где мы не собираем заказ.
+
+    Новые чеки таких сетей и так не попадают в историю (app/chains.py), а этот
+    фильтр убирает то, что успело лечь раньше: иначе «Как обычно» предлагала бы
+    товары, которые приложение заказать не может. Строки без магазина остаются —
+    их человек добавил сам, и судить их не по чему.
+    """
+    from app import chains
+
+    allowed = chains.orderable()
+    blocked = {s.id for s in repo.list_stores() if s.code not in allowed}
+    return [r for r in repo.list_history(store_id=store_id)
+            if r.get("product_id") and r.get("store_id") not in blocked]
+
+
 def last_purchase_items(store_id: int | None = None) -> tuple[str | None, list[dict]]:
     """Позиции самой свежей покупки: (дата, строки). Строки — product_id, qty, unit, name."""
-    rows = [r for r in repo.list_history(store_id=store_id) if r.get("product_id")]
+    rows = orderable_history(store_id)
     if not rows:
         return None, []
     last_date = max(str(r["date"]) for r in rows)
@@ -51,7 +67,7 @@ def last_purchase_items(store_id: int | None = None) -> tuple[str | None, list[d
 
 def average_month_items(store_id: int | None = None) -> tuple[int, list[dict]]:
     """Среднемесячное количество по каждому товару: (число месяцев, строки)."""
-    rows = [r for r in repo.list_history(store_id=store_id) if r.get("product_id")]
+    rows = orderable_history(store_id)
     if not rows:
         return 0, []
 
@@ -111,7 +127,7 @@ def build_from_history(kind: str, name: str | None = None, store_id: int | None 
 
 def regular_purchases(min_times: int = 2) -> list[dict]:
     """Товары, которые покупают регулярно: встречались минимум в min_times разных покупках."""
-    rows = [r for r in repo.list_history() if r.get("product_id")]
+    rows = orderable_history()
     seen: dict[int, set[str]] = defaultdict(set)
     names: dict[int, str] = {}
     for row in rows:

@@ -193,8 +193,9 @@ def test_missing_item_does_not_inflate_a_store_total():
 
     stores = [S("lenta", 1)]
     items = [{"product_id": 1, "qty": 2, "unit": "pcs"}, {"product_id": 2, "qty": 1, "unit": "pcs"}]
-    snapshots = {(1, 1): {"price": 100.0, "in_stock": 1},
-                 (2, 1): {"price": 999.0, "in_stock": 0}}
+    from app.repo import NOW
+    snapshots = {(1, 1): {"price": 100.0, "in_stock": 1, "fetched_at": NOW()},
+                 (2, 1): {"price": 999.0, "in_stock": 0, "fetched_at": NOW()}}
 
     import app.web.screens.basket as screen
     old_lookup = screen.repo.latest_price_for
@@ -226,12 +227,38 @@ def test_the_freshest_snapshot_wins(tmp_path, monkeypatch):
     pid = repo.upsert_product(Product(id=None, name="Молоко", unit="pcs"))
     sp = repo.upsert_store_product(store.id, "lenta-1", "Молоко")
     repo.confirm_mapping(pid, sp, confirmed=True)
-    repo.save_price(sp, 500.0, fetched_at="2026-09-10T10:00:00")
-    repo.save_price(sp, 75.99, fetched_at="2026-09-17T10:00:00")
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    repo.save_price(sp, 500.0, fetched_at=(now - timedelta(hours=3)).isoformat(timespec="seconds"))
+    repo.save_price(sp, 75.99, fetched_at=(now - timedelta(minutes=5)).isoformat(timespec="seconds"))
 
     cell, _ = _price_matrix([{"product_id": pid, "qty": 1, "unit": "pcs"}], [store])
 
     assert cell[(pid, "lenta")]["value"] == 75.99
+
+
+def test_a_stale_price_is_not_shown(tmp_path, monkeypatch):
+    """Недельная цена не показывается вовсе: интерфейс не пишет «цены от вчера»,
+    значит, на экран попадает только то, чему можно верить (app/freshness.py)."""
+    from datetime import datetime, timedelta
+
+    from app import config, repo
+    from app.db import init_db
+    from app.web.screens.basket import _price_matrix
+
+    monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "stale.db"))
+    init_db()
+
+    store = repo.get_store("lenta")
+    pid = repo.upsert_product(Product(id=None, name="Кефир", unit="pcs"))
+    sp = repo.upsert_store_product(store.id, "lenta-2", "Кефир")
+    repo.confirm_mapping(pid, sp, confirmed=True)
+    repo.save_price(sp, 59.99, fetched_at=(datetime.now() - timedelta(days=7)).isoformat(timespec="seconds"))
+
+    cell, totals = _price_matrix([{"product_id": pid, "qty": 1, "unit": "pcs"}], [store])
+
+    assert (pid, "lenta") not in cell
+    assert totals["lenta"] == 0.0
 
 
 def test_address_is_part_of_the_calculation_key(tmp_path, monkeypatch):

@@ -298,7 +298,8 @@ def _priced(lines: list[BasketLine], store_code: str) -> list[BasketLine]:
         if not line.product_id:
             continue
         # Тот же счёт, что у расчёта: весовой товар — по килограммам или упаковкам,
-        # штучный — по цене полки. Иначе сумма наряда спорила бы с «Результатом».
+        # штучный — по цене полки, и только действующая цена (app/freshness.py).
+        # Иначе сумма наряда спорила бы с «Результатом».
         product = repo.get_product(line.product_id)
         found = service.line_price(line.product_id, store, line.qty, line.unit,
                                    product.weight_g if product else None)
@@ -387,7 +388,7 @@ def take_cartplan(body: dict) -> dict:
                 "note": "Отложенного наряда нет: нажмите «Передать корзину» в приложении."}
 
     lines, empty_note = _plan_lines(body, store_code)
-    plan = cartplan.build(store_code, lines)
+    plan = cartplan.build(store_code, lines, verify_prices=True)
     if not plan.lines and not plan.note:
         plan.note = empty_note
     answer = plan.as_dict()

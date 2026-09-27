@@ -129,16 +129,6 @@
     Экономия посчитана без этих позиций.</div>
 {% endif %}
 
-{% if best.stale %}
-  {# Несвежая цена — не ошибка, а повод проверить: акция могла кончиться, цена —
-     вырасти, а после смены адреса это цена прежнего магазина. Человек видит, какие
-     позиции считаны по такому снимку, до поездки. #}
-  <div class="note warn">Эти цены могли измениться — проверьте перед заказом или обновите
-    цены на экране «Корзина»:
-    {% for ln in best.stale %}{{ ln.product_name }} ({{ ln.store_name }}:
-      {% if ln.stale_since[:2] == '20' %}цена от {{ ln.stale_since[8:10] }}.{{ ln.stale_since[5:7] }}, старше {{ best.stale_days }} дн.{% else %}{{ ln.stale_since }}{% endif %}){{ ', ' if not loop.last }}{% endfor %}</div>
-{% endif %}
-
 {% if doubts and doubts.products %}
   <details class="card">
     <summary><strong>Проверьте {{ doubts.products }} из {{ doubts.total }} позиций —

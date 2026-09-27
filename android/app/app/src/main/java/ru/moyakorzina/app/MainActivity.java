@@ -5,8 +5,6 @@ import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.text.TextUtils;
-import android.util.Base64;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -16,65 +14,105 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
-import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.json.JSONTokener;
+
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashSet;
-import java.util.Set;
 
 /**
- * Моя корзина — Android-приложение.
+ * Моя корзина — Android-приложение: телефон работает в магазинах от имени владельца.
  *
- * ЗАЧЕМ ОНО НУЖНО. Веб-версия приложения упёрлась в три стены:
- *   1. iframe блокируется X-Frame-Options у всех 8 сетей;
- *   2. серверный Chromium заблокирован по IP у 4 из 8 (Пятёрочка, Самокат, Лента, Дикси);
- *   3. SmartCaptcha у Магнита банит серверный вход.
+ * ЗАЧЕМ ОНО НУЖНО. Сервер не может войти в аккаунты магазинов: iframe запрещён у всех
+ * сетей, серверный адрес заблокирован у Пятёрочки, Самоката, Ленты и Дикси, у Магнита
+ * серверный вход ловит SmartCaptcha. Телефон владельца — обычный покупатель, и магазины
+ * пускают его как любого покупателя.
  *
- * Android WebView решает все три: запрос идёт с телефона владельца (нет блокировки
- * по IP), ограничений iframe не существует, а CookieManager отдаёт ВСЕ куки
- * включая HttpOnly. Подтверждено замером 17.09.2026 на Магните: 21 кука, mg_at 648 зн.
+ * ЧТО ОНО ДЕЛАЕТ.
+ *   «Моя корзина» — открывает наше приложение. Один раз входите своим номером: дальше
+ *                   телефон ходит на сервер с этой сессией, и ни номер, ни секрет в
+ *                   коде приложения не хранятся.
+ *   Кнопка сети   — открывает сайт магазина. Входите как обычно: номер, код из СМС,
+ *                   капча — сами, родной клавиатурой.
+ *   «Сохранить вход»   — куки входа уезжают на сервер ТЕЛОМ запроса POST /api/handoff
+ *                   (не в адресе: адрес оседает в журналах).
+ *   «Сохранить акции»  — откройте в магазине страницу своих предложений («Мои скидки»,
+ *                   «Персональные предложения»): приложение соберёт с неё карточки
+ *                   акций и отправит на сервер (POST /api/store_accounts/sync). Сервер
+ *                   учтёт их в цене — app/personal.py.
  *
- * КАК ЭТО РАБОТАЕТ.
- *   1. Человек нажимает кнопку сети — WebView открывает её сайт.
- *   2. Человек входит как обычно (телефон, СМС-код, капча — всё родной клавиатурой).
- *   3. Нажимает «Сохранить вход» — приложение собирает куки через CookieManager
- *      и отправляет их на наш сервер POST /api/handoff.
- *   4. Сервер сохраняет куки в SQLite пользователя и дальше сам ходит в шлюзы
- *      сетей, собирает цены и наполняет корзину.
+ * АДРЕС СЕРВЕРА задаётся при сборке (-PkorzinaServer=https://… или переменная
+ * KORZINA_SERVER), в коде его нет.
  *
- * ЧЕГО ЗДЕСЬ НЕТ. User-agent не подменяется. Отпечаток браузера не трогается.
- * Пароли и коды из СМС не перехватываются и не хранятся. Значения кук не
- * показываются на экране. Кнопку «заказать» приложение не нажимает никогда.
+ * ЧЕГО ЗДЕСЬ НЕТ. Пароли и коды из СМС не перехватываются и не хранятся. Значения кук
+ * не показываются. Кнопку «заказать» приложение не нажимает никогда.
  */
 public class MainActivity extends Activity {
 
-    /** Сети, их адреса и известные куки входа. "?" = ещё не знаем. */
+    /** Название, код сети на сервере, стартовая страница. */
     private static final String[][] CHAINS = {
-        {"Магнит",      "magnit",      "https://magnit.ru/",              "mg_at"},
-        {"Пятёрочка",   "pyaterochka", "https://5ka.ru/",                 "?"},
-        {"Самокат",     "samokat",     "https://samokat.ru/",             "?"},
-        {"Лента",       "lenta",       "https://lenta.com/",              "?"},
-        {"ВкусВилл",    "vkusvill",    "https://vkusvill.ru/",            "?"},
-        {"Дикси",       "dixy",        "https://dixy.ru/",                "?"},
-        {"METRO",       "metro",       "https://online.metro-cc.ru/",     "?"},
-        {"Перекрёсток", "perekrestok", "https://www.perekrestok.ru/",     "?"},
+        {"Магнит",      "magnit",      "https://magnit.ru/"},
+        {"Пятёрочка",   "pyaterochka", "https://5ka.ru/"},
+        {"Самокат",     "samokat",     "https://samokat.ru/"},
+        {"Лента",       "lenta",       "https://lenta.com/"},
+        {"ВкусВилл",    "vkusvill",    "https://vkusvill.ru/"},
+        {"Дикси",       "dixy",        "https://dixy.ru/"},
     };
 
-    /** Адрес нашего сервера. Меняется при переезде — больше нигде не написан. */
-    private static final String SERVER = "http://200.169.191.137";
+    private static final String SERVER = BuildConfig.KORZINA_SERVER.replaceAll("/+$", "");
+
+    /**
+     * Сборщик карточек акций со страницы магазина. Разметка у сетей своя и меняется,
+     * поэтому он не привязан к классам конкретного сайта: ищет небольшие блоки, где
+     * есть скидка («-30%», «69,90 ₽»), и берёт из них название и срок («до 30.09»).
+     * Лишнее отсеет сервер: купон без понятных цифр показывается, но в цену не идёт,
+     * а к товару купон прикладывается только при очень похожем названии.
+     */
+    private static final String OFFERS_JS =
+        "(function(){"
+      // скидка — отдельной строкой: «-30%», «−15 ₽», «69,90 ₽». «2,5%» внутри названия — не скидка
+      + "var val=/^[-\u2212\u2013]?\\s?(\\d{1,2}(?:[.,]\\d+)?\\s?%|\\d[\\d\\s\\u00a0]*(?:[.,]\\d{1,2})?\\s?(?:\u20bd|\u0440\u0443\u0431\\.?))$/i;"
+      + "var sel='article,li,[class*=card],[class*=Card],[class*=offer],[class*=Offer],"
+      + "[class*=coupon],[class*=Coupon],[class*=promo],[class*=Promo],[class*=discount],[class*=Discount]';"
+      // куски текста — по самым вложенным элементам: «-30%» и «до 30.09» в соседних
+      // <span> иначе слиплись бы в одну строку «-30%до 30.09»
+      + "function lines(n){var out=[];[].slice.call(n.querySelectorAll('*')).concat([n]).forEach(function(e){"
+      + " if(e.children.length)return; var t=(e.textContent||'').replace(/\\s+/g,' ').trim(); if(t)out.push(t);});"
+      + " return out.length?out:(n.innerText||'').split('\\n').map(function(s){return s.trim();}).filter(Boolean);}"
+      + "function hit(n){var t=(n.innerText||'').trim();"
+      + " return t.length>0&&t.length<=300&&lines(n).some(function(l){return val.test(l);});}"
+      + "var all=[].slice.call(document.querySelectorAll(sel)).filter(hit);"
+      // самые внутренние: карточка, внутри которой нет другой карточки со скидкой
+      + "var cards=all.filter(function(n){return !all.some(function(m){return m!==n&&n.contains(m);});});"
+      + "var out=[],seen={},y=new Date().getFullYear();"
+      + "cards.slice(0,200).forEach(function(n){"
+      + " var ls=lines(n),value=ls.filter(function(l){return val.test(l);})[0];"
+      + " var names=ls.filter(function(l){return !val.test(l)&&l.length>3&&l.length<=120&&!/^\u0434\u043e\\s/i.test(l);});"
+      + " if(!names.length)return;"
+      + " var title=names.reduce(function(a,b){return b.length>a.length?b:a;});"
+      + " var e=(n.innerText||'').match(/\u0434\u043e\\s+(\\d{1,2})[.](\\d{1,2})(?:[.](\\d{2,4}))?/i),ends=null;"
+      + " if(e){var yy=e[3]?(e[3].length==2?'20'+e[3]:e[3]):y;"
+      + "  ends=yy+'-'+('0'+e[2]).slice(-2)+'-'+('0'+e[1]).slice(-2);}"
+      + " var key=title+'|'+value; if(seen[key])return; seen[key]=1;"
+      + " out.push({title:title,product:title,value:value.replace(/\\s+/g,' '),ends_at:ends});"
+      + "});"
+      + "return JSON.stringify(out);"
+      + "})()";
 
     private WebView web;
     private TextView status;
     private ProgressBar progress;
-    private Button saveBtn;
+    private Button saveLoginBtn;
+    private Button saveOffersBtn;
     private int currentChain = -1;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
@@ -87,76 +125,76 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(Color.WHITE);
         root.setFitsSystemWindows(true);
 
-        // ── Верхняя полоса: кнопки сетей ──
         root.addView(chainRow());
 
-        // ── Строка состояния ──
         status = new TextView(this);
         status.setPadding(dp(16), dp(8), dp(16), dp(8));
         status.setTextSize(14f);
         status.setTextColor(Color.DKGRAY);
-        status.setText("Выберите магазин");
         root.addView(status);
 
-        // ── Прогресс загрузки ──
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(100);
         progress.setVisibility(View.GONE);
-        LinearLayout.LayoutParams progLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(3));
-        root.addView(progress, progLp);
+        root.addView(progress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)));
 
-        // ── WebView ──
         web = new WebView(this);
-        LinearLayout.LayoutParams webLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
-        root.addView(web, webLp);
+        root.addView(web, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         setUpWeb();
 
-        // ── Нижняя панель: кнопка «Сохранить вход» ──
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER);
-        bar.setPadding(dp(12), dp(8), dp(12), dp(8));
+        bar.setPadding(dp(8), dp(8), dp(8), dp(8));
         bar.setBackgroundColor(0xFFF5F5F5);
 
-        saveBtn = new Button(this);
-        saveBtn.setText("💾  Сохранить вход");
-        saveBtn.setTextSize(16f);
-        saveBtn.setEnabled(false);
-        saveBtn.setOnClickListener(v -> saveCookies());
+        saveLoginBtn = new Button(this);
+        saveLoginBtn.setText("Сохранить вход");
+        saveLoginBtn.setEnabled(false);
+        saveLoginBtn.setOnClickListener(v -> saveLogin());
+        bar.addView(saveLoginBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        bar.addView(saveBtn, btnLp);
+        saveOffersBtn = new Button(this);
+        saveOffersBtn.setText("Сохранить акции");
+        saveOffersBtn.setEnabled(false);
+        saveOffersBtn.setOnClickListener(v -> saveOffers());
+        bar.addView(saveOffersBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
         root.addView(bar);
-
         setContentView(root);
+
+        if (SERVER.isEmpty()) {
+            say("Адрес сервера не задан при сборке (-PkorzinaServer).", true);
+        } else {
+            openOurApp();
+        }
     }
 
-    /** Горизонтальная строка кнопок сетей. */
     private HorizontalScrollView chainRow() {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setPadding(dp(4), dp(4), dp(4), 0);
+
+        Button ours = new Button(this);
+        ours.setText("Моя корзина");
+        ours.setTextSize(13f);
+        ours.setOnClickListener(v -> openOurApp());
+        row.addView(ours);
 
         for (int i = 0; i < CHAINS.length; i++) {
             final int idx = i;
             Button b = new Button(this);
             b.setText(CHAINS[i][0]);
             b.setTextSize(13f);
-            b.setPadding(dp(12), dp(6), dp(12), dp(6));
             b.setOnClickListener(v -> openChain(idx));
             row.addView(b);
         }
-
         HorizontalScrollView scroll = new HorizontalScrollView(this);
         scroll.setHorizontalScrollBarEnabled(false);
         scroll.addView(row);
         return scroll;
     }
 
-    /** Настройки WebView — только необходимые для работы витрин. */
     private void setUpWeb() {
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -172,176 +210,181 @@ public class MainActivity extends Activity {
         jar.setAcceptCookie(true);
         jar.setAcceptThirdPartyCookies(web, true);
 
-        // Маскировка под обычный мобильный Chrome (убираем метку встроенного WebView '; wv')
-        String ua = s.getUserAgentString();
-        if (ua != null) {
-            s.setUserAgentString(ua.replace("; wv", "").replace("Version/4.0 ", ""));
-        }
-        s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-
         web.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                if (currentChain >= 0) {
-                    saveBtn.setEnabled(true);
-                    status.setText(CHAINS[currentChain][0] + " — " + shortenUrl(url));
-                }
+                boolean inChain = currentChain >= 0;
+                saveLoginBtn.setEnabled(inChain);
+                saveOffersBtn.setEnabled(inChain);
+                if (inChain) say(CHAINS[currentChain][0] + " — " + shortenUrl(url), false);
             }
 
             @Override
-            public void onReceivedSslError(WebView view, android.webkit.SslErrorHandler handler, android.net.http.SslError error) {
-                // Поддержка российских сайтов с сертификатами Минцифры (Перекрёсток и др.)
-                handler.proceed();
-            }
-
-            @Override
-            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-                super.onReceivedError(view, errorCode, description, failingUrl);
-                if (currentChain >= 0) {
-                    status.setText("⚠️ " + CHAINS[currentChain][0] + ": " + description);
-                    status.setTextColor(0xFFB71C1C);
-                }
+            public void onReceivedSslError(WebView view, android.webkit.SslErrorHandler h,
+                                           android.net.http.SslError error) {
+                // Сертификаты Минцифры у части российских магазинов — только для их сайтов.
+                // Наш сервер и чужие адреса с битым сертификатом не открываются никогда:
+                // там ездит сессия владельца.
+                if (currentChain >= 0 && isChainHost(error.getUrl())) h.proceed();
+                else h.cancel();
             }
         });
 
         web.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onProgressChanged(WebView view, int p) {
-                if (p < 100) {
-                    progress.setVisibility(View.VISIBLE);
-                    progress.setProgress(p);
-                } else {
-                    progress.setVisibility(View.GONE);
-                }
+                progress.setVisibility(p < 100 ? View.VISIBLE : View.GONE);
+                progress.setProgress(p);
             }
         });
     }
 
-    /** Открыть сайт магазина. */
+    private void openOurApp() {
+        currentChain = -1;
+        saveLoginBtn.setEnabled(false);
+        saveOffersBtn.setEnabled(false);
+        say("Моя корзина", false);
+        web.loadUrl(SERVER + "/");
+    }
+
     private void openChain(int idx) {
         currentChain = idx;
-        saveBtn.setEnabled(false);
-        status.setText("Открываю " + CHAINS[idx][0] + "…");
+        saveLoginBtn.setEnabled(false);
+        saveOffersBtn.setEnabled(false);
+        say("Открываю " + CHAINS[idx][0] + "…", false);
         web.loadUrl(CHAINS[idx][2]);
     }
 
-    /** Собрать куки и отправить на сервер. */
-    private void saveCookies() {
+    // ── Вход в магазин ──
+    private void saveLogin() {
         if (currentChain < 0) return;
-
-        String chain = CHAINS[currentChain][1];
+        final String chain = CHAINS[currentChain][1];
         String url = web.getUrl();
-        if (url == null) {
-            status.setText("Страница ещё не загрузилась.");
-            return;
-        }
-
-        String raw = CookieManager.getInstance().getCookie(url);
+        String raw = url == null ? null : CookieManager.getInstance().getCookie(url);
         if (raw == null || raw.trim().isEmpty()) {
-            status.setText("Нет кук — похоже, вы ещё не вошли.");
+            say("Нет кук — похоже, вы ещё не вошли в магазин.", true);
             return;
         }
-
-        // Собираем JSON такого же формата, как закладка hand.src.js
-        StringBuilder json = new StringBuilder();
-        json.append("{\"store\":\"").append(chain).append("\",");
-        json.append("\"host\":\"").append(hostOf(url)).append("\",");
-        json.append("\"at\":\"").append(isoNow()).append("\",");
-        json.append("\"cookies\":[");
-
-        String[] parts = raw.split(";");
-        boolean first = true;
-        int count = 0;
-        for (String piece : parts) {
-            piece = piece.trim();
-            if (piece.isEmpty()) continue;
-            int eq = piece.indexOf('=');
-            if (eq < 1) continue;
-            String name = piece.substring(0, eq).trim();
-            String value = piece.substring(eq + 1);
-            if (!first) json.append(",");
-            json.append("{\"name\":\"").append(escJson(name))
-                .append("\",\"value\":\"").append(escJson(value)).append("\"}");
-            first = false;
-            count++;
+        try {
+            JSONArray cookies = new JSONArray();
+            for (String piece : raw.split(";")) {
+                piece = piece.trim();
+                int eq = piece.indexOf('=');
+                if (eq < 1) continue;
+                cookies.put(new JSONObject().put("name", piece.substring(0, eq).trim())
+                                            .put("value", piece.substring(eq + 1)));
+            }
+            JSONObject body = new JSONObject()
+                .put("store", chain).put("host", hostOf(url)).put("cookies", cookies);
+            say("Сохраняю вход…", false);
+            post("/api/handoff", body, CHAINS[currentChain][0] + " — вход сохранён");
+        } catch (Exception e) {
+            say("Не получилось собрать вход: " + e.getMessage(), true);
         }
-        json.append("]}");
-
-        saveBtn.setEnabled(false);
-        status.setText("Отправляю " + count + " кук на сервер…");
-
-        final int cookieCount = count;
-        final String payload = json.toString();
-        new Thread(() -> sendToServer(chain, payload, cookieCount)).start();
     }
 
-    /** Номер владельца для привязки сессии на сервере. */
-    private static final String DEFAULT_PHONE = "79313391149";
-
-    /** Отправка кук на сервер в фоновом потоке. */
-    private void sendToServer(String chain, String jsonPayload, int cookieCount) {
-        try {
-            // Кодируем как base64url (тот же формат, что закладка hand.src.js pack())
-            byte[] bytes = jsonPayload.getBytes(StandardCharsets.UTF_8);
-            String b64 = Base64.encodeToString(bytes, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
-
-            String target = SERVER + "/cabinet?store=" + URLEncoder.encode(chain, "UTF-8")
-                          + "&phone=" + URLEncoder.encode(DEFAULT_PHONE, "UTF-8")
-                          + "&format=json"
-                          + "&vhod=" + URLEncoder.encode(b64, "UTF-8");
-
-            HttpURLConnection conn = (HttpURLConnection) new URL(target).openConnection();
-            conn.setRequestMethod("GET");
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(15000);
-            conn.setInstanceFollowRedirects(false);
-            int code = conn.getResponseCode();
-
-            java.io.InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
-            String respText = "";
-            if (is != null) {
-                java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
-                byte[] buf = new byte[1024];
-                int n;
-                while ((n = is.read(buf)) != -1) baos.write(buf, 0, n);
-                respText = baos.toString("UTF-8");
+    // ── Личные акции ──
+    private void saveOffers() {
+        if (currentChain < 0) return;
+        final String chain = CHAINS[currentChain][1];
+        final String name = CHAINS[currentChain][0];
+        say("Собираю акции со страницы…", false);
+        web.evaluateJavascript(OFFERS_JS, result -> {
+            try {
+                String json = (String) new JSONTokener(result).nextValue();
+                JSONArray offers = new JSONArray(json == null ? "[]" : json);
+                if (offers.length() == 0) {
+                    say("На этой странице акций не нашлось. Откройте в " + name
+                        + " раздел своих предложений и нажмите ещё раз.", true);
+                    return;
+                }
+                JSONObject body = new JSONObject()
+                    .put("store", chain).put("logged_in", true)
+                    .put("gives", new JSONArray().put("coupons"))
+                    .put("coupons", offers);
+                post("/api/store_accounts/sync", body,
+                     name + " — сохранено акций: " + offers.length());
+            } catch (Exception e) {
+                say("Не получилось разобрать страницу: " + e.getMessage(), true);
             }
-            conn.disconnect();
+        });
+    }
 
-            final String serverMsg = respText;
+    /** POST на наш сервер с сессией «Моей корзины» из WebView. В фоне. */
+    private void post(String path, JSONObject body, String okText) {
+        saveLoginBtn.setEnabled(false);
+        saveOffersBtn.setEnabled(false);
+        final String session = CookieManager.getInstance().getCookie(SERVER);
+        new Thread(() -> {
+            int code;
+            String text = "";
+            try {
+                HttpURLConnection conn = (HttpURLConnection) new URL(SERVER + path).openConnection();
+                conn.setRequestMethod("POST");
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(30000);
+                conn.setDoOutput(true);
+                conn.setInstanceFollowRedirects(false);
+                conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                if (session != null) conn.setRequestProperty("Cookie", session);
+                try (OutputStream os = conn.getOutputStream()) {
+                    os.write(body.toString().getBytes(StandardCharsets.UTF_8));
+                }
+                code = conn.getResponseCode();
+                InputStream is = code < 400 ? conn.getInputStream() : conn.getErrorStream();
+                if (is != null) text = new String(readAll(is), StandardCharsets.UTF_8);
+                conn.disconnect();
+            } catch (Exception e) {
+                final String why = e.getMessage();
+                handler.post(() -> done("Сервер недоступен: " + why, true));
+                return;
+            }
+            final int status = code;
+            final String answer = text;
             handler.post(() -> {
-                if (code >= 200 && code < 400 && !serverMsg.contains("<!DOCTYPE html>")) {
-                    status.setText("✅ " + CHAINS[currentChain][0]
-                                 + " — вход сохранён (" + cookieCount + " кук)");
-                    status.setTextColor(0xFF1B5E20);
-                } else if (code == 302 || code == 303 || serverMsg.contains("<!DOCTYPE html>")) {
-                    // Перенаправление на страницу входа
-                    status.setText("⚠️ Требуется вход по номеру " + DEFAULT_PHONE);
-                    status.setTextColor(0xFFB71C1C);
-                    saveBtn.setEnabled(true);
+                if (status == 200) {
+                    done(okText, false);
+                } else if (status == 401 || status == 302 || status == 303) {
+                    done("Сначала войдите в «Мою корзину» — кнопка слева вверху.", true);
                 } else {
-                    String msg = "Ошибка " + code;
-                    if (serverMsg.contains("\"error\":\"")) {
-                        int sIdx = serverMsg.indexOf("\"error\":\"") + 9;
-                        int eIdx = serverMsg.indexOf("\"", sIdx);
-                        if (eIdx > sIdx) msg = serverMsg.substring(sIdx, eIdx);
-                    }
-                    status.setText("⚠️ " + msg);
-                    status.setTextColor(0xFFB71C1C);
-                    saveBtn.setEnabled(true);
+                    String msg = "Ошибка " + status;
+                    try { msg = new JSONObject(answer).optString("error", msg); } catch (Exception ignored) { }
+                    done(msg, true);
                 }
             });
-        } catch (Exception e) {
-            handler.post(() -> {
-                status.setText("❌ Ошибка: " + e.getMessage());
-                status.setTextColor(0xFFB71C1C);
-                saveBtn.setEnabled(true);
-            });
-        }
+        }).start();
+    }
+
+    private void done(String text, boolean bad) {
+        say(text, bad);
+        boolean inChain = currentChain >= 0;
+        saveLoginBtn.setEnabled(inChain);
+        saveOffersBtn.setEnabled(inChain);
     }
 
     // ── Вспомогательные ──
+    private void say(String text, boolean bad) {
+        status.setText(text);
+        status.setTextColor(bad ? 0xFFB71C1C : Color.DKGRAY);
+    }
+
+    private static byte[] readAll(InputStream is) throws java.io.IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = is.read(buf)) != -1) out.write(buf, 0, n);
+        return out.toByteArray();
+    }
+
+    private static boolean isChainHost(String url) {
+        String host = hostOf(url);
+        for (String[] c : CHAINS) {
+            String own = hostOf(c[2]).replaceFirst("^www\\.", "");
+            if (host.equals(own) || host.endsWith("." + own)) return true;
+        }
+        return false;
+    }
 
     private static String hostOf(String url) {
         try {
@@ -353,40 +396,10 @@ public class MainActivity extends Activity {
 
     private static String shortenUrl(String url) {
         if (url == null) return "";
-        // Убираем протокол и параметры для читаемости
         String s = url.replaceFirst("^https?://", "");
         int q = s.indexOf('?');
-        if (q > 0 && s.length() > 50) s = s.substring(0, q);
-        if (s.length() > 60) s = s.substring(0, 57) + "…";
-        return s;
-    }
-
-    private static String isoNow() {
-        return new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
-                .format(new java.util.Date());
-    }
-
-    /** Экранирование для JSON-строки (без библиотек). */
-    private static String escJson(String s) {
-        if (s == null) return "";
-        StringBuilder out = new StringBuilder(s.length());
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"':  out.append("\\\""); break;
-                case '\\': out.append("\\\\"); break;
-                case '\n': out.append("\\n");  break;
-                case '\r': out.append("\\r");  break;
-                case '\t': out.append("\\t");  break;
-                default:
-                    if (c < 0x20) {
-                        out.append(String.format("\\u%04x", (int) c));
-                    } else {
-                        out.append(c);
-                    }
-            }
-        }
-        return out.toString();
+        if (q > 0) s = s.substring(0, q);
+        return s.length() > 60 ? s.substring(0, 57) + "…" : s;
     }
 
     private int dp(int dp) {
@@ -395,10 +408,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (web.canGoBack()) {
-            web.goBack();
-        } else {
-            super.onBackPressed();
-        }
+        if (web.canGoBack()) web.goBack();
+        else super.onBackPressed();
     }
 }

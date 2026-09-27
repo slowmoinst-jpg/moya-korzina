@@ -188,11 +188,6 @@ def _resent(code: str) -> dict | None:
             "retry": len(cart.failed_skus(code))}
 
 
-def _stale_days() -> int:
-    from app import service
-    return int(service.stale_after_days())
-
-
 def _units() -> dict[int, str]:
     """product_id -> единица. У строки варианта единицы нет, а весовые нужны в кг."""
     try:
@@ -389,9 +384,7 @@ def _draw(basket: dict, bundle: dict, mode: str | None, trouble: str | None, pla
               "stores": [_store_card(s, units, True, trouble)
                          for s in (getattr(best, "stores", None) or [])],
               "penalty": float(getattr(best, "penalty", 0.0) or 0.0),
-              "missing": list(getattr(best, "missing_products", None) or []),
-              "stale": list(getattr(best, "stale_lines", None) or []),
-              "stale_days": _stale_days()},
+              "missing": list(getattr(best, "missing_products", None) or [])},
         others=[{"n": n, "variant": v, "figures": _figures(v, bundle["baseline"]),
                  "stores": [_store_card(s, units, False, None)
                             for s in (getattr(v, "stores", None) or [])],
@@ -448,7 +441,7 @@ def _act():
                 from app.web import auth
 
                 try:
-                    cp = cartplan.build(target, lines, force=True)
+                    cp = cartplan.build(target, lines, force=True, verify_prices=True)
                     if cp.lines:
                         if shopstore.load(target) is None:
                             # Класть некуда, пока человек не вошёл. Ведём туда, где

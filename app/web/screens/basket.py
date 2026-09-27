@@ -345,25 +345,23 @@ def _price_matrix(items, stores) -> tuple[dict, dict]:
     totals: dict[str, float] = {s.code: 0.0 for s in stores}
     from app import service
 
-    from app import location as client_place
-
-    moved = client_place.moved_at()
     for item in items:
         pid = int(item["product_id"])
         qty = float(item.get("qty") or 0)
         unit = item.get("unit") or "pcs"
         weighed = service.is_weighed(pid, unit, item.get("name"))
         for store in stores:
-            # Тот же расчёт, что у оптимизатора: цена килограмма не берётся из цены
-            # фасовки, разные фасовки приводятся к весу эталона. Два расчёта цены
-            # на двух экранах однажды разошлись бы, и строка корзины спорила бы с итогом.
-            found = service.line_price(pid, store, qty, unit, item.get("weight_g"), weighed, moved)
+            # Тот же расчёт, что у оптимизатора: цена только действующая
+            # (app/freshness.py), цена килограмма не берётся из цены фасовки, разные
+            # фасовки приводятся к весу эталона. Два расчёта цены на двух экранах
+            # однажды разошлись бы, и строка корзины спорила бы с итогом.
+            found = service.line_price(pid, store, qty, unit, item.get("weight_g"), weighed)
             if not found:
                 continue
             value = found["value"]
             in_stock = found["in_stock"]
             cell[(pid, store.code)] = {"value": value, "in_stock": in_stock,
-                                       "stale": found["stale"], "note": found["note"],
+                                       "note": found["note"],
                                        "adjust": found.get("adjust", 0.0)}
             if in_stock:
                 # Складывать цену отсутствующего товара — значит обещать корзину,

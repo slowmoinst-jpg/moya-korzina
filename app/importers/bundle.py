@@ -19,7 +19,7 @@ import hashlib
 import json
 from typing import Any
 
-from app import repo
+from app import chains, repo
 from app.db import init_db
 from app.importers.ofd_pdf import Receipt, _ensure_product, _remember_barcode, _resolve_store_id
 from app.importers.sources import parse_receipt_json
@@ -188,12 +188,15 @@ def store_receipts(items: list[dict], store_code: str | None = None,
     загрузка повторяется, и второй заход обязан быть безвредным.
     """
     init_db()
-    known = repo.imported_receipt_keys()
+    # отложенный чек другого магазина второй раз не разбирается — он уже решён
+    known = repo.imported_receipt_keys() | repo.other_store_receipt_keys()
 
     imported: list[dict] = []
     skipped: list[dict] = []
     created = 0
     rows_total = 0
+
+    other: list[dict] = []
 
     for item in items:
         receipt = item["receipt"]
@@ -202,7 +205,22 @@ def store_receipts(items: list[dict], store_code: str | None = None,
             skipped.append({"key": key, "date": receipt.date, "total": receipt.total})
             continue
 
-        store_id, store_label = _resolve_store_id(receipt, store_code)
+        # Заказами становятся только чеки сетей, где мы собираем заказ (app/chains.py).
+        # Аптека, кафе, незнакомый продавец — откладываются, в историю не пишутся.
+        # Чек совсем без продавца (вставленный текст заказа) судить не по чему — его
+        # добавил сам человек, и он принимается, как и в загрузке из ФНС.
+        chain = store_code or chains.resolve(receipt.store_name)
+        seller = str(receipt.store_name or "").strip().strip("—-").strip()
+        unnamed = not chain and seller.lower() in ("", "неизвестный магазин")
+        if not unnamed and not chains.accepts(store_code=chain):
+            repo.mark_receipt_other_store(key, receipt.date, receipt.store_name or chain,
+                                          receipt.total, source)
+            known.add(key)
+            other.append({"key": key, "date": receipt.date, "store": receipt.store_name or chain or "—",
+                          "total": receipt.total})
+            continue
+
+        store_id, store_label = _resolve_store_id(receipt, chain)
         for row in receipt.rows:
             product_id, is_new = _ensure_product(row.raw_name, row.qty)
             created += int(is_new)
@@ -238,10 +256,20 @@ def store_receipts(items: list[dict], store_code: str | None = None,
         "catalogue": len(catalogue or []),
         "pending": len(repo.pending_receipts()),
         "imported": imported,
+        # чеки других магазинов: не добавлены, по магазину — сколько
+        "other": other,
+        "other_by_store": _count_by_store(other),
         # то же самое словами прежнего одиночного импорта — экраны читают эти ключи
         "date": max(dates) if dates else "",
         "store": stores.pop() if len(stores) == 1 else (f"{len(stores)} магазинов" if stores else "—"),
     }
+
+
+def _count_by_store(rows: list[dict]) -> list[tuple[str, int]]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["store"]] = counts.get(row["store"], 0) + 1
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
 def import_bundle(payload: str | bytes | dict | list, store_code: str | None = None) -> dict:

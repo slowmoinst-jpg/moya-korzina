@@ -252,7 +252,8 @@ def test_same_file_loaded_twice_does_not_double_history(db, tmp_path):
     from app.importers import import_receipt
 
     path = tmp_path / "cheque.json"
-    path.write_text(json.dumps(TWO[0]["fiscalData"], ensure_ascii=False), encoding="utf-8")
+    fiscal = dict(TWO[0]["fiscalData"], user='ООО "Агроторг"')   # продавец так, как его пишет ФНС
+    path.write_text(json.dumps(fiscal, ensure_ascii=False), encoding="utf-8")
 
     first = import_receipt(str(path))
     second = import_receipt(str(path))

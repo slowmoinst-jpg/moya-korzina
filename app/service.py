@@ -6,9 +6,8 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime
 
-from app import config, location, purchase, repo
+from app import config, freshness, location, purchase, repo
 from app.matcher.normalize import sold_by_weight
 from app.models import BasketLine, Offer, Store, Variant
 
@@ -18,34 +17,6 @@ log = logging.getLogger(__name__)
 # Приведение фасовок: разница меньше этой доли — это одна и та же фасовка
 # («930 мл» и «0,93 л»), и цену полки не трогаем.
 PACK_SAME = 0.03
-
-
-def _days(value: str | None) -> float | None:
-    """Сколько дней назад снята цена. None — дату не разобрать."""
-    text = str(value or "").strip().replace(" ", "T")
-    if not text:
-        return None
-    try:
-        when = datetime.fromisoformat(text[:19])
-    except ValueError:
-        try:
-            when = datetime.fromisoformat(text[:10])
-        except ValueError:
-            return None
-    return (datetime.now() - when).total_seconds() / 86400.0
-
-
-def _stamp_of(value) -> str:
-    """Отметка времени в сравнимом виде: «2026-09-26T10:00:00»."""
-    return str(value or "").strip().replace(" ", "T")[:19]
-
-
-def stale_after_days() -> float:
-    """Старше скольких дней цена считается несвежей и помечается в расчёте."""
-    try:
-        return float(config.get("prices.stale_after_days", 7) or 7)
-    except (TypeError, ValueError):
-        return 7.0
 
 
 def _grams(value) -> float | None:
@@ -119,20 +90,17 @@ def _shop_by_weight(snap: dict) -> bool:
             or sold_by_weight(snap.get("sp_name") or ""))
 
 
-_UNSET = object()
-
-
 def line_price(product_id: int, store: Store, qty: float, unit: str,
-               ref_weight_g: float | None = None, weighed: bool | None = None,
-               moved: object = _UNSET) -> dict | None:
+               ref_weight_g: float | None = None, weighed: bool | None = None) -> dict | None:
     """Во что обойдётся позиция корзины в магазине. None — сравнимой цены нет.
 
-    Возвращает {"value", "adjust", "in_stock", "fetched_at", "stale", "stale_label", "note"}:
+    Возвращает {"value", "adjust", "in_stock", "note"}:
       value   — ДЕНЬГИ: столько заплатит человек за то, что ляжет в корзину;
-      adjust  — поправка ТОЛЬКО ДЛЯ ВЫБОРА (разная фасовка), в оплату не входит;
-      stale_label — дата несвежего снимка, «справочная цена» для цены из CSV или
-                    «по прежнему адресу» для цены точки, снятой до смены адреса;
-      moved   — когда сменился адрес (location.moved_at); не передано — прочитать здесь.
+      adjust  — поправка ТОЛЬКО ДЛЯ ВЫБОРА (разная фасовка), в оплату не входит.
+
+    Цена — только действующая (app/freshness.py): устаревшая, справочная и снятая
+    по прежнему адресу в расчёт не идут, магазин по этой позиции просто выпадает,
+    а не предлагается по цене, которой уже нет. Личные акции человека в ней уже учтены.
 
     Количество — по тому же правилу, по которому его положат в корзину
     (app/purchase.pieces): расчёт и корзина не спорят.
@@ -154,7 +122,7 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
         неё считаются пороги доставки и минимального заказа; разница с ценой,
         приведённой к весу эталона, идёт в adjust — по ней выбирается вариант.
     """
-    snap = repo.latest_price_for(product_id, store.id)
+    snap = freshness.price_for(product_id, store.id)
     if not snap:
         return None
     price = snap.get("price")
@@ -211,39 +179,19 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
                 note = (f"фасовка {pack_g:g} г вместо {ref_g:g} г: для сравнения цена "
                         f"приведена к {ref_g:g} г ({price * ref_g / pack_g:.2f} ₽ за штуку)")
 
-    age = _days(snap.get("fetched_at"))
-    reference = snap.get("source") == "fallback"
-    if moved is _UNSET:
-        moved = location.moved_at()
-    # Цена ТОЧКИ, снятая до смены адреса, — цена прежнего магазина, как бы свежа
-    # она ни была. Сети без точек (ВкусВилл, Дикси, цены по чекам) адрес не меняет.
-    before_move = (store.code in location.ADDRESS_STORES and bool(moved)
-                   and _stamp_of(snap.get("fetched_at")) < _stamp_of(moved))
-    stale = reference or before_move or (age is not None and age > stale_after_days())
-    if reference:
-        label = "справочная цена"
-    elif before_move:
-        label = "по прежнему адресу"
-    elif stale:
-        label = str(snap.get("fetched_at") or "")[:10]
-    else:
-        label = None
     return {
         "value": round(value, 2),
         "adjust": round(adjust, 2),
         "in_stock": bool(snap.get("in_stock", 1)),
-        "fetched_at": snap.get("fetched_at"),
-        "stale": stale,
-        "stale_label": label,
         "note": note,
     }
 
 
 def _price_for_line(product_id: int, store: Store, qty: float, unit: str,
                     ref_weight_g: float | None = None,
-                    weighed: bool | None = None, moved: object = _UNSET) -> tuple[float | None, bool]:
+                    weighed: bool | None = None) -> tuple[float | None, bool]:
     """Стоимость позиции целиком в магазине: (деньги, в наличии)."""
-    found = line_price(product_id, store, qty, unit, ref_weight_g, weighed, moved)
+    found = line_price(product_id, store, qty, unit, ref_weight_g, weighed)
     if not found:
         return None, False
     return found["value"], found["in_stock"]
@@ -252,7 +200,6 @@ def _price_for_line(product_id: int, store: Store, qty: float, unit: str,
 def build_basket_lines(basket_id: int) -> list[BasketLine]:
     """Строки корзины с ценами по всем магазинам, где есть подтверждённое сопоставление."""
     stores = repo.list_stores()
-    moved = location.moved_at()
     lines: list[BasketLine] = []
     for item in repo.basket_items(basket_id):
         line = BasketLine(
@@ -264,15 +211,13 @@ def build_basket_lines(basket_id: int) -> list[BasketLine]:
         weighed = is_weighed(line.product_id, line.unit, item.get("name"))
         for store in stores:
             found = line_price(line.product_id, store, line.qty, line.unit, item.get("weight_g"),
-                               weighed, moved)
+                               weighed)
             if found is None:
                 continue
             line.prices[store.code] = found["value"]
             line.in_stock[store.code] = found["in_stock"]
             if found["adjust"]:
                 line.adjust[store.code] = found["adjust"]
-            if found["stale"]:
-                line.stale[store.code] = found["stale_label"] or ""
             if found["note"]:
                 line.notes[store.code] = found["note"]
         lines.append(line)
@@ -290,39 +235,42 @@ def _history_price(product_id: int) -> float | None:
 
 
 def baseline_by_product(basket_id: int) -> dict[int, float]:
-    """Во что обошлась бы каждая позиция в базовом магазине без акций.
+    """Сколько человек заплатил бы за каждую позицию по-старому — база для «Экономии».
+
+    Экономия на экране — «по сравнению с тем, сколько вы платили за эти товары
+    раньше», поэтому первым источником идёт ЕГО ЖЕ цена из чеков: последняя цена
+    за единицу в истории покупок. Цена чужой сети в этом месте была бы подменой —
+    сравнением с магазином, где человек, может быть, никогда не покупает.
+
+    Товар, которого в чеках нет (добавлен вручную), оценивается ценой базового
+    магазина (`baseline_store`), а если и её нет — самой низкой действующей ценой:
+    так такой товар не рисует экономии из воздуха. Цены магазинов — только свежие.
 
     По позициям, а не одной суммой: вариант, где части корзины нет, сравнивается
     с базой БЕЗ этой части. Иначе недостающий товар за 900 ₽ записывался
     варианту в «экономию» — дешевле ведь, раз его не купили.
-
-    Порядок источников цены: цена базового магазина -> последняя цена из истории
-    покупок -> минимальная известная цена среди остальных магазинов.
     """
     base_store = repo.get_store(config.get("baseline_store", "pyaterochka"))
-    moved = location.moved_at()
     out: dict[int, float] = {}
     for item in repo.basket_items(basket_id):
         qty, unit, pid = float(item["qty"]), item["unit"] or "pcs", item["product_id"]
         grams = item.get("weight_g")
         weighed = is_weighed(pid, unit, item.get("name"))
-        price = None
-        if base_store:
-            found = line_price(pid, base_store, qty, unit, grams, weighed, moved)
+        hp = _history_price(pid)
+        price = round(hp * qty, 2) if hp is not None else None
+        if price is None and base_store:
+            found = line_price(pid, base_store, qty, unit, grams, weighed)
             # Товара нет в базовом магазине — его «цена» там не база: Магнит на
-            # отсутствующий товар пишет справочную цену или ноль с пометкой «нет».
+            # отсутствующий товар пишет ноль с пометкой «нет».
             # База — в рублях, как и «Заплатим»: экономия на экране обязана быть
             # разностью двух показанных чисел. Поправка на фасовку живёт только в
             # выборе варианта (Variant.pack_extra).
             if found and found["in_stock"] and found["value"] > 0:
                 price = found["value"]
         if price is None:
-            hp = _history_price(pid)
-            price = round(hp * qty, 2) if hp is not None else None
-        if price is None:
             others = []
             for store in repo.list_stores():
-                p, _ = _price_for_line(pid, store, qty, unit, grams, weighed, moved)
+                p, _ = _price_for_line(pid, store, qty, unit, grams, weighed)
                 if p:
                     others.append(p)
             price = min(others) if others else 0.0
@@ -331,7 +279,7 @@ def baseline_by_product(basket_id: int) -> dict[int, float]:
 
 
 def baseline_total(basket_id: int) -> float:
-    """Baseline: стоимость всей корзины в одном базовом магазине без акций (раздел 2 спецификации)."""
+    """Сколько человек заплатил бы за всю корзину по-старому (см. baseline_by_product)."""
     return round(sum(baseline_by_product(basket_id).values()), 2)
 
 

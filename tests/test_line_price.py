@@ -212,24 +212,17 @@ def test_the_piece_rate_is_the_kilo_price_not_the_portion(shop):
     assert service.line_price(pid, shop, 1, "pcs", 200)["value"] == 150.0
 
 
-def test_old_price_is_marked_stale(shop):
+def test_an_old_price_is_not_a_price(shop):
+    """Цена старше prices.fresh_hours в расчёт не идёт: магазин по позиции выпадает
+    (app/freshness.py), а не показывается со старой ценой и пометкой."""
     old = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
     pid = _mapped(shop, "Кефир", "pcs", price=80.0, fetched_at=old)
-    found = service.line_price(pid, shop, 1.0, "pcs")
-    assert found["stale"] is True
-    fresh = _mapped(shop, "Ряженка", "pcs", sku="2", price=80.0)
-    assert service.line_price(fresh, shop, 1.0, "pcs")["stale"] is False
-
-
-def test_stale_price_reaches_the_variant(shop):
-    old = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
-    pid = _mapped(shop, "Кефир", "pcs", price=80.0, fetched_at=old)
+    assert service.line_price(pid, shop, 1.0, "pcs") is None
     basket = repo.create_basket("проверка")
     repo.set_basket_item(basket, pid, 1)
-    variants, _base = service.calculate(basket, refresh=False)
-    stale = variants[0].stale_lines
-    assert [ln.product_name for ln in stale] == ["Кефир"]
-    assert stale[0].stale_since == old[:10]
+    assert service.build_basket_lines(basket)[0].prices == {}
+    fresh = _mapped(shop, "Ряженка", "pcs", sku="2", price=80.0)
+    assert service.line_price(fresh, shop, 1.0, "pcs")["value"] == 80.0
 
 
 def test_pieces_are_whole_in_the_basket(shop):
@@ -248,13 +241,19 @@ def test_pieces_are_whole_in_the_basket(shop):
 
 
 def test_reference_price_is_never_taken_for_a_live_one(shop):
-    """Справочная цена из CSV помечается в расчёте, какой бы свежей ни была дата."""
+    """Справочная цена из CSV в расчёт не идёт, какой бы свежей ни была дата: её
+    подставляет коннектор, когда сеть не ответила, — это цена из файла, а не с полки."""
+    from app import freshness
+    from app.connectors.stub import FALLBACK
+
+    assert freshness.REFERENCE == FALLBACK, "отметка коннектора и правило — одно слово"
     pid = repo.upsert_product(Product(id=None, name="Хлебцы", unit="pcs"))
     sp = repo.upsert_store_product(shop.id, "magnit-hlebcy", "Хлебцы")
     repo.confirm_mapping(pid, sp, confirmed=True)
     repo.save_price(sp, 55.0, source="fallback")
-    found = service.line_price(pid, shop, 1.0, "pcs")
-    assert found["stale"] is True and found["stale_label"] == "справочная цена"
+    assert service.line_price(pid, shop, 1.0, "pcs") is None
+    repo.save_price(sp, 57.0)
+    assert service.line_price(pid, shop, 1.0, "pcs")["value"] == 57.0, "живая цена — снова цена"
 
 
 def test_absent_in_the_baseline_store_is_not_a_zero_baseline(shop):

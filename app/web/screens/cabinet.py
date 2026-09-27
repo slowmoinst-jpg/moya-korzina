@@ -39,7 +39,7 @@ import urllib.parse
 
 from flask import flash, g, jsonify, redirect, render_template, request
 
-from app import collector, repo, store_accounts, users
+from app import collector, repo, store_accounts
 from app.shopbrowser import driver, handoff, signals, store as shopstore
 from app.web import auth
 from app.web.views import SCREEN_BY_KEY
@@ -189,10 +189,12 @@ def _answer(chain: str, shot: driver.Shot | None, *, note: str = "",
 
 
 def _take_vhod(chain: str, phone: str, packed: str):
-    """Принять вход, переданный закладкой через адрес (как в ФНС) или из Android-приложения."""
-    user_phone = (request.args.get("phone") or phone or "").strip()
-    if user_phone:
-        users.activate(user_phone)
+    """Принять вход, переданный закладкой через адрес (как в ФНС).
+
+    Рабочее место — только того, кто вошёл в «Мою корзину» в этом браузере. Номер
+    из адреса больше не принимается: по нему любой вошедший мог положить свой вход
+    магазина в чужую базу. Приложение на телефоне шлёт вход телом на /api/handoff.
+    """
     import base64
     try:
         padded = packed + "=" * ((4 - len(packed) % 4) % 4)
