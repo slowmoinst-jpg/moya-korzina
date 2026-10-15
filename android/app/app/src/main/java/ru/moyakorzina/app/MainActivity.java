@@ -49,6 +49,11 @@ import java.nio.charset.StandardCharsets;
  *                   «Персональные предложения»): приложение соберёт с неё карточки
  *                   акций и отправит на сервер (POST /api/store_accounts/sync). Сервер
  *                   учтёт их в цене — app/personal.py.
+ *   «Записать корзину» — включает запись того, как сайт магазина кладёт товар в
+ *                   корзину и убирает его. Человек кладёт и убирает любой товар, жмёт
+ *                   «Готово», и структура этих запросов (без ключей входа и личных
+ *                   данных) уходит на сервер (POST /api/cart_record, app/cartrecord.py).
+ *                   По ней наполняется корзина во всех кабинетах, где человек вошёл.
  *
  * АДРЕС СЕРВЕРА задаётся при сборке (-PkorzinaServer=https://… или переменная
  * KORZINA_SERVER), в коде его нет.
@@ -58,15 +63,110 @@ import java.nio.charset.StandardCharsets;
  */
 public class MainActivity extends Activity {
 
-    /** Название, код сети на сервере, стартовая страница. */
+    /**
+     * Название, код сети на сервере, стартовая страница, свои адреса сети. Последнее —
+     * для записи корзины: запросы к чужим адресам (счётчики, реклама) не записываются.
+     */
     private static final String[][] CHAINS = {
-        {"Магнит",      "magnit",      "https://magnit.ru/"},
-        {"Пятёрочка",   "pyaterochka", "https://5ka.ru/"},
-        {"Самокат",     "samokat",     "https://samokat.ru/"},
-        {"Лента",       "lenta",       "https://lenta.com/"},
-        {"ВкусВилл",    "vkusvill",    "https://vkusvill.ru/"},
-        {"Дикси",       "dixy",        "https://dixy.ru/"},
+        {"Магнит",      "magnit",      "https://magnit.ru/",   "magnit.ru"},
+        {"Пятёрочка",   "pyaterochka", "https://5ka.ru/",      "5ka.ru,x5.ru"},
+        {"Самокат",     "samokat",     "https://samokat.ru/",  "samokat.ru"},
+        {"Лента",       "lenta",       "https://lenta.com/",   "lenta.com"},
+        {"ВкусВилл",    "vkusvill",    "https://vkusvill.ru/", "vkusvill.ru"},
+        {"Дикси",       "dixy",        "https://dixy.ru/",     "dixy.ru"},
     };
+
+    /**
+     * Запись корзины: как сайт магазина кладёт товар в корзину и убирает его.
+     *
+     * ЗАЧЕМ. Корзину во все кабинеты, где человек вошёл, кладём запросами самих
+     * магазинов (решение владельца 01.10.2026), а эти запросы под входом мы не видели
+     * ни у одной сети. Снять их можно только здесь, на телефоне: сервер Пятёрочка и
+     * Самокат не пускают даже через домашний выход (403, 15.10.2026).
+     *
+     * КАК. Скрипт оборачивает fetch и XMLHttpRequest страницы и записывает запросы К
+     * СВОИМ адресам сети: все, кроме GET, и GET с корзиной в пути. Пишется СТРУКТУРА:
+     * имена заголовков без значений, тело и ответ без телефонов, карт, адресов, имён.
+     * Запросы входа (auth, login, otp, sms…) не пишутся вовсе. Сервер разбирает
+     * запись ещё раз тем же правилом — app/cartrecord.py.
+     *
+     * Записанное копится в sessionStorage страницы и переживает её перезагрузку.
+     */
+    private static final String REC_JS =
+        "(function(allow){"
+      + "if(window.__kzRec){window.__kzRecStop=false;return 'on';}"
+      + "window.__kzRec=true;window.__kzRecStop=false;"
+      + "var SKIP=/auth|login|logout|otp|sms|verify|token|session|passw|register|sign|captcha|metric|analytic|track|collect|pixel|beacon|event/i;"
+      + "var CARTISH=/cart|basket|korzin|order|checkout/i;"
+      + "var HIDDEN={};('token auth session secret password pass passwd phone tel telephone msisdn email mail card pan address street house flat apartment entrance floor lat latitude lon lng longitude geo coords coordinates fio name firstname lastname surname user customer client device signature sign hash cookie birth birthday inn snils passport comment sms otp captcha ip').split(' ').forEach(function(w){HIDDEN[w]=1;});"
+      + "var IDW={};('id sku article product plu good goods item code xml').split(' ').forEach(function(w){IDW[w]=1;});"
+      + "function words(k){if(!k)return[];return String(k).replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().split(/[^a-z\\u0430-\\u044f\\u04510-9]+/).filter(Boolean);}"
+      + "function any(ws,set){for(var i=0;i<ws.length;i++)if(set[ws[i]])return true;return false;}"
+      + "function shape(v,k,d){"
+      + " if(d>6)return '…';"
+      + " if(v===null||typeof v==='boolean')return v;"
+      + " var ws=words(k);"
+      + " if(any(ws,HIDDEN))return '<скрыто>';"
+      + " if(typeof v==='number')return(Math.abs(v)>=1e10&&!any(ws,IDW))?'<число>':v;"
+      + " if(typeof v==='string'){"
+      + "  if(/^\\+?\\d{11,}$/.test(v)&&!any(ws,IDW))return '<строка '+v.length+'>';"
+      + "  return(v.length<=24&&/^[A-Za-z0-9_\\-.:]*$/.test(v))?v:'<строка '+v.length+'>';}"
+      + " if(Array.isArray(v))return{'<список>':v.length,'пример':v.slice(0,2).map(function(x){return shape(x,k,d+1);})};"
+      + " if(typeof v==='object'){var o={},n=0;for(var kk in v){if(!Object.prototype.hasOwnProperty.call(v,kk))continue;"
+      + "  if(n++>=40){o['…']=Object.keys(v).length;break;}o[kk]=shape(v[kk],kk,d+1);}return o;}"
+      + " return '<'+typeof v+'>';}"
+      + "function own(u){try{var h=new URL(u,location.href).hostname;"
+      + " return allow.some(function(d){return h===d||h.slice(-(d.length+1))==='.'+d;});}catch(e){return false;}}"
+      + "function keep(m,u){if(!own(u))return false;var p='';try{p=new URL(u,location.href).pathname;}catch(e){return false;}"
+      + " if(SKIP.test(p))return false;return m!=='GET'||CARTISH.test(p);}"
+      + "function tpl(p){return String(p||'').split('/').map(function(s){"
+      + " return(/^\\d{3,}$/.test(s)||/^[0-9a-fA-F-]{16,}$/.test(s)||/^[A-Za-z0-9_\\-]{20,}$/.test(s))?'{id}':s;}).join('/');}"
+      + "function parse(t){if(t==null)return null;if(typeof t!=='string')return '<'+typeof t+'>';"
+      + " try{return shape(JSON.parse(t),null,0);}catch(e){}"
+      + " if(t.indexOf('=')>0&&t.indexOf(' ')<0){var o={};t.split('&').forEach(function(p){var i=p.indexOf('=');if(i<0)return;"
+      + "  try{o[decodeURIComponent(p.slice(0,i))]=decodeURIComponent(p.slice(i+1).replace(/\\+/g,' '));}catch(e){}});return shape(o,null,0);}"
+      + " return '<текст '+t.length+'>';}"
+      + "function names(h){var out=[];try{if(!h)return out;"
+      + " if(typeof Headers!=='undefined'&&h instanceof Headers)h.forEach(function(v,k){out.push(k);});"
+      + " else if(Array.isArray(h))h.forEach(function(p){out.push(String(p[0]));});"
+      + " else Object.keys(h).forEach(function(k){out.push(k);});}catch(e){}return out;}"
+      + "function body(b){if(b==null)return null;if(typeof b==='string')return parse(b);"
+      + " try{if(b instanceof URLSearchParams)return parse(b.toString());"
+      + "  if(b instanceof FormData){var o={};b.forEach(function(v,k){o[k]=(typeof v==='string')?v:'<файл>';});return shape(o,null,0);}}catch(e){}"
+      + " return '<тело>';}"
+      + "function query(u){var q={};try{new URL(u,location.href).searchParams.forEach(function(v,k){q[k]=v;});}catch(e){}return shape(q,null,0);}"
+      + "function save(r){if(window.__kzRecStop)return;try{var a=JSON.parse(sessionStorage.getItem('__kzRec')||'[]');"
+      + " if(a.length<60){a.push(r);sessionStorage.setItem('__kzRec',JSON.stringify(a));}}catch(e){}}"
+      + "function rec(via,m,u,h,b){var x=new URL(u,location.href);"
+      + " return{via:via,method:m,host:x.hostname,path:tpl(x.pathname),query:query(u),headers:names(h),body:body(b),page:tpl(location.pathname)};}"
+      + "var of=window.fetch;"
+      + "if(of)window.fetch=function(input,init){"
+      + " var u=(typeof input==='string')?input:((input&&input.url)||String(input||''));"
+      + " var m=String((init&&init.method)||(input&&input.method)||'GET').toUpperCase();"
+      + " var p=of.apply(this,arguments);"
+      + " try{if(keep(m,u)){var r=rec('fetch',m,u,(init&&init.headers)||(input&&input.headers),init&&init.body);"
+      + "  p.then(function(resp){r.status=resp.status;resp.clone().text().then(function(t){r.response=parse(t);save(r);},function(){save(r);});},"
+      + "  function(){r.status=0;save(r);});}}catch(e){}"
+      + " return p;};"
+      + "var X=XMLHttpRequest.prototype,oOpen=X.open,oSend=X.send,oHead=X.setRequestHeader;"
+      + "X.open=function(m,u){try{this.__kz={m:String(m||'GET').toUpperCase(),u:String(u||''),h:[]};}catch(e){}return oOpen.apply(this,arguments);};"
+      + "X.setRequestHeader=function(k){try{if(this.__kz)this.__kz.h.push(String(k));}catch(e){}return oHead.apply(this,arguments);};"
+      + "X.send=function(b){try{var x=this,k=x.__kz;if(k&&keep(k.m,k.u)){var r=rec('xhr',k.m,k.u,null,b);r.headers=k.h;"
+      + " x.addEventListener('loadend',function(){r.status=x.status;try{"
+      + "  r.response=(x.responseType===''||x.responseType==='text')?parse(String(x.responseText||'')):"
+      + "  (x.responseType==='json'?shape(x.response,null,0):'<'+x.responseType+'>');}catch(e){}save(r);});}}catch(e){}"
+      + " return oSend.apply(this,arguments);};"
+      + "return 'on';"
+      + "})(%s)";
+
+    /** Начать запись: старое записанное на этой странице — в сторону. */
+    private static final String REC_START_JS =
+        "(function(){window.__kzRecStop=false;try{sessionStorage.removeItem('__kzRec');}catch(e){}return 1;})()";
+
+    /** Закончить запись и забрать записанное. */
+    private static final String REC_TAKE_JS =
+        "(function(){window.__kzRecStop=true;var a='[]';"
+      + "try{a=sessionStorage.getItem('__kzRec')||'[]';sessionStorage.removeItem('__kzRec');}catch(e){}return a;})()";
 
     private static final String SERVER = BuildConfig.KORZINA_SERVER.replaceAll("/+$", "");
 
@@ -113,6 +213,8 @@ public class MainActivity extends Activity {
     private ProgressBar progress;
     private Button saveLoginBtn;
     private Button saveOffersBtn;
+    private Button recordBtn;
+    private boolean recording = false;
     private int currentChain = -1;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
@@ -159,6 +261,12 @@ public class MainActivity extends Activity {
         saveOffersBtn.setEnabled(false);
         saveOffersBtn.setOnClickListener(v -> saveOffers());
         bar.addView(saveOffersBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        recordBtn = new Button(this);
+        recordBtn.setText("Записать корзину");
+        recordBtn.setEnabled(false);
+        recordBtn.setOnClickListener(v -> toggleRecord());
+        bar.addView(recordBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         root.addView(bar);
         setContentView(root);
@@ -217,7 +325,16 @@ public class MainActivity extends Activity {
                 boolean inChain = currentChain >= 0;
                 saveLoginBtn.setEnabled(inChain);
                 saveOffersBtn.setEnabled(inChain);
-                if (inChain) say(CHAINS[currentChain][0] + " — " + shortenUrl(url), false);
+                recordBtn.setEnabled(inChain);
+                if (!inChain) return;
+                if (recording) {
+                    // Новая страница — новый скрипт: обёртка живёт, пока жива страница.
+                    // Записанное раньше лежит в sessionStorage и переживает перезагрузку.
+                    view.evaluateJavascript(recScript(currentChain), null);
+                    say("Идёт запись — " + shortenUrl(url), false);
+                } else {
+                    say(CHAINS[currentChain][0] + " — " + shortenUrl(url), false);
+                }
             }
 
             @Override
@@ -242,18 +359,72 @@ public class MainActivity extends Activity {
 
     private void openOurApp() {
         currentChain = -1;
+        stopRecording();
         saveLoginBtn.setEnabled(false);
         saveOffersBtn.setEnabled(false);
+        recordBtn.setEnabled(false);
         say("Моя корзина", false);
         web.loadUrl(SERVER + "/");
     }
 
     private void openChain(int idx) {
         currentChain = idx;
+        stopRecording();
         saveLoginBtn.setEnabled(false);
         saveOffersBtn.setEnabled(false);
+        recordBtn.setEnabled(false);
         say("Открываю " + CHAINS[idx][0] + "…", false);
         web.loadUrl(CHAINS[idx][2]);
+    }
+
+    // ── Запись корзины ──
+    /** Скрипт записи со своими адресами этой сети. */
+    private static String recScript(int idx) {
+        JSONArray allow = new JSONArray();
+        for (String host : CHAINS[idx][3].split(",")) allow.put(host.trim());
+        return REC_JS.replace("%s", allow.toString());
+    }
+
+    /** Ушли со страницы сети — запись этой сети больше не наша: кнопка снова «Записать». */
+    private void stopRecording() {
+        recording = false;
+        recordBtn.setText("Записать корзину");
+    }
+
+    private void toggleRecord() {
+        if (currentChain < 0) return;
+        if (!recording) {
+            recording = true;
+            recordBtn.setText("Готово");
+            web.evaluateJavascript(REC_START_JS, null);
+            web.evaluateJavascript(recScript(currentChain), null);
+            say("Идёт запись. Положите в корзину любой товар, потом уберите его и нажмите «Готово».",
+                false);
+            return;
+        }
+        final String chain = CHAINS[currentChain][1];
+        final String name = CHAINS[currentChain][0];
+        stopRecording();
+        web.evaluateJavascript(REC_TAKE_JS, result -> {
+            try {
+                String json = (String) new JSONTokener(result).nextValue();
+                JSONArray entries = new JSONArray(json == null ? "[]" : json);
+                if (entries.length() == 0) {
+                    say("Запросов корзины не видно. Войдите в " + name + ", нажмите «Записать "
+                        + "корзину», положите товар и уберите его, затем «Готово».", true);
+                    return;
+                }
+                JSONObject body = new JSONObject()
+                    .put("store", chain)
+                    .put("app_version", BuildConfig.VERSION_NAME)
+                    .put("entries", entries);
+                say("Отправляю запись…", false);
+                post("/api/cart_record", body,
+                     name + " — записано запросов корзины: " + entries.length());
+            } catch (Exception e) {
+                say("Не получилось забрать запись: " + e.getMessage(), true);
+            }
+        });
     }
 
     // ── Вход в магазин ──
@@ -315,6 +486,7 @@ public class MainActivity extends Activity {
     private void post(String path, JSONObject body, String okText) {
         saveLoginBtn.setEnabled(false);
         saveOffersBtn.setEnabled(false);
+        recordBtn.setEnabled(false);
         final String session = CookieManager.getInstance().getCookie(SERVER);
         new Thread(() -> {
             int code;
@@ -361,6 +533,7 @@ public class MainActivity extends Activity {
         boolean inChain = currentChain >= 0;
         saveLoginBtn.setEnabled(inChain);
         saveOffersBtn.setEnabled(inChain);
+        recordBtn.setEnabled(inChain);
     }
 
     // ── Вспомогательные ──

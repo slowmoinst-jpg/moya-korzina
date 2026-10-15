@@ -167,5 +167,35 @@ def handoff_login():
             jsonify({"ok": False, "error": "Вход не сохранился — попробуйте ещё раз."}), 500))
 
 
+@bp.route("/cart_record", methods=["POST"])
+def cart_record():
+    """Запись запросов корзины магазина, снятая приложением на телефоне.
+
+    {store, entries: [{method, host, path, query, headers, body, status, response}]}.
+    Принимается только от вошедшего в «Мою корзину» (сессия) или по замку: запись —
+    шаг к наполнению его же кабинетов. Что хранится и чего нет — app/cartrecord.py.
+    """
+    from app import cartrecord
+
+    body = request.get_json(silent=True) if request.is_json else None
+    if not isinstance(body, dict):
+        return _cors_response(make_response(
+            jsonify({"ok": False, "error": "Тело запроса должно быть объектом JSON"}), 400))
+    try:
+        _authenticate(body)
+        payload = {k: v for k, v in body.items() if k not in api.AUTH_FIELDS}
+        return _cors_response(jsonify(cartrecord.accept(payload)))
+    except api.Refused as err:
+        log.warning("отказ API /api/cart_record: %s (%s)", err.reason, request.remote_addr)
+        return _cors_response(make_response(
+            jsonify({"ok": False, "error": err.message}), err.status))
+    except ValueError as err:
+        return _cors_response(make_response(jsonify({"ok": False, "error": str(err)}), 400))
+    except Exception:  # noqa: BLE001
+        log.exception("ошибка при обработке /api/cart_record")
+        return _cors_response(make_response(
+            jsonify({"ok": False, "error": "Запись не сохранилась — попробуйте ещё раз."}), 500))
+
+
 def install(flask_app):
     flask_app.register_blueprint(bp)
