@@ -78,7 +78,13 @@ def cart_link(items, location=None) -> str | None:
         except (TypeError, ValueError):
             continue
         number = min(max(number, MIN_QTY), MAX_QTY)
-        products.append({"xml_id": int(sku), "q": number})
+        # ПОЛЕ — `id`, А НЕ `xml_id`: ВкусВилл сменил схему инструмента, и прежняя
+        # форма ссылку больше не собирает. Замер 15.10.2026 с боевого сервера:
+        # {"xml_id": 36296, "q": 1} — «invalid_input: Некорректный массив товаров»,
+        # {"id": 36296, "q": 1} — ссылка vkusvill.ru/mobile?basket&share=…. Схема
+        # сети теперь та же: item {id:int>0, q:number}. Ошибка была тихой: кнопка
+        # падала на список позиций, и казалось, что сеть просто не ответила.
+        products.append({"id": int(sku), "q": number})
     if not products:
         return None
     if len(items) > CART_LIMIT:
