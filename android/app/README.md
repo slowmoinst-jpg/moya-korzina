@@ -66,6 +66,20 @@ APK: `app/build/outputs/apk/debug/app-debug.apk`
 Установка на телефон: нужно разрешить установку из неизвестных источников
 (отладочная сборка, подписана отладочным ключом).
 
+## Раздача
+
+Кнопка «Скачать APK» на сайте (`/static/moya-korzina.apk`) отдаёт свежую сборку из
+тома данных — `data/apk/moya-korzina.apk`, а если её там нет — старый файл из git
+(`app/web/static/moya-korzina.apk`, версия 1.0). В git свежий APK не кладётся: в нём зашит адрес
+сервера, а репозиторий публичный. Положить сборку на сервер:
+
+```bash
+scp android/moya-korzina-debug.apk korzina:/tmp/korzina.apk
+ssh korzina 'docker exec korzina mkdir -p /app/data/apk && docker cp /tmp/korzina.apk korzina:/app/data/apk/moya-korzina.apk && rm /tmp/korzina.apk'
+```
+
+Подробности — `app/web/apk.py`.
+
 ## Адрес сервера
 
 Задаётся при сборке: переменная `KORZINA_SERVER` или `-PkorzinaServer=…`. В коде его нет.
