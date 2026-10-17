@@ -426,6 +426,7 @@ def _draw(basket: dict, bundle: dict, mode: str | None, trouble: str | None, pla
         variants=variants,
         basket_path=SCREEN_BY_KEY["basket"].path,
         products_path=SCREEN_BY_KEY["products"].path,
+        carts_path=SCREEN_BY_KEY["carts"].path,
         rub=rub, num=num, pct=pct, plural_items=plural_items, unit_label=unit_label,
     )
 

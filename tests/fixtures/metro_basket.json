@@ -1,0 +1,15 @@
+{
+  "success": true,
+  "data": {
+    "eshop_basket_id": 7,
+    "user_hash": "5502aed9f4501b12da05daf6f5347e7b",
+    "minimal_cost": 1500,
+    "articles": [
+      {"article": 117189, "count": 2, "eshop_product_id": 55, "name": "Сахар aro 1 кг", "price": 79.9},
+      {"article": 204411, "count": 1, "eshop_product_id": 56, "name": "Масло сливочное 82,5% 180 г", "price": 189.0}
+    ],
+    "unavailable_articles": [{"article": 900}],
+    "total_cost": 348.8,
+    "total_discount": 41.2
+  }
+}

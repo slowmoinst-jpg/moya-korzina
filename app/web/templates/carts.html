@@ -1,0 +1,252 @@
+{# Сборка корзин. Сверху — одна кнопка на все сети, ниже — строка на каждую сеть:
+   ход, что легло, чего нет в наличии и итог с пометкой, чей он.
+
+   Строки читают с телефона, стоя у полки, поэтому всё друг под другом, а не в
+   колонках: на 360 точках колонки схлопываются в кашу. Правила вида живут здесь, а
+   не в общем korzina.css: больше нигде они не нужны. #}
+{% extends "layout.html" %}
+{% block title %}Сборка корзин — Моя корзина{% endblock %}
+{% block body %}
+
+<style>
+  .sborka .hod{margin:10px 0 0;font-size:0.92rem;line-height:1.4;}
+  .sborka .itog{margin-top:12px;padding-top:10px;border-top:1px solid var(--line);}
+  .sborka .itog .row{justify-content:space-between;}
+  .sborka .chto{margin:10px 0 0;line-height:1.4;}
+  .sborka ul{list-style:none;margin:6px 0 0;padding:0;}
+  .sborka li{padding:5px 0;border-top:1px solid var(--line);overflow-wrap:anywhere;line-height:1.35;}
+  .sborka li:first-child{border-top:0;}
+  .sborka .pochemu{display:block;color:var(--ink3);font-size:0.82rem;}
+  .sborka details{margin-top:8px;}
+  .sborka summary{cursor:pointer;}
+  .pill.t-ok{border-color:var(--green);color:var(--green);}
+  .pill.t-info{border-color:var(--blue);color:var(--blue);}
+  .pill.t-warn{border-color:var(--amber);color:var(--amber);}
+  .pill.t-bad{border-color:var(--red);color:var(--red);}
+  .pill.t-{border-color:var(--line2);color:var(--ink3);}
+  /* Нажатая кнопка гаснет видом, а не disabled: см. почему — в script ниже. */
+  button[aria-disabled="true"]{opacity:0.5;cursor:default;}
+</style>
+
+{% if not basket %}
+  <div class="card">
+    <div class="eyebrow">Собирать пока нечего</div>
+    <h2>Сначала корзина</h2>
+    <p class="muted">Сборка кладёт вашу корзину в кабинеты сетей. Соберите её на экране
+      «Корзина» — и здесь появится строка на каждую сеть.</p>
+    <a class="btn main" href="{{ basket_path }}">К корзине</a>
+  </div>
+{% else %}
+
+<div class="card">
+  <div class="row">
+    <strong>{{ basket.name }}</strong>
+    <span class="dim">#{{ basket.id }} · {{ plural_items(positions) }}</span>
+    <span class="spacer"></span>
+    <a class="dim" href="{{ result_path }}?basket={{ basket.id }}">← к «Результату»</a>
+  </div>
+  <p class="muted" style="margin:8px 0 12px">Кнопка кладёт эту корзину целиком в каждую сеть,
+    куда приложение умеет класть сегодня, — каждая сеть идёт своим потоком. В строке сети
+    видно, что легло, чего нет в наличии и итог: посчитанный самой сетью, если она его
+    показала, или наш расчёт — так и подписано. Заказ и оплату вы делаете сами, в кабинете
+    сети: приложение их не нажимает.</p>
+  {% if ready %}
+    <form method="post" data-once>
+      <input type="hidden" name="basket" value="{{ basket.id }}">
+      <button class="btn main wide" type="submit" name="do" value="all">
+        Собрать во всех подключённых</button>
+    </form>
+    <p class="dim" style="margin:8px 0 0">Уедет в:
+      {% for r in ready %}{{ r.name }} ({{ r.planned }} поз.){% if not loop.last %}, {% endif %}{% endfor %}.
+      Остальные сети — ниже, у каждой своя причина.</p>
+  {% endif %}
+  {% if going %}
+    <div class="note info" style="margin:10px 0 0">Сборка идёт — строки ниже обновляются сами.
+      Второй раз нажимать не нужно: вторую передачу в ту же сеть приложение не пустит.</div>
+  {% elif not ready %}
+    <div class="note warn" style="margin:10px 0 0">Сейчас положить эту корзину приложению
+      некуда — причина у каждой сети ниже.</div>
+  {% endif %}
+</div>
+
+{% for r in rows %}
+  <div class="card sborka" data-code="{{ r.code }}" data-going="{{ '1' if r.going else '0' }}"
+       style="border-left:3px solid var(--s-{{ r.code }})">
+    <div class="row">
+      <span class="chip" style="font-weight:600;font-size:1.05rem">
+        <span class="dot s-{{ r.code }}"></span>{{ r.name }}</span>
+      <span class="pill t-{{ r.tone }}">{{ r.state_words }}</span>
+      <span class="spacer"></span>
+      <span class="dim">{{ r.road_words }}</span>
+    </div>
+
+    {% if r.going %}
+      {# Номер позиции знает только идущая передача; до неё (проверка цен, ссылка)
+         известно лишь, сколько позиций уедет, — его и пишем, не выдумывая «1 из». #}
+      <p class="hod">Собираю{% if r.live and r.live.at %}: {{ r.live.at }} из {{ r.live.total }}
+        {%- elif r.live and r.live.total %} {{ r.live.total }} поз.{% endif %}
+        {%- if r.live and r.live.now %} · {{ r.live.now }}{% endif %}. Строка обновится сама.</p>
+    {% elif r.state == 'ready' %}
+      <p class="chto">Уедет {{ r.planned }} поз.{% if r.road == 'link' %} одной ссылкой — корзину
+        соберёт сама сеть{% endif %}.</p>
+    {% elif r.state == 'done' and r.road == 'link' %}
+      <p class="chto">Ссылка на корзину готова{% if r.when %} ({{ r.when }}){% endif %}: в ней
+        <b>{{ r.planned }}</b> поз.</p>
+      <a class="btn main wide" href="{{ r.link }}" target="_blank" rel="noopener"
+         style="margin-top:8px">Открыть корзину {{ r.of }} →</a>
+    {% elif r.state == 'done' %}
+      <p class="chto">Легло <b>{{ r.landed|length }} из {{ r.planned }}</b>
+        {%- if r.gone %} · нет в наличии {{ r.gone }}{% endif %}
+        {%- if r.missing|length > r.gone %} · не легло по другой причине
+        {{ r.missing|length - r.gone }}{% endif %}{% if r.when %} · {{ r.when }}{% endif %}
+        {%- if r.by_phone %} · собрал телефон{% endif %}.</p>
+    {% endif %}
+
+    {% if r.total %}
+      <div class="itog">
+        <div class="row"><strong>Итог</strong>
+          <span class="sum" style="font-size:1.2rem">{{ rub(r.total.sum) }}</span></div>
+        <div class="dim">{{ r.total.source }}{% if r.total.at %} · {{ r.total.at }}{% endif %}
+          {%- if r.by_phone %} · прочитал телефон{% endif %}</div>
+        {# Скидка и доставка — только сказанные самой сетью: у нашего расчёта их нет. #}
+        {% if r.total.goods is not none %}
+          <div class="row"><span class="dim">Товары</span><span>{{ rub(r.total.goods) }}</span></div>
+        {% endif %}
+        {% if r.total.discount is not none %}
+          <div class="row"><span class="dim">Скидка</span>
+            <span class="gain">−{{ rub(r.total.discount) }}</span></div>
+        {% endif %}
+        {% if r.total.delivery is not none %}
+          <div class="row"><span class="dim">Доставка</span>
+            <span>{{ 'бесплатно' if not r.total.delivery else rub(r.total.delivery) }}</span></div>
+        {% endif %}
+        {% if r.total.minimal %}
+          <p class="dim" style="margin:6px 0 0">Минимальная сумма заказа по ответу сети —
+            {{ rub(r.total.minimal) }}.</p>
+        {% endif %}
+        {% if r.total.network and r.total.count is not none %}
+          <p class="dim" style="margin:6px 0 0">В корзине сети {{ r.total.count }} поз.: итог —
+            за всю её корзину, и если там лежало своё, оно в нём тоже.</p>
+        {% endif %}
+      </div>
+    {% endif %}
+
+    {% if r.note and not r.going %}<p class="dim" style="margin:10px 0 0">{{ r.note }}</p>{% endif %}
+
+    {% if r.missing %}
+      <details {{ 'open' if r.missing|length <= 4 }}>
+        <summary class="dim">Не легло и нет в наличии — {{ r.missing|length }}</summary>
+        <ul>{% for m in r.missing %}<li>{{ m.name }}<span class="pochemu">{{ m.why }}</span></li>{% endfor %}</ul>
+      </details>
+    {% endif %}
+    {% if r.changes %}
+      {# Цена сменилась между расчётом и передачей — сумма до того, как товары лягут. #}
+      <details>
+        <summary class="dim">Цены изменились с расчёта — {{ r.changes|length }}</summary>
+        <ul>{% for c in r.changes %}<li>{{ c.name }}<span class="pochemu">было {{ rub(c.was) }},
+          стало {{ rub(c.now) }}</span></li>{% endfor %}</ul>
+      </details>
+    {% endif %}
+    {% if r.landed and r.road != 'link' %}
+      <details>
+        <summary class="dim">Что легло — {{ r.landed|length }}</summary>
+        <ul>{% for name in r.landed %}<li>{{ name }}</li>{% endfor %}</ul>
+      </details>
+    {% endif %}
+    {% if r.unknown and r.state not in ('cant',) %}
+      {# Список бывает в полкорзины — свёрнут, а число на виду: по нему видно, что
+         итоги сетей посчитаны по разному набору позиций. #}
+      <details>
+        <summary class="dim">Этой сети незнакомы и не уезжали — {{ r.unknown|length }}</summary>
+        <ul>{% for name in r.unknown %}<li>{{ name }}</li>{% endfor %}</ul>
+      </details>
+    {% endif %}
+
+    {% if r.login or r.button %}
+      <div class="row" style="margin-top:10px">
+        {% if r.login %}
+          {# Вход человек проходит сам, в окне сети на «Кабинетах»: капчу и код из СМС
+             за него не пройти, а сохранённый вход дальше подхватит сборка. #}
+          <a class="btn main" href="{{ r.accounts }}">
+            {{ 'Подключить' if r.login == 'connect' else 'Войти заново' }}</a>
+        {% endif %}
+        {% if r.button %}
+          <form method="post" style="display:inline" data-once>
+            <input type="hidden" name="basket" value="{{ basket.id }}">
+            <button class="btn" type="submit" name="do" value="{{ r.button.do }}">
+              {{ r.button.label }}</button>
+          </form>
+        {% endif %}
+      </div>
+    {% endif %}
+  </div>
+{% endfor %}
+
+<script>
+(function () {
+  // ЗАЧЕМ ОПРОС. Сборка идёт минуту и больше. Без него страница стоит неподвижно,
+  // человек решает, что нажатие не сработало, и нажимает ещё раз.
+  //
+  // ПОЧЕМУ НЕ ПЕРЕЧИТЫВАЕМ СТРАНИЦУ ЦЕЛИКОМ. Она собирает строку каждой сети по
+  // корзине и справочникам; раз в пару секунд это лишняя работа серверу. Ответ
+  // «?state=1» — ход и ничего больше. В конце страница всё-таки перечитывается:
+  // итог, списки и кнопки рисует сервер, и второй источник правды здесь разошёлся
+  // бы с первым в первый же день.
+  var PAUSE = 2500;
+  var misses = 0;
+  // Сети, которые собирались, когда страница открылась. Кончилась хоть одна —
+  // страница перечитывается: её строка заполняется сразу, а не после самой долгой
+  // из сетей. Остальные после перечитывания продолжают опрос с того же места.
+  var watched = {};
+  Array.prototype.forEach.call(document.querySelectorAll('.sborka[data-going="1"]'),
+    function (box) { watched[box.getAttribute('data-code')] = true; });
+
+  function draw(r) {
+    var box = document.querySelector('.sborka[data-code="' + r.code + '"]');
+    var hod = box && box.querySelector('.hod');
+    if (!hod || !r.going) { return; }
+    hod.textContent = 'Собираю' + (r.at ? ': ' + r.at + ' из ' + r.total
+                                        : (r.total ? ' ' + r.total + ' поз.' : ''))
+      + (r.now ? ' · ' + r.now : '') + '. Строка обновится сама.';
+  }
+
+  function ask() {
+    fetch('{{ screen.path }}?state=1',
+          { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      .then(function (answer) { return answer.json(); })
+      .then(function (d) {
+        if (!d || !d.ok) { throw new Error('ход не пришёл'); }
+        misses = 0;
+        (d.rows || []).forEach(draw);
+        var finished = (d.rows || []).some(function (r) { return watched[r.code] && !r.going; });
+        if (d.going && !finished) { setTimeout(ask, PAUSE); return; }
+        window.location.replace('{{ screen.path }}?basket={{ basket.id }}');
+      })
+      .catch(function () {
+        // Сеть моргнула — сборка идёт на сервере, нашего опроса она не касается.
+        misses += 1;
+        if (misses < 5) { setTimeout(ask, PAUSE * 2); }
+      });
+  }
+
+  if (document.querySelector('.sborka[data-going="1"]')) { setTimeout(ask, PAUSE); }
+
+  // Двойное нажатие не пускаем, а кнопку гасим ВИДОМ, а не disabled: погашенная
+  // кнопка не отправляет своего имени, и сервер получил бы форму без слова «что
+  // делать». Настоящая проверка всё равно на сервере (app/cartrun.start).
+  Array.prototype.forEach.call(document.querySelectorAll('form[data-once]'), function (form) {
+    form.addEventListener('submit', function (event) {
+      if (form.getAttribute('data-pushed')) { event.preventDefault(); return; }
+      form.setAttribute('data-pushed', '1');
+      var button = form.querySelector('button');
+      if (button) {
+        button.setAttribute('aria-disabled', 'true');
+        button.textContent = 'Пускаю…';
+      }
+    });
+  });
+})();
+</script>
+
+{% endif %}
+{% endblock %}

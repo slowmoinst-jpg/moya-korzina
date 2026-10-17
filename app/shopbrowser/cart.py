@@ -1071,25 +1071,27 @@ def _metro(chain: str, lines: list, items: list, state: dict) -> dict:
                      "отвечает «Basket not found». Токен получают через форму METRO для "
                      "бизнеса, кладут в настройку connectors.metro_api_token — и передача "
                      "заработает без единой правки. Пока его нет, соберите корзину по "
-                     "ссылкам на товары: они рядом.")
+                     "ссылкам на товары: они рядом.", stop="token")
 
     user_hash = metro_cart.hash_of(state)
     if not user_hash:
         return _done(chain, [], [], items,
                      "METRO ещё не признала корзину вашей. Откройте её кабинет в окне "
-                     "магазина — сеть выдаст корзине хозяина, и передача заработает.")
+                     "магазина — сеть выдаст корзине хозяина, и передача заработает.",
+                     stop="login")
     store_id = metro._store_id(location.for_store(chain))
     if not store_id:
         return _done(chain, [], [], items,
                      "Не выбран торговый центр METRO: цены, наличие и корзина у неё свои "
-                     "в каждом. Укажите адрес — приложение подберёт ближайший.")
+                     "в каждом. Укажите адрес — приложение подберёт ближайший.",
+                     stop="point")
 
     # Шапку отметки о ходе ставим и здесь: пускатель ставит её до потока, но
     # deliver переписывает её у остальных сетей, и без этой строки у METRO
     # остались бы чужие «всего» и «сейчас» от прошлой передачи.
     _progress(chain, started_at=time.strftime("%Y-%m-%dT%H:%M:%S"), finished_at=None,
-              done=0, at=1, total=len(lines), note="", items=items,
-              now=f"передаю {len(lines)} позиций одним разом")
+              done=0, at=1, total=len(lines), note="", items=items, stop="",
+              network_total=None, now=f"передаю {len(lines)} позиций одним разом")
     # Сколько штук просим — то же число, что покажет заметка об округлении:
     # раньше METRO округляла вверх сама (1,3 → 2), а заметка считала через round
     # и писала «взяли 1 упаковку». Человек читал одно, а в корзине было другое.
@@ -1114,7 +1116,14 @@ def _metro(chain: str, lines: list, items: list, state: dict) -> dict:
         for line in lines:
             items.append(_row(line, False, why, rounding_of(line)))
         return _done(chain, [], [{"sku": str(ln.sku), "why": why} for ln in lines], items,
-                     "METRO не приняла корзину. " + why)
+                     "METRO не приняла корзину. " + why, stop=_refusal_of(exc))
+
+    # Итог корзины, который посчитала сама сеть, — из того же ответа, которым мы
+    # проверяем, что легло. Второй запрос ради итога сети не нужен (app/carttotal.py).
+    from app import carttotal
+
+    total = carttotal.from_metro(basket)
+    _progress(chain, network_total=total.as_dict() if total else None)
 
     # Что сеть засчитала, видно по самой корзине: прибавилось — значит легло.
     inside = _metro_counts(basket)
@@ -1152,6 +1161,18 @@ def _metro(chain: str, lines: list, items: list, state: dict) -> dict:
     return _done(chain, ok, failed, items, verdict)
 
 
+def _refusal_of(exc: Exception) -> str:
+    """Код остановки по ошибке запроса к сети: отказ ли это сети или просто сбой.
+
+    401, 403 и 429 — сеть закрыла дверь: не пустила, не признала, попросила реже.
+    Ломиться туда тем же темпом бессмысленно (app/catalog/model.CrawlBlocked), и
+    сборка корзин (app/cartrun.py) показывает это строкой «сеть отказала». Остальное
+    — сбой, который можно повторить.
+    """
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return "refused" if status in (401, 403, 429) else "error"
+
+
 def _metro_counts(basket) -> dict[str, int]:
     """Сколько штук каждого артикула лежит в корзине METRO."""
     inside: dict[str, int] = {}
@@ -1177,15 +1198,18 @@ def deliver(chain: str, phone: str, plan) -> dict:
     items: list[dict] = report(chain)
 
     if not lines:
-        return _done(chain, [], [], items, "В наряде нет ни одной позиции с артикулом.")
+        return _done(chain, [], [], items, "В наряде нет ни одной позиции с артикулом.",
+                     stop="empty")
     if len(lines) > LINE_LIMIT:
         return _done(chain, [], [], items,
-                     f"В наряде {len(lines)} позиций — столько в корзине не бывает.")
+                     f"В наряде {len(lines)} позиций — столько в корзине не бывает.",
+                     stop="empty")
 
     state = shopstore.load(chain)
     if not state:
         return _done(chain, [], [], items,
-                     "Вход в эту сеть не сохранён: откройте её кабинет и войдите.")
+                     "Вход в эту сеть не сохранён: откройте её кабинет и войдите.",
+                     stop="nologin")
 
     # Сеть, у которой есть свой способ наполнить корзину, идёт мимо браузера — и
     # мимо всего, что ниже: ни открывать окно, ни искать «я не робот», ни ходить
@@ -1204,7 +1228,7 @@ def deliver(chain: str, phone: str, plan) -> dict:
         # Точка известна, но заказать из неё нельзя. Молча взять вместо неё
         # магазин витрины значило бы собрать человеку корзину по ценам, которых
         # он не видел, — та самая беда, ради которой всё это и писалось.
-        return _done(chain, [], [], items, hitch)
+        return _done(chain, [], [], items, hitch, stop="point")
     # Передана ли точка — помним отдельно: ниже от этого зависит, вправе ли мы
     # закрыть окно выбора магазина. Без точки закрыть его значило бы согласиться
     # на магазин витрины, то есть на цены, которых человек не видел.
@@ -1215,7 +1239,7 @@ def deliver(chain: str, phone: str, plan) -> dict:
     failed: list[dict] = []
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
     _progress(chain, started_at=started, finished_at=None, done=0, at=0,
-              total=len(lines), now="открываю магазин", note="", items=items)
+              total=len(lines), now="открываю магазин", note="", items=items, stop="")
 
     driver.open_store(chain, phone, state=state)
     seen = driver.look(chain, phone)
@@ -1237,11 +1261,14 @@ def deliver(chain: str, phone: str, plan) -> dict:
         else:
             note = ("Сеть встретила проверкой «я не робот». Откройте её кабинет, "
                     "пройдите проверку и повторите передачу.")
-        return _done(chain, [], [], items, note)
+        # Что встретило, то и в коде остановки: «forbidden», «blocked» или «check».
+        # По нему сборка корзин (app/cartrun.py) отличает отказ сети от прочего.
+        return _done(chain, [], [], items, note, stop=kind if kind in ("forbidden", "blocked")
+                     else "check")
     if seen.get("logged_in") is False:
         return _done(chain, [], [], items,
                      "Сеть больше не считает вас вошедшим — сохранённый вход устарел. "
-                     "Откройте кабинет и войдите заново.")
+                     "Откройте кабинет и войдите заново.", stop="login")
 
     # ТРЕТЬЯ ПРИЧИНА ПУСТОЙ КОРЗИНЫ, И СПРАШИВАЕМ ПРО НЕЁ ЗДЕСЬ, ДО ПЕРВОЙ КАРТОЧКИ.
     #
@@ -1275,7 +1302,8 @@ def deliver(chain: str, phone: str, plan) -> dict:
         except Exception:  # noqa: BLE001 — не вышло: остаётся прежняя честная остановка
             log.info("%s: окно выбора магазина не закрылось", chain, exc_info=True)
     if waiting:
-        return _done(chain, [], [], items, signals.NEEDS_STORE_NOTE + _which_point(chain))
+        return _done(chain, [], [], items, signals.NEEDS_STORE_NOTE + _which_point(chain),
+                     stop="store")
 
     already = getattr(plan, "already", None) or {}
     for number, line in enumerate(lines, start=1):
@@ -1354,11 +1382,22 @@ def deliver(chain: str, phone: str, plan) -> dict:
     return _done(chain, ok, failed, items, verdict)
 
 
-def _done(chain: str, ok: list, failed: list, items: list, note: str) -> dict:
-    """Закрыть отметку о ходе. Незакрытая означала бы «идёт» навсегда."""
+def _done(chain: str, ok: list, failed: list, items: list, note: str,
+          stop: str = "") -> dict:
+    """Закрыть отметку о ходе. Незакрытая означала бы «идёт» навсегда.
+
+    `stop` — почему передача кончилась, не исполнив наряд, одним словом для программ:
+    «nologin» (входа нет, окно не открывалось), «login» (сеть входа не признала),
+    «check», «forbidden», «blocked», «store», «point», «token», «refused», «error»,
+    «empty»; «broken» ставит пускатель, когда передача упала на полуслове.
+    Пусто — наряд пройден до конца. Человеку то же самое сказано в `note` словами;
+    код нужен тем, кто решает за него следующий шаг, — сборке корзин (app/cartrun.py):
+    отказ сети там одна строка, просьба войти — другая.
+    """
     _progress(chain, finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
-              done=len(ok) + len(failed), at=0, now="", note=note, items=list(items))
-    return {"ok": ok, "failed": failed, "note": note}
+              done=len(ok) + len(failed), at=0, now="", note=note, items=list(items),
+              stop=stop)
+    return {"ok": ok, "failed": failed, "note": note, "stop": stop}
 
 
 def start(chain: str, phone: str, plan, *, only=None, wait: bool = False,
@@ -1409,7 +1448,8 @@ def start(chain: str, phone: str, plan, *, only=None, wait: bool = False,
             _progress(chain, items=_carry(chain, {str(ln.sku) for ln in lines}))
         _progress(chain, started_at=time.strftime("%Y-%m-%dT%H:%M:%S"), finished_at=None,
                   done=0, at=0, total=len(getattr(naryad, "lines", None) or []),
-                  now="открываю магазин", note="", retry=only is not None)
+                  now="открываю магазин", note="", retry=only is not None,
+                  stop="", network_total=None)
 
     def work() -> None:
         # open_workspace стоит ВНУТРИ try нарочно: упади он снаружи — finally не
@@ -1439,7 +1479,7 @@ def start(chain: str, phone: str, plan, *, only=None, wait: bool = False,
                 # ушли бы в общую базу из config.yaml — молча и правдоподобно.
                 if opened and running(chain):
                     _progress(chain, finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
-                              at=0, now="",
+                              at=0, now="", stop="broken",
                               note="Передача оборвалась на полуслове — посмотрите, что легло, "
                                    "и повторите остальное.")
             except Exception:  # noqa: BLE001
