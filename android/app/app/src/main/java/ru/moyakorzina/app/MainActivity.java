@@ -280,33 +280,60 @@ public class MainActivity extends Activity {
 
     /**
      * Выучить запрос сети «положить в корзину» по тому, что сайт отправил после
-     * касания (window.__kzLast): найти в теле поле с артикулом этой позиции и рядом
-     * поле количества. Ответ — только имена полей и путь, без значений заголовков.
+     * касания (window.__kzLast): найти в теле ВСЕ поля с артикулом этой позиции и рядом
+     * с первым — поле количества. Ответ — только имена полей и путь, без значений заголовков.
+     *
+     * ВСЕ, А НЕ ПЕРВОЕ. Замер на эмуляторе 18.10.2026: Магнит шлёт
+     * {"items":[{"goodId":"…","offerId":"…","qnty":1}]} — артикул в двух полях. 1.10
+     * подменяла только goodId, и позиции ложились «гибридами» с offerId первого товара:
+     * сайт показывал их, но его «−» и крестик слали чужой offerId и строку не трогали.
      */
     private static final String LEARN_JS =
         "(function(sku){try{var r=window.__kzLast;if(!r)return JSON.stringify({ok:false,why:'запроса корзины после касания не видно'});"
       + "var body;try{body=JSON.parse(r.b);}catch(e){return JSON.stringify({ok:false,why:'тело запроса не JSON'});}"
-      + "var idPath=null,qtyPath=null,numeric=false;"
-      + "function walk(o,path){if(idPath||o===null||typeof o!=='object')return;"
+      + "var idPaths=[],qtyPath=null;"
+      + "function walk(o,path){if(o===null||typeof o!=='object')return;"
       + " for(var k in o){if(!Object.prototype.hasOwnProperty.call(o,k))continue;var v=o[k],p=path.concat([k]);"
-      + "  if((typeof v==='string'||typeof v==='number')&&String(v)===String(sku)){idPath=p;numeric=(typeof v==='number');"
-      + "   for(var q in o){if(/^(quantity|qty|count|amount|quantityinbasket|cnt)$/i.test(q)&&typeof o[q]==='number'){qtyPath=path.concat([q]);break;}}return;}"
+      + "  if((typeof v==='string'||typeof v==='number')&&String(v)===String(sku)){"
+      + "   if(!idPaths.length)for(var q in o){if(/^(quantity|qty|qnty|count|amount|quantityinbasket|cnt)$/i.test(q)&&typeof o[q]==='number'){qtyPath=path.concat([q]);break;}}"
+      + "   idPaths.push(p);continue;}"
       + "  if(v&&typeof v==='object')walk(v,p);}}"
-      + "walk(body,[]);if(!idPath)return JSON.stringify({ok:false,why:'в запросе нет артикула '+sku});"
-      + "window.__kzTpl={m:r.m,u:r.u,h:r.h,body:body,idPath:idPath,qtyPath:qtyPath,numeric:numeric};window.__kzRep={};"
-      + "return JSON.stringify({ok:true,method:r.m,path:new URL(r.u,location.href).pathname,id:idPath.join('.'),qty:qtyPath?qtyPath.join('.'):null});"
+      + "walk(body,[]);if(!idPaths.length)return JSON.stringify({ok:false,why:'в запросе нет артикула '+sku});"
+      + "window.__kzTpl={m:r.m,u:r.u,h:r.h,body:body,idPaths:idPaths,qtyPath:qtyPath};window.__kzRep={};"
+      + "return JSON.stringify({ok:true,method:r.m,path:new URL(r.u,location.href).pathname,"
+      + " id:idPaths.map(function(p){return p.join('.');}).join(', '),qty:qtyPath?qtyPath.join('.'):null});"
       + "}catch(e){return JSON.stringify({ok:false,why:String(e).slice(0,100)});}})(%s)";
 
-    /** Повторить выученный запрос для другой позиции: начать и вернуть сразу, ответ — в __kzRep. */
+    /**
+     * Повторить выученный запрос для другой позиции: начать и вернуть сразу, ответ — в
+     * __kzRep. Артикул встаёт во все поля образца, каждое своего типа (строка или число).
+     *
+     * В ОТВЕТЕ ИЩЕТСЯ «НЕТ В НАЛИЧИИ». Артикул под ключом вроде unavailable,
+     * outOfStock, soldOut в ответе сети значит gone: запрос сеть приняла, а товара у
+     * неё нет. Так отвечает checkout/preview Магнита (unavailableItems, замер на
+     * эмуляторе 18.10.2026). Его carts/lite, которым кладёт карточка, наличие не
+     * выделяет — такие позиции ловит сверка со страницей корзины (CART_GONE_JS).
+     */
     private static final String REPLAY_JS =
         "(function(p){try{var t=window.__kzTpl;if(!t)return 'нет образца';"
       + "var b=JSON.parse(JSON.stringify(t.body));"
+      + "function get(o,path){for(var i=0;i<path.length;i++){if(o==null)return undefined;o=o[path[i]];}return o;}"
       + "function set(o,path,v){for(var i=0;i<path.length-1;i++)o=o[path[i]];o[path[path.length-1]]=v;}"
-      + "set(b,t.idPath,t.numeric?Number(p.sku):String(p.sku));if(t.qtyPath)set(b,t.qtyPath,p.qty);"
+      + "(t.idPaths||[]).forEach(function(path){set(b,path,typeof get(t.body,path)==='number'?Number(p.sku):String(p.sku));});"
+      + "if(t.qtyPath)set(b,t.qtyPath,p.qty);"
+      + "var OUT=/unavailable|out_?of_?stock|not_?available|sold_?out/i;"
+      + "function gone(o,under,d){if(!o||typeof o!=='object'||d>8)return false;"
+      + " if(Array.isArray(o)){for(var i=0;i<o.length;i++)if(gone(o[i],under,d+1))return true;return false;}"
+      + " for(var k in o){if(!Object.prototype.hasOwnProperty.call(o,k))continue;var v=o[k];"
+      + "  if(under&&(typeof v==='string'||typeof v==='number')&&String(v)===String(p.sku))return true;"
+      + "  if(v&&typeof v==='object'&&gone(v,under||OUT.test(k),d+1))return true;}"
+      + " return false;}"
       + "window.__kzRep=window.__kzRep||{};window.__kzRep[p.key]=null;"
       + "fetch(t.u,{method:t.m,headers:t.h,body:JSON.stringify(b),credentials:'include'})"
-      + " .then(function(r){window.__kzRep[p.key]={ok:r.status>=200&&r.status<300,status:r.status,"
-      + "  call:t.m+' '+new URL(t.u,location.href).pathname+' '+r.status};})"
+      + " .then(function(r){var res={ok:r.status>=200&&r.status<300,status:r.status,"
+      + "  call:t.m+' '+new URL(t.u,location.href).pathname+' '+r.status,gone:false};"
+      + "  return r.text().then(function(x){try{res.gone=gone(JSON.parse(x),false,0);}catch(e){}window.__kzRep[p.key]=res;},"
+      + "   function(){window.__kzRep[p.key]=res;});})"
       + " .catch(function(e){window.__kzRep[p.key]={ok:false,status:0,why:String(e).slice(0,80)};});"
       + "return 'started';}catch(e){return 'ошибка: '+String(e).slice(0,80);}})(%s)";
 
@@ -378,13 +405,14 @@ public class MainActivity extends Activity {
     /**
      * Что сайт отправил после касания: артикулы в теле последнего запроса записи в
      * корзину (window.__kzLast). Есть поля артикула, но нашего среди них нет — значит
-     * легло ДРУГОЕ: так сметана 25% чуть не сошла за 15% (17.10.2026).
+     * легло ДРУГОЕ: так сметана 25% чуть не сошла за 15% (17.10.2026). Магнит зовёт
+     * поля goodId и offerId (18.10.2026) — их сверка тоже видит.
      */
     private static final String VERIFY_JS =
         "(function(sku){try{var r=window.__kzLast;if(!r||typeof r.b!=='string')return JSON.stringify({known:false});"
       + "var body;try{body=JSON.parse(r.b);}catch(e){return JSON.stringify({known:false});}"
       + "var ids=[];(function walk(o){if(!o||typeof o!=='object')return;for(var k in o){if(!Object.prototype.hasOwnProperty.call(o,k))continue;"
-      + " var v=o[k];if((typeof v==='string'||typeof v==='number')&&/^(product_?id|sku|article|goods_?id|item_?id|plu)$/i.test(k))ids.push(String(v));"
+      + " var v=o[k];if((typeof v==='string'||typeof v==='number')&&/^(product_?id|sku|article|goods?_?id|item_?id|offer_?id|plu)$/i.test(k))ids.push(String(v));"
       + " else if(v&&typeof v==='object')walk(v);}})(body);"
       + "return JSON.stringify({known:ids.length>0,match:ids.indexOf(String(sku))>=0,ids:ids.slice(0,3)});"
       + "}catch(e){return JSON.stringify({known:false});}})(%s)";
@@ -434,6 +462,37 @@ public class MainActivity extends Activity {
       + " var l=((e.getAttribute('aria-label')||'')+' '+(e.innerText||'')).replace(/\\s+/g,' ').trim(),hr=e.getAttribute('href')||'';"
       + " if(/корзин|cart|basket/i.test(l+' '+hr))near.push((l||hr).slice(0,30));});"
       + "return JSON.stringify({near:near});}catch(e){return JSON.stringify({error:String(e).slice(0,120)});}})(%s)";
+
+    /**
+     * Какие из положенных позиций корзина сети показывает «нет в наличии». Замер на
+     * эмуляторе 18.10.2026: Алёнку Магнит принял запросом carts/lite с кодом 200 и в
+     * ответе ничем её не выделил, а страница корзины поставила её в «Этих товаров
+     * нет» с надписью «Нет в наличии» — сборка же написала «легло».
+     *
+     * От короткой надписи (как в правиле gone, не длиннее 25 знаков: баннер «Некоторые
+     * товары закончились — проверьте корзину» не в счёт) поднимаемся к предкам, пока
+     * в тексте не встретится имя ровно одной нашей позиции, — это её строка корзины.
+     * Два имени сразу или текст длиннее 300 знаков — уже список, не строка: стоп.
+     * Стоп и на строке списка без нашего имени (у неё есть соседка того же тега и
+     * класса, а текста не меньше 30 знаков): это чужой товар человека, и его «нет в
+     * наличии» не должно перейти на нашу позицию из соседней строки. Ответ — номера
+     * имён из p.names.
+     */
+    private static final String CART_GONE_JS =
+        "(function(p){try{var g=new RegExp(p.gone,'i');"
+      + "function norm(s){return String(s||'').toLowerCase().replace(/ё/g,'е').replace(/[^a-zа-я0-9%]+/g,' ').trim();}"
+      + "function item(e){var c=typeof e.className==='string'?e.className:'';if(!c||!e.parentElement)return false;"
+      + " for(var s=e.parentElement.firstElementChild;s;s=s.nextElementSibling)"
+      + "  if(s!==e&&s.tagName===e.tagName&&s.className===c)return true;return false;}"
+      + "var names=(p.names||[]).map(norm),out=[];"
+      + "var w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT),m;"
+      + "while((m=w.nextNode())){var t=norm(m.nodeValue);if(!t||t.length>25||!g.test(t))continue;"
+      + " var el=m.parentElement;if(!el)continue;var r=el.getBoundingClientRect();if(r.width<=0||r.height<=0)continue;"
+      + " for(var i=0;i<8&&el;i++,el=el.parentElement){var x=norm(el.innerText);if(x.length>300)break;"
+      + "  var hits=[];names.forEach(function(n,k){if(n.length>=4&&x.indexOf(n)>=0)hits.push(k);});"
+      + "  if(hits.length===1){if(out.indexOf(hits[0])<0)out.push(hits[0]);break;}"
+      + "  if(hits.length>1||(x.length>=30&&item(el)))break;}}"
+      + "return JSON.stringify({gone:out});}catch(e){return JSON.stringify({gone:[],error:String(e).slice(0,80)});}})(%s)";
 
     /**
      * Итог корзины сети со страницы: строки «Итого», «Товары», «Скидка», «Доставка»,
@@ -488,6 +547,9 @@ public class MainActivity extends Activity {
     private static final int CART_SETTLE_MS = 3000;
     private static final int READY_POLL_MS = 600;
     private static final int READY_LIMIT_MS = 30000;
+    /** Сколько раз ещё поискать кнопку «В корзину», если её пока нет, и через сколько. */
+    private static final int PICK_TRIES = 3;
+    private static final int PICK_RETRY_MS = 1500;
 
     private WebView web;
     private ProgressBar progress;
@@ -819,6 +881,7 @@ public class MainActivity extends Activity {
         int at = 0;        // какую позицию кладём
         int clicks = 1;    // сколько касаний у неё
         int put = 0;       // сколько уже сделано
+        int tries = 0;     // сколько раз ещё раз искали кнопку на этой карточке
         final JSONArray items = new JSONArray();
         boolean stopped = false;
         // Запрос сети «положить в корзину» выучен по первому касанию (LEARN_JS): дальше
@@ -913,6 +976,7 @@ public class MainActivity extends Activity {
         JSONObject line = r.lines.optJSONObject(r.at);
         r.clicks = Math.max(1, line == null ? 1 : line.optInt("clicks", 1));
         r.put = 0;
+        r.tries = 0;
         r.how = "tap";
         if (r.learned && line != null && !line.optString("sku", "").isEmpty()) {
             replayLine(r, line);
@@ -932,9 +996,13 @@ public class MainActivity extends Activity {
             return;
         }
         say("Кладу " + (r.at + 1) + " из " + r.lines.length() + ": " + line.optString("name", ""), false);
-        if (url.equals(web.getUrl())) {
-            // Карточка уже открыта («Положить этот»): перезагрузка посреди касаний
-            // только сбила бы её, а страница и так та самая.
+        final String open = web.getUrl() == null ? "" : web.getUrl();
+        final String want = pathOf(url);
+        if (url.equals(open) || (isHostOf(r.chain, open) && want != null && want.equals(pathOf(open)))) {
+            // Карточка уже открыта («Положить этот» или сборка начата с неё): перезагрузка
+            // только сбила бы её. Тот же путь с другими параметрами — та же карточка, а
+            // whenReady принял бы уходящую страницу за пришедшую: путь у них один, и
+            // вышло бы «нет заголовка» (замер на эмуляторе 18.10.2026, Магнит).
             handler.postDelayed(() -> onCard(r), 300);
             return;
         }
@@ -1020,6 +1088,14 @@ public class MainActivity extends Activity {
                 return;
             }
             if (!got.optBoolean("found")) {
+                // Кнопка ещё не нарисована: через VPN компьютера у Магнита полоса покупки
+                // с «В корзину» появлялась позже заголовка, и обе карточки ушли в «не
+                // нашлось кнопки», хотя через 10 с она была на месте (эмулятор, 18.10.2026).
+                if (!again && r.put == 0 && r.tries < PICK_TRIES) {
+                    r.tries++;
+                    handler.postDelayed(() -> tapAdd(r, false), PICK_RETRY_MS);
+                    return;
+                }
                 String why = r.put == 0
                     ? (got.optBoolean("h1") ? "на карточке не нашлось кнопки «в корзину»"
                                             : "страница не похожа на карточку товара: нет заголовка")
@@ -1199,10 +1275,15 @@ public class MainActivity extends Activity {
                             return;
                         }
                         if (res.optBoolean("ok")) {
-                            r.put = r.clicks;
                             r.how = "request";
                             JSONArray calls = new JSONArray();
                             calls.put(res.optString("call", ""));
+                            if (res.optBoolean("gone")) {
+                                // Запрос сеть приняла, а позицию положила в «нет в наличии».
+                                lineDone(r, false, "нет в наличии у сети", calls);
+                                return;
+                            }
+                            r.put = r.clicks;
                             lineDone(r, true, "", calls);
                             return;
                         }
@@ -1257,7 +1338,40 @@ public class MainActivity extends Activity {
         web.evaluateJavascript(watchScript(r), null);
         web.evaluateJavascript(READ_JS, value -> {
             if (!alive(r)) return;
-            finishRun(r, asObject(value), "");
+            final JSONObject cart = asObject(value);
+            markGone(r, () -> finishRun(r, cart, ""));
+        });
+    }
+
+    /** Положенное, которое корзина сети показывает «нет в наличии», — не «легло» (CART_GONE_JS). */
+    private void markGone(final CartRun r, final Runnable then) {
+        final JSONArray names = new JSONArray();
+        final JSONArray at = new JSONArray();
+        for (int i = 0; i < r.items.length(); i++) {
+            JSONObject it = r.items.optJSONObject(i);
+            if (it == null || !it.optBoolean("ok")) continue;
+            names.put(it.optString("name", ""));
+            at.put(i);
+        }
+        if (names.length() == 0) {
+            then.run();
+            return;
+        }
+        JSONObject p = new JSONObject();
+        try {
+            p.put("gone", r.rules.optString("gone", "нет в наличии|закончил|раскупил")).put("names", names);
+        } catch (Exception ignored) { }
+        web.evaluateJavascript(CART_GONE_JS.replace("%s", p.toString()), value -> {
+            if (!alive(r)) return;
+            JSONArray gone = asObject(value).optJSONArray("gone");
+            for (int k = 0; gone != null && k < gone.length(); k++) {
+                JSONObject it = r.items.optJSONObject(at.optInt(gone.optInt(k, -1), -1));
+                if (it == null) continue;
+                try {
+                    it.put("ok", false).put("why", "корзина сети показывает: нет в наличии");
+                } catch (Exception ignored) { }
+            }
+            then.run();
         });
     }
 
