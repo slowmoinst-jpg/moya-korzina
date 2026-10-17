@@ -346,8 +346,11 @@ def _build_variant(lines: list[BasketLine], combo: tuple[Store, ...], assign: li
             below_min_order=bool(store.min_order) and subtotal < store.min_order,
         ))
 
+    # Штраф за лишний заказ — не деньги: магазинам его никто не платит. До 17.10.2026
+    # он лежал в total и так попадал в «К оплате» и в «Экономию». Теперь total — ровно
+    # итоги магазинов, а штраф решает только выбор варианта (Variant.effort_total).
     variant_penalty = round(float(penalty) * (len(breakdowns) - 1), 2)
-    total = round(sum(b.total for b in breakdowns) + variant_penalty, 2)
+    total = round(sum(b.total for b in breakdowns), 2)
     pack_extra = round(sum(float(lines[i].adjust.get(combo[j].code, 0.0))
                            for j, idxs in groups.items() for i in idxs), 2)
     return Variant(
@@ -365,7 +368,8 @@ def optimize(lines: list[BasketLine], stores: list[Store], offers: dict[int, lis
              handover: dict[str, float] | None = None,
              baseline_lines: dict[int, float] | None = None) -> list[Variant]:
     """Перебирает разбиения корзины на 1..max_stores магазинов, для каждого магазина подбирает
-    лучшую карту, считает итог, возвращает top_n лучших вариантов, отсортированных по total.
+    лучшую карту, считает итог, возвращает top_n лучших вариантов, отсортированных по
+    effort_total: деньги магазинам плюс штраф за лишние заказы, ручная работа и фасовка.
 
     Варианты с непокрытыми позициями (missing_products) и с чеком ниже store.min_order
     не выбрасываются, а помечаются и уходят в конец списка: они заведомо хуже полноценных,

@@ -5,7 +5,9 @@
     discount_s = 0, если subtotal_s < min_check_rub
                = min(subtotal_s * percent / 100, cap_rub - cap_used) иначе
     total_s    = subtotal_s + delivery_s - discount_s
-    total_v    = сумма(total_s) + penalty * (число магазинов в варианте - 1)
+    total_v    = сумма(total_s)                      — «К оплате», деньги магазинам
+    effort_v   = total_v + penalty * (число магазинов в варианте - 1) + ручная работа
+                 — по нему варианты сравниваются; штраф в оплату не входит (с 17.10.2026)
 """
 from __future__ import annotations
 
@@ -171,7 +173,8 @@ def test_split_between_two_stores_beats_single_store():
 
 def test_penalty_for_second_order_kills_the_split():
     """Та же корзина, но штраф за второй заказ 100 ₽:
-    разбиение 2850 + 100*(2-1) = 2950, один магазин «a» = 2900 -> побеждает один магазин.
+    в выборе разбиение 2850 + 100*(2-1) = 2950, один магазин «a» = 2900 -> побеждает
+    один магазин. Платить за разбиение пришлось бы 2850: штраф — не деньги.
     """
     lines, stores, offers = _two_store_basket()
     variants = optimize(lines, stores, offers, baseline=3000.0, penalty=100.0, top_n=3, max_stores=2)
@@ -181,9 +184,27 @@ def test_penalty_for_second_order_kills_the_split():
     assert len(best.stores) == 1
     assert best.stores[0].store_code == "a"
     assert best.penalty == 0.0
-    # разбиение осталось в выдаче, но уже со штрафом и хуже по итогу
+    # разбиение осталось в выдаче, но уже со штрафом и хуже в выборе
     split = next(v for v in variants if len(v.stores) == 2)
-    assert (split.penalty, split.total) == (100.0, 2950.0)
+    assert (split.penalty, split.total, split.effort_total) == (100.0, 2850.0, 2950.0)
+
+
+def test_the_extra_order_penalty_is_not_money_the_person_pays():
+    """Штраф за второй заказ — в выборе варианта, но не в «К оплате» и не в экономии.
+
+    Сверка с концепцией 2.0 17.10.2026: штраф входил в Variant.total, и экран
+    показывал его в «К оплате», а «Экономию» уменьшал на него же — рубли, которые
+    человек никому не платит. Теперь total — деньги магазинам, а штраф живёт в
+    effort_total рядом с ручной работой и поправкой на фасовку.
+    """
+    lines, stores, offers = _two_store_basket()
+    variants = optimize(lines, stores, offers, baseline=3000.0, penalty=100.0, top_n=3, max_stores=2)
+
+    split = next(v for v in variants if len(v.stores) == 2)
+    assert split.total == round(sum(s.total for s in split.stores), 2) == 2850.0
+    assert split.penalty == 100.0
+    assert split.effort_total == 2950.0
+    assert split.savings_rub == 150.0
 
 
 def test_more_expensive_position_to_reach_min_check():
@@ -215,7 +236,10 @@ def test_more_expensive_position_to_reach_min_check():
     assert prices["Мелочь"] == 600.0
 
 
-def test_returns_exactly_top_n_sorted_by_total():
+def test_returns_exactly_top_n_sorted_by_effort_total():
+    """Порядок — по effort_total: со штрафом 50 ₽ разбиение дешевле по деньгам, но
+    уступает одному магазину в выборе. До 17.10.2026 штраф сидел в total, и тест
+    сортировал по нему."""
     a = mk_store("a", 1, "Магнит")
     b = mk_store("b", 2, "ВкусВилл")
     c = mk_store("c", 3, "Лента")
@@ -233,8 +257,8 @@ def test_returns_exactly_top_n_sorted_by_total():
                         top_n=3, max_stores=2)
 
     assert len(variants) == 3
-    totals = [v.total for v in variants]
-    assert totals == sorted(totals)
+    efforts = [v.effort_total for v in variants]
+    assert efforts == sorted(efforts)
     assert all(v.total == round(v.total, 2) for v in variants)
     # состав магазинов не повторяется
     keys = [tuple(sorted(s.store_code for s in v.stores)) for v in variants]
@@ -437,14 +461,16 @@ def test_full_basket_16_lines_is_fast():
 
     assert elapsed < 3.0, f"перебор занял {elapsed:.2f} с"
     assert len(variants) == 3
-    assert [v.total for v in variants] == sorted(v.total for v in variants)
+    assert [v.effort_total for v in variants] == sorted(v.effort_total for v in variants)
     assert all(v.missing_products == [] for v in variants)
     best = variants[0]
     # каждая позиция корзины распределена ровно один раз
     placed = [line.product_id for s in best.stores for line in s.lines]
     assert sorted(placed) == list(range(1, 17))
-    # итог варианта пересобирается из слагаемых формулы раздела 6
-    assert best.total == round(sum(s.total for s in best.stores) + best.penalty, 2)
+    # итог варианта пересобирается из слагаемых формулы раздела 6; штраф — только в выборе
+    for v in variants:
+        assert v.total == round(sum(s.total for s in v.stores), 2)
+        assert v.effort_total == round(v.total + v.penalty + v.handover + v.pack_extra, 2)
     for s in best.stores:
         assert s.total == round(s.subtotal + s.delivery - s.discount, 2)
     assert best.savings_rub == round(3690.40 - best.total, 2)

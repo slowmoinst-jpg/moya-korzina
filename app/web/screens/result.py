@@ -117,7 +117,9 @@ def _bundle(basket_id: int, again: bool = False) -> dict:
 
     fresh = {"stamp": stamp, "at": time.time(), "when": time.strftime("%H:%M"),
              "variants": list(variants or []), "baseline": baseline,
-             "effortless": list(effortless or []), "doubts": doubts, "positions": len(items)}
+             "effortless": list(effortless or []), "doubts": doubts, "positions": len(items),
+             # чья база из чеков человека, а чья — у магазина: от этого подпись базы
+             "from_receipts": service.receipt_priced(basket_id)}
     _CALC[key] = fresh
     _forget_oldest()
     return fresh
@@ -174,6 +176,9 @@ def _chosen(variants, mode: str | None):
         # порога (итоги уже с обеими доставками), крупно показываем один магазин,
         # а разбивка остаётся рядом ссылкой. Порог не обходит полноту: магазин, где
         # чего-то не хватает, сплиту с полной корзиной не замена.
+        # Выгода здесь — деньги: total без штрафа за лишний заказ. До 17.10.2026
+        # штраф сидел в total, и порог 250 ₽ на деле требовал от разбивки на два
+        # магазина 400 ₽, а подпись «выгоднее на …» занижала её на 150 ₽.
         if (mode == "split" and gain < threshold
                 and len(single.missing_products) <= len(split.missing_products)):
             mode = "single"
@@ -199,6 +204,28 @@ def _completeness(variant, positions: int) -> dict:
     missing = len(getattr(variant, "missing_products", None) or [])
     have = max(0, positions - missing)
     return {"have": have, "of": positions, "full": missing == 0}
+
+
+def _base_words(variant, from_receipts) -> dict:
+    """Как подписать базу «Экономии» у варианта — по тому, откуда она взята.
+
+    База — цены из чеков человека, а где чека нет, цена магазина
+    (service.baseline_by_product). Стоявшее здесь до 17.10.2026 «Было бы в одном
+    магазине» не описывало ни то, ни другое. Считаем по позициям самого варианта:
+    недостающих в его базе нет (Variant.baseline).
+    """
+    covered = {ln.product_id for s in (getattr(variant, "stores", None) or [])
+               for ln in (getattr(s, "lines", None) or [])}
+    known = len(covered & set(from_receipts or ()))
+    unseen = len(covered) - known
+    if not unseen:
+        label = "Раньше вы платили"
+    elif known:
+        label = "По вашим чекам и ценам магазинов"
+    else:
+        label = "По ценам магазинов"
+    return {"label": label, "unseen": unseen, "of": len(covered),
+            "mixed": bool(known and unseen)}
 
 
 def _resent(code: str) -> dict | None:
@@ -413,6 +440,7 @@ def _draw(basket: dict, bundle: dict, mode: str | None, trouble: str | None, pla
               "stores": [_store_card(s, units, True, trouble)
                          for s in (getattr(best, "stores", None) or [])],
               "penalty": float(getattr(best, "penalty", 0.0) or 0.0),
+              "base": _base_words(best, bundle.get("from_receipts")),
               "missing": list(getattr(best, "missing_products", None) or []),
               "complete": _completeness(best, bundle["positions"])},
         others=[{"n": n, "variant": v, "figures": _figures(v, bundle["baseline"]),

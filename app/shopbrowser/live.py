@@ -158,7 +158,11 @@ def _capture_and_save(sess: dict[str, Any]) -> dict[str, Any]:
             pass
 
         account = signals.account(chain, page_text) if page_text else None
-        points = signals.points(chain, page_text) if page_text else None
+        # Баллы разбираются по одному тексту страницы: параметра chain у
+        # signals.points нет (так его и зовёт driver.look). Лишний аргумент давал
+        # TypeError, общий except ниже его глотал, и вход не сохранялся вовсе
+        # (сверка 17.10.2026, tests/test_live.py).
+        points = signals.points(page_text) if page_text else None
 
         users.open_workspace(phone)
         try:

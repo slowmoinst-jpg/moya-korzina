@@ -47,7 +47,7 @@
 | Параметр | По умолчанию | Смысл |
 |---|---|---|
 | `baseline_store` | `pyaterochka` | Магазин, относительно которого считается экономия |
-| `extra_order_penalty_rub` | 150 | Штраф за каждый дополнительный заказ |
+| `extra_order_penalty_rub` | 150 | Штраф за каждый дополнительный заказ: в выбор варианта, не в оплату |
 | `optimizer.max_stores` | 2 | Глубина перебора разбиений |
 | `connectors.rate_limit_rps` | 1.0 | Не чаще одного запроса в секунду на магазин |
 | `connectors.cache_ttl_hours` | 6 | Срок жизни кэша цен; протухшие файлы убираются сами |
@@ -63,7 +63,9 @@ subtotal_s = сумма(price * qty) по позициям, отнесённым
 delivery_s = 0, если subtotal_s >= free_delivery_from, иначе delivery_fee
 discount_s = 0, если subtotal_s < min_check_rub, иначе min(subtotal_s * percent / 100, cap_rub - cap_used)
 total_s    = subtotal_s + delivery_s - discount_s
-total_v    = сумма(total_s) + penalty * (число магазинов в варианте - 1)
+total_v    = сумма(total_s)                    — «К оплате», деньги магазинам
+effort_v   = total_v + penalty * (число магазинов в варианте - 1) + ручная работа + фасовка
+             — по нему сравниваются варианты; в оплату штраф и работа не входят
 ```
 
 Скидка нелинейна из-за лимита и минимального чека, поэтому выгода считается на уровне варианта

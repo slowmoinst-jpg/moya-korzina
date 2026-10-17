@@ -135,8 +135,9 @@ def test_calculate_returns_top3(demo_db):
             delivery = 0.0 if subtotal >= store.free_delivery_from else store.delivery_fee
             assert abs(delivery - sb.delivery) < 0.01, f"доставка {sb.store_name}"
             expected += subtotal + delivery - sb.discount
-        expected += v.penalty
+        # штраф за лишний заказ — только в выборе варианта, в итог к оплате не входит
         assert abs(expected - v.total) < 0.05, f"итог варианта {v.title}"
+        assert abs(v.effort_total - (v.total + v.penalty + v.handover + v.pack_extra)) < 0.01
 
     best = variants[0]
     assert abs(best.savings_rub - round(baseline - best.total, 2)) < 0.01
