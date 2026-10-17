@@ -1,0 +1,31 @@
+{# Значки телефонной части: тонкие линии, цвет — от текста. Один макрос на все экраны,
+   чтобы путь каждой линии жил в одном месте, а не копией в каждом шаблоне. #}
+{% macro icon(name, cls='i') -%}
+<svg class="{{ cls }}" viewBox="0 0 24 24" aria-hidden="true">
+{%- if name == 'cart' -%}
+<circle cx="9" cy="20" r="1.4"></circle><circle cx="18" cy="20" r="1.4"></circle><path d="M2.5 3.5h2.6l2.4 11.2a1.6 1.6 0 0 0 1.6 1.3h8.7a1.6 1.6 0 0 0 1.6-1.2l1.6-6.8H6.2"></path>
+{%- elif name == 'gear' -%}
+<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path>
+{%- elif name == 'clock' -%}
+<circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path>
+{%- elif name == 'back' -%}
+<path d="M15 6l-6 6 6 6"></path>
+{%- elif name == 'next' -%}
+<path d="M9 6l6 6-6 6"></path>
+{%- elif name == 'down' -%}
+<path d="M6 9l6 6 6-6"></path>
+{%- elif name == 'check' -%}
+<path d="M4 12.5l5 5L20 6.5"></path>
+{%- elif name == 'x' -%}
+<path d="M6 6l12 12M18 6 6 18"></path>
+{%- elif name == 'phone' -%}
+<rect x="7" y="2.5" width="10" height="19" rx="2"></rect><path d="M11 18.5h2"></path>
+{%- elif name == 'pin' -%}
+<path d="M12 21s7-6.2 7-12a7 7 0 0 0-14 0c0 5.8 7 12 7 12z"></path><circle cx="12" cy="9" r="2.5"></circle>
+{%- elif name == 'receipt' -%}
+<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"></path><path d="M9 8h6M9 12h6M9 16h3"></path>
+{%- elif name == 'out' -%}
+<path d="M14 4h6v6"></path><path d="M20 4l-9 9"></path><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"></path>
+{%- endif -%}
+</svg>
+{%- endmacro %}

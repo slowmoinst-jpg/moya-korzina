@@ -1,0 +1,110 @@
+{# «Где дешевле» на телефоне — вариант А (выбор владельца 17.10.2026): ответ, цена и выгода
+   сверху, ниже сколько корзина стоит в каждом месте, внизу «Заказать». Место
+   выбирается касанием строки; рекомендуемое — то, что советует «Результат» веба
+   (порог деления на два магазина — там же, app/web/screens/result.py). #}
+{% extends 'phone/base.html' %}
+{% from 'phone/_icons.html' import icon %}
+{% block title %}Где дешевле — Моя корзина{% endblock %}
+{% block body %}
+  <a class="back" href="{{ url_for('phone.basket') }}">{{ icon('back') }}Корзина</a>
+  <h1 class="title">Где дешевле</h1>
+
+  {% if basket is none %}
+    <div class="empty">Корзина пуста — повторите заказ из истории, и здесь появится, где он дешевле.</div>
+  {% elif not variants %}
+    <div class="empty">Пока не хватает цен, чтобы посчитать. Цены по вашему адресу подтягиваются сами — загляните чуть позже.</div>
+  {% else %}
+    {% if sent %}
+      <div class="note ok">Корзина собирается {{ where(sent) }} — это пара минут. Потом откройте её в приложении магазина и оплатите.</div>
+    {% elif why == 'link' %}
+      <div class="note warn">Магазин не отдал ссылку на корзину. Попробуйте ещё раз через минуту.</div>
+    {% elif why == 'closed' %}
+      <div class="note warn">Корзину {{ where(why_store) }} с сервера не положить. Откройте магазин в приложении на телефоне — там корзину кладёт телефон.</div>
+    {% elif why == 'busy' %}
+      <div class="note warn">Корзина {{ where(why_store) }} уже собирается или не собралась. Загляните через пару минут.</div>
+    {% endif %}
+
+    <div class="card tint hero">
+      <div style="display: flex; align-items: center; gap: 8px">
+        {% for c in chosen.codes %}<span class="sq" style="background: var(--s-{{ c }}, var(--line2))"></span>{% endfor %}
+        <span class="disp" style="font-size: 17px; font-weight: 600">{{ chosen.title }}</span>
+        {% if chosen.best %}<span class="badge" style="margin-left: auto">Рекомендуем</span>{% endif %}
+      </div>
+      <div style="display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap">
+        <span class="disp num" style="font-size: 28px; font-weight: 600; line-height: 1.15">{{ rub(chosen.total) }}</span>
+        {% if chosen.figures.saved > 0.005 %}
+          <span class="gd num" style="font-size: 15px; font-weight: 600">Выгода {{ rub(chosen.figures.saved) }}</span>
+        {% elif chosen.figures.saved < -0.005 %}
+          <span class="mut num" style="font-size: 14px">дороже на {{ rub(-chosen.figures.saved) }}</span>
+        {% endif %}
+      </div>
+      <div class="mut" style="font-size: 12.5px">
+        {% if chosen.figures.base %}{{ chosen.base.label }} {{ rub(chosen.figures.base) }}. {% endif %}
+        Товары {{ rub(chosen.subtotal) }}{% if chosen.discount %}, скидка и кэшбэк −{{ rub(chosen.discount) }}{% endif %},
+        доставка {% if chosen.delivery %}{{ rub(chosen.delivery) }}{% else %}бесплатно{% endif %},
+        в наличии {{ chosen.complete.have }} из {{ chosen.complete.of }}.
+      </div>
+    </div>
+    {% if chosen.missing %}
+      <div class="note warn">Не нашли цену для: {{ chosen.missing|join(', ') }}.</div>
+    {% endif %}
+
+    <section>
+      <div class="grp">Сколько стоит в каждом месте</div>
+      <div class="card">
+        {% for p in places %}
+          <a class="opt {{ 'on' if p.on }}" href="{{ url_for('phone.cheaper', pick=p.n) }}"
+             style="color: inherit; text-decoration: none" {% if p.on %}aria-current="true"{% endif %}>
+            <span class="marks">{% for c in p.codes %}<span class="sq" style="background: var(--s-{{ c }}, var(--line2))"></span>{% endfor %}</span>
+            <span style="flex: 1; min-width: 0">
+              <span style="display: block; font-weight: 500">{{ p.title }}</span>
+              <span class="mut" style="font-size: 12.5px">{{ p.sub }}{% if p.best %} · рекомендуем{% endif %}</span>
+            </span>
+            <span class="num" style="font-weight: 600">{{ rub(p.total) }}</span>
+            {% if p.on %}{{ icon('check', 'i s gd') }}{% else %}<span style="width: 15px"></span>{% endif %}
+          </a>
+        {% endfor %}
+      </div>
+      <div class="fnt" style="font-size: 12px; padding: 7px 2px 0">С учётом скидок магазинов, ваших личных скидок, доставки и кэшбэка карт.</div>
+    </section>
+  {% endif %}
+{% endblock %}
+{% block actions %}
+  {% if chosen %}
+    <div class="actions" style="flex-direction: column">
+      {% for part in chosen.parts %}
+        {% if part.needs_login %}
+          <a class="cta" href="/cabinet?store={{ part.code }}" data-open-store="{{ part.code }}">Подключить {{ part.whom }}{% if part.again %} заново{% endif %}</a>
+        {% else %}
+          <form method="post" action="{{ url_for('phone.cheaper') }}" style="width: 100%"
+                data-store="{{ part.code }}" data-phone-fills="{{ 1 if (not part.by_link and chosen.whole) else 0 }}">
+            <input type="hidden" name="store" value="{{ part.code }}">
+            {% if pick is not none %}<input type="hidden" name="pick" value="{{ pick }}">{% endif %}
+            <button class="cta" type="submit">Заказать {{ part.where }}<span class="sub num">· {{ rub(part.total) }}</span></button>
+          </form>
+        {% endif %}
+      {% endfor %}
+      {% if on_phone and chosen.whole and not chosen.parts[0].by_link and not chosen.parts[0].needs_login %}
+        <div class="fnt" style="font-size: 12px; text-align: center">Откроется сайт магазина — нажмите «Собрать» на панели, и товары лягут в его корзину.</div>
+      {% endif %}
+    </div>
+  {% endif %}
+  <script>
+    /* Внутри приложения на телефоне сеть без ссылки на корзину открывается у него
+       самого: корзину туда кладёт телефон кнопкой «Собрать». Вне приложения форма
+       уходит на сервер как обычно (app/web/phone.py, _order). */
+    document.addEventListener('click', function (e) {
+      var link = e.target.closest('[data-open-store]');
+      if (link && window.KorzinaDevice && KorzinaDevice.openStore(link.getAttribute('data-open-store'))) {
+        e.preventDefault();
+      }
+    });
+    document.addEventListener('submit', function (e) {
+      var form = e.target;
+      if (form.getAttribute('data-phone-fills') === '1' && window.KorzinaDevice
+          && KorzinaDevice.openStore(form.getAttribute('data-store'))) {
+        e.preventDefault();
+      }
+    });
+  </script>
+{% endblock %}

@@ -1,0 +1,54 @@
+{# История заказов на телефоне — вариант Б (выбор владельца 17.10.2026): у каждого заказа
+   магазин, дата, сумма и первые товары, остальное — «Ещё N товаров». «Повторить»
+   кладёт заказ в корзину; заказ, который уже лежит в ней, помечен «В корзине». #}
+{% extends 'phone/base.html' %}
+{% from 'phone/_icons.html' import icon %}
+{% block title %}История заказов — Моя корзина{% endblock %}
+{% block body %}
+  <a class="back" href="{{ url_for('phone.basket') }}">{{ icon('back') }}Корзина</a>
+  <h1 class="title">История заказов</h1>
+
+  {% if not orders %}
+    <div class="empty">
+      Заказов пока нет. Подключите «Мои чеки» в Настройках — покупки из чеков появятся здесь.
+    </div>
+    <a class="bt ghost" href="{{ url_for('phone.settings') }}" style="align-self: center">Настройки</a>
+  {% endif %}
+
+  {% for o in orders %}
+    <section class="ord" aria-label="Заказ {{ o.day }}, {{ o.store_name }}">
+      <div class="oh">
+        <span class="sq" style="background: var(--s-{{ o.store_code }}, var(--line2))"></span>
+        <span style="font-weight: 600">{{ o.store_name }}</span>
+        <span class="mut small">· {{ o.day }}</span>
+        <span class="num" style="margin-left: auto; font-weight: 600">{{ rub(o.total) }}</span>
+      </div>
+      <div class="oh" style="padding: 4px 0 6px">
+        <span class="fnt small">{{ goods(o.count) }}</span>
+        {% if o.in_basket %}
+          <span class="gd small" style="margin-left: auto; display: inline-flex; align-items: center; gap: 4px; height: 30px; font-weight: 500">{{ icon('check', 'i s') }}В корзине</span>
+        {% else %}
+          <form method="post" action="{{ url_for('phone.orders') }}" style="margin-left: auto">
+            <input type="hidden" name="key" value="{{ o.key }}">
+            <button class="bt" type="submit">Повторить</button>
+          </form>
+        {% endif %}
+      </div>
+      {% for ln in o.head %}
+        <div class="li"><span class="name">{{ ln.name }}</span><span class="lq num">{{ ln.qty }}</span><span class="lp num">{{ rub(ln.total) }}</span></div>
+      {% endfor %}
+      {% if o.rest %}
+        <details>
+          <summary>Ещё {{ goods(o.rest|length) }}{{ icon('down', 'i s') }}</summary>
+          {% for ln in o.rest %}
+            <div class="li"><span class="name">{{ ln.name }}</span><span class="lq num">{{ ln.qty }}</span><span class="lp num">{{ rub(ln.total) }}</span></div>
+          {% endfor %}
+        </details>
+      {% endif %}
+    </section>
+  {% endfor %}
+
+  {% if more > 0 %}
+    <a class="bt ghost" href="{{ url_for('phone.orders', n=next_n) }}" style="align-self: center">Показать ещё заказы</a>
+  {% endif %}
+{% endblock %}
