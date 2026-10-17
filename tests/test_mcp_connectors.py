@@ -131,6 +131,26 @@ def test_vkusvill_cart_link_survives_refusal(monkeypatch):
     assert vkusvill.cart_link([(1, 1)]) is None
 
 
+def test_vkusvill_cart_link_sends_items_in_vkusvills_current_shape(monkeypatch):
+    """Позиция — {id, q}: на прежнее {xml_id, q} сеть с 15.10.2026 отвечает invalid_input.
+
+    Тихая поломка: ссылка не собиралась, кнопка падала на список, а снаружи это
+    выглядело как «магазин не ответил». Форма снята с живой схемы инструмента.
+    """
+    sent = {}
+
+    def call(url, store_code, tool, arguments, cache_key=None):
+        sent.update(arguments)
+        return {"ok": True, "data": {"link": "https://vkusvill.ru/mobile?basket&share=1"}}
+
+    monkeypatch.setattr(mcp_client, "call_tool", call)
+    link = vkusvill.cart_link([("36296", 1), (173, 2)])
+
+    assert link == "https://vkusvill.ru/mobile?basket&share=1"
+    assert sent["products"] == [{"id": 36296, "q": 1.0}, {"id": 173, "q": 2.0}]
+    assert all("xml_id" not in p for p in sent["products"])
+
+
 # ---------- Лента ----------
 @pytest.fixture
 def lenta_address(monkeypatch):
@@ -269,7 +289,7 @@ def test_lenta_resolves_address_once_and_asks_by_hub_code(monkeypatch, lenta_add
 
 
 def test_lenta_cart_link_sends_items_in_lentas_own_shape(monkeypatch):
-    """У Ленты свои имена полей: items/id/quantity, а не products/xml_id/q ВкусВилла."""
+    """У Ленты свои имена полей: items/id/quantity, а не products/id/q ВкусВилла."""
     sent = {}
 
     def call(url, store_code, tool, arguments, cache_key=None):
@@ -555,4 +575,4 @@ def test_vkusvill_takes_the_unit_without_choking_on_it(monkeypatch):
 
     vkusvill.cart_link([(52, 0.7, "kg")])
 
-    assert sent["products"] == [{"xml_id": 52, "q": 0.7}], "дробное ВкусВилл берёт как есть"
+    assert sent["products"] == [{"id": 52, "q": 0.7}], "дробное ВкусВилл берёт как есть"
