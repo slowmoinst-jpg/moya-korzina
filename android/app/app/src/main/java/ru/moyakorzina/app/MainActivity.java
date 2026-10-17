@@ -9,12 +9,13 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
-import android.widget.HorizontalScrollView;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -30,43 +31,138 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Моя корзина — Android-приложение: телефон работает в магазинах от имени владельца.
+ * Моя корзина — Android-приложение: оболочка сайта и руки сервера на телефоне.
  *
- * ЗАЧЕМ ОНО НУЖНО. Сервер не может войти в аккаунты магазинов: iframe запрещён у всех
- * сетей, серверный адрес заблокирован у Пятёрочки, Самоката, Ленты и Дикси, у Магнита
- * серверный вход ловит SmartCaptcha. Телефон владельца — обычный покупатель, и магазины
- * пускают его как любого покупателя.
+ * ШАГ 1 ЕДИНОЙ АРХИТЕКТУРЫ (документ от 16.10.2026). До него приложение было
+ * своим миром: ряд кнопок сетей вверху, нижняя панель действий, а сайт — одной
+ * из вкладок. Теперь интерфейс один — веб-экраны сервера во весь экран, — а
+ * приложение добавляет к ним ровно две вещи:
  *
- * ЧТО ОНО ДЕЛАЕТ.
- *   «Моя корзина» — открывает наше приложение. Один раз входите своим номером: дальше
- *                   телефон ходит на сервер с этой сессией, и ни номер, ни секрет в
- *                   коде приложения не хранятся.
- *   Кнопка сети   — открывает сайт магазина. Входите как обычно: номер, код из СМС,
- *                   капча — сами, родной клавиатурой.
- *   «Сохранить вход»   — куки входа уезжают на сервер ТЕЛОМ запроса POST /api/handoff
- *                   (не в адресе: адрес оседает в журналах).
- *   «Сохранить акции»  — откройте в магазине страницу своих предложений («Мои скидки»,
- *                   «Персональные предложения»): приложение соберёт с неё карточки
- *                   акций и отправит на сервер (POST /api/store_accounts/sync). Сервер
- *                   учтёт их в цене — app/personal.py.
+ *   МОСТ window.Korzina. Сайт узнаёт, что открыт в телефоне (по метке в
+ *   User-Agent и по самому мосту), и зовёт его: открыть страницу сети
+ *   (openStore), вернуться на наш сайт (openApp), спросить версию (info).
+ *   Кнопка «Войти» на «Кабинетах» работает через него.
+ *
+ *   ПАНЕЛЬ НА СТРАНИЦЕ СЕТИ. Когда в WebView открыт магазин, поверх страницы
+ *   стоит маленькая панель: «Сохранить вход», «Акции», «Записать корзину» —
+ *   то, что серверу с этой страницы не сделать. На наших экранах панели нет:
+ *   там командует сайт. Панель — переходная форма: на шаге 2 её заменит лист
+ *   входа, который замечает вход сам, без кнопки.
+ *
+ * ЧТО ОСТАЛОСЬ ПРЕЖНИМ. Вход в магазин делает человек — номер, код из СМС,
+ * капча, родная клавиатура. Куки входа едут на сервер телом POST /api/handoff.
+ * Пароли и коды не перехватываются, значения кук не показываются, кнопку
+ * «заказать» приложение не нажимает никогда.
  *
  * АДРЕС СЕРВЕРА задаётся при сборке (-PkorzinaServer=https://… или переменная
  * KORZINA_SERVER), в коде его нет.
- *
- * ЧЕГО ЗДЕСЬ НЕТ. Пароли и коды из СМС не перехватываются и не хранятся. Значения кук
- * не показываются. Кнопку «заказать» приложение не нажимает никогда.
  */
 public class MainActivity extends Activity {
 
-    /** Название, код сети на сервере, стартовая страница. */
+    /**
+     * Название, код сети на сервере, стартовая страница, свои адреса сети. Последнее —
+     * для записи корзины: запросы к чужим адресам (счётчики, реклама) не записываются.
+     */
     private static final String[][] CHAINS = {
-        {"Магнит",      "magnit",      "https://magnit.ru/"},
-        {"Пятёрочка",   "pyaterochka", "https://5ka.ru/"},
-        {"Самокат",     "samokat",     "https://samokat.ru/"},
-        {"Лента",       "lenta",       "https://lenta.com/"},
-        {"ВкусВилл",    "vkusvill",    "https://vkusvill.ru/"},
-        {"Дикси",       "dixy",        "https://dixy.ru/"},
+        {"Магнит",      "magnit",      "https://magnit.ru/",   "magnit.ru"},
+        {"Пятёрочка",   "pyaterochka", "https://5ka.ru/",      "5ka.ru,x5.ru"},
+        {"Самокат",     "samokat",     "https://samokat.ru/",  "samokat.ru"},
+        {"Лента",       "lenta",       "https://lenta.com/",   "lenta.com"},
+        {"ВкусВилл",    "vkusvill",    "https://vkusvill.ru/", "vkusvill.ru"},
+        {"Дикси",       "dixy",        "https://dixy.ru/",     "dixy.ru"},
     };
+
+    /**
+     * Запись корзины: как сайт магазина кладёт товар в корзину и убирает его.
+     *
+     * ЗАЧЕМ. Корзину во все кабинеты, где человек вошёл, кладём запросами самих
+     * магазинов (решение владельца 01.10.2026), а эти запросы под входом мы не видели
+     * ни у одной сети. Снять их можно только здесь, на телефоне: сервер Пятёрочка и
+     * Самокат не пускают даже через домашний выход (403, 15.10.2026).
+     *
+     * КАК. Скрипт оборачивает fetch и XMLHttpRequest страницы и записывает запросы К
+     * СВОИМ адресам сети: все, кроме GET, и GET с корзиной в пути. Пишется СТРУКТУРА:
+     * имена заголовков без значений, тело и ответ без телефонов, карт, адресов, имён.
+     * Запросы входа (auth, login, otp, sms…) не пишутся вовсе. Сервер разбирает
+     * запись ещё раз тем же правилом — app/cartrecord.py.
+     *
+     * Записанное копится в sessionStorage страницы и переживает её перезагрузку.
+     */
+    private static final String REC_JS =
+        "(function(allow){"
+      + "if(window.__kzRec){window.__kzRecStop=false;return 'on';}"
+      + "window.__kzRec=true;window.__kzRecStop=false;"
+      + "var SKIP=/auth|login|logout|otp|sms|verify|token|session|passw|register|sign|captcha|metric|analytic|track|collect|pixel|beacon|event/i;"
+      + "var CARTISH=/cart|basket|korzin|order|checkout/i;"
+      + "var HIDDEN={};('token auth session secret password pass passwd phone tel telephone msisdn email mail card pan address street house flat apartment entrance floor lat latitude lon lng longitude geo coords coordinates fio name firstname lastname surname user customer client device signature sign hash cookie birth birthday inn snils passport comment sms otp captcha ip').split(' ').forEach(function(w){HIDDEN[w]=1;});"
+      + "var IDW={};('id sku article product plu good goods item code xml').split(' ').forEach(function(w){IDW[w]=1;});"
+      + "function words(k){if(!k)return[];return String(k).replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().split(/[^a-z\\u0430-\\u044f\\u04510-9]+/).filter(Boolean);}"
+      + "function any(ws,set){for(var i=0;i<ws.length;i++)if(set[ws[i]])return true;return false;}"
+      + "function shape(v,k,d){"
+      + " if(d>6)return '…';"
+      + " if(v===null||typeof v==='boolean')return v;"
+      + " var ws=words(k);"
+      + " if(any(ws,HIDDEN))return '<скрыто>';"
+      + " if(typeof v==='number')return(Math.abs(v)>=1e10&&!any(ws,IDW))?'<число>':v;"
+      + " if(typeof v==='string'){"
+      + "  if(/^\\+?\\d{11,}$/.test(v)&&!any(ws,IDW))return '<строка '+v.length+'>';"
+      + "  return(v.length<=24&&/^[A-Za-z0-9_\\-.:]*$/.test(v))?v:'<строка '+v.length+'>';}"
+      + " if(Array.isArray(v))return{'<список>':v.length,'пример':v.slice(0,2).map(function(x){return shape(x,k,d+1);})};"
+      + " if(typeof v==='object'){var o={},n=0;for(var kk in v){if(!Object.prototype.hasOwnProperty.call(v,kk))continue;"
+      + "  if(n++>=40){o['…']=Object.keys(v).length;break;}o[kk]=shape(v[kk],kk,d+1);}return o;}"
+      + " return '<'+typeof v+'>';}"
+      + "function own(u){try{var h=new URL(u,location.href).hostname;"
+      + " return allow.some(function(d){return h===d||h.slice(-(d.length+1))==='.'+d;});}catch(e){return false;}}"
+      + "function keep(m,u){if(!own(u))return false;var p='';try{p=new URL(u,location.href).pathname;}catch(e){return false;}"
+      + " if(SKIP.test(p))return false;return m!=='GET'||CARTISH.test(p);}"
+      + "function tpl(p){return String(p||'').split('/').map(function(s){"
+      + " return(/^\\d{3,}$/.test(s)||/^[0-9a-fA-F-]{16,}$/.test(s)||/^[A-Za-z0-9_\\-]{20,}$/.test(s))?'{id}':s;}).join('/');}"
+      + "function parse(t){if(t==null)return null;if(typeof t!=='string')return '<'+typeof t+'>';"
+      + " try{return shape(JSON.parse(t),null,0);}catch(e){}"
+      + " if(t.indexOf('=')>0&&t.indexOf(' ')<0){var o={};t.split('&').forEach(function(p){var i=p.indexOf('=');if(i<0)return;"
+      + "  try{o[decodeURIComponent(p.slice(0,i))]=decodeURIComponent(p.slice(i+1).replace(/\\+/g,' '));}catch(e){}});return shape(o,null,0);}"
+      + " return '<текст '+t.length+'>';}"
+      + "function names(h){var out=[];try{if(!h)return out;"
+      + " if(typeof Headers!=='undefined'&&h instanceof Headers)h.forEach(function(v,k){out.push(k);});"
+      + " else if(Array.isArray(h))h.forEach(function(p){out.push(String(p[0]));});"
+      + " else Object.keys(h).forEach(function(k){out.push(k);});}catch(e){}return out;}"
+      + "function body(b){if(b==null)return null;if(typeof b==='string')return parse(b);"
+      + " try{if(b instanceof URLSearchParams)return parse(b.toString());"
+      + "  if(b instanceof FormData){var o={};b.forEach(function(v,k){o[k]=(typeof v==='string')?v:'<файл>';});return shape(o,null,0);}}catch(e){}"
+      + " return '<тело>';}"
+      + "function query(u){var q={};try{new URL(u,location.href).searchParams.forEach(function(v,k){q[k]=v;});}catch(e){}return shape(q,null,0);}"
+      + "function save(r){if(window.__kzRecStop)return;try{var a=JSON.parse(sessionStorage.getItem('__kzRec')||'[]');"
+      + " if(a.length<60){a.push(r);sessionStorage.setItem('__kzRec',JSON.stringify(a));}}catch(e){}}"
+      + "function rec(via,m,u,h,b){var x=new URL(u,location.href);"
+      + " return{via:via,method:m,host:x.hostname,path:tpl(x.pathname),query:query(u),headers:names(h),body:body(b),page:tpl(location.pathname)};}"
+      + "var of=window.fetch;"
+      + "if(of)window.fetch=function(input,init){"
+      + " var u=(typeof input==='string')?input:((input&&input.url)||String(input||''));"
+      + " var m=String((init&&init.method)||(input&&input.method)||'GET').toUpperCase();"
+      + " var p=of.apply(this,arguments);"
+      + " try{if(keep(m,u)){var r=rec('fetch',m,u,(init&&init.headers)||(input&&input.headers),init&&init.body);"
+      + "  p.then(function(resp){r.status=resp.status;resp.clone().text().then(function(t){r.response=parse(t);save(r);},function(){save(r);});},"
+      + "  function(){r.status=0;save(r);});}}catch(e){}"
+      + " return p;};"
+      + "var X=XMLHttpRequest.prototype,oOpen=X.open,oSend=X.send,oHead=X.setRequestHeader;"
+      + "X.open=function(m,u){try{this.__kz={m:String(m||'GET').toUpperCase(),u:String(u||''),h:[]};}catch(e){}return oOpen.apply(this,arguments);};"
+      + "X.setRequestHeader=function(k){try{if(this.__kz)this.__kz.h.push(String(k));}catch(e){}return oHead.apply(this,arguments);};"
+      + "X.send=function(b){try{var x=this,k=x.__kz;if(k&&keep(k.m,k.u)){var r=rec('xhr',k.m,k.u,null,b);r.headers=k.h;"
+      + " x.addEventListener('loadend',function(){r.status=x.status;try{"
+      + "  r.response=(x.responseType===''||x.responseType==='text')?parse(String(x.responseText||'')):"
+      + "  (x.responseType==='json'?shape(x.response,null,0):'<'+x.responseType+'>');}catch(e){}save(r);});}}catch(e){}"
+      + " return oSend.apply(this,arguments);};"
+      + "return 'on';"
+      + "})(%s)";
+
+    /** Начать запись: старое записанное на этой странице — в сторону. */
+    private static final String REC_START_JS =
+        "(function(){window.__kzRecStop=false;try{sessionStorage.removeItem('__kzRec');}catch(e){}return 1;})()";
+
+    /** Закончить запись и забрать записанное. */
+    private static final String REC_TAKE_JS =
+        "(function(){window.__kzRecStop=true;var a='[]';"
+      + "try{a=sessionStorage.getItem('__kzRec')||'[]';sessionStorage.removeItem('__kzRec');}catch(e){}return a;})()";
 
     private static final String SERVER = BuildConfig.KORZINA_SERVER.replaceAll("/+$", "");
 
@@ -109,90 +205,146 @@ public class MainActivity extends Activity {
       + "})()";
 
     private WebView web;
-    private TextView status;
     private ProgressBar progress;
+    private View chainPanel;
+    private TextView chainStatus;
     private Button saveLoginBtn;
     private Button saveOffersBtn;
+    private Button recordBtn;
+    private boolean recording = false;
     private int currentChain = -1;
     private final Handler handler = new Handler(Looper.getMainLooper());
+
+    /**
+     * Мост window.Korzina: им сайт зовёт телефон (шаг 1 единой архитектуры).
+     *
+     * Методы исполняются на ОТДЕЛЬНОМ потоке WebView (JavaBridge), поэтому всё,
+     * что трогает экран, уезжает на главный через handler. Вызовы короткие и без
+     * ответа о результате действия: открытие сети человек увидит сам, а действия
+     * с отчётом («сохранить вход», акции, запись) пока делает панель — когда они
+     * переедут на сайт, у моста появится обратный вызов.
+     */
+    private final class KorzinaBridge {
+        /** Кто на связи: сайт сверяет версию, прежде чем просить о новом. */
+        @JavascriptInterface
+        public String info() {
+            try {
+                return new JSONObject()
+                    .put("version", BuildConfig.VERSION_NAME)
+                    .put("server", SERVER)
+                    .toString();
+            } catch (Exception e) {
+                return "{}";
+            }
+        }
+
+        /** Открыть сайт сети в этом же WebView. Незнакомый код — ложь, и сайт решает сам. */
+        @JavascriptInterface
+        public boolean openStore(String code) {
+            for (int i = 0; i < CHAINS.length; i++) {
+                if (CHAINS[i][1].equals(code)) {
+                    final int idx = i;
+                    handler.post(() -> openChain(idx));
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /** Вернуться на наш сайт. Путь только свой: мост чужих адресов не открывает. */
+        @JavascriptInterface
+        public void openApp(String path) {
+            final String target = (path != null && path.startsWith("/") && !path.contains("://"))
+                ? path : "/";
+            handler.post(() -> openOurApp(target));
+        }
+    }
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+
+        if (SERVER.isEmpty()) {
+            TextView lost = new TextView(this);
+            lost.setPadding(dp(24), dp(24), dp(24), dp(24));
+            lost.setTextSize(16f);
+            lost.setText("Адрес сервера не задан при сборке (-PkorzinaServer).");
+            setContentView(lost);
+            return;
+        }
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.WHITE);
         root.setFitsSystemWindows(true);
 
-        root.addView(chainRow());
-
-        status = new TextView(this);
-        status.setPadding(dp(16), dp(8), dp(16), dp(8));
-        status.setTextSize(14f);
-        status.setTextColor(Color.DKGRAY);
-        root.addView(status);
-
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(100);
         progress.setVisibility(View.GONE);
         root.addView(progress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)));
 
+        // Весь экран — сайт. Панель действий лежит поверх и показывается только на
+        // странице сети: на наших экранах командует сайт, там панели не место.
+        FrameLayout frame = new FrameLayout(this);
         web = new WebView(this);
-        root.addView(web, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-        setUpWeb();
+        frame.addView(web, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        chainPanel = buildChainPanel();
+        chainPanel.setVisibility(View.GONE);
+        frame.addView(chainPanel, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM));
+        root.addView(frame, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER);
-        bar.setPadding(dp(8), dp(8), dp(8), dp(8));
-        bar.setBackgroundColor(0xFFF5F5F5);
+        setContentView(root);
+        setUpWeb();
+        openOurApp("/");
+    }
+
+    /** Панель на странице сети: действия, которые серверу с этой страницы не сделать. */
+    private View buildChainPanel() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(8), dp(6), dp(8), dp(8));
+        panel.setBackgroundColor(0xF2F5F5F5);
+
+        chainStatus = new TextView(this);
+        chainStatus.setTextSize(13f);
+        chainStatus.setTextColor(Color.DKGRAY);
+        chainStatus.setSingleLine(true);
+        chainStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        panel.addView(chainStatus);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER);
+        row.setPadding(0, dp(6), 0, 0);
+
+        Button backBtn = new Button(this);
+        backBtn.setText("← Назад");
+        backBtn.setTextSize(12f);
+        backBtn.setOnClickListener(v -> leaveChain());
+        row.addView(backBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.2f));
 
         saveLoginBtn = new Button(this);
         saveLoginBtn.setText("Сохранить вход");
-        saveLoginBtn.setEnabled(false);
+        saveLoginBtn.setTextSize(12f);
         saveLoginBtn.setOnClickListener(v -> saveLogin());
-        bar.addView(saveLoginBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(saveLoginBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.2f));
 
         saveOffersBtn = new Button(this);
-        saveOffersBtn.setText("Сохранить акции");
-        saveOffersBtn.setEnabled(false);
+        saveOffersBtn.setText("Акции");
+        saveOffersBtn.setTextSize(12f);
         saveOffersBtn.setOnClickListener(v -> saveOffers());
-        bar.addView(saveOffersBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(saveOffersBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        root.addView(bar);
-        setContentView(root);
+        recordBtn = new Button(this);
+        recordBtn.setText("Записать");
+        recordBtn.setTextSize(12f);
+        recordBtn.setOnClickListener(v -> toggleRecord());
+        row.addView(recordBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        if (SERVER.isEmpty()) {
-            say("Адрес сервера не задан при сборке (-PkorzinaServer).", true);
-        } else {
-            openOurApp();
-        }
-    }
-
-    private HorizontalScrollView chainRow() {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(dp(4), dp(4), dp(4), 0);
-
-        Button ours = new Button(this);
-        ours.setText("Моя корзина");
-        ours.setTextSize(13f);
-        ours.setOnClickListener(v -> openOurApp());
-        row.addView(ours);
-
-        for (int i = 0; i < CHAINS.length; i++) {
-            final int idx = i;
-            Button b = new Button(this);
-            b.setText(CHAINS[i][0]);
-            b.setTextSize(13f);
-            b.setOnClickListener(v -> openChain(idx));
-            row.addView(b);
-        }
-        HorizontalScrollView scroll = new HorizontalScrollView(this);
-        scroll.setHorizontalScrollBarEnabled(false);
-        scroll.addView(row);
-        return scroll;
+        panel.addView(row);
+        return panel;
     }
 
     private void setUpWeb() {
@@ -205,6 +357,11 @@ public class MainActivity extends Activity {
         s.setSupportZoom(true);
         s.setBuiltInZoomControls(true);
         s.setDisplayZoomControls(false);
+        // Метка в конце User-Agent: сервер узнаёт телефон с первого запроса и
+        // рисует кнопки моста сразу, а не после того, как встанет скрипт.
+        // Вторая, независимая половина узнавания — сам мост ниже.
+        s.setUserAgentString(s.getUserAgentString() + " KorzinaApp/" + BuildConfig.VERSION_NAME);
+        web.addJavascriptInterface(new KorzinaBridge(), "Korzina");
 
         CookieManager jar = CookieManager.getInstance();
         jar.setAcceptCookie(true);
@@ -214,10 +371,22 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                boolean inChain = currentChain >= 0;
-                saveLoginBtn.setEnabled(inChain);
-                saveOffersBtn.setEnabled(inChain);
-                if (inChain) say(CHAINS[currentChain][0] + " — " + shortenUrl(url), false);
+                // Режим следует за адресом, а не за тем, кто его открыл: человек
+                // мог вернуться «назад» на наш сайт сам — и панель должна уйти
+                // вместе со страницей сети, а не висеть поверх корзины.
+                if (currentChain >= 0 && !isHostOf(currentChain, url)) {
+                    exitChainMode();
+                }
+                if (currentChain < 0) return;
+                chainPanel.setVisibility(View.VISIBLE);
+                if (recording) {
+                    // Новая страница — новый скрипт: обёртка живёт, пока жива страница.
+                    // Записанное раньше лежит в sessionStorage и переживает перезагрузку.
+                    view.evaluateJavascript(recScript(currentChain), null);
+                    say("Идёт запись — " + shortenUrl(url), false);
+                } else {
+                    say(CHAINS[currentChain][0] + " — " + shortenUrl(url), false);
+                }
             }
 
             @Override
@@ -240,20 +409,92 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void openOurApp() {
-        currentChain = -1;
-        saveLoginBtn.setEnabled(false);
-        saveOffersBtn.setEnabled(false);
-        say("Моя корзина", false);
-        web.loadUrl(SERVER + "/");
+    // ── Режимы: наш сайт и страница сети ──
+    private void openOurApp(String path) {
+        exitChainMode();
+        web.loadUrl(SERVER + path);
     }
 
     private void openChain(int idx) {
         currentChain = idx;
-        saveLoginBtn.setEnabled(false);
-        saveOffersBtn.setEnabled(false);
+        stopRecording();
+        chainPanel.setVisibility(View.VISIBLE);
+        setChainButtons(true);
         say("Открываю " + CHAINS[idx][0] + "…", false);
         web.loadUrl(CHAINS[idx][2]);
+    }
+
+    /** Уйти со страницы сети обратно к сайту — по истории, если она ещё помнит нас. */
+    private void leaveChain() {
+        if (web.canGoBack()) {
+            // Режим снимется сам в onPageFinished, когда адрес перестанет быть
+            // адресом сети: два переключателя одного режима разъезжаются.
+            web.goBack();
+        } else {
+            openOurApp("/");
+        }
+    }
+
+    private void exitChainMode() {
+        currentChain = -1;
+        stopRecording();
+        if (chainPanel != null) chainPanel.setVisibility(View.GONE);
+    }
+
+    private void setChainButtons(boolean on) {
+        saveLoginBtn.setEnabled(on);
+        saveOffersBtn.setEnabled(on);
+        recordBtn.setEnabled(on);
+    }
+
+    // ── Запись корзины ──
+    /** Скрипт записи со своими адресами этой сети. */
+    private static String recScript(int idx) {
+        JSONArray allow = new JSONArray();
+        for (String host : CHAINS[idx][3].split(",")) allow.put(host.trim());
+        return REC_JS.replace("%s", allow.toString());
+    }
+
+    /** Ушли со страницы сети — запись этой сети больше не наша: кнопка снова «Записать». */
+    private void stopRecording() {
+        recording = false;
+        if (recordBtn != null) recordBtn.setText("Записать");
+    }
+
+    private void toggleRecord() {
+        if (currentChain < 0) return;
+        if (!recording) {
+            recording = true;
+            recordBtn.setText("Готово");
+            web.evaluateJavascript(REC_START_JS, null);
+            web.evaluateJavascript(recScript(currentChain), null);
+            say("Идёт запись. Положите в корзину любой товар, потом уберите его и нажмите «Готово».",
+                false);
+            return;
+        }
+        final String chain = CHAINS[currentChain][1];
+        final String name = CHAINS[currentChain][0];
+        stopRecording();
+        web.evaluateJavascript(REC_TAKE_JS, result -> {
+            try {
+                String json = (String) new JSONTokener(result).nextValue();
+                JSONArray entries = new JSONArray(json == null ? "[]" : json);
+                if (entries.length() == 0) {
+                    say("Запросов корзины не видно. Войдите в " + name + ", нажмите «Записать», "
+                        + "положите товар и уберите его, затем «Готово».", true);
+                    return;
+                }
+                JSONObject body = new JSONObject()
+                    .put("store", chain)
+                    .put("app_version", BuildConfig.VERSION_NAME)
+                    .put("entries", entries);
+                say("Отправляю запись…", false);
+                post("/api/cart_record", body,
+                     name + " — записано запросов корзины: " + entries.length());
+            } catch (Exception e) {
+                say("Не получилось забрать запись: " + e.getMessage(), true);
+            }
+        });
     }
 
     // ── Вход в магазин ──
@@ -313,8 +554,7 @@ public class MainActivity extends Activity {
 
     /** POST на наш сервер с сессией «Моей корзины» из WebView. В фоне. */
     private void post(String path, JSONObject body, String okText) {
-        saveLoginBtn.setEnabled(false);
-        saveOffersBtn.setEnabled(false);
+        setChainButtons(false);
         final String session = CookieManager.getInstance().getCookie(SERVER);
         new Thread(() -> {
             int code;
@@ -346,7 +586,7 @@ public class MainActivity extends Activity {
                 if (status == 200) {
                     done(okText, false);
                 } else if (status == 401 || status == 302 || status == 303) {
-                    done("Сначала войдите в «Мою корзину» — кнопка слева вверху.", true);
+                    done("Сначала войдите в «Мою корзину» своим номером.", true);
                 } else {
                     String msg = "Ошибка " + status;
                     try { msg = new JSONObject(answer).optString("error", msg); } catch (Exception ignored) { }
@@ -358,15 +598,14 @@ public class MainActivity extends Activity {
 
     private void done(String text, boolean bad) {
         say(text, bad);
-        boolean inChain = currentChain >= 0;
-        saveLoginBtn.setEnabled(inChain);
-        saveOffersBtn.setEnabled(inChain);
+        if (currentChain >= 0) setChainButtons(true);
     }
 
     // ── Вспомогательные ──
     private void say(String text, boolean bad) {
-        status.setText(text);
-        status.setTextColor(bad ? 0xFFB71C1C : Color.DKGRAY);
+        if (chainStatus == null) return;
+        chainStatus.setText(text);
+        chainStatus.setTextColor(bad ? 0xFFB71C1C : Color.DKGRAY);
     }
 
     private static byte[] readAll(InputStream is) throws java.io.IOException {
@@ -375,6 +614,17 @@ public class MainActivity extends Activity {
         int n;
         while ((n = is.read(buf)) != -1) out.write(buf, 0, n);
         return out.toByteArray();
+    }
+
+    /** Адрес — из своих адресов ЭТОЙ сети, а не любой из списка: на странице
+        Магнита не должно быть панели Пятёрочки. */
+    private static boolean isHostOf(int idx, String url) {
+        String host = hostOf(url);
+        for (String own : CHAINS[idx][3].split(",")) {
+            String d = own.trim();
+            if (host.equals(d) || host.endsWith("." + d)) return true;
+        }
+        return false;
     }
 
     private static boolean isChainHost(String url) {
@@ -408,7 +658,8 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (web.canGoBack()) web.goBack();
+        // Режим снимет onPageFinished по адресу: вернулись на наш сайт — панель ушла.
+        if (web != null && web.canGoBack()) web.goBack();
         else super.onBackPressed();
     }
 }

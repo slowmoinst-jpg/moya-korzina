@@ -439,6 +439,25 @@ def test_the_screen_says_who_passes_the_check(web):
         assert word not in page.lower(), f"на экране осталось слово «{word}»"
 
 
+def test_the_store_window_is_the_shot_not_a_frame(web):
+    """Окно магазина — снимок браузера на сервере, а не рамка с сайтом сети.
+
+    Сети запрещают показывать себя в чужой рамке: Магнит и ВкусВилл отвечают
+    X-Frame-Options: SAMEORIGIN и frame-ancestors 'self' (замер 27.09.2026), и
+    рамка остаётся белой. Да и куки в ней были бы куками браузера человека, а
+    корзину потом кладёт браузер сервера. 26.09 рамку поставили главным окном, а
+    снимки убрали в свёрнутый «запасной способ» — и владелец увидел пустой экран
+    вместо Магнита, хотя рабочее окно было на той же странице, ниже и свёрнутым.
+    """
+    enter(web)
+    page = web.get("/cabinet?store=magnit").data.decode("utf-8")
+
+    assert "<iframe" not in page, "сайт сети в рамке не покажется — рамка останется белой"
+    before_shot = page[:page.index('id="screen"')]
+    assert before_shot.count("<details") == before_shot.count("</details>"), \
+        "окно со снимком спрятано в свёрнутый блок — человек видит пустой экран"
+
+
 def test_the_screen_is_usable_with_a_thumb(web):
     """Телефонные обещания экрана — каждое закрывает свою живую поломку.
 
