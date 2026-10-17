@@ -283,6 +283,18 @@ def baseline_total(basket_id: int) -> float:
     return round(sum(baseline_by_product(basket_id).values()), 2)
 
 
+def receipt_priced(basket_id: int) -> set[int]:
+    """Товары корзины, база которых взята из чеков человека, а не у магазина.
+
+    Нужно подписи базы на «Результате». До 17.10.2026 там стояло «Было бы в одном
+    магазине», а baseline_by_product считает иначе: сначала цена из истории покупок,
+    и только товар без чека — по цене магазина. «Раньше вы платили» верно ровно для
+    этих товаров, поэтому признак берётся той же _history_price, что и сама база.
+    """
+    return {int(item["product_id"]) for item in repo.basket_items(basket_id)
+            if _history_price(item["product_id"]) is not None}
+
+
 def offers_map(day: str | None = None) -> dict[int, list[Offer]]:
     """store_id -> действующие акции (срок, активация, остаток лимита учтены)."""
     return {s.id: repo.offers_for_store(s.id, day) for s in repo.list_stores()}
@@ -396,19 +408,6 @@ def _resolve_card_names(variants: list[Variant]) -> None:
             for ln in sb.lines:
                 if ln.card_id and not ln.card_name:
                     ln.card_name = names.get(ln.card_id)
-
-
-def save_best(basket_id: int, variants: list[Variant]) -> list[int]:
-    """Сохраняет варианты в БД (таблицы variants / variant_lines)."""
-    by_code = {s.code: s.id for s in repo.list_stores()}
-    ids = []
-    for v in variants:
-        rows = []
-        for sb in v.stores:
-            for ln in sb.lines:
-                rows.append((by_code.get(sb.store_code), sb.card_id, ln.product_id, ln.qty, ln.price, ln.discount))
-        ids.append(repo.save_variant(basket_id, v.total, v.baseline, v.savings_rub, v.savings_pct, rows))
-    return ids
 
 
 # ---------- передача корзины в магазин ----------

@@ -619,7 +619,6 @@ def page():
         approx=_approx(rows),
         usual={"date": date, "count": count, "mine": _usual_count() if not items else 0},
         job=job_of(basket_id),
-        saved=repo.list_variants(basket_id),
         result_path=SCREEN_BY_KEY["result"].path,
         receipts_path=SCREEN_BY_KEY["receipts"].path,
         plural_items=plural_items, rub=rub, num=num, pct=pct, unit_label=unit_label,

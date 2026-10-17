@@ -339,27 +339,9 @@
     <button class="btn main wide cart-go" type="submit" form="cart-items" name="do" value="fresh"
             {{ 'disabled' if job and job.status == 'running' }}>Обновить цены и рассчитать</button>
   </div>
-
-  {% if saved %}
-    <details class="card">
-      <summary><strong>Сохранённые расчёты ({{ saved|length }})</strong></summary>
-      {# Прокручивается таблица, а не страница: горизонтальная прокрутка всего
-         экрана на телефоне выглядит как поломка вёрстки, и из неё трудно выбраться. #}
-      <div style="overflow-x:auto;margin-top:10px">
-        <table>
-          <tr><th>Когда</th><th>Итого</th><th>Было бы</th><th>Экономия</th></tr>
-          {% for v in saved %}
-            <tr>
-              <td class="dim">{{ v.created_at }}</td>
-              <td class="sum">{{ rub(v.total) }}</td>
-              <td class="dim">{{ rub(v.baseline) }}</td>
-              <td class="gain">{{ rub(v.savings_rub) }} · {{ pct(v.savings_pct) }}</td>
-            </tr>
-          {% endfor %}
-        </table>
-      </div>
-    </details>
-  {% endif %}
+  {# Здесь стоял блок прошлых расчётов. Его не наполнял никто с самого MVP:
+     писатель service.save_best не вызывался ни разу, и место пустовало под то,
+     чего не бывает. Убран 17.10.2026; вернётся — только вместе с тем, кто пишет. #}
 {% endif %}
 
 {# ---------- итог всегда виден ----------

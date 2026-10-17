@@ -242,26 +242,27 @@
         </div>
         <div class="fig">
           <span class="eyebrow">Разбить на два</span>
-          <span class="v">3 415,25 ₽</span>
+          <span class="v">3 265,25 ₽</span>
         </div>
         <div class="fig">
           <span class="eyebrow" style="color:var(--green)">Экономия</span>
-          <span class="v" style="color:var(--green)">275,15 ₽</span>
-          <span style="font-weight:600;color:var(--green);font-size:15px;">7,46 %</span>
+          <span class="v" style="color:var(--green)">425,15 ₽</span>
+          <span style="font-weight:600;color:var(--green);font-size:15px;">11,52 %</span>
         </div>
       </div>
       <div class="stack" style="gap:9px;">
         <div class="bar">
-          <i style="width:92.55%;background:var(--ink);"></i>
-          <i style="width:7.45%;background:var(--green);"></i>
+          <i style="width:88.48%;background:var(--ink);"></i>
+          <i style="width:11.52%;background:var(--green);"></i>
         </div>
         <div class="barlabels">
           <span>Заплатим в двух магазинах</span>
           <span>Было бы в одном</span>
         </div>
       </div>
-      <p style="font-size:14px;color:var(--ink2);max-width:none;">В расчёт уже включён штраф 150 ₽ за второй
-        заказ — иначе разбиение всегда выглядело бы выгоднее, чем оно есть.</p>
+      <p style="font-size:14px;color:var(--ink2);max-width:none;">При выборе к разбиению прибавляется штраф
+        150 ₽ за второй заказ — иначе оно всегда выглядело бы выгоднее, чем оно есть. Делить стоит, только
+        если выгоднее и с ним; в сумму к оплате штраф не входит.</p>
     </div>
 
     <div class="split" style="padding-top:6px;">
@@ -335,7 +336,9 @@
 кэшбэк   = 0, если subtotal &lt; минимального чека,
            иначе min(subtotal × процент ⁄ 100, остаток лимита карты)
 итог     = subtotal + доставка − кэшбэк
-вариант  = сумма итогов + штраф × (число магазинов − 1)</pre>
+к оплате = сумма итогов по магазинам варианта
+выбор    = к оплате + штраф × (число магазинов − 1) + ручная работа:
+           по нему сравниваются варианты, в оплату штраф и работа не входят</pre>
   </section>
 
 

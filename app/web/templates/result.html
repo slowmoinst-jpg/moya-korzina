@@ -104,8 +104,15 @@
       {% if not loop.last %}<span class="dim">+</span>{% endif %}
     {% endfor %}
   </div>
+  {# Штраф за лишний заказ решает только выбор варианта (Variant.effort_total): в
+     «К оплате» его нет, магазинам его никто не платит. До 17.10.2026 здесь стояло
+     «включён штраф» — тогда он и правда сидел в сумме к оплате. #}
+  {% set orders = best.stores|length %}
   <p class="dim" style="margin:0 0 14px">
-    {% if best.penalty %}{{ best.stores|length }} заказа · включён штраф {{ rub(best.penalty) }}
+    {% if orders > 1 %}{{ orders }} {{ 'заказа' if orders < 5 else 'заказов' }}
+      {%- if best.penalty %} · штраф {{ rub(best.penalty) }}
+      {{ 'за второй заказ' if orders == 2 else 'за лишние заказы' }} учтён только в выборе
+      варианта, к оплате не прибавлен{% endif %}
     {% else %}Один заказ, без штрафа{% endif %}
     · {% if best.complete.full %}{{ best.complete.have }} из {{ best.complete.of }} в наличии
     {% else %}<b>{{ best.complete.have }} из {{ best.complete.of }}</b> в наличии{% endif %}</p>
@@ -129,8 +136,13 @@
   </div>
   <div class="row" style="justify-content:space-between;margin-top:7px">
     <span class="dim">Заплатим — {{ rub(best.figures.total) }}</span>
-    <span class="dim">Было бы в одном магазине — {{ rub(best.figures.base) }}</span>
+    {# База — цены из чеков человека, где чека нет — цена магазина
+       (service.baseline_by_product), и подпись говорит, что из этого вышло. #}
+    <span class="dim">{{ best.base.label }} — {{ rub(best.figures.base) }}</span>
   </div>
+  {% if best.base.mixed %}
+    <p class="dim" style="margin:6px 0 0">Цены из ваших чеков нет у {{ best.base.unseen }} из {{ best.base.of }} — для них взята цена магазина.</p>
+  {% endif %}
 </div>
 
 {% if best.missing %}

@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 
@@ -244,6 +245,30 @@ def test_due_filter_lives_in_the_address(web):
 
     page = web.get(f"/basket?id={basket_id}&f=due").get_data(as_text=True)
     assert "Пора докупить" in page and "Молоко цикл" in page
+
+
+def test_the_basket_keeps_no_place_for_calculations_nobody_saves(web):
+    """На «Корзине» нет блока «Сохранённые расчёты»: наполнять его некому.
+
+    Сверка с концепцией 2.0 17.10.2026: блок читал repo.list_variants, а писать
+    туда умел только service.save_best — его не звал никто с самого MVP (786b511).
+    Место на экране стояло под то, чего не бывает. Сохранять расчёт при показе
+    «Результата» значило бы писать в базу на открытие страницы, а эти экраны
+    обещают обратное (шапка файла), поэтому блок убран вместе с писателем.
+    Понадобится история расчётов — она вернётся с тем, кто её пишет, и с тестом,
+    что запись появляется.
+    """
+    enter(web)
+    workspace()
+    basket_id, _, _ = seed_basket()
+    web.get(f"/result?basket={basket_id}")
+
+    page = text(web.get(f"/basket?id={basket_id}"))
+    with open(os.path.join(ROOT, "app", "web", "templates", "basket.html"), encoding="utf-8") as file:
+        template = file.read()
+
+    assert "Сохранённые расчёты" not in template, "блок вернулся, а наполнять его по-прежнему некому"
+    assert "Сохранённые расчёты" not in page
 
 
 # ---------- корзина: правка позиций ----------
@@ -531,6 +556,88 @@ def test_result_does_not_go_to_the_network_when_shown(web):
     workspace()
     basket_id, _, _ = seed_basket()
     assert web.get(f"/result?basket={basket_id}").status_code == 200
+
+
+def seed_split_basket() -> tuple[int, int, int]:
+    """Корзина, которую выгодно делить: молоко дешевле в Магните, хлеб — в Пятёрочке.
+
+    Магнит: молоко 600 + доставка 149 = 749 ₽; Пятёрочка: хлеб 700 + доставка 199 =
+    899 ₽. Вместе 1 648 ₽ против 2 300 ₽ одним Магнитом — делить выгоднее и со
+    штрафом 150 ₽ за второй заказ, и с ручной работой обеих сетей.
+    """
+    milk = add_product("Молоко Простоквашино 930 мл")
+    bread = add_product("Хлеб Бородинский")
+    price(milk, "magnit", 600.0)
+    price(milk, "pyaterochka", 1600.0)
+    price(bread, "magnit", 1700.0)
+    price(bread, "pyaterochka", 700.0)
+    basket_id = repo.create_basket("Делим")
+    repo.set_basket_item(basket_id, milk, 1.0)
+    repo.set_basket_item(basket_id, bread, 1.0)
+    return basket_id, milk, bread
+
+
+def _best_part(page: str) -> str:
+    """Лучший вариант — всё, что выше «Других вариантов»: у тех свои суммы."""
+    return page.split("Другие варианты")[0]
+
+
+def test_to_pay_is_what_the_stores_get_without_the_extra_order_penalty(web):
+    """«К оплате» — сумма «Итого по магазину», без штрафа за второй заказ.
+
+    Сверка с концепцией 2.0 17.10.2026: штраф 150 ₽ за лишний заказ входил в
+    Variant.total, поэтому сидел в «К оплате», в «Разделить · …» и уменьшал
+    «Экономию», хотя магазинам его никто не платит. Он нужен только выбору
+    варианта (effort_total), рядом с ручной работой.
+    """
+    from app.web.screens.basket import rub
+
+    enter(web)
+    workspace()
+    basket_id, _, _ = seed_split_basket()
+    page = text(web.get(f"/result?basket={basket_id}"))
+    best = _best_part(page)
+
+    stores = re.findall(r'Итого по магазину</strong><span class="sum"[^>]*>([^<]+)</span>', best)
+    to_pay = re.search(r'К оплате</div>\s*<div class="sum"[^>]*>([^<]+)</div>', best).group(1)
+
+    assert sorted(stores) == sorted([rub(749.0), rub(899.0)]), "лучшим должен выйти раздел на две сети"
+    assert to_pay.strip() == rub(1648.0), "в «К оплате» попало то, что магазинам не платят"
+    assert f"Разделить · {rub(1648.0)}" in page
+    assert rub(2300.0 - 1648.0) in best, "экономия — разность показанных «было» и «заплатим»"
+    assert "включён штраф" not in best
+
+
+def test_the_base_of_the_saving_says_where_it_came_from(web):
+    """База «Экономии» — цены из чеков человека, а где чека нет — цена магазина.
+
+    Подпись «Было бы в одном магазине» описывала то, чего расчёт не делает:
+    service.baseline_by_product берёт сначала его же цену из истории покупок и лишь
+    для товара без чека — цену магазина (правило 4 «Требований к данным»,
+    docs/design/nazvaniya-2026-09-26.md). Сверка с концепцией 2.0 17.10.2026.
+    """
+    enter(web)
+    workspace()
+    basket_id, milk, bread = seed_split_basket()
+    magnit = repo.get_store("magnit")
+
+    page = text(web.get(f"/result?basket={basket_id}"))
+    assert "Было бы в одном магазине" not in page
+    assert "По ценам магазинов" in page, "чеков нет — база взята у магазинов"
+
+    workspace()
+    repo.add_history_row("2026-09-01", magnit.id, milk, "МОЛОКО ПРОСТОКВ 930", 1.0, 1000.0, 1000.0)
+    web.post("/result", data={"basket": basket_id, "do": "again"})
+    page = text(web.get(f"/result?basket={basket_id}"))
+    assert "По вашим чекам и ценам магазинов" in page
+    assert "Цены из ваших чеков нет у 1 из 2" in page
+
+    workspace()
+    repo.add_history_row("2026-09-01", magnit.id, bread, "ХЛЕБ БОРОДИНСК", 1.0, 1500.0, 1500.0)
+    web.post("/result", data={"basket": basket_id, "do": "again"})
+    page = text(web.get(f"/result?basket={basket_id}"))
+    assert "Раньше вы платили" in page
+    assert "Цены из ваших чеков нет" not in page
 
 
 # ---------- история ----------

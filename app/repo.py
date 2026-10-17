@@ -360,26 +360,6 @@ def list_history(date_from: str | None = None, date_to: str | None = None,
         return [dict(r) for r in c.execute(sql + " ORDER BY h.date DESC, h.id", tuple(params))]
 
 
-# ---------- variants ----------
-def save_variant(basket_id: int, total: float, baseline: float, savings_rub: float, savings_pct: float,
-                 lines: list[tuple]) -> int:
-    """lines: (store_id, card_id, product_id, qty, price, discount)"""
-    with get_conn() as c:
-        cur = c.execute("INSERT INTO variants (basket_id, created_at, total, baseline, savings_rub, savings_pct)"
-                        " VALUES (?,?,?,?,?,?)", (basket_id, NOW(), total, baseline, savings_rub, savings_pct))
-        vid = cur.lastrowid
-        c.executemany("INSERT INTO variant_lines (variant_id, store_id, card_id, product_id, qty, price, discount)"
-                      " VALUES (?,?,?,?,?,?,?)", [(vid,) + tuple(ln) for ln in lines])
-        c.commit()
-        return vid
-
-
-def list_variants(basket_id: int) -> list[dict]:
-    with get_conn() as c:
-        return [dict(r) for r in c.execute(
-            "SELECT * FROM variants WHERE basket_id=? ORDER BY created_at DESC, total", (basket_id,))]
-
-
 # ---------- settings ----------
 # Пары «ключ — значение» для того немногого, что человек задаёт один раз и надолго:
 # адрес доставки и разрешённые из него точки магазинов. В config.yaml им не место —

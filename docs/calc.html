@@ -308,8 +308,11 @@ function evaluate(chosen, pair, penalty){
   });
   const parts = pair.map(s => ({store:s, ...storeTotal(Math.round(sums[s.code]*100)/100, s)}))
                     .filter(p => p.subtotal > 0);
-  const total = parts.reduce((a,p)=>a+p.total, 0) + penalty * Math.max(0, parts.length - 1);
-  return {total: Math.round(total*100)/100, parts};
+  // как в приложении: к оплате — итоги магазинов, а неудобство второго заказа
+  // прибавляется только к сравнению разбиений и в сумму к оплате не входит
+  const total = parts.reduce((a,p)=>a+p.total, 0);
+  const score = total + penalty * Math.max(0, parts.length - 1);
+  return {total: Math.round(total*100)/100, score: Math.round(score*100)/100, parts};
 }
 
 function bestSplit(chosen, penalty){
@@ -318,7 +321,7 @@ function bestSplit(chosen, penalty){
   STORES.forEach(s => {
     chosen.forEach(it => it.__where = 0);
     const r = evaluate(chosen, [s], penalty);
-    if (!best || r.total < best.total) best = r;
+    if (!best || r.score < best.score) best = r;
   });
   // две пары: перебираем все разбиения
   for (let a = 0; a < STORES.length; a++){
@@ -329,7 +332,7 @@ function bestSplit(chosen, penalty){
       for (let mask = 0; mask < (1<<n); mask++){
         chosen.forEach((it,i)=> it.__where = (mask>>i) & 1);
         const r = evaluate(chosen, pair, penalty);
-        if (r.total < best.total) best = r;
+        if (r.score < best.score) best = r;
       }
     }
   }
@@ -391,7 +394,7 @@ function render(){
     const note = document.createElement("div");
     note.className = "edge";
     note.style.cssText = "font-size:12px;color:var(--ink3);padding-left:4px;";
-    note.textContent = `Включён штраф ${money(penalty)} за второй заказ.`;
+    note.textContent = `Неудобство второго заказа ${money(penalty)} учтено в выборе, к оплате не прибавлено.`;
     split.appendChild(note);
   }
 }
