@@ -50,6 +50,7 @@ SCREENS: tuple[Screen, ...] = (
 
     Screen("basket", "/basket", "Корзина", "Что покупаем", "Корзина"),
     Screen("result", "/result", "Результат", "Разбиение и экономия", "Корзина"),
+    Screen("carts", "/carts", "Сборка корзин", "Корзина в каждой подключённой сети", "Корзина"),
     Screen("orders", "/orders", "Заказы", "Покупки из чеков ФНС и добавленные вручную", "Корзина"),
     Screen("history", "/history", "История", "Покупки семьи", "Корзина"),
 
@@ -90,6 +91,8 @@ def install(flask_app: Flask) -> None:
     ready["orders"] = orders.page
     from app.web.screens import accounts
     ready["accounts"] = accounts.page
+    from app.web.screens import carts
+    ready["carts"] = carts.page
     # Кабинет магазина в меню не стоит: в него заходят с «Кабинетов», по
     # конкретной сети, — и у него своё действие, отвечающее снимком, а не страницей.
     from app.web.screens import cabinet
