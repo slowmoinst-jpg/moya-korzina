@@ -476,3 +476,70 @@ def test_autofill_leaves_no_junk_baskets(tmp_path, monkeypatch):
 
     assert len(repo.list_baskets()) == было, "мусорная корзина осталась в списке"
     assert repo.basket_items(цель), "целевая корзина должна была наполниться"
+
+
+# ---------- привычки: «Пора докупить» и «Моя обычная корзина» (концепция 2.0, экран 2.1) ----------
+@pytest.fixture
+def cycles():
+    """Молоко раз в 5 дней, масло раз в 30, хлеб — два чека в один день, сыр однажды."""
+    from datetime import date
+    store = repo.get_store("pyaterochka")
+    milk = repo.upsert_product(Product(None, "Молоко 1 л", unit="pcs"))
+    oil = repo.upsert_product(Product(None, "Масло оливковое", unit="pcs"))
+    bread = repo.upsert_product(Product(None, "Хлеб", unit="pcs"))
+    cheese = repo.upsert_product(Product(None, "Сыр", unit="kg"))
+    for day in ("2026-09-01", "2026-09-06", "2026-09-11", "2026-09-16"):
+        repo.add_history_row(day, store.id, milk, "Молоко", 2, 80.0, 160.0)
+    repo.add_history_row("2026-08-17", store.id, oil, "Масло", 1, 900.0, 900.0)
+    repo.add_history_row("2026-09-16", store.id, oil, "Масло", 1, 900.0, 900.0)
+    repo.add_history_row("2026-09-10", store.id, bread, "Хлеб", 1, 50.0, 50.0)
+    repo.add_history_row("2026-09-10", store.id, bread, "Хлеб", 1, 50.0, 50.0)
+    repo.add_history_row("2026-09-16", store.id, cheese, "Сыр", 0.35, 900.0, 315.0)
+    return {"milk": milk, "oil": oil, "bread": bread, "cheese": cheese,
+            "today": date(2026, 9, 22)}
+
+
+def _by(found, pid):
+    return next((h for h in found if h["product_id"] == pid), None)
+
+
+def test_habits_cycle_is_mean_gap_between_days(cycles):
+    found = baskets.habits(cycles["today"])
+    milk = _by(found, cycles["milk"])
+    assert milk["times"] == 4 and milk["cycle"] == 5 and milk["since"] == 6
+    assert milk["qty"] == 2 and milk["due"] is True
+
+
+def test_two_receipts_same_day_are_one_purchase(cycles):
+    """Вернулся за хлебом в тот же день — это один заход, и цикла у хлеба ещё нет."""
+    bread = _by(baskets.habits(cycles["today"]), cycles["bread"])
+    assert bread["times"] == 1 and bread["cycle"] is None and bread["due"] is False
+    assert bread["qty"] == 2
+
+
+def test_due_items_only_overdue(cycles):
+    due = baskets.due_items(cycles["today"])
+    assert [h["product_id"] for h in due] == [cycles["milk"]]
+
+
+def test_usual_takes_what_runs_out_this_week(cycles):
+    """Молоко кончилось, масло куплено шесть дней назад на месяц — его не берём."""
+    usual = {h["product_id"] for h in baskets.usual_items(cycles["today"])}
+    assert usual == {cycles["milk"]}
+    later = {h["product_id"] for h in baskets.usual_items(cycles["today"], horizon_days=30)}
+    assert cycles["oil"] in later
+
+
+def test_build_usual_basket(cycles, monkeypatch):
+    from datetime import date as real_date
+
+    class Today(real_date):
+        @classmethod
+        def today(cls):
+            return cycles["today"]
+
+    monkeypatch.setattr(baskets, "date", Today)
+    made = baskets.build_from_history(baskets.USUAL)
+    assert made["basket_id"]
+    got = {int(i["product_id"]): float(i["qty"]) for i in repo.basket_items(made["basket_id"])}
+    assert got == {cycles["milk"]: 2.0}

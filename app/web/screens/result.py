@@ -161,15 +161,44 @@ def _chosen(variants, mode: str | None):
     single = next((v for v in variants if _size(v) == 1), None)
     if not split or not single:
         return variants[0], None
+    gain = round(single.total - split.total, 2)
+    threshold = split_threshold()
     if mode not in ("split", "single"):
         # В ТОМ ПОРЯДКЕ, В КОТОРОМ ИХ РАСПОЛОЖИЛ РАСЧЁТ: сначала полные, потом не
         # ниже минимального заказа, потом по итогу с ручной работой и фасовкой. По
         # одним деньгам экран советовал дробить там, где расчёт счёл дробление хуже,
         # а по одному итогу — брать магазин, где нет сыра, потому что без сыра дешевле.
         mode = "split" if variants.index(split) < variants.index(single) else "single"
+        # ПОРОГ СПЛИТА (концепция 2.0, модуль 5). Два заказа — это две доставки,
+        # два окна ожидания курьера и две корзины. Если разбивка сберегает меньше
+        # порога (итоги уже с обеими доставками), крупно показываем один магазин,
+        # а разбивка остаётся рядом ссылкой. Порог не обходит полноту: магазин, где
+        # чего-то не хватает, сплиту с полной корзиной не замена.
+        if (mode == "split" and gain < threshold
+                and len(single.missing_products) <= len(split.missing_products)):
+            mode = "single"
     switch = {"split": {"label": f"Разделить · {rub(split.total)}", "on": mode == "split"},
-              "single": {"label": f"Один магазин · {rub(single.total)}", "on": mode == "single"}}
+              "single": {"label": f"Один магазин · {rub(single.total)}", "on": mode == "single"},
+              "gain": gain, "threshold": threshold,
+              "worth": gain >= threshold}
     return (split if mode == "split" else single), switch
+
+
+def split_threshold() -> float:
+    """Сколько рублей должна сберечь разбивка на два заказа, чтобы её советовать."""
+    from app import config
+
+    try:
+        return max(0.0, float(config.get("optimizer.split_min_saving_rub", 250.0)))
+    except (TypeError, ValueError):
+        return 250.0
+
+
+def _completeness(variant, positions: int) -> dict:
+    """Полнота наличия: сколько позиций корзины вариант покрывает — «12 из 12»."""
+    missing = len(getattr(variant, "missing_products", None) or [])
+    have = max(0, positions - missing)
+    return {"have": have, "of": positions, "full": missing == 0}
 
 
 def _resent(code: str) -> dict | None:
@@ -384,11 +413,13 @@ def _draw(basket: dict, bundle: dict, mode: str | None, trouble: str | None, pla
               "stores": [_store_card(s, units, True, trouble)
                          for s in (getattr(best, "stores", None) or [])],
               "penalty": float(getattr(best, "penalty", 0.0) or 0.0),
-              "missing": list(getattr(best, "missing_products", None) or [])},
+              "missing": list(getattr(best, "missing_products", None) or []),
+              "complete": _completeness(best, bundle["positions"])},
         others=[{"n": n, "variant": v, "figures": _figures(v, bundle["baseline"]),
                  "stores": [_store_card(s, units, False, None)
                             for s in (getattr(v, "stores", None) or [])],
-                 "missing": list(getattr(v, "missing_products", None) or [])}
+                 "missing": list(getattr(v, "missing_products", None) or []),
+                 "complete": _completeness(v, bundle["positions"])}
                 for n, v in enumerate(others, start=2)],
         effortless=_effortless_note(bundle, best),
         doubts=bundle["doubts"],

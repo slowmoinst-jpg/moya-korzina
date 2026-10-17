@@ -85,6 +85,13 @@
     <a class="btn {{ 'main' if switch.single.on }}"
        href="{{ screen.path }}?basket={{ basket.id }}&mode=single">{{ switch.single.label }}</a>
   </div>
+  {% if switch.gain > 0 and not switch.worth %}
+    <p class="dim" style="margin:-4px 0 12px">Разделить выгоднее всего на {{ rub(switch.gain) }},
+      это меньше порога {{ rub(switch.threshold) }} — две доставки того не стоят.</p>
+  {% elif switch.worth %}
+    <p class="dim" style="margin:-4px 0 12px">Разделить на два магазина выгоднее на
+      {{ rub(switch.gain) }} — с учётом обеих доставок.</p>
+  {% endif %}
 {% endif %}
 
 {# ---------- лучший вариант ---------- #}
@@ -99,7 +106,9 @@
   </div>
   <p class="dim" style="margin:0 0 14px">
     {% if best.penalty %}{{ best.stores|length }} заказа · включён штраф {{ rub(best.penalty) }}
-    {% else %}Один заказ, без штрафа{% endif %}</p>
+    {% else %}Один заказ, без штрафа{% endif %}
+    · {% if best.complete.full %}{{ best.complete.have }} из {{ best.complete.of }} в наличии
+    {% else %}<b>{{ best.complete.have }} из {{ best.complete.of }}</b> в наличии{% endif %}</p>
 
   <div class="row" style="gap:28px;align-items:flex-end">
     <div>
@@ -343,6 +352,7 @@
         <strong style="margin-left:8px">{{ o.variant.title }}</strong>
         <span class="sum" style="margin-left:10px">{{ rub(o.figures.total) }}</span>
         <span class="gain" style="margin-left:8px">−{{ rub(o.figures.saved) }} · {{ pct(o.figures.pct) }}</span>
+        <span class="dim" style="margin-left:8px">{{ o.complete.have }} из {{ o.complete.of }}</span>
       </summary>
       <div style="display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--tint);margin:12px 0">
         <div style="width:{{ o.figures.paid_width }}%;background:var(--ink)"></div>
