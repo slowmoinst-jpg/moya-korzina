@@ -202,9 +202,10 @@ def carts_report():
     """Отчёт исполнителя о сборке корзины в одной сети: {store, landed, missing, total, …}.
 
     Строка сети на экране «Сборка корзин» одна для сервера и телефона (app/cartrun.py),
-    и эта дверь кладёт в неё отчёт, пришедший снаружи. Сегодня сюда никто не пишет:
-    исполнителя корзины по записям на телефоне ещё нет. Принимается только от
-    вошедшего в «Мою корзину» (сессия) или по замку — строка лежит в его же базе.
+    и эта дверь кладёт в неё отчёт, пришедший снаружи. Приложение 1.4 отчитывается
+    своей дверью /api/device/cartreport (app/phonecart.py), и та сама кладёт итог в
+    эту же строку. Принимается только от вошедшего в «Мою корзину» (сессия) или по
+    замку — строка лежит в его же базе.
     """
     from app import cartrun
 
@@ -227,6 +228,44 @@ def carts_report():
         log.exception("ошибка при обработке /api/carts/report")
         return _cors_response(make_response(
             jsonify({"ok": False, "error": "Отчёт не сохранился — попробуйте ещё раз."}), 500))
+
+
+def _device_call(name: str, work):
+    """Общая дверь двух запросов телефона: JSON, вход «Моей корзины», понятный отказ."""
+    body = request.get_json(silent=True) if request.is_json else None
+    if not isinstance(body, dict):
+        return _cors_response(make_response(
+            jsonify({"ok": False, "error": "Тело запроса должно быть объектом JSON"}), 400))
+    try:
+        _authenticate(body)
+        payload = {k: v for k, v in body.items() if k not in api.AUTH_FIELDS}
+        return _cors_response(jsonify(work(payload)))
+    except api.Refused as err:
+        log.warning("отказ API /api/device/%s: %s (%s)", name, err.reason, request.remote_addr)
+        return _cors_response(make_response(
+            jsonify({"ok": False, "error": err.message}), err.status))
+    except ValueError as err:
+        return _cors_response(make_response(jsonify({"ok": False, "error": str(err)}), 400))
+    except Exception:  # noqa: BLE001
+        log.exception("ошибка при обработке /api/device/%s", name)
+        return _cors_response(make_response(
+            jsonify({"ok": False, "error": "Сервер не справился — попробуйте ещё раз."}), 500))
+
+
+@bp.route("/device/cartplan", methods=["POST"])
+def device_cartplan():
+    """Что телефону положить в корзину сети: {store} → наряд и правила кнопок (app/phonecart.py)."""
+    from app import phonecart
+
+    return _device_call("cartplan", phonecart.plan)
+
+
+@bp.route("/device/cartreport", methods=["POST"])
+def device_cartreport():
+    """Отчёт телефона: что легло и какой итог показала корзина сети (app/phonecart.py)."""
+    from app import phonecart
+
+    return _device_call("cartreport", phonecart.accept_report)
 
 
 def install(flask_app):

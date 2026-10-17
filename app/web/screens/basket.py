@@ -529,13 +529,17 @@ def _catalog_hits(query: str, stores_n: int) -> list[dict]:
         found = catalog_store.search_items(query, limit=8)
     except Exception:  # noqa: BLE001 — каталог не повод ронять корзину
         return []
+    # Сети — по-русски, как в шапке экрана: «magnit, lenta» владелец 17.10.2026
+    # искал глазами и не находил, какой товар знаком Магниту.
+    names = {s.code: s.name for s in repo.list_stores()}
     out = []
     for item in found:
         small = " · ".join(x for x in (f"{int(item['weight_g'])} г" if item.get("weight_g") else "",
                                        item.get("brand") or "") if x)
+        codes = [c for c in (item.get("chain_codes") or "").split(",") if c]
         out.append({"id": item["id"], "name": item["name"], "small": small,
                     "chains_n": item.get("chains_n") or 0, "stores_n": stores_n,
-                    "chains": (item.get("chain_codes") or "").replace(",", ", ")})
+                    "chains": ", ".join(names.get(c, c) for c in codes)})
     return out
 
 
@@ -658,14 +662,19 @@ def suggest():
             if p.id not in in_basket and low in (p.name or "").lower()]
     mine.sort(key=lambda p: (-_ready_in(p.id, matrix, stores), p.name or ""))
 
+    # Откуда строка — сказано словами: в подсказке нет заголовков блоков, а разница
+    # важна. Свой товар (часто из чека) бывает знаком одной сети, товар каталога —
+    # сразу всем названным, и его корзина уедет в каждую из них (замер владельца
+    # 17.10.2026: в подсказке он не отличил одно от другого).
     items = [{"do": f"add:{p.id}", "name": p.name, "mine": True,
               "small": " · ".join(x for x in (unit_label(p.unit), p.brand or "") if x),
-              "where": f"в {_ready_in(p.id, matrix, stores)} из {len(stores)}"}
-             for p in mine[:6]]
-    for hit in _catalog_hits(query, len(stores))[:6]:
+              "where": f"ваш товар, в {_ready_in(p.id, matrix, stores)} из {len(stores)} сетей"}
+             for p in mine[:5]]
+    for hit in _catalog_hits(query, len(stores))[:5]:
         items.append({"do": f"catalog:{hit['id']}", "name": hit["name"], "mine": False,
                       "small": hit["small"],
-                      "where": f"в {hit['chains_n']} из {hit['stores_n']}"})
+                      "where": f"каталог сетей: {hit['chains']}" if hit["chains"]
+                               else f"каталог сетей, в {hit['chains_n']} из {hit['stores_n']}"})
     # Запрос возвращаем обратно, чтобы браузер выбросил ответ, опоздавший к уже
     # набранному слову: ответы приходят не в том порядке, в котором их спросили.
     return {"q": query, "items": items[:10]}
