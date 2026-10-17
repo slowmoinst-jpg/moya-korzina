@@ -1,0 +1,111 @@
+{# Настройки на телефоне — вариант В (выбор владельца 17.10.2026): сначала сколько магазинов
+   подключено и кого осталось подключить, подключённые — одной строкой, чеки ФНС, внизу
+   телефон и адрес — их задают один раз. «Подключить» внутри приложения открывает сайт
+   сети у самого телефона (вход — номер, код из СМС, капча — человек делает сам), вне
+   приложения ведёт в окно магазина на сервере. #}
+{% extends 'phone/base.html' %}
+{% from 'phone/_icons.html' import icon %}
+{% block title %}Настройки — Моя корзина{% endblock %}
+{% block body %}
+  <h1 class="title">Настройки</h1>
+
+  {% if saved == 'address' %}
+    <div class="note ok">Адрес сохранён. Цены по нему обновятся сами.</div>
+  {% endif %}
+  {% if connect %}
+    <div class="note warn">Чтобы заказать {{ where(connect) }}, подключите магазин — войдите в него своим номером.</div>
+  {% endif %}
+
+  <div class="card tint" style="padding: 12px; display: flex; flex-direction: column; gap: 7px">
+    <div style="display: flex; align-items: baseline; gap: 8px">
+      <span style="font-weight: 600">Магазины</span>
+      <span class="mut small">подключено</span>
+      <span class="disp num" style="margin-left: auto; font-size: 16px; font-weight: 600">{{ connected|length }} из {{ stores|length }}</span>
+    </div>
+    <div class="bar"><span style="width: {{ ((connected|length) * 100 / (stores|length)) if stores else 0 }}%"></span></div>
+    <div class="mut small">Подключённые магазины дают ваши личные цены и скидки и заказ прямо в их корзине.</div>
+  </div>
+
+  {% if waiting %}
+    <section>
+      <div class="grp">Осталось подключить</div>
+      <div class="card">
+        {% for s in waiting %}
+          <div class="row">
+            <span class="sq" style="background: var(--s-{{ s.code }}, var(--line2))"></span>
+            <span class="grow">{{ s.name }}{% if s.again %}<span class="fnt small"> · вход истёк</span>{% endif %}</span>
+            <a class="bt" href="/cabinet?store={{ s.code }}" data-open-store="{{ s.code }}">{{ 'Войти снова' if s.again else 'Подключить' }}</a>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+
+  {% if connected %}
+    <section>
+      <div class="grp">Подключено</div>
+      <div class="card">
+        <div class="row" style="flex-wrap: wrap; gap: 6px; padding-top: 9px; padding-bottom: 9px">
+          {% for s in connected %}
+            <span class="chip"><span class="sq" style="background: var(--s-{{ s.code }}, var(--line2)); width: 9px; height: 9px"></span>{{ s.name }}</span>
+          {% endfor %}
+          <a class="mut small" href="/accounts" style="margin-left: auto">Изменить</a>
+        </div>
+      </div>
+    </section>
+  {% endif %}
+
+  <section>
+    <div class="grp">Чеки</div>
+    <div class="card">
+      <a class="row" href="/receipts">
+        {{ icon('receipt') }}
+        <span class="grow">Мои чеки (ФНС)</span>
+        {% if fns.connected %}
+          <span class="gd num small">{{ fns.label }}</span>{{ icon('check', 'i s gd') }}
+        {% else %}
+          <span class="bt">Подключить</span>
+        {% endif %}
+      </a>
+    </div>
+  </section>
+
+  <section>
+    <div class="grp">Телефон и адрес</div>
+    <div class="card">
+      <div class="row">
+        {{ icon('phone') }}
+        <span class="grow num">{{ 'Демо' if is_demo else (phone_label or phone) }}</span>
+        <form method="post" action="{{ url_for('auth.logout') }}">
+          <button class="bt ghost" type="submit">Выйти</button>
+        </form>
+      </div>
+      <details {% if edit == 'address' or not address %}open{% endif %}>
+        <summary class="row" style="list-style: none; cursor: pointer">
+          {{ icon('pin') }}
+          <span class="grow">{{ address or 'Укажите адрес доставки' }}</span>
+          {{ icon('next', 'i s fnt') }}
+        </summary>
+        <form method="post" action="{{ url_for('phone.settings') }}" class="field">
+          <input name="address" value="{{ address or '' }}" placeholder="Город, улица, дом"
+                 aria-label="Адрес доставки" autocomplete="street-address">
+          <button class="bt" type="submit">Сохранить</button>
+        </form>
+      </details>
+    </div>
+  </section>
+
+  <a class="mut small" href="/?web=1" style="text-align: center; padding: 6px 0">Полная версия приложения</a>
+{% endblock %}
+{% block actions %}
+  <script>
+    /* «Подключить» внутри приложения: сайт сети открывается у телефона, вход человек
+       проходит сам. Вне приложения ссылка ведёт в окно магазина на сервере. */
+    document.addEventListener('click', function (e) {
+      var link = e.target.closest('[data-open-store]');
+      if (link && window.KorzinaDevice && KorzinaDevice.openStore(link.getAttribute('data-open-store'))) {
+        e.preventDefault();
+      }
+    });
+  </script>
+{% endblock %}

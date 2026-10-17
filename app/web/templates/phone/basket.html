@@ -1,0 +1,36 @@
+{# Корзина на телефоне — вариант Б (выбор владельца 17.10.2026): товары, а внизу рядом
+   «История заказов» и «Где дешевле», обе под большим пальцем. «−», «+» и «убрать»
+   отправляют одну форму на весь список: без скрипта, и количество сохраняется
+   каждым нажатием, а не одним общим «Сохранить». #}
+{% extends 'phone/base.html' %}
+{% from 'phone/_icons.html' import icon %}
+{% block title %}Корзина — Моя корзина{% endblock %}
+{% block body %}
+  <h1 class="title">Корзина</h1>
+  {% if basket and items %}
+    <div class="mut small">{{ basket.name }} · {{ goods(items|length) }}</div>
+    <form method="post" action="{{ url_for('phone.basket') }}">
+      {% for it in items %}
+        <div class="it" id="it-{{ it.pid }}">
+          <span class="name">{{ it.name }}</span>
+          <button class="q" type="submit" name="do" value="minus:{{ it.pid }}" aria-label="Меньше: {{ it.name }}">−</button>
+          <span class="qn num">{{ qty_label(it.qty, it.unit) }}</span>
+          <button class="q" type="submit" name="do" value="plus:{{ it.pid }}" aria-label="Больше: {{ it.name }}">+</button>
+          <button class="x" type="submit" name="do" value="remove:{{ it.pid }}" aria-label="Убрать: {{ it.name }}">{{ icon('x', 'i s') }}</button>
+        </div>
+      {% endfor %}
+    </form>
+  {% else %}
+    <div class="empty">Корзина пуста. Повторите заказ из истории — его товары лягут сюда.</div>
+  {% endif %}
+{% endblock %}
+{% block actions %}
+  <div class="actions">
+    <a class="cta ghost" href="{{ url_for('phone.orders') }}">{{ icon('clock', 'i s') }}История заказов</a>
+    {% if basket and items %}
+      <a class="cta" style="flex: 1; width: auto" href="{{ url_for('phone.cheaper') }}">Где дешевле<span class="sub num">· {{ items|length }}</span></a>
+    {% else %}
+      <button class="cta" style="flex: 1; width: auto" type="button" disabled>Где дешевле</button>
+    {% endif %}
+  </div>
+{% endblock %}

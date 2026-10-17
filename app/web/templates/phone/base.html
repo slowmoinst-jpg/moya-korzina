@@ -1,0 +1,38 @@
+{# Рама телефонной части: прокручиваемая середина и прибитый низ — кнопки экрана и
+   две вкладки, Корзина и Настройки (выбор владельца 17.10.2026,
+   docs/design/ekrany-telefona-2026-10-17.md). Веб на компьютере живёт в layout.html
+   и этой рамой не пользуется. #}
+{% from 'phone/_icons.html' import icon %}
+<!doctype html>
+<html lang="ru" data-device="{{ 'phone' if device_phone else 'web' }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#FFFFFF">
+  <title>{% block title %}Моя корзина{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Unbounded:wght@500;600;700&display=swap">
+  <link rel="stylesheet" href="{{ url_for('static', filename='phone.css') }}">
+  <script src="{{ url_for('static', filename='korzina-device.js') }}" defer></script>
+</head>
+<body>
+<div class="ph">
+  <main class="ph-body">
+    {% block body %}{% endblock %}
+  </main>
+  <div class="ph-foot">
+    {% block actions %}{% endblock %}
+    {% if tab %}
+      <nav class="tabs" aria-label="Разделы">
+        <a class="tab {{ 'on' if tab == 'basket' }}" href="{{ url_for('phone.basket') }}"
+           {% if tab == 'basket' %}aria-current="page"{% endif %}>{{ icon('cart') }}Корзина</a>
+        <a class="tab {{ 'on' if tab == 'settings' }}" href="{{ url_for('phone.settings') }}"
+           {% if tab == 'settings' %}aria-current="page"{% endif %}>{{ icon('gear') }}Настройки</a>
+      </nav>
+    {% endif %}
+  </div>
+</div>
+</body>
+</html>
