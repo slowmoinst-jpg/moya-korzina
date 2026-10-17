@@ -115,14 +115,22 @@ def test_calculate_returns_top3(demo_db):
     # Порядок такой, как обещает docstring оптимизатора: сначала полноценные варианты по
     # возрастанию итога, а варианты с непокрытыми позициями и с чеком ниже минимального
     # заказа уходят в конец — они дешевле на бумаге, но их нельзя оформить.
+    #
+    # «Итог» здесь — effort_total (app/models.Variant): деньги плюс ручная работа по
+    # передаче корзины и поправка на фасовку; по нему оптимизатор и сравнивает варианты.
+    # Тест сортировал по голому total и проходил, пока демо-акции банков (seed_offers,
+    # до 30.09.2026) делали ВкусВилл дешевле и по деньгам. С 01.10.2026 акции кончились,
+    # ссылка ВкусВилла (передача без работы) обогнала Магнит с его карточками — тест
+    # покраснел, хотя оптимизатор делал ровно то, что обещает.
     def rank(v):
         return (len(v.missing_products),
                 sum(1 for b in v.stores if b.below_min_order),
-                v.total)
+                v.effort_total)
 
     assert variants == sorted(variants, key=rank), "варианты идут не в том порядке"
     clean = [v for v in variants if rank(v)[:2] == (0, 0)]
-    assert clean == sorted(clean, key=lambda v: v.total), "исполнимые варианты не по возрастанию итога"
+    assert clean == sorted(clean, key=lambda v: v.effort_total), \
+        "исполнимые варианты не по возрастанию итога с учётом работы"
 
     stores = {s.code: s for s in repo.list_stores()}
     for v in variants:

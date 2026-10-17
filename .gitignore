@@ -24,5 +24,11 @@ data/*.db-wal
 android/*.apk
 android/apk.b64
 android/apk.err
+# Следы сборки Gradle: кеш и собранный APK, в который вшит адрес сервера (BuildConfig).
+# Собирают в Docker (android/app/Dockerfile.build), в git живут только исходники.
+android/*/.gradle/
+android/*/app/build/
+# Раздаваемый сайтом APK кладут в том данных (app/web/apk.py), а не в репозиторий.
+data/apk/
 # Общий темп запросов к сетям между процессами (app/connectors/cache.reserve).
 data/pace/

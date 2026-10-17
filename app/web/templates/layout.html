@@ -7,7 +7,10 @@
    Адрес доставки стоит сразу за маркой, а не под меню: он определяет все цены на
    странице, и внизу читался бы как часть содержимого, а не как настройка. #}
 <!doctype html>
-<html lang="ru">
+{# data-device — вторая половина узнавания телефона (первая — window.Korzina в
+   korzina-device.js). Сервер знает о телефоне по UA с первого запроса и рисует
+   кнопки моста сразу; скрипт сверяется с мостом сам, когда доходит до вызова. #}
+<html lang="ru" data-device="{{ 'phone' if device_phone else 'web' }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -21,6 +24,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Unbounded:wght@500;600;700&display=swap">
   <link rel="stylesheet" href="{{ url_for('static', filename='korzina.css') }}">
+  {# Мост к телефону подключён на каждой странице: вне приложения он просто
+     отвечает available() == false, и экраны идут своей обычной дорогой. #}
+  <script src="{{ url_for('static', filename='korzina-device.js') }}" defer></script>
 </head>
 <body>
 <header class="top">
