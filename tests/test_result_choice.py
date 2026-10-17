@@ -39,3 +39,43 @@ def test_the_address_bar_mode_still_wins():
     single = _variant(["magnit"], 700.0)
     best, _switch = _chosen([split, single], "single")
     assert best is single
+
+
+# ---------- порог сплита (концепция 2.0, модуль 5) ----------
+def test_a_split_that_saves_less_than_the_threshold_gives_way_to_one_store():
+    split = _variant(["magnit", "lenta"], 850.0)
+    single = _variant(["magnit"], 900.0)
+    best, switch = _chosen([split, single], None)
+    assert best is single
+    assert switch["gain"] == 50.0 and switch["worth"] is False
+
+
+def test_a_split_that_saves_enough_stays_first():
+    split = _variant(["magnit", "lenta"], 600.0)
+    single = _variant(["magnit"], 900.0)
+    best, switch = _chosen([split, single], None)
+    assert best is split and switch["worth"] is True
+
+
+def test_the_threshold_does_not_push_to_an_incomplete_store():
+    split = _variant(["magnit", "lenta"], 850.0)
+    single = _variant(["magnit"], 870.0, missing=["Сыр"])
+    best, _switch = _chosen([split, single], None)
+    assert best is split
+
+
+def test_the_threshold_comes_from_config(monkeypatch):
+    from app import config
+    real = config.get
+    monkeypatch.setattr(config, "get", lambda key, default=None:
+                        0 if key == "optimizer.split_min_saving_rub" else real(key, default))
+    split = _variant(["magnit", "lenta"], 850.0)
+    single = _variant(["magnit"], 900.0)
+    best, _switch = _chosen([split, single], None)
+    assert best is split
+
+
+def test_completeness_counts_covered_positions():
+    from app.web.screens.result import _completeness
+    assert _completeness(_variant(["magnit"], 1.0, missing=["Сыр"]), 12) == \
+        {"have": 11, "of": 12, "full": False}

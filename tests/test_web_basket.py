@@ -202,6 +202,50 @@ def test_a_new_basket_can_be_born_already_full(web):
     assert repo.basket_items(int(fresh["id"]))
 
 
+def _cycled_milk() -> int:
+    """Молоко раз в неделю, последний раз три недели назад: пора докупить."""
+    from datetime import date, timedelta
+    store = repo.get_store("pyaterochka")
+    milk = add_product("Молоко цикл")
+    start = date.today() - timedelta(days=35)
+    for week in range(3):
+        day = (start + timedelta(days=7 * week)).isoformat()
+        repo.add_history_row(day, store.id, milk, "Молоко", 2, 80.0, 160.0)
+    return milk
+
+
+def test_the_usual_basket_is_one_press_from_an_empty_basket(web):
+    """Экран 2.1: «Собрать мою обычную корзину» кладёт то, чему по циклу пора."""
+    enter(web)
+    workspace()
+    milk = _cycled_milk()
+    basket_id = repo.create_basket("Пустая")
+
+    page = web.get(f"/basket?id={basket_id}").get_data(as_text=True)
+    assert "Собрать мою обычную корзину" in page
+
+    web.post("/basket", data={"basket": basket_id, "do": "fill:usual"})
+    workspace()
+    got = {int(i["product_id"]): float(i["qty"]) for i in repo.basket_items(basket_id)}
+    assert got == {milk: 2.0}
+
+
+def test_due_filter_lives_in_the_address(web):
+    enter(web)
+    workspace()
+    _cycled_milk()
+    other = add_product("Хлеб")
+    store = repo.get_store("pyaterochka")
+    from datetime import date
+    repo.add_history_row(date.today().isoformat(), store.id, other, "Хлеб", 1, 50.0, 50.0)
+    repo.add_history_row("2026-01-01", store.id, other, "Хлеб", 1, 50.0, 50.0)
+    basket_id = repo.create_basket("Неделя")
+    repo.set_basket_item(basket_id, other, 1.0)
+
+    page = web.get(f"/basket?id={basket_id}&f=due").get_data(as_text=True)
+    assert "Пора докупить" in page and "Молоко цикл" in page
+
+
 # ---------- корзина: правка позиций ----------
 def test_quantities_are_saved_by_the_form(web):
     enter(web)

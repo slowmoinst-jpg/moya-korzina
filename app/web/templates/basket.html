@@ -37,6 +37,11 @@
           <button class="btn main wide cart-go" type="submit" name="do" value="new:history">Как в прошлый раз</button>
           <button class="btn wide cart-go" type="submit" name="do" value="new:average">По среднему за месяц</button>
         </div>
+        {% if usual.mine %}
+          {# Обычная корзина — по циклам покупок: то, что кончится на этой неделе. #}
+          <button class="btn wide cart-go" type="submit" name="do" value="new:usual"
+                  style="margin-top:8px">Собрать мою обычную корзину ({{ plural_items(usual.mine) }})</button>
+        {% endif %}
         <div class="cart-find" style="margin-top:12px">
           <input class="cart-q" name="name" placeholder="Или своя: Неделя 38">
           <button class="btn" type="submit" name="do" value="new">Создать</button>
@@ -125,7 +130,26 @@
   <div class="cart-hints" id="cart-hints"></div>
 
   <div id="cart-found">
-    {% if regulars %}
+    {% if due and regulars %}
+      {# Два фильтра по истории (концепция 2.0, экран 2.1): «покупаю постоянно» и
+         «пора докупить». Переключатель — ссылка: фильтр живёт в адресе, как поиск. #}
+      <div class="row" style="margin-bottom:8px">
+        <a class="btn {{ 'main' if habit != 'due' }}" href="{{ screen.path }}?id={{ basket.id }}&f=often">Покупаю постоянно</a>
+        <a class="btn {{ 'main' if habit == 'due' }}" href="{{ screen.path }}?id={{ basket.id }}&f=due">Пора докупить · {{ due|length }}</a>
+      </div>
+    {% endif %}
+    {% if due and (habit == 'due' or not regulars) %}
+      <div class="cart-often-title">Пора докупить</div>
+      <div class="cart-often">
+        {% for r in due %}
+          <button type="submit" form="cart-items" name="do" value="add:{{ r.product_id }}"
+                  title="Берёте раз в {{ r.cycle|round|int }} дн., последний раз {{ r.since }} дн. назад">
+            <span class="cart-often-plus">＋</span>
+            <span class="cart-often-name">{{ r.name[:26] }}</span>
+          </button>
+        {% endfor %}
+      </div>
+    {% elif regulars %}
       {# ЧАСТОЕ ДО ВСЯКОГО ПОИСКА. Человек покупает одно и то же, и пустое поле —
          это вопрос там, где ответ уже есть: история покупок лежит в базе. #}
       <div class="cart-often-title">Часто берёте</div>
@@ -199,6 +223,10 @@
           <button class="btn main wide cart-go" type="submit" name="do" value="fill:history">Собрать заново</button>
           <button class="btn wide cart-go" type="submit" name="do" value="fill:average">По среднему за месяц</button>
         </div>
+        {% if usual.mine %}
+          <button class="btn wide cart-go" type="submit" name="do" value="fill:usual"
+                  style="margin-top:8px">Собрать мою обычную корзину ({{ plural_items(usual.mine) }})</button>
+        {% endif %}
       {% else %}
         <h2>Наполнить нечем</h2>
         <p class="muted">Истории покупок пока нет — загрузите чеки на экране «Мои чеки»,

@@ -491,6 +491,30 @@ def _peek_usual() -> tuple[str | None, int]:
         return None, 0
 
 
+def _usual_count() -> int:
+    """Сколько товаров соберёт «Моя обычная корзина» прямо сейчас — для подписи кнопки."""
+    try:
+        from app import baskets as build
+        return len(build.usual_items())
+    except Exception:  # noqa: BLE001 — истории может не быть вовсе
+        return 0
+
+
+def _due(basket_id: int) -> list[dict]:
+    """«Пора докупить»: привычное, что по циклу уже кончилось, и чего нет в корзине.
+
+    Отдельно от «Часто берёте»: частое отвечает «что я беру», а это — «что я забыл».
+    Самое просроченное сверху, рядом — сколько дней прошло при обычном цикле.
+    """
+    try:
+        from app import baskets as build
+        in_basket = {int(i["product_id"]) for i in repo.basket_items(basket_id)}
+        found = [h for h in build.due_items() if h["product_id"] not in in_basket]
+    except Exception:  # noqa: BLE001 — истории может не быть вовсе
+        return []
+    return found[:12]
+
+
 def _catalog_hits(query: str, stores_n: int) -> list[dict]:
     """Единый каталог сетей — только по запросу.
 
@@ -549,7 +573,8 @@ def page():
         # предложить это одним нажатием, а не отправить человека искать кнопку.
         date, count = _peek_usual()
         return render_template("basket.html", screen=SCREEN_BY_KEY["basket"], basket=None,
-                               baskets=baskets, usual={"date": date, "count": count},
+                               baskets=baskets,
+                               usual={"date": date, "count": count, "mine": _usual_count()},
                                receipts_path=SCREEN_BY_KEY["receipts"].path,
                                plural_items=plural_items, rub=rub, num=num, pct=pct,
                                unit_label=unit_label, missing=request.args.get("id", type=int))
@@ -589,8 +614,10 @@ def page():
         suggestions_n=len(suggestions),
         catalog=_catalog_hits(query, len(stores)),
         regulars=_regulars(basket_id),
+        due=_due(basket_id),
+        habit=request.args.get("f") if request.args.get("f") in ("often", "due") else None,
         approx=_approx(rows),
-        usual={"date": date, "count": count},
+        usual={"date": date, "count": count, "mine": _usual_count() if not items else 0},
         job=job_of(basket_id),
         saved=repo.list_variants(basket_id),
         result_path=SCREEN_BY_KEY["result"].path,
@@ -716,7 +743,7 @@ def _act():
         kind = target
         basket_id = repo.create_basket(name or f"Корзина от {time.strftime('%d.%m.%Y')}",
                                        source=kind or "manual")
-        if kind in ("history", "average"):
+        if kind in ("history", "average", "usual"):
             # Новая корзина создаётся уже собранной: это единственное место, где
             # наполнение по истории — действие человека, а не побочный эффект
             # открытия страницы.
@@ -770,7 +797,7 @@ def _act():
             log.warning("товар %s из каталога взять не вышло", target, exc_info=True)
         return redirect(_back(basket_id, query))
 
-    if what == "fill" and target in ("history", "average"):
+    if what == "fill" and target in ("history", "average", "usual"):
         _fill_from_history(basket_id, target)
         return redirect(_back(basket_id, query))
 
