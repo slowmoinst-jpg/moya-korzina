@@ -147,6 +147,26 @@ def test_the_search_asks_for_hints_while_the_word_is_still_being_typed(web):
     assert all(item["do"].startswith(("add:", "catalog:")) for item in body["items"])
 
 
+def test_a_hint_says_whether_it_is_yours_or_from_the_chains_catalog(web, monkeypatch):
+    """В подсказке нет заголовков блоков — откуда строка и каким сетям знакома, сказано в ней."""
+    from app.catalog import store as catalog_store
+
+    enter(web)
+    workspace()
+    basket_id, _, _ = seed_basket()
+    add_product("Сникерс домашний")
+    monkeypatch.setattr(catalog_store, "search_items", lambda q, limit=20: [
+        {"id": 7, "name": "Батончик Snickers Super 80 г", "weight_g": 80, "brand": "Snickers",
+         "chains_n": 2, "chain_codes": "magnit,lenta"}])
+
+    items = web.get(f"/basket/suggest?q=сникерс&id={basket_id}").get_json()["items"]
+
+    mine = next(item for item in items if item["do"].startswith("add:"))
+    catalog = next(item for item in items if item["do"] == "catalog:7")
+    assert mine["where"].startswith("ваш товар")
+    assert catalog["where"] == "каталог сетей: Магнит, Лента"
+
+
 def test_a_single_letter_gets_no_hints(web):
     """На «м» откликается половина каталога — это список, который не читают."""
     enter(web)
