@@ -101,8 +101,9 @@ def create_app() -> Flask:
         JSON_AS_ASCII=False,
     )
 
-    from app.web import api as web_api, auth, views
+    from app.web import api as web_api, apk, auth, views
     auth.install(flask_app)
+    apk.install(flask_app)
     views.install(flask_app)
     web_api.install(flask_app)
     return flask_app
