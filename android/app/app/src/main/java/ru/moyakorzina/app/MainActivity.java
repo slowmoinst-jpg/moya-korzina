@@ -358,6 +358,9 @@ public class MainActivity extends Activity {
      * вместе («94.99 ₽ В корзину»), строгое имя её не узнаёт. Второй проход ищет «в
      * корзину» внутри надписи, кроме «Перейти в корзину», «В корзине» и «Оформить».
      * Не нашлось — в ответе near: какие кнопки были в блоке покупки, для отчёта.
+     *
+     * ПЛИТКИ ЧУЖИХ ТОВАРОВ не в счёт и без забора (foreign): кнопка в плитке со ссылкой
+     * на другую карточку — не наша, и её «нет в наличии» — тоже не наше.
      */
     private static final String PICK_JS =
         "(function(p){try{"
@@ -376,13 +379,26 @@ public class MainActivity extends Activity {
       // такой полосе забор не нужен — только чтобы она была видна на экране.
       + "function pinned(e){for(var x=e;x&&x!==document.body;x=x.parentElement){var s=getComputedStyle(x).position;"
       + " if(s==='fixed'||s==='sticky')return true;}return false;}"
+      // Плитка чужого товара: в маленьком (до 300 знаков) предке кнопки есть ссылка на
+      // ДРУГУЮ страницу сайта с картинкой или длинным названием, а заголовка карточки
+      // в этом предке нет. Забор ловит только подписанные h2/h3 «Похожие». У Дикси
+      // 18.10.2026 строка Алёнки дала ✓, а в корзине оказался второй Бабаевский —
+      // похоже на кнопку плитки, которую забор не узнал.
+      + "function foreign(e){var cur=location.pathname.replace(/\\/+$/,'');"
+      + " for(var x=e,i=0;i<6&&x&&x!==document.body;i++,x=x.parentElement){if(h1&&x.contains(h1))return false;"
+      + "  if((x.innerText||'').length>300)return false;var as=x.querySelectorAll('a[href]');"
+      + "  for(var k=0;k<as.length;k++){try{var u=new URL(as[k].getAttribute('href'),location.href);"
+      + "   var pth=u.pathname.replace(/\\/+$/,'');if(u.host!==location.host||!pth||pth===cur)continue;"
+      + "   if(as[k].querySelector('img')||(as[k].innerText||'').replace(/\\s+/g,' ').trim().length>=20)return true;}catch(err){}}}"
+      + " return false;}"
       + "function inside(e,below){var r=e.getBoundingClientRect();if(r.width<=0||r.height<=0)return false;"
       + " if(pinned(e))return r.bottom>0&&r.top<(window.innerHeight||100000);"
+      + " if(foreign(e))return false;"
       + " var y=r.top+window.scrollY;if(below&&top!==null&&y<top)return false;return y<limit;}"
       + "if(p.gone&&!p.again&&h1){var g=new RegExp(p.gone,'i'),w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT),n;"
       + " while((n=w.nextNode())){var t=(n.nodeValue||'').replace(/\\s+/g,' ').trim().toLowerCase();"
       + "  if(!t||!g.test(t))continue;var el=n.parentElement;if(!el)continue;var r=el.getBoundingClientRect();"
-      + "  if(r.width<=0||r.height<=0)continue;var y=r.top+window.scrollY;"
+      + "  if(r.width<=0||r.height<=0||(!pinned(el)&&foreign(el)))continue;var y=r.top+window.scrollY;"
       + "  if((y>=top-200&&y<limit)||(pinned(el)&&r.top<(window.innerHeight||100000)))return JSON.stringify({gone:true});}}"
       + "var bySel=!p.again&&p.selectors&&p.selectors.length>0,nodes=[];"
       + "if(bySel)p.selectors.forEach(function(s){try{nodes=nodes.concat([].slice.call(document.querySelectorAll(s)));}catch(e){}});"
@@ -443,20 +459,26 @@ public class MainActivity extends Activity {
       + "var MARK='data-korzina-add',ADD=/^(в корзину|добавить в корзину|купить)$/i,H=window.innerHeight||100000;"
       + "var NEVER=/очист|удал|убра|оформ|оплат|clear|remove|delete|checkout/i;"
       + "[].slice.call(document.querySelectorAll('['+MARK+']')).forEach(function(e){e.removeAttribute(MARK);});"
-      + "var els=[].slice.call(document.querySelectorAll('a,button,[role=button],[role=link],[role=tab]')),best=null,bestS=9;"
+      // Пункт меню тоже дорога: у Магнита с доставкой «Мигом» нижнее меню — это
+      // li[role=menuitem], а кнопка «Перейти в корзину» нулевого размера (эмулятор, 18.10.2026).
+      + "var els=[].slice.call(document.querySelectorAll('a,button,[role=button],[role=link],[role=tab],[role=menuitem]')),best=null,bestS=9;"
       // Детали значка (svg и всё внутри) не в счёт: у «Корзины» нижнего меню Магнита
       // картинка из многих частей, и по общему числу потомков кнопка выглядела плиткой.
       + "function kids(e){return e.querySelectorAll('*').length-e.querySelectorAll('svg, svg *').length;}"
-      + "for(var j=0;j<els.length;j++){var e=els[j];if(kids(e)>8)continue;"
+      // Много потомков — плитка, только если и сама она большая. У пункта меню со
+      // счётчиком на значке («Перейти в корзину Корзина 1») деталей больше восьми, и
+      // 1.11 его пропускала: «дорогу к корзине не нашёл» (эмулятор владельца, 18.10.2026).
+      + "function tile(e,r){return kids(e)>8&&(r.width>240||r.height>160);}"
+      + "for(var j=0;j<els.length;j++){var e=els[j];"
       + " var al=(e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim(),tx=(e.innerText||'').replace(/\\s+/g,' ').trim();"
       + " var t=(al+' '+tx).trim();if(t.length>40||!/корзин/i.test(t)||ADD.test(al)||ADD.test(tx)||NEVER.test(t))continue;"
-      + " var r=e.getBoundingClientRect();if(r.width<=0||r.height<=0||r.bottom<=0||r.top>=H)continue;"
+      + " var r=e.getBoundingClientRect();if(r.width<=0||r.height<=0||r.bottom<=0||r.top>=H||tile(e,r))continue;"
       + " var s=/^корзина$/i.test(tx)?0:(/^корзина/i.test(tx)?1:2);if(s<bestS){best=e;bestS=s;}}"
       + "if(best){best.setAttribute(MARK,'1');return JSON.stringify({button:true});}"
       + "var links=[].slice.call(document.querySelectorAll('a[href]'));"
       + "for(var i=0;i<links.length;i++){var a=links[i];try{var u=new URL(a.getAttribute('href'),location.href);"
       + " if(!own(u.hostname)||!/(^|\\/)(cart|basket|korzina)(\\/|$)/i.test(u.pathname))continue;"
-      + " if(kids(a)>8)continue;return JSON.stringify({href:u.href});}catch(e){}}"
+      + " if(tile(a,a.getBoundingClientRect()))continue;return JSON.stringify({href:u.href});}catch(e){}}"
       // Дороги не нашлось — для отчёта: что на странице похоже на корзину.
       + "var near=[];[].slice.call(document.querySelectorAll('a,button,[role=button]')).forEach(function(e){if(near.length>=5)return;"
       + " var l=((e.getAttribute('aria-label')||'')+' '+(e.innerText||'')).replace(/\\s+/g,' ').trim(),hr=e.getAttribute('href')||'';"
@@ -477,22 +499,37 @@ public class MainActivity extends Activity {
      * класса, а текста не меньше 30 знаков): это чужой товар человека, и его «нет в
      * наличии» не должно перейти на нашу позицию из соседней строки. Ответ — номера
      * имён из p.names.
+     *
+     * И ВИДНО ЛИ ПОЗИЦИЮ В КОРЗИНЕ ВООБЩЕ (seen): не меньше 70 % слов её имени есть
+     * в тексте страницы. У Дикси 18.10.2026 Алёнка дала ✓, а в корзине её не было.
+     * Имя из латиницы («shokolad alenka molochnyy 75g» — так наряд назвал находку
+     * поиском сети) сверяется с текстом страницы, переложенным в латиницу.
      */
     private static final String CART_GONE_JS =
         "(function(p){try{var g=new RegExp(p.gone,'i');"
       + "function norm(s){return String(s||'').toLowerCase().replace(/ё/g,'е').replace(/[^a-zа-я0-9%]+/g,' ').trim();}"
+      + "var TR={'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l',"
+      + " 'м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'kh','ц':'ts','ч':'ch','ш':'sh',"
+      + " 'щ':'shch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya'};"
+      + "function lat(s){return s.replace(/[а-я]/g,function(c){return TR[c]===undefined?c:TR[c];});}"
       + "function item(e){var c=typeof e.className==='string'?e.className:'';if(!c||!e.parentElement)return false;"
       + " for(var s=e.parentElement.firstElementChild;s;s=s.nextElementSibling)"
       + "  if(s!==e&&s.tagName===e.tagName&&s.className===c)return true;return false;}"
-      + "var names=(p.names||[]).map(norm),out=[];"
+      + "var names=(p.names||[]).map(norm),latin=names.map(function(n){return !/[а-я]/.test(n);}),out=[];"
+      + "function exact(x,k){var n=names[k];return n.length>=4&&(latin[k]?lat(x):x).indexOf(n)>=0;}"
       + "var w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT),m;"
       + "while((m=w.nextNode())){var t=norm(m.nodeValue);if(!t||t.length>25||!g.test(t))continue;"
       + " var el=m.parentElement;if(!el)continue;var r=el.getBoundingClientRect();if(r.width<=0||r.height<=0)continue;"
       + " for(var i=0;i<8&&el;i++,el=el.parentElement){var x=norm(el.innerText);if(x.length>300)break;"
-      + "  var hits=[];names.forEach(function(n,k){if(n.length>=4&&x.indexOf(n)>=0)hits.push(k);});"
+      + "  var hits=[];names.forEach(function(n,k){if(exact(x,k))hits.push(k);});"
       + "  if(hits.length===1){if(out.indexOf(hits[0])<0)out.push(hits[0]);break;}"
       + "  if(hits.length>1||(x.length>=30&&item(el)))break;}}"
-      + "return JSON.stringify({gone:out});}catch(e){return JSON.stringify({gone:[],error:String(e).slice(0,80)});}})(%s)";
+      + "var page=norm(document.body.innerText),pageLat=lat(page),seen=[];"
+      + "names.forEach(function(n,k){var hay=latin[k]?pageLat:page;"
+      + " var ws=n.split(' ').filter(function(x){return x.length>=3&&!/^\\d+$/.test(x);});"
+      + " if(!ws.length){if(n.length>=4&&hay.indexOf(n)>=0)seen.push(k);return;}"
+      + " if(ws.filter(function(x){return hay.indexOf(x)>=0;}).length/ws.length>=0.7)seen.push(k);});"
+      + "return JSON.stringify({gone:out,seen:seen});}catch(e){return JSON.stringify({gone:[],seen:null,error:String(e).slice(0,80)});}})(%s)";
 
     /**
      * Итог корзины сети со страницы: строки «Итого», «Товары», «Скидка», «Доставка»,
@@ -550,6 +587,9 @@ public class MainActivity extends Activity {
     /** Сколько раз ещё поискать кнопку «В корзину», если её пока нет, и через сколько. */
     private static final int PICK_TRIES = 3;
     private static final int PICK_RETRY_MS = 1500;
+    /** Сколько раз перечитать страницу корзины, если итога на ней ещё нет, и через сколько. */
+    private static final int READ_TRIES = 5;
+    private static final int READ_RETRY_MS = 2500;
 
     private WebView web;
     private ProgressBar progress;
@@ -882,6 +922,9 @@ public class MainActivity extends Activity {
         int clicks = 1;    // сколько касаний у неё
         int put = 0;       // сколько уже сделано
         int tries = 0;     // сколько раз ещё раз искали кнопку на этой карточке
+        int readTries = 0;            // сколько раз перечитывали страницу корзины без итога
+        boolean cartPageTried = false; // открывали ли адрес корзины из наряда
+        String cartFrom = null;        // путь страницы, с которой пошли в корзину
         final JSONArray items = new JSONArray();
         boolean stopped = false;
         // Запрос сети «положить в корзину» выучен по первому касанию (LEARN_JS): дальше
@@ -1301,6 +1344,7 @@ public class MainActivity extends Activity {
     private void openCart(final CartRun r) {
         if (!alive(r)) return;
         say(r.name + ": открываю корзину сети", false);
+        r.cartFrom = pathOf(web.getUrl());
         web.evaluateJavascript(findCartScript(r), value -> {
             if (!alive(r)) return;
             JSONObject got = asObject(value);
@@ -1339,12 +1383,52 @@ public class MainActivity extends Activity {
         web.evaluateJavascript(READ_JS, value -> {
             if (!alive(r)) return;
             final JSONObject cart = asObject(value);
-            markGone(r, () -> finishRun(r, cart, ""));
+            if (!hasTotal(cart)) {
+                String open = web.getUrl() == null ? "" : web.getUrl();
+                // Всё ещё на странице, с которой шли в корзину, — касание её не открыло:
+                // ждать дорисовки нечего, сразу адрес корзины (ниже).
+                boolean stuck = r.cartFrom != null && r.cartFrom.equals(pathOf(open));
+                // Итога нет — страница корзины ещё дорисовывается: у Магнита через VPN
+                // эмулятора суммы пришли позже 9 с после заголовка (18.10.2026).
+                if (!stuck && r.readTries < READ_TRIES) {
+                    r.readTries++;
+                    handler.postDelayed(() -> readCart(r), READ_RETRY_MS);
+                    return;
+                }
+                // Касание «Корзины» её так и не открыло: у Дикси 18.10.2026 окно прочитало
+                // страницу товара («Доставка, 99 руб.»). Тогда — адрес корзины из наряда.
+                JSONArray pages = r.rules.optJSONArray("cart_pages");
+                String page = pages != null && pages.length() > 0 ? pages.optString(0, "") : "";
+                if (!r.cartPageTried && !page.isEmpty() && !page.equals(open)
+                        && (pathOf(page) == null || !pathOf(page).equals(pathOf(open)))) {
+                    r.cartPageTried = true;
+                    r.readTries = 0;
+                    web.loadUrl(page);
+                    whenReady(r, page, null, CART_SETTLE_MS, () -> readCart(r));
+                    return;
+                }
+            }
+            markGone(r, hasTotal(cart), () -> finishRun(r, cart, ""));
         });
     }
 
-    /** Положенное, которое корзина сети показывает «нет в наличии», — не «легло» (CART_GONE_JS). */
-    private void markGone(final CartRun r, final Runnable then) {
+    /** Прочитан ли со страницы итог корзины: строка «Итого» или «К оформлению» (вид total). */
+    private static boolean hasTotal(JSONObject cart) {
+        JSONArray totals = cart.optJSONArray("totals");
+        for (int i = 0; totals != null && i < totals.length(); i++) {
+            JSONObject t = totals.optJSONObject(i);
+            if (t != null && "total".equals(t.optString("kind"))) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Положенное, которое корзина сети показывает «нет в наличии», — не «легло»
+     * (CART_GONE_JS). На странице корзины (onCart: итог прочитан) — и то, чего в ней
+     * не видно, если хоть одну нашу позицию на странице видно: значит, имена сеть
+     * пишет как в наряде, и пропавшее имя — пропавший товар.
+     */
+    private void markGone(final CartRun r, final boolean onCart, final Runnable then) {
         final JSONArray names = new JSONArray();
         final JSONArray at = new JSONArray();
         for (int i = 0; i < r.items.length(); i++) {
@@ -1363,13 +1447,26 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) { }
         web.evaluateJavascript(CART_GONE_JS.replace("%s", p.toString()), value -> {
             if (!alive(r)) return;
-            JSONArray gone = asObject(value).optJSONArray("gone");
+            JSONObject got = asObject(value);
+            JSONArray gone = got.optJSONArray("gone");
             for (int k = 0; gone != null && k < gone.length(); k++) {
                 JSONObject it = r.items.optJSONObject(at.optInt(gone.optInt(k, -1), -1));
                 if (it == null) continue;
                 try {
                     it.put("ok", false).put("why", "корзина сети показывает: нет в наличии");
                 } catch (Exception ignored) { }
+            }
+            JSONArray seen = got.optJSONArray("seen");
+            if (onCart && seen != null && seen.length() > 0) {
+                for (int k = 0; k < at.length(); k++) {
+                    boolean visible = false;
+                    for (int s = 0; s < seen.length() && !visible; s++) visible = seen.optInt(s, -1) == k;
+                    JSONObject it = r.items.optJSONObject(at.optInt(k, -1));
+                    if (visible || it == null || !it.optBoolean("ok")) continue;
+                    try {
+                        it.put("ok", false).put("why", "в корзине сети его не видно");
+                    } catch (Exception ignored) { }
+                }
             }
             then.run();
         });
