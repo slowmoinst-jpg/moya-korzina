@@ -1,11 +1,15 @@
 package ru.moyakorzina.app;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.Gravity;
+import android.view.InputDevice;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
@@ -15,7 +19,6 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
-import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -29,6 +32,8 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Iterator;
+import java.util.Locale;
 
 /**
  * Моя корзина — Android-приложение: оболочка сайта и руки сервера на телефоне.
@@ -43,11 +48,19 @@ import java.nio.charset.StandardCharsets;
  *   (openStore), вернуться на наш сайт (openApp), спросить версию (info).
  *   Кнопка «Войти» на «Кабинетах» работает через него.
  *
- *   ПАНЕЛЬ НА СТРАНИЦЕ СЕТИ. Когда в WebView открыт магазин, поверх страницы
- *   стоит маленькая панель: «Сохранить вход», «Акции», «Записать корзину» —
- *   то, что серверу с этой страницы не сделать. На наших экранах панели нет:
- *   там командует сайт. Панель — переходная форма: на шаге 2 её заменит лист
+ *   ПАНЕЛЬ НА СТРАНИЦЕ СЕТИ. Когда в WebView открыт магазин, под страницей
+ *   стоит маленькая панель: «Вход», «Акции», «Запись», «Собрать» — то, что
+ *   серверу с этой страницы не сделать. На наших экранах панели нет: там
+ *   командует сайт. Панель — переходная форма: на шаге 2 её заменит лист
  *   входа, который замечает вход сам, без кнопки.
+ *
+ *   «СОБРАТЬ» (1.4). Повторить корзину в этой сети руками телефона: сервер даёт
+ *   наряд (POST /api/device/cartplan — позиции на карточках сети и правила кнопок
+ *   серверной передачи), приложение открывает карточки и касается кнопки «В
+ *   корзину» столько раз, сколько упаковок, затем открывает корзину сети, читает
+ *   её итог (строки «Итого», «Скидка», «Доставка» и числа из ответов сайта) и
+ *   отчитывается (POST /api/device/cartreport). Касания настоящие — события
+ *   экрана, а не щелчки скрипта. Темп — из наряда, не чаще правил сервера.
  *
  * ЧТО ОСТАЛОСЬ ПРЕЖНИМ. Вход в магазин делает человек — номер, код из СМС,
  * капча, родная клавиатура. Куки входа едут на сервер телом POST /api/handoff.
@@ -70,6 +83,8 @@ public class MainActivity extends Activity {
         {"Лента",       "lenta",       "https://lenta.com/",   "lenta.com"},
         {"ВкусВилл",    "vkusvill",    "https://vkusvill.ru/", "vkusvill.ru"},
         {"Дикси",       "dixy",        "https://dixy.ru/",     "dixy.ru"},
+        {"METRO",       "metro",       "https://online.metro-cc.ru/", "metro-cc.ru"},
+        {"Перекрёсток", "perekrestok", "https://www.perekrestok.ru/", "perekrestok.ru"},
     };
 
     /**
@@ -204,6 +219,338 @@ public class MainActivity extends Activity {
       + "return JSON.stringify(out);"
       + "})()";
 
+    // ── Сборка корзины кнопками сайта (1.4) ──
+
+    /**
+     * Сторож запросов к корзине на карточке. Пишет «МЕТОД путь код» запросов к СВОИМ
+     * адресам сети с корзиной в пути — по ним видно, приняла ли сеть нажатие. Из
+     * ответов-JSON берёт только числа с полями вроде total, discount, delivery и
+     * кладёт в sessionStorage: ответ на «положить» у многих сетей и есть пересчитанная
+     * корзина. Поля со словами телефона, адреса, карты, имени не берутся вовсе.
+     */
+    private static final String WATCH_JS =
+        "(function(hosts){"
+      + "if(window.__kzCartWatch)return 'on';window.__kzCartWatch=true;window.__kzCalls=[];"
+      + "var KEYS=/total|sum|amount|cost|price|discount|delivery|bonus|point|saving|benefit|econom|promo|fee|pay|count|quantity|minimal/i;"
+      + "var HID={};('token auth session secret password pass passwd phone tel telephone msisdn email mail card pan address street house flat apartment entrance floor lat latitude lon lng longitude geo coords coordinates fio name firstname lastname surname user customer client device signature sign hash cookie birth birthday inn snils passport comment sms otp captcha ip').split(' ').forEach(function(w){HID[w]=1;});"
+      + "function hidden(k){var ws=String(k).replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().split(/[^a-z0-9\\u0430-\\u044f\\u0451]+/);"
+      + " for(var i=0;i<ws.length;i++)if(ws[i]&&HID[ws[i]])return true;return false;}"
+      + "function own(u){try{var h=new URL(u,location.href).hostname;"
+      + " return hosts.some(function(d){return h===d||h.slice(-(d.length+1))==='.'+d;});}catch(e){return false;}}"
+      + "var CARTISH=/cart|basket|korzin|order|checkout/i;"
+      + "function tpl(p){return String(p||'').split('/').map(function(s){"
+      + " return(/^\\d{3,}$/.test(s)||/^[0-9a-fA-F-]{16,}$/.test(s)||/^[A-Za-z0-9_\\-]{20,}$/.test(s))?'{id}':s;}).join('/');}"
+      + "function nums(o,pre,d,out){if(d>5||!o||typeof o!=='object'||Array.isArray(o))return;"
+      + " for(var k in o){if(!Object.prototype.hasOwnProperty.call(o,k)||hidden(k))continue;"
+      + "  var v=o[k],p=pre?pre+'.'+k:k;"
+      + "  if(typeof v==='number'&&isFinite(v)){if(KEYS.test(k)&&Object.keys(out).length<40)out[p]=v;}"
+      + "  else if(typeof v==='string'&&/^-?\\d+(?:[.,]\\d+)?$/.test(v)&&KEYS.test(k)){if(Object.keys(out).length<40)out[p]=parseFloat(v.replace(',','.'));}"
+      + "  else if(v&&typeof v==='object'&&!Array.isArray(v))nums(v,p,d+1,out);}}"
+      + "function keep(path,t){try{var out={};nums(JSON.parse(t),'',0,out);if(!Object.keys(out).length)return;"
+      + " var all=JSON.parse(sessionStorage.getItem('__kzNums')||'{}');delete all[path];all[path]=out;"
+      + " var ks=Object.keys(all);if(ks.length>6)delete all[ks[0]];"
+      + " sessionStorage.setItem('__kzNums',JSON.stringify(all));}catch(e){}}"
+      + "function note(m,u,code,t){try{if(!own(u))return;var path=tpl(new URL(u,location.href).pathname);"
+      + " if(!CARTISH.test(path))return;if(window.__kzCalls.length<40)window.__kzCalls.push(m+' '+path+' '+code);"
+      + " if(t)keep(path,t);}catch(e){}}"
+      // Последний удачный запрос ЗАПИСИ в корзину — целиком, но только в памяти страницы
+      // (window.__kzLast): по нему сборка повторит запрос сети для остальных позиций.
+      // Наружу он не уходит никогда, на сервер едут лишь «метод путь код».
+      + "function last(m,u,h,b,code,via){try{if(m==='GET'||!own(u)||code<200||code>=300||typeof b!=='string')return;"
+      + " if(!CARTISH.test(new URL(u,location.href).pathname))return;window.__kzLast={m:m,u:u,h:h||{},b:b,via:via,at:Date.now()};}catch(e){}}"
+      + "function heads(hh){var h={};try{if(!hh)return h;if(typeof Headers!=='undefined'&&hh instanceof Headers)hh.forEach(function(v,k){h[k]=v;});"
+      + " else if(Array.isArray(hh))hh.forEach(function(p){h[p[0]]=p[1];});else Object.keys(hh).forEach(function(k){h[k]=hh[k];});}catch(e){}return h;}"
+      + "var of=window.fetch;"
+      + "if(of)window.fetch=function(input,init){"
+      + " var u=(typeof input==='string')?input:((input&&input.url)||String(input||''));"
+      + " var m=String((init&&init.method)||(input&&input.method)||'GET').toUpperCase();"
+      + " var h=heads((init&&init.headers)||(input&&input.headers)),b=init?init.body:undefined;"
+      + " var p=of.apply(this,arguments);"
+      + " try{p.then(function(r){last(m,u,h,b,r.status,'fetch');try{r.clone().text().then(function(t){note(m,u,r.status,t);},function(){note(m,u,r.status,'');});}catch(e){}},"
+      + "  function(){note(m,u,0,'');});}catch(e){}"
+      + " return p;};"
+      + "var X=XMLHttpRequest.prototype,oOpen=X.open,oSend=X.send,oHead=X.setRequestHeader;"
+      + "X.open=function(m,u){try{this.__kzc={m:String(m||'GET').toUpperCase(),u:String(u||''),h:{}};}catch(e){}return oOpen.apply(this,arguments);};"
+      + "X.setRequestHeader=function(k,v){try{if(this.__kzc)this.__kzc.h[k]=v;}catch(e){}return oHead.apply(this,arguments);};"
+      + "X.send=function(b){try{var x=this,k=x.__kzc;if(k)x.addEventListener('loadend',function(){var t='';"
+      + " try{t=(x.responseType===''||x.responseType==='text')?String(x.responseText||''):(x.responseType==='json'?JSON.stringify(x.response):'');}catch(e){}"
+      + " last(k.m,k.u,k.h,b,x.status,'xhr');note(k.m,k.u,x.status,t);});}catch(e){}return oSend.apply(this,arguments);};"
+      + "return 'on';"
+      + "})(%s)";
+
+    /**
+     * Выучить запрос сети «положить в корзину» по тому, что сайт отправил после
+     * касания (window.__kzLast): найти в теле ВСЕ поля с артикулом этой позиции и рядом
+     * с первым — поле количества. Ответ — только имена полей и путь, без значений заголовков.
+     *
+     * ВСЕ, А НЕ ПЕРВОЕ. Замер на эмуляторе 18.10.2026: Магнит шлёт
+     * {"items":[{"goodId":"…","offerId":"…","qnty":1}]} — артикул в двух полях. 1.10
+     * подменяла только goodId, и позиции ложились «гибридами» с offerId первого товара:
+     * сайт показывал их, но его «−» и крестик слали чужой offerId и строку не трогали.
+     */
+    private static final String LEARN_JS =
+        "(function(sku){try{var r=window.__kzLast;if(!r)return JSON.stringify({ok:false,why:'запроса корзины после касания не видно'});"
+      + "var body;try{body=JSON.parse(r.b);}catch(e){return JSON.stringify({ok:false,why:'тело запроса не JSON'});}"
+      + "var idPaths=[],qtyPath=null;"
+      + "function walk(o,path){if(o===null||typeof o!=='object')return;"
+      + " for(var k in o){if(!Object.prototype.hasOwnProperty.call(o,k))continue;var v=o[k],p=path.concat([k]);"
+      + "  if((typeof v==='string'||typeof v==='number')&&String(v)===String(sku)){"
+      + "   if(!idPaths.length)for(var q in o){if(/^(quantity|qty|qnty|count|amount|quantityinbasket|cnt)$/i.test(q)&&typeof o[q]==='number'){qtyPath=path.concat([q]);break;}}"
+      + "   idPaths.push(p);continue;}"
+      + "  if(v&&typeof v==='object')walk(v,p);}}"
+      + "walk(body,[]);if(!idPaths.length)return JSON.stringify({ok:false,why:'в запросе нет артикула '+sku});"
+      + "window.__kzTpl={m:r.m,u:r.u,h:r.h,body:body,idPaths:idPaths,qtyPath:qtyPath};window.__kzRep={};"
+      + "return JSON.stringify({ok:true,method:r.m,path:new URL(r.u,location.href).pathname,"
+      + " id:idPaths.map(function(p){return p.join('.');}).join(', '),qty:qtyPath?qtyPath.join('.'):null});"
+      + "}catch(e){return JSON.stringify({ok:false,why:String(e).slice(0,100)});}})(%s)";
+
+    /**
+     * Повторить выученный запрос для другой позиции: начать и вернуть сразу, ответ — в
+     * __kzRep. Артикул встаёт во все поля образца, каждое своего типа (строка или число).
+     *
+     * В ОТВЕТЕ ИЩЕТСЯ «НЕТ В НАЛИЧИИ». Артикул под ключом вроде unavailable,
+     * outOfStock, soldOut в ответе сети значит gone: запрос сеть приняла, а товара у
+     * неё нет. Так отвечает checkout/preview Магнита (unavailableItems, замер на
+     * эмуляторе 18.10.2026). Его carts/lite, которым кладёт карточка, наличие не
+     * выделяет — такие позиции ловит сверка со страницей корзины (CART_GONE_JS).
+     */
+    private static final String REPLAY_JS =
+        "(function(p){try{var t=window.__kzTpl;if(!t)return 'нет образца';"
+      + "var b=JSON.parse(JSON.stringify(t.body));"
+      + "function get(o,path){for(var i=0;i<path.length;i++){if(o==null)return undefined;o=o[path[i]];}return o;}"
+      + "function set(o,path,v){for(var i=0;i<path.length-1;i++)o=o[path[i]];o[path[path.length-1]]=v;}"
+      + "(t.idPaths||[]).forEach(function(path){set(b,path,typeof get(t.body,path)==='number'?Number(p.sku):String(p.sku));});"
+      + "if(t.qtyPath)set(b,t.qtyPath,p.qty);"
+      + "var OUT=/unavailable|out_?of_?stock|not_?available|sold_?out/i;"
+      + "function gone(o,under,d){if(!o||typeof o!=='object'||d>8)return false;"
+      + " if(Array.isArray(o)){for(var i=0;i<o.length;i++)if(gone(o[i],under,d+1))return true;return false;}"
+      + " for(var k in o){if(!Object.prototype.hasOwnProperty.call(o,k))continue;var v=o[k];"
+      + "  if(under&&(typeof v==='string'||typeof v==='number')&&String(v)===String(p.sku))return true;"
+      + "  if(v&&typeof v==='object'&&gone(v,under||OUT.test(k),d+1))return true;}"
+      + " return false;}"
+      + "window.__kzRep=window.__kzRep||{};window.__kzRep[p.key]=null;"
+      + "fetch(t.u,{method:t.m,headers:t.h,body:JSON.stringify(b),credentials:'include'})"
+      + " .then(function(r){var res={ok:r.status>=200&&r.status<300,status:r.status,"
+      + "  call:t.m+' '+new URL(t.u,location.href).pathname+' '+r.status,gone:false};"
+      + "  return r.text().then(function(x){try{res.gone=gone(JSON.parse(x),false,0);}catch(e){}window.__kzRep[p.key]=res;},"
+      + "   function(){window.__kzRep[p.key]=res;});})"
+      + " .catch(function(e){window.__kzRep[p.key]={ok:false,status:0,why:String(e).slice(0,80)};});"
+      + "return 'started';}catch(e){return 'ошибка: '+String(e).slice(0,80);}})(%s)";
+
+    /** Чем кончился повтор: объект ответа или null, пока ответа нет. */
+    private static final String REPLAY_POLL_JS =
+        "(function(k){var r=(window.__kzRep||{})[k];return r?JSON.stringify(r):'';})(%s)";
+
+    /**
+     * Кнопка «В корзину» ИМЕННО ЭТОГО товара — правило серверной передачи
+     * (app/shopbrowser/cart.py, _PICK_JS): первая видимая ниже заголовка и не дальше
+     * блока покупки, по признакам сети или по доступному имени из наряда. «Нет в
+     * наличии» ищется только в блоке покупки. Найденная кнопка помечается и
+     * прокручивается к середине экрана; касание делает приложение, не скрипт.
+     *
+     * ЗАБОР ПОД БЛОКОМ ПОКУПКИ. Замер владельца 17.10.2026 на Магните: сметаны 15%
+     * в его магазине нет, и под карточкой сразу шли «Похожие» — их «В корзину»
+     * попадала в окно 700 точек, и в корзину легла сметана 25%. Поэтому всё, что ниже
+     * первого заголовка «Похожие», «Рекомендуем», «С этим покупают»…, — чужие товары,
+     * и ни кнопки, ни «нет в наличии» оттуда не берутся.
+     *
+     * ВТОРОЙ ПРОХОД — НАДПИСЬ С ЦЕНОЙ. У Дикси кнопка товара подписана ценой и словами
+     * вместе («94.99 ₽ В корзину»), строгое имя её не узнаёт. Второй проход ищет «в
+     * корзину» внутри надписи, кроме «Перейти в корзину», «В корзине» и «Оформить».
+     * Не нашлось — в ответе near: какие кнопки были в блоке покупки, для отчёта.
+     */
+    private static final String PICK_JS =
+        "(function(p){try{"
+      + "var MARK='data-korzina-add',FENCE=/похож|рекоменд|с этим|покупают|понравит|аналог|вместе|смотрели|популярн|ещё товары|еще товары/i;"
+      + "[].slice.call(document.querySelectorAll('['+MARK+']')).forEach(function(e){e.removeAttribute(MARK);});"
+      + "var h1=document.querySelector('h1');"
+      + "var top=h1?h1.getBoundingClientRect().top+window.scrollY:null;"
+      + "var limit=(top!==null&&p.below)?top+p.below:Infinity;"
+      + "if(top!==null)[].slice.call(document.querySelectorAll('h2,h3,h4,[role=heading]')).forEach(function(h){"
+      + " var t=(h.innerText||'').replace(/\\s+/g,' ').trim();if(!t||t.length>40||!FENCE.test(t))return;"
+      + " var y=h.getBoundingClientRect().top+window.scrollY;if(y>top&&y<limit)limit=y;});"
+      + "function label(e){return((e.getAttribute('aria-label')||'')+' '+(e.innerText||'')).replace(/\\s+/g,' ').trim();}"
+      // Закреплённая полоса покупки (position fixed/sticky) — своя кнопка товара: у
+      // Магнита на телефоне «94,99 ₽ [В корзину]» стоит внизу экрана поверх страницы
+      // (замер владельца 18.10.2026). Каруселей закреплёнными не бывает, поэтому
+      // такой полосе забор не нужен — только чтобы она была видна на экране.
+      + "function pinned(e){for(var x=e;x&&x!==document.body;x=x.parentElement){var s=getComputedStyle(x).position;"
+      + " if(s==='fixed'||s==='sticky')return true;}return false;}"
+      + "function inside(e,below){var r=e.getBoundingClientRect();if(r.width<=0||r.height<=0)return false;"
+      + " if(pinned(e))return r.bottom>0&&r.top<(window.innerHeight||100000);"
+      + " var y=r.top+window.scrollY;if(below&&top!==null&&y<top)return false;return y<limit;}"
+      + "if(p.gone&&!p.again&&h1){var g=new RegExp(p.gone,'i'),w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT),n;"
+      + " while((n=w.nextNode())){var t=(n.nodeValue||'').replace(/\\s+/g,' ').trim().toLowerCase();"
+      + "  if(!t||!g.test(t))continue;var el=n.parentElement;if(!el)continue;var r=el.getBoundingClientRect();"
+      + "  if(r.width<=0||r.height<=0)continue;var y=r.top+window.scrollY;"
+      + "  if((y>=top-200&&y<limit)||(pinned(el)&&r.top<(window.innerHeight||100000)))return JSON.stringify({gone:true});}}"
+      + "var bySel=!p.again&&p.selectors&&p.selectors.length>0,nodes=[];"
+      + "if(bySel)p.selectors.forEach(function(s){try{nodes=nodes.concat([].slice.call(document.querySelectorAll(s)));}catch(e){}});"
+      + "var buttons=[].slice.call(document.querySelectorAll('button,[role=button]'));"
+      + "if(!nodes.length){bySel=false;nodes=buttons;}"
+      + "var pat=new RegExp(p.again?p.plus:p.add,'i'),best=null,bestY=Infinity;"
+      + "function take(e){var y=e.getBoundingClientRect().top+window.scrollY;if(y<bestY){best=e;bestY=y;}}"
+      + "nodes.forEach(function(e){if(e.disabled||!inside(e,!p.again))return;"
+      + " if(!bySel){var a=(e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim(),t=(e.innerText||'').replace(/\\s+/g,' ').trim();"
+      + "  if(!(pat.test(a)||pat.test(t)||pat.test((a+' '+t).trim())))return;}"
+      + " take(e);});"
+      + "if(!best&&!p.again)buttons.forEach(function(e){if(e.disabled||!inside(e,true))return;var l=label(e);"
+      + " if(l.length>60||!/в корзину|добавить|купить/i.test(l)||/перейти|в корзине|оформ|избранн|сравн/i.test(l))return;take(e);});"
+      + "if(!best){var near=[];buttons.forEach(function(e){if(near.length<6&&inside(e,true)){var l=label(e).slice(0,30);if(l)near.push(l);}});"
+      + " return JSON.stringify({found:false,h1:!!h1,near:near});}"
+      + "best.setAttribute(MARK,'1');best.scrollIntoView({block:'center',inline:'center'});"
+      + "return JSON.stringify({found:true});"
+      + "}catch(e){return JSON.stringify({found:false,error:String(e).slice(0,120)});}})(%s)";
+
+    /**
+     * Что сайт отправил после касания: артикулы в теле последнего запроса записи в
+     * корзину (window.__kzLast). Есть поля артикула, но нашего среди них нет — значит
+     * легло ДРУГОЕ: так сметана 25% чуть не сошла за 15% (17.10.2026). Магнит зовёт
+     * поля goodId и offerId (18.10.2026) — их сверка тоже видит.
+     */
+    private static final String VERIFY_JS =
+        "(function(sku){try{var r=window.__kzLast;if(!r||typeof r.b!=='string')return JSON.stringify({known:false});"
+      + "var body;try{body=JSON.parse(r.b);}catch(e){return JSON.stringify({known:false});}"
+      + "var ids=[];(function walk(o){if(!o||typeof o!=='object')return;for(var k in o){if(!Object.prototype.hasOwnProperty.call(o,k))continue;"
+      + " var v=o[k];if((typeof v==='string'||typeof v==='number')&&/^(product_?id|sku|article|goods?_?id|item_?id|offer_?id|plu)$/i.test(k))ids.push(String(v));"
+      + " else if(v&&typeof v==='object')walk(v);}})(body);"
+      + "return JSON.stringify({known:ids.length>0,match:ids.indexOf(String(sku))>=0,ids:ids.slice(0,3)});"
+      + "}catch(e){return JSON.stringify({known:false});}})(%s)";
+
+    /** Где на экране помеченная кнопка: середина в точках CSS и ширина видимой области. */
+    private static final String COORDS_JS =
+        "(function(){var e=document.querySelector('[data-korzina-add]');if(!e)return JSON.stringify({found:false});"
+      + "var r=e.getBoundingClientRect();if(r.width<=0||r.height<=0)return JSON.stringify({found:false});"
+      + "var vv=window.visualViewport,ox=vv?vv.offsetLeft:0,oy=vv?vv.offsetTop:0,vw=vv?vv.width:window.innerWidth;"
+      + "return JSON.stringify({found:true,x:r.left+r.width/2-ox,y:r.top+r.height/2-oy,vw:vw});})()";
+
+    /** Забрать записанные сторожем запросы к корзине и начать запись заново. */
+    private static final String CALLS_JS =
+        "(function(){var c=(window.__kzCalls||[]).slice(0,10);window.__kzCalls=[];return JSON.stringify({calls:c});})()";
+
+    /**
+     * Дорога к корзине сети со страницы. Первой — видимая кнопка или пункт меню
+     * «Корзина»: её касается приложение, как человек. Замер владельца 17.10.2026 в 1.5:
+     * у Магнита корзина открывается пунктом «Корзина» нижнего меню и живёт внутри
+     * сайта без своего адреса (адрес остаётся magnit.ru/), а страницы /cart у него нет
+     * (замер 20.09.2026). Без такой кнопки — своя ссылка с cart/basket/korzina в пути.
+     * Кнопка «В корзину» товара сюда не попадает. И НИКОГДА — «Очистить корзину»,
+     * «Удалить», «Оформить», «Оплатить»: на странице корзины они стоят рядом.
+     */
+    private static final String FIND_CART_JS =
+        "(function(hosts){try{"
+      + "function own(h){return hosts.some(function(d){return h===d||h.slice(-(d.length+1))==='.'+d;});}"
+      + "var MARK='data-korzina-add',ADD=/^(в корзину|добавить в корзину|купить)$/i,H=window.innerHeight||100000;"
+      + "var NEVER=/очист|удал|убра|оформ|оплат|clear|remove|delete|checkout/i;"
+      + "[].slice.call(document.querySelectorAll('['+MARK+']')).forEach(function(e){e.removeAttribute(MARK);});"
+      + "var els=[].slice.call(document.querySelectorAll('a,button,[role=button],[role=link],[role=tab]')),best=null,bestS=9;"
+      // Детали значка (svg и всё внутри) не в счёт: у «Корзины» нижнего меню Магнита
+      // картинка из многих частей, и по общему числу потомков кнопка выглядела плиткой.
+      + "function kids(e){return e.querySelectorAll('*').length-e.querySelectorAll('svg, svg *').length;}"
+      + "for(var j=0;j<els.length;j++){var e=els[j];if(kids(e)>8)continue;"
+      + " var al=(e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim(),tx=(e.innerText||'').replace(/\\s+/g,' ').trim();"
+      + " var t=(al+' '+tx).trim();if(t.length>40||!/корзин/i.test(t)||ADD.test(al)||ADD.test(tx)||NEVER.test(t))continue;"
+      + " var r=e.getBoundingClientRect();if(r.width<=0||r.height<=0||r.bottom<=0||r.top>=H)continue;"
+      + " var s=/^корзина$/i.test(tx)?0:(/^корзина/i.test(tx)?1:2);if(s<bestS){best=e;bestS=s;}}"
+      + "if(best){best.setAttribute(MARK,'1');return JSON.stringify({button:true});}"
+      + "var links=[].slice.call(document.querySelectorAll('a[href]'));"
+      + "for(var i=0;i<links.length;i++){var a=links[i];try{var u=new URL(a.getAttribute('href'),location.href);"
+      + " if(!own(u.hostname)||!/(^|\\/)(cart|basket|korzina)(\\/|$)/i.test(u.pathname))continue;"
+      + " if(kids(a)>8)continue;return JSON.stringify({href:u.href});}catch(e){}}"
+      // Дороги не нашлось — для отчёта: что на странице похоже на корзину.
+      + "var near=[];[].slice.call(document.querySelectorAll('a,button,[role=button]')).forEach(function(e){if(near.length>=5)return;"
+      + " var l=((e.getAttribute('aria-label')||'')+' '+(e.innerText||'')).replace(/\\s+/g,' ').trim(),hr=e.getAttribute('href')||'';"
+      + " if(/корзин|cart|basket/i.test(l+' '+hr))near.push((l||hr).slice(0,30));});"
+      + "return JSON.stringify({near:near});}catch(e){return JSON.stringify({error:String(e).slice(0,120)});}})(%s)";
+
+    /**
+     * Какие из положенных позиций корзина сети показывает «нет в наличии». Замер на
+     * эмуляторе 18.10.2026: Алёнку Магнит принял запросом carts/lite с кодом 200 и в
+     * ответе ничем её не выделил, а страница корзины поставила её в «Этих товаров
+     * нет» с надписью «Нет в наличии» — сборка же написала «легло».
+     *
+     * От короткой надписи (как в правиле gone, не длиннее 25 знаков: баннер «Некоторые
+     * товары закончились — проверьте корзину» не в счёт) поднимаемся к предкам, пока
+     * в тексте не встретится имя ровно одной нашей позиции, — это её строка корзины.
+     * Два имени сразу или текст длиннее 300 знаков — уже список, не строка: стоп.
+     * Стоп и на строке списка без нашего имени (у неё есть соседка того же тега и
+     * класса, а текста не меньше 30 знаков): это чужой товар человека, и его «нет в
+     * наличии» не должно перейти на нашу позицию из соседней строки. Ответ — номера
+     * имён из p.names.
+     */
+    private static final String CART_GONE_JS =
+        "(function(p){try{var g=new RegExp(p.gone,'i');"
+      + "function norm(s){return String(s||'').toLowerCase().replace(/ё/g,'е').replace(/[^a-zа-я0-9%]+/g,' ').trim();}"
+      + "function item(e){var c=typeof e.className==='string'?e.className:'';if(!c||!e.parentElement)return false;"
+      + " for(var s=e.parentElement.firstElementChild;s;s=s.nextElementSibling)"
+      + "  if(s!==e&&s.tagName===e.tagName&&s.className===c)return true;return false;}"
+      + "var names=(p.names||[]).map(norm),out=[];"
+      + "var w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT),m;"
+      + "while((m=w.nextNode())){var t=norm(m.nodeValue);if(!t||t.length>25||!g.test(t))continue;"
+      + " var el=m.parentElement;if(!el)continue;var r=el.getBoundingClientRect();if(r.width<=0||r.height<=0)continue;"
+      + " for(var i=0;i<8&&el;i++,el=el.parentElement){var x=norm(el.innerText);if(x.length>300)break;"
+      + "  var hits=[];names.forEach(function(n,k){if(n.length>=4&&x.indexOf(n)>=0)hits.push(k);});"
+      + "  if(hits.length===1){if(out.indexOf(hits[0])<0)out.push(hits[0]);break;}"
+      + "  if(hits.length>1||(x.length>=30&&item(el)))break;}}"
+      + "return JSON.stringify({gone:out});}catch(e){return JSON.stringify({gone:[],error:String(e).slice(0,80)});}})(%s)";
+
+    /**
+     * Итог корзины сети со страницы: строки «Итого», «Товары», «Скидка», «Доставка»,
+     * «Сборка», «Баллы», «Минимальный заказ» с суммой в рублях в той же строке, плюс
+     * счётчик корзины и числа из ответов сайта, собранные сторожем. Текст строки
+     * (row) показывается только на телефоне, на сервер уходят вид, подпись и сумма.
+     *
+     * У Магнита строки «Итого» нет: сумма стоит на кнопке «К оформлению 1 600,4 ₽»,
+     * а число товаров — подписью «11 товаров» (замер владельца 17.10.2026). Кнопка
+     * оформления читается как итог, но не нажимается: заказ оформляет человек.
+     */
+    private static final String READ_JS =
+        "(function(){try{"
+      + "var KIND=[['total',/^(итого|итог|к оплате|всего|сумма заказа|общая сумма|стоимость заказа|сумма|к оформлению|перейти к оформлению|оформить заказ|оформить)(\\s|:|$)/i],"
+      + " ['goods',/^(товары|стоимость товаров|сумма товаров|товаров на сумму|\\d+\\s+товар)/i],"
+      + " ['discount',/(скидк|выгод|экономи|промокод)/i],['delivery',/доставк/i],"
+      + " ['service',/(сервисн|сбор заказа|сборк|упаковк)/i],['points',/(бонус|балл|апельсинк|спасибо)/i],"
+      + " ['min',/(минимальн|до бесплатн)/i]];"
+      // Строка итога — одна строка: длиннее 60 знаков или с подписями двух видов сразу
+      // («Промокод Товары на сумму…», «Доставка • адрес … Итого») — это уже блок, и сумма
+      // в нём чужая. Замер владельца 17.10.2026: так в «доставку» попадал адрес и итог.
+      + "var ANY=[/итог|к оплате|к оформлению|сумма заказа/i,/товар/i,/скидк|выгод|экономи|промокод/i,/доставк/i,"
+      + " /сервисн|сборк|упаковк/i,/бонус|балл|апельсинк|спасибо/i,/минимальн/i];"
+      + "function many(t){var n=0;for(var i=0;i<ANY.length;i++)if(ANY[i].test(t))n++;return n>1;}"
+      + "var MONEY=/(\\d{1,3}(?:[\\s\\u00a0\\u202f]\\d{3})+(?:[.,]\\d{1,2})?|\\d+(?:[.,]\\d{1,2})?)\\s?(?:₽|руб)/gi;"
+      + "function kind(t){for(var i=0;i<KIND.length;i++)if(KIND[i][1].test(t))return KIND[i][0];return null;}"
+      + "function amount(s){return parseFloat(s.replace(/[\\s\\u00a0\\u202f]/g,'').replace(',','.'));}"
+      + "var out=[],seen={},goods=null,els=document.querySelectorAll('body *');"
+      + "for(var i=0;i<els.length&&out.length<20;i++){var e=els[i];if(e.children.length>3)continue;"
+      + " var own=(e.innerText||'').replace(/\\s+/g,' ').trim();if(!own||own.length>40)continue;"
+      + " var gm=own.match(/^(\\d+)\\s+товар/i);if(gm&&goods===null)goods=parseInt(gm[1],10);"
+      + " var k=kind(own);if(!k)continue;var rc=e.getBoundingClientRect();if(rc.width<=0||rc.height<=0)continue;"
+      + " var row=e,val=null,base=null,text='';"
+      + " for(var up=0;up<4&&row;up++){text=(row.innerText||'').replace(/\\s+/g,' ').trim();if(text.length>60||many(text))break;"
+      + "  var m=[],x;MONEY.lastIndex=0;while((x=MONEY.exec(text))!==null)m.push(x[1]);"
+      + "  if(m.length){val=amount(m[m.length-1]);if(m.length>1)base=amount(m[0]);break;}"
+      + "  if(k==='delivery'&&/бесплатн/i.test(text)){val=0;break;}"
+      + "  row=row.parentElement;}"
+      + " if(val===null||!isFinite(val))continue;var key=k+'|'+val;if(seen[key])continue;seen[key]=1;"
+      + " out.push({kind:k,label:own,amount:val,base:(base!==null&&isFinite(base))?base:null,row:text.slice(0,120)});}"
+      + "var count=null;[].slice.call(document.querySelectorAll('a,button,[role=button]')).forEach(function(e){"
+      + " if(e.querySelectorAll('*').length-e.querySelectorAll('svg, svg *').length>8)return;"
+      + " var t=((e.getAttribute('aria-label')||'')+' '+(e.innerText||'')).replace(/\\s+/g,' ').trim();"
+      + " if(t.length>40||!/корзин/i.test(t))return;var m=t.match(/(\\d+)/);if(m){var n=parseInt(m[1],10);if(count===null||n>count)count=n;}});"
+      + "var nums={};try{nums=JSON.parse(sessionStorage.getItem('__kzNums')||'{}');}catch(e){}"
+      + "if(goods!==null)count=goods;"
+      + "return JSON.stringify({totals:out,count:count,api:nums,page:location.pathname});"
+      + "}catch(e){return JSON.stringify({error:String(e).slice(0,120)});}})()";
+
+    /** Сколько дать странице сети улечься после загрузки, мс: витрины дорисовываются скриптом. */
+    private static final int SETTLE_MS = 1500;
+    private static final int CART_SETTLE_MS = 3000;
+    private static final int READY_POLL_MS = 600;
+    private static final int READY_LIMIT_MS = 30000;
+    /** Сколько раз ещё поискать кнопку «В корзину», если её пока нет, и через сколько. */
+    private static final int PICK_TRIES = 3;
+    private static final int PICK_RETRY_MS = 1500;
+
     private WebView web;
     private ProgressBar progress;
     private View chainPanel;
@@ -211,8 +558,11 @@ public class MainActivity extends Activity {
     private Button saveLoginBtn;
     private Button saveOffersBtn;
     private Button recordBtn;
+    private Button cartBtn;
     private boolean recording = false;
-    private int currentChain = -1;
+    // volatile: читает его и мост, а он живёт на своём потоке (JavaBridge).
+    private volatile int currentChain = -1;
+    private CartRun cartRun;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     /**
@@ -223,11 +573,16 @@ public class MainActivity extends Activity {
      * ответа о результате действия: открытие сети человек увидит сам, а действия
      * с отчётом («сохранить вход», акции, запись) пока делает панель — когда они
      * переедут на сайт, у моста появится обратный вызов.
+     *
+     * МОСТ ТОЛЬКО ДЛЯ НАШЕГО САЙТА. WebView один, и на странице сети window.Korzina
+     * тоже виден — её скриптам и чужим счётчикам на ней. Поэтому, пока открыта сеть,
+     * мост молчит: ни адреса сервера, ни открытия страниц по чужой просьбе.
      */
     private final class KorzinaBridge {
         /** Кто на связи: сайт сверяет версию, прежде чем просить о новом. */
         @JavascriptInterface
         public String info() {
+            if (currentChain >= 0) return "{}";
             try {
                 return new JSONObject()
                     .put("version", BuildConfig.VERSION_NAME)
@@ -241,6 +596,7 @@ public class MainActivity extends Activity {
         /** Открыть сайт сети в этом же WebView. Незнакомый код — ложь, и сайт решает сам. */
         @JavascriptInterface
         public boolean openStore(String code) {
+            if (currentChain >= 0) return false;
             for (int i = 0; i < CHAINS.length; i++) {
                 if (CHAINS[i][1].equals(code)) {
                     final int idx = i;
@@ -254,6 +610,7 @@ public class MainActivity extends Activity {
         /** Вернуться на наш сайт. Путь только свой: мост чужих адресов не открывает. */
         @JavascriptInterface
         public void openApp(String path) {
+            if (currentChain >= 0) return;
             final String target = (path != null && path.startsWith("/") && !path.contains("://"))
                 ? path : "/";
             handler.post(() -> openOurApp(target));
@@ -283,17 +640,18 @@ public class MainActivity extends Activity {
         progress.setVisibility(View.GONE);
         root.addView(progress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)));
 
-        // Весь экран — сайт. Панель действий лежит поверх и показывается только на
-        // странице сети: на наших экранах командует сайт, там панели не место.
-        FrameLayout frame = new FrameLayout(this);
+        // Весь экран — сайт. Панель действий показывается только на странице сети:
+        // на наших экранах командует сайт, там панели не место.
+        //
+        // ПАНЕЛЬ ПОД СТРАНИЦЕЙ, А НЕ ПОВЕРХ (1.5). В 1.4 она лежала поверх и закрывала
+        // нижнее меню мобильного сайта сети — у Магнита там значок корзины, и владелец
+        // 17.10.2026 не нашёл, как в неё попасть. Теперь страница кончается над панелью.
         web = new WebView(this);
-        frame.addView(web, new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        root.addView(web, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         chainPanel = buildChainPanel();
         chainPanel.setVisibility(View.GONE);
-        frame.addView(chainPanel, new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM));
-        root.addView(frame, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        root.addView(chainPanel, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         setContentView(root);
         setUpWeb();
@@ -320,16 +678,16 @@ public class MainActivity extends Activity {
         row.setPadding(0, dp(6), 0, 0);
 
         Button backBtn = new Button(this);
-        backBtn.setText("← Назад");
+        backBtn.setText("←");
         backBtn.setTextSize(12f);
         backBtn.setOnClickListener(v -> leaveChain());
-        row.addView(backBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.2f));
+        row.addView(backBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.6f));
 
         saveLoginBtn = new Button(this);
-        saveLoginBtn.setText("Сохранить вход");
+        saveLoginBtn.setText("Вход");
         saveLoginBtn.setTextSize(12f);
         saveLoginBtn.setOnClickListener(v -> saveLogin());
-        row.addView(saveLoginBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.2f));
+        row.addView(saveLoginBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         saveOffersBtn = new Button(this);
         saveOffersBtn.setText("Акции");
@@ -338,10 +696,16 @@ public class MainActivity extends Activity {
         row.addView(saveOffersBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         recordBtn = new Button(this);
-        recordBtn.setText("Записать");
+        recordBtn.setText("Запись");
         recordBtn.setTextSize(12f);
         recordBtn.setOnClickListener(v -> toggleRecord());
         row.addView(recordBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        cartBtn = new Button(this);
+        cartBtn.setText("Собрать");
+        cartBtn.setTextSize(12f);
+        cartBtn.setOnClickListener(v -> toggleCart());
+        row.addView(cartBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.1f));
 
         panel.addView(row);
         return panel;
@@ -383,8 +747,9 @@ public class MainActivity extends Activity {
                     // Новая страница — новый скрипт: обёртка живёт, пока жива страница.
                     // Записанное раньше лежит в sessionStorage и переживает перезагрузку.
                     view.evaluateJavascript(recScript(currentChain), null);
-                    say("Идёт запись — " + shortenUrl(url), false);
-                } else {
+                    if (cartRun == null) say("Идёт запись — " + shortenUrl(url), false);
+                } else if (cartRun == null) {
+                    // Во время сборки строку состояния ведёт она: «кладу 3 из 9».
                     say(CHAINS[currentChain][0] + " — " + shortenUrl(url), false);
                 }
             }
@@ -436,6 +801,7 @@ public class MainActivity extends Activity {
     }
 
     private void exitChainMode() {
+        if (cartRun != null) stopRun("Сборка остановлена: вы ушли со страницы сети.");
         currentChain = -1;
         stopRecording();
         if (chainPanel != null) chainPanel.setVisibility(View.GONE);
@@ -445,6 +811,7 @@ public class MainActivity extends Activity {
         saveLoginBtn.setEnabled(on);
         saveOffersBtn.setEnabled(on);
         recordBtn.setEnabled(on);
+        cartBtn.setEnabled(on);
     }
 
     // ── Запись корзины ──
@@ -458,7 +825,7 @@ public class MainActivity extends Activity {
     /** Ушли со страницы сети — запись этой сети больше не наша: кнопка снова «Записать». */
     private void stopRecording() {
         recording = false;
-        if (recordBtn != null) recordBtn.setText("Записать");
+        if (recordBtn != null) recordBtn.setText("Запись");
     }
 
     private void toggleRecord() {
@@ -495,6 +862,748 @@ public class MainActivity extends Activity {
                 say("Не получилось забрать запись: " + e.getMessage(), true);
             }
         });
+    }
+
+    // ── Сборка корзины кнопками сайта ──
+
+    /**
+     * Одна сборка в одной сети. Шаги идут цепочкой отложенных вызовов, и каждый
+     * первым делом сверяется, что сборка всё ещё ЭТА и не остановлена: человек мог
+     * нажать «Стоп» или уйти со страницы, пока карточка грузилась.
+     */
+    private static final class CartRun {
+        final int chain;
+        final String code;
+        final String name;
+        JSONObject rules = new JSONObject();
+        JSONArray lines = new JSONArray();
+        double ourTotal = 0;
+        int at = 0;        // какую позицию кладём
+        int clicks = 1;    // сколько касаний у неё
+        int put = 0;       // сколько уже сделано
+        int tries = 0;     // сколько раз ещё раз искали кнопку на этой карточке
+        final JSONArray items = new JSONArray();
+        boolean stopped = false;
+        // Запрос сети «положить в корзину» выучен по первому касанию (LEARN_JS): дальше
+        // позиции кладутся им, без загрузки карточек. Пробуем выучить один раз.
+        boolean learned = false;
+        boolean learnTried = false;
+        String how = "tap";          // чем легла текущая позиция: касанием или запросом
+        final long startedAt = SystemClock.uptimeMillis();
+        String cartHint = "";        // дорога к корзине не нашлась: что похожее было на странице
+
+        CartRun(int chain) {
+            this.chain = chain;
+            this.code = CHAINS[chain][1];
+            this.name = CHAINS[chain][0];
+        }
+    }
+
+    private boolean alive(CartRun r) {
+        return r != null && r == cartRun && !r.stopped;
+    }
+
+    private void toggleCart() {
+        if (currentChain < 0) return;
+        if (cartRun != null) {
+            stopRun("Сборка остановлена.");
+            return;
+        }
+        final CartRun r = new CartRun(currentChain);
+        cartRun = r;
+        setChainButtons(false);
+        cartBtn.setEnabled(true);
+        cartBtn.setText("Стоп");
+        say("Беру у сервера, что положить в " + r.name + "…", false);
+        JSONObject body = new JSONObject();
+        try { body.put("store", r.code); } catch (Exception ignored) { }
+        call("/api/device/cartplan", body, (status, text) -> {
+            if (!alive(r)) return;
+            if (status != 200) {
+                failRun(serverError(status, text));
+                return;
+            }
+            try {
+                JSONObject plan = new JSONObject(text);
+                JSONObject rules = plan.optJSONObject("rules");
+                JSONArray lines = plan.optJSONArray("lines");
+                r.rules = rules != null ? rules : new JSONObject();
+                r.lines = lines != null ? lines : new JSONArray();
+                r.ourTotal = plan.optDouble("total", 0);
+                if (r.lines.length() == 0) {
+                    offerThisCard(r, plan.optString("note", ""));
+                    return;
+                }
+                say(r.name + ": позиций " + r.lines.length() + ", начинаю", false);
+                nextLine(r);
+            } catch (Exception e) {
+                failRun("Сервер ответил непонятно: " + e.getMessage());
+            }
+        });
+    }
+
+    /** Нашей корзины в этой сети нет — проверить сборку на открытой карточке. */
+    private void offerThisCard(final CartRun r, String note) {
+        String why = note == null || note.isEmpty() ? "у приложения нет карточек этой сети для вашей корзины" : note;
+        new AlertDialog.Builder(this)
+            .setTitle(r.name + ": класть нечего")
+            .setMessage(why + "\n\nМожно проверить сборку на товаре, открытом сейчас: "
+                + "приложение нажмёт на нём «В корзину» и прочитает итог корзины сети.")
+            .setPositiveButton("Положить этот", (d, w) -> {
+                if (!alive(r)) return;
+                try {
+                    JSONObject line = new JSONObject()
+                        .put("name", "товар с открытой страницы")
+                        .put("url", web.getUrl() == null ? "" : web.getUrl())
+                        .put("clicks", 1).put("sku", "");
+                    r.lines = new JSONArray().put(line);
+                    nextLine(r);
+                } catch (Exception e) {
+                    failRun("Не получилось: " + e.getMessage());
+                }
+            })
+            .setNegativeButton("Отмена", (d, w) -> failRun(why))
+            .setOnCancelListener(d -> failRun(why))
+            .show();
+    }
+
+    private void nextLine(final CartRun r) {
+        if (!alive(r)) return;
+        if (r.at >= r.lines.length()) {
+            openCart(r);
+            return;
+        }
+        JSONObject line = r.lines.optJSONObject(r.at);
+        r.clicks = Math.max(1, line == null ? 1 : line.optInt("clicks", 1));
+        r.put = 0;
+        r.tries = 0;
+        r.how = "tap";
+        if (r.learned && line != null && !line.optString("sku", "").isEmpty()) {
+            replayLine(r, line);
+            return;
+        }
+        cardLine(r, line);
+    }
+
+    /** Позиция касаниями: открыть её карточку и нажать «В корзину». */
+    private void cardLine(final CartRun r, JSONObject line) {
+        if (!alive(r)) return;
+        String url = line == null ? "" : line.optString("url", "");
+        r.how = "tap";
+        if (url.isEmpty() || !isHostOf(r.chain, url)) {
+            lineDone(r, false, url.isEmpty() ? "у позиции нет адреса карточки"
+                : "адрес карточки принадлежит не этой сети", new JSONArray());
+            return;
+        }
+        say("Кладу " + (r.at + 1) + " из " + r.lines.length() + ": " + line.optString("name", ""), false);
+        final String open = web.getUrl() == null ? "" : web.getUrl();
+        final String want = pathOf(url);
+        if (url.equals(open) || (isHostOf(r.chain, open) && want != null && want.equals(pathOf(open)))) {
+            // Карточка уже открыта («Положить этот» или сборка начата с неё): перезагрузка
+            // только сбила бы её. Тот же путь с другими параметрами — та же карточка, а
+            // whenReady принял бы уходящую страницу за пришедшую: путь у них один, и
+            // вышло бы «нет заголовка» (замер на эмуляторе 18.10.2026, Магнит).
+            handler.postDelayed(() -> onCard(r), 300);
+            return;
+        }
+        web.loadUrl(url);
+        whenReady(r, url, null, SETTLE_MS, () -> onCard(r));
+    }
+
+    /** Где страница и в каком она виде: путь, readyState и есть ли заголовок h1. */
+    private static final String STATE_JS =
+        "(function(){return JSON.stringify({p:location.pathname,s:document.readyState,h:!!document.querySelector('h1')});})()";
+
+    /** Сколько ждать смены адреса после касания «Корзины»: дальше корзина — окно на месте. */
+    private static final int SAME_PAGE_MS = 6000;
+
+    /**
+     * Дождаться страницы и дать ей улечься.
+     *
+     * ПО АДРЕСУ, А НЕ ПО onPageStarted. Замер на эмуляторе 17.10.2026 (Магнит): после
+     * loadUrl прежняя страница живёт ещё около 3 с, и readyState «complete» у неё свой.
+     * Сборка принимала её за новую и искала кнопку не там — «нет заголовка» у всех трёх
+     * карточек. Теперь ждём, пока путь страницы станет тем, куда шли (want), а после
+     * касания «Корзины» — пока он сменится с прежнего (from). Годна страница с
+     * readyState «complete» или уже с заголовком h1: у Магнита заголовок есть через
+     * ~5 с, а «complete» — только через ~11 из-за счётчиков. Не дождались за
+     * READY_LIMIT_MS — идём дальше.
+     */
+    private void whenReady(final CartRun r, final String want, final String from,
+                           final int settle, final Runnable then) {
+        final String target = pathOf(want);
+        final String before = from == null ? null : trimSlash(from);
+        final long started = SystemClock.uptimeMillis();
+        final long until = started + READY_LIMIT_MS;
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!alive(r)) return;
+                final Runnable again = this;
+                web.evaluateJavascript(STATE_JS, value -> {
+                    if (!alive(r)) return;
+                    JSONObject st = asObject(value);
+                    String path = trimSlash(st.optString("p", ""));
+                    String state = st.optString("s", "");
+                    long now = SystemClock.uptimeMillis();
+                    boolean here = !path.isEmpty() && (target != null ? target.equals(path)
+                        : (before == null || !before.equals(path) || now - started > SAME_PAGE_MS));
+                    boolean usable = "complete".equals(state)
+                        || ("interactive".equals(state) && st.optBoolean("h"));
+                    if ((here && usable) || now > until) handler.postDelayed(then, settle);
+                    else handler.postDelayed(again, READY_POLL_MS);
+                });
+            }
+        }, READY_POLL_MS);
+    }
+
+    private static String pathOf(String url) {
+        if (url == null || url.isEmpty()) return null;
+        try {
+            return trimSlash(new URL(url).getPath());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String trimSlash(String path) {
+        String p = path == null ? "" : path;
+        while (p.length() > 1 && p.endsWith("/")) p = p.substring(0, p.length() - 1);
+        return p;
+    }
+
+    private void onCard(final CartRun r) {
+        if (!alive(r)) return;
+        web.evaluateJavascript(watchScript(r), null);
+        tapAdd(r, false);
+    }
+
+    private void tapAdd(final CartRun r, final boolean again) {
+        if (!alive(r)) return;
+        web.evaluateJavascript(pickScript(r, again), value -> {
+            if (!alive(r)) return;
+            JSONObject got = asObject(value);
+            if (got.optBoolean("gone")) {
+                lineDone(r, false, "карточка говорит, что товара нет в наличии", new JSONArray());
+                return;
+            }
+            if (!got.optBoolean("found")) {
+                // Кнопка ещё не нарисована: через VPN компьютера у Магнита полоса покупки
+                // с «В корзину» появлялась позже заголовка, и обе карточки ушли в «не
+                // нашлось кнопки», хотя через 10 с она была на месте (эмулятор, 18.10.2026).
+                if (!again && r.put == 0 && r.tries < PICK_TRIES) {
+                    r.tries++;
+                    handler.postDelayed(() -> tapAdd(r, false), PICK_RETRY_MS);
+                    return;
+                }
+                String why = r.put == 0
+                    ? (got.optBoolean("h1") ? "на карточке не нашлось кнопки «в корзину»"
+                                            : "страница не похожа на карточку товара: нет заголовка")
+                    : "положено " + r.put + " из " + r.clicks + ": кнопки «ещё одну» не нашлось";
+                // Какие кнопки были в блоке покупки — по ним видно, как сеть зовёт свою.
+                JSONArray near = got.optJSONArray("near");
+                if (near != null && near.length() > 0) {
+                    StringBuilder seen = new StringBuilder();
+                    for (int i = 0; i < near.length(); i++) {
+                        seen.append(i > 0 ? ", " : "").append('«').append(near.optString(i)).append('»');
+                    }
+                    why += " (рядом: " + seen + ")";
+                }
+                checkLine(r, why);
+                return;
+            }
+            // Прокрутке к кнопке нужно встать, прежде чем спрашивать, где кнопка.
+            handler.postDelayed(() -> tapMarked(r), 450);
+        });
+    }
+
+    private void tapMarked(final CartRun r) {
+        if (!alive(r)) return;
+        web.evaluateJavascript(COORDS_JS, value -> {
+            if (!alive(r)) return;
+            if (!tapAt(asObject(value))) {
+                checkLine(r, r.put == 0 ? "кнопка «в корзину» ушла из-под пальца — карточка перерисовалась"
+                                        : "положено " + r.put + " из " + r.clicks + ": карточка перерисовалась");
+                return;
+            }
+            r.put++;
+            int pause = r.rules.optInt("click_pause_ms", 700);
+            if (r.put < r.clicks) handler.postDelayed(() -> tapAdd(r, true), pause + 500);
+            else handler.postDelayed(() -> checkLine(r, ""), pause + 1200);
+        });
+    }
+
+    /**
+     * Что сеть сделала после касаний. Последнее слово — за её запросами к корзине:
+     * все отказали — не легло; у Магнита ни одного запроса — тоже не легло (замер
+     * 20.09.2026, правило SENDS_CART серверной передачи). Иначе судит число касаний.
+     */
+    private void checkLine(final CartRun r, final String failure) {
+        if (!alive(r)) return;
+        web.evaluateJavascript(CALLS_JS, value -> {
+            if (!alive(r)) return;
+            JSONArray calls = asObject(value).optJSONArray("calls");
+            if (calls == null) calls = new JSONArray();
+            boolean anyOk = false;
+            int refused = 0;
+            for (int i = 0; i < calls.length(); i++) {
+                String c = calls.optString(i, "");
+                int code = 0;
+                try { code = Integer.parseInt(c.substring(c.lastIndexOf(' ') + 1)); } catch (Exception ignored) { }
+                if (code >= 200 && code < 400) anyOk = true;
+                else if (code >= 400 && refused == 0) refused = code;
+            }
+            boolean ok = failure.isEmpty() && r.put >= r.clicks;
+            String why = failure;
+            if (ok && !anyOk && refused > 0) {
+                ok = false;
+                why = "сеть отказала на запрос к корзине: " + refused;
+            } else if (ok && calls.length() == 0 && r.rules.optBoolean("sends_cart")) {
+                ok = false;
+                why = "кнопка нажалась, а сеть не обратилась к своей корзине — не легло";
+            }
+            if (!ok) {
+                lineDone(r, false, why, calls);
+                return;
+            }
+            verifyLine(r, calls);
+        });
+    }
+
+    /**
+     * Сверить, ЧТО легло: артикул в запросе записи сети против артикула наряда. Сеть
+     * назвала другой — позиция не легла, а в корзине сети лишний товар, и человеку
+     * сказано, что его убрать. Учиться по такому запросу нельзя.
+     */
+    private void verifyLine(final CartRun r, final JSONArray calls) {
+        JSONObject line = r.lines.optJSONObject(r.at);
+        final String sku = line == null ? "" : line.optString("sku", "");
+        if (sku.isEmpty()) {
+            lineDone(r, true, "", calls);
+            return;
+        }
+        web.evaluateJavascript(VERIFY_JS.replace("%s", JSONObject.quote(sku)), value -> {
+            if (!alive(r)) return;
+            JSONObject got = asObject(value);
+            if (got.optBoolean("known") && !got.optBoolean("match")) {
+                JSONArray ids = got.optJSONArray("ids");
+                String other = ids != null && ids.length() > 0 ? ids.optString(0) : "?";
+                lineDone(r, false, "лёг другой товар (артикул " + other + " вместо " + sku
+                    + ") — уберите его из корзины сети", calls);
+                return;
+            }
+            lineDone(r, true, "", calls);
+        });
+    }
+
+    private void lineDone(final CartRun r, boolean ok, String why, JSONArray calls) {
+        if (!alive(r)) return;
+        JSONObject line = r.lines.optJSONObject(r.at);
+        final String sku = line == null ? "" : line.optString("sku", "");
+        final String how = r.how;
+        try {
+            r.items.put(new JSONObject()
+                .put("name", line == null ? "" : line.optString("name", ""))
+                .put("sku", sku)
+                .put("ok", ok).put("why", why == null ? "" : why)
+                .put("put", r.put).put("times", r.clicks).put("how", how)
+                .put("calls", calls == null ? new JSONArray() : calls));
+        } catch (Exception ignored) { }
+        r.at++;
+        r.how = "tap";
+        // Первая позиция легла касанием — выучить по ней запрос сети и дальше класть им.
+        if (ok && "tap".equals(how) && !r.learned && !r.learnTried && !sku.isEmpty()
+                && r.at < r.lines.length()) {
+            r.learnTried = true;
+            learn(r, sku);
+            return;
+        }
+        handler.postDelayed(() -> nextLine(r), pauseAfter(r));
+    }
+
+    /** Пауза до следующей позиции: запросом — темп запросов сервера, касаниями — темп покупателя. */
+    private static int pauseAfter(CartRun r) {
+        return r.learned ? Math.max(300, r.rules.optInt("request_pause_ms", 1000))
+                         : Math.max(1300, r.rules.optInt("pause_ms", 1300));
+    }
+
+    /**
+     * Выучить запрос сети по только что легшей позиции. Не вышло — не беда: остальные
+     * позиции лягут касаниями, как раньше, а в строке состояния сказано, почему.
+     */
+    private void learn(final CartRun r, String sku) {
+        web.evaluateJavascript(LEARN_JS.replace("%s", JSONObject.quote(sku)), value -> {
+            if (!alive(r)) return;
+            JSONObject got = asObject(value);
+            if (got.optBoolean("ok")) {
+                r.learned = true;
+                say(r.name + ": дальше кладу запросом сети " + got.optString("method") + " "
+                    + got.optString("path"), false);
+            } else {
+                say(r.name + ": запрос сети не выучен (" + got.optString("why", "?") + "), дальше касаниями", false);
+            }
+            handler.postDelayed(() -> nextLine(r), pauseAfter(r));
+        });
+    }
+
+    /**
+     * Позиция запросом сети: тот же запрос, что сайт отправил после касания, с артикулом
+     * и количеством этой позиции. Отправляет его сама страница, со своей сессией.
+     * Сеть не приняла — эта же позиция идёт касаниями, и дальше уже только касаниями.
+     */
+    private void replayLine(final CartRun r, final JSONObject line) {
+        final String sku = line.optString("sku", "");
+        say("Кладу " + (r.at + 1) + " из " + r.lines.length() + " запросом: " + line.optString("name", ""), false);
+        final String key = "k" + r.at;
+        JSONObject p = new JSONObject();
+        try {
+            p.put("sku", sku).put("qty", r.clicks).put("key", key);
+        } catch (Exception ignored) { }
+        web.evaluateJavascript(REPLAY_JS.replace("%s", p.toString()), started -> {
+            if (!alive(r)) return;
+            final long until = SystemClock.uptimeMillis() + 15000;
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (!alive(r)) return;
+                    final Runnable again = this;
+                    web.evaluateJavascript(REPLAY_POLL_JS.replace("%s", JSONObject.quote(key)), value -> {
+                        if (!alive(r)) return;
+                        JSONObject res = asObject(value);
+                        if (res.length() == 0 && SystemClock.uptimeMillis() < until) {
+                            handler.postDelayed(again, 300);
+                            return;
+                        }
+                        if (res.optBoolean("ok")) {
+                            r.how = "request";
+                            JSONArray calls = new JSONArray();
+                            calls.put(res.optString("call", ""));
+                            if (res.optBoolean("gone")) {
+                                // Запрос сеть приняла, а позицию положила в «нет в наличии».
+                                lineDone(r, false, "нет в наличии у сети", calls);
+                                return;
+                            }
+                            r.put = r.clicks;
+                            lineDone(r, true, "", calls);
+                            return;
+                        }
+                        r.learned = false;
+                        say(r.name + ": сеть не приняла запрос (" + res.optInt("status", 0)
+                            + "), дальше касаниями", true);
+                        cardLine(r, line);
+                    });
+                }
+            }, 300);
+        });
+    }
+
+    /** Открыть корзину сети: своей ссылкой со страницы, кнопкой «Корзина» или адресом из наряда. */
+    private void openCart(final CartRun r) {
+        if (!alive(r)) return;
+        say(r.name + ": открываю корзину сети", false);
+        web.evaluateJavascript(findCartScript(r), value -> {
+            if (!alive(r)) return;
+            JSONObject got = asObject(value);
+            String href = got.optString("href", "");
+            if (!href.isEmpty() && isHostOf(r.chain, href)) {
+                web.loadUrl(href);
+                whenReady(r, href, null, CART_SETTLE_MS, () -> readCart(r));
+                return;
+            }
+            if (got.optBoolean("button")) {
+                final String from = pathOf(web.getUrl());
+                handler.postDelayed(() -> web.evaluateJavascript(COORDS_JS, at -> {
+                    if (!alive(r)) return;
+                    tapAt(asObject(at));
+                    whenReady(r, null, from, CART_SETTLE_MS, () -> readCart(r));
+                }), 450);
+                return;
+            }
+            JSONArray near = got.optJSONArray("near");
+            if (near != null && near.length() > 0) r.cartHint = near.toString();
+            JSONArray pages = r.rules.optJSONArray("cart_pages");
+            String page = pages != null && pages.length() > 0 ? pages.optString(0, "") : "";
+            if (!page.isEmpty()) {
+                web.loadUrl(page);
+                whenReady(r, page, null, CART_SETTLE_MS, () -> readCart(r));
+                return;
+            }
+            readCart(r);
+        });
+    }
+
+    private void readCart(final CartRun r) {
+        if (!alive(r)) return;
+        // Сторож нужен и здесь: страница корзины пересчитывает её своими запросами.
+        web.evaluateJavascript(watchScript(r), null);
+        web.evaluateJavascript(READ_JS, value -> {
+            if (!alive(r)) return;
+            final JSONObject cart = asObject(value);
+            markGone(r, () -> finishRun(r, cart, ""));
+        });
+    }
+
+    /** Положенное, которое корзина сети показывает «нет в наличии», — не «легло» (CART_GONE_JS). */
+    private void markGone(final CartRun r, final Runnable then) {
+        final JSONArray names = new JSONArray();
+        final JSONArray at = new JSONArray();
+        for (int i = 0; i < r.items.length(); i++) {
+            JSONObject it = r.items.optJSONObject(i);
+            if (it == null || !it.optBoolean("ok")) continue;
+            names.put(it.optString("name", ""));
+            at.put(i);
+        }
+        if (names.length() == 0) {
+            then.run();
+            return;
+        }
+        JSONObject p = new JSONObject();
+        try {
+            p.put("gone", r.rules.optString("gone", "нет в наличии|закончил|раскупил")).put("names", names);
+        } catch (Exception ignored) { }
+        web.evaluateJavascript(CART_GONE_JS.replace("%s", p.toString()), value -> {
+            if (!alive(r)) return;
+            JSONArray gone = asObject(value).optJSONArray("gone");
+            for (int k = 0; gone != null && k < gone.length(); k++) {
+                JSONObject it = r.items.optJSONObject(at.optInt(gone.optInt(k, -1), -1));
+                if (it == null) continue;
+                try {
+                    it.put("ok", false).put("why", "корзина сети показывает: нет в наличии");
+                } catch (Exception ignored) { }
+            }
+            then.run();
+        });
+    }
+
+    private void stopRun(String why) {
+        CartRun r = cartRun;
+        if (r == null) return;
+        r.stopped = true;
+        finishRun(r, new JSONObject(), why);
+    }
+
+    private void failRun(String why) {
+        cartRun = null;
+        cartBtn.setText("Собрать");
+        setChainButtons(currentChain >= 0);
+        say(why, true);
+    }
+
+    /** Показать, что вышло, и отдать отчёт серверу. Корзину не трогаем: оформляет человек. */
+    private void finishRun(final CartRun r, JSONObject cart, String stoppedWhy) {
+        cartRun = null;
+        cartBtn.setText("Собрать");
+        setChainButtons(currentChain >= 0);
+
+        int landed = 0;
+        StringBuilder msg = new StringBuilder();
+        if (!stoppedWhy.isEmpty()) msg.append(stoppedWhy).append("\n\n");
+        for (int i = 0; i < r.items.length(); i++) {
+            JSONObject it = r.items.optJSONObject(i);
+            if (it == null) continue;
+            boolean ok = it.optBoolean("ok");
+            if (ok) landed++;
+            msg.append(ok ? "✓ " : "✗ ").append(it.optString("name", ""));
+            if (ok && "request".equals(it.optString("how"))) msg.append(" · запросом сети");
+            if (!ok) msg.append(" — ").append(it.optString("why", ""));
+            msg.append('\n');
+        }
+
+        JSONArray totals = cart.optJSONArray("totals");
+        JSONObject api = cart.optJSONObject("api");
+        if (stoppedWhy.isEmpty()) {
+            msg.append("\nКорзина сети:\n");
+            if (totals == null || totals.length() == 0) {
+                msg.append("строк итога на странице не нашлось\n");
+                if (!r.cartHint.isEmpty()) {
+                    msg.append("дорогу к корзине не нашёл, похожее на странице: ").append(r.cartHint).append('\n');
+                }
+            } else {
+                for (int i = 0; i < totals.length(); i++) {
+                    JSONObject t = totals.optJSONObject(i);
+                    if (t != null) msg.append("• ").append(t.optString("row", "")).append('\n');
+                }
+            }
+            if (cart.has("count") && !cart.isNull("count")) {
+                msg.append("Счётчик корзины: ").append(cart.optInt("count")).append('\n');
+            }
+            if (api != null && api.length() > 0) {
+                msg.append("\nИз ответов сайта:\n");
+                Iterator<String> paths = api.keys();
+                int shownPaths = 0;
+                while (paths.hasNext() && shownPaths < 3) {
+                    String path = paths.next();
+                    JSONObject fields = api.optJSONObject(path);
+                    if (fields == null) continue;
+                    msg.append(path).append(": ");
+                    Iterator<String> keys = fields.keys();
+                    int shown = 0;
+                    while (keys.hasNext() && shown < 8) {
+                        String k = keys.next();
+                        msg.append(shown > 0 ? ", " : "").append(k).append('=').append(fields.opt(k));
+                        shown++;
+                    }
+                    msg.append('\n');
+                    shownPaths++;
+                }
+            }
+            if (cart.has("error")) msg.append("Чтение корзины: ").append(cart.optString("error")).append('\n');
+        }
+        msg.append("\nНаш расчёт по корзине: ").append(money(r.ourTotal));
+
+        long seconds = Math.round((SystemClock.uptimeMillis() - r.startedAt) / 1000.0);
+        new AlertDialog.Builder(this)
+            .setTitle(r.name + ": легло " + landed + " из " + r.items.length() + " за " + seconds + " с")
+            .setMessage(msg.toString())
+            .setPositiveButton("Готово", null)
+            .show();
+        say(r.name + ": легло " + landed + " из " + r.items.length() + ", отправляю отчёт", false);
+
+        JSONArray pageTotals = new JSONArray();
+        if (totals != null) {
+            for (int i = 0; i < totals.length(); i++) {
+                JSONObject t = totals.optJSONObject(i);
+                if (t == null) continue;
+                try {
+                    JSONObject row = new JSONObject().put("kind", t.optString("kind"))
+                        .put("label", t.optString("label")).put("amount", t.optDouble("amount"));
+                    // «Товары на сумму 1 748,98 ₽ 1 561,4 ₽»: первая сумма — до скидок.
+                    if (t.has("base") && !t.isNull("base")) row.put("base", t.optDouble("base"));
+                    pageTotals.put(row);
+                } catch (Exception ignored) { }
+            }
+        }
+        try {
+            JSONObject body = new JSONObject()
+                .put("store", r.code)
+                .put("app_version", BuildConfig.VERSION_NAME)
+                .put("items", r.items)
+                .put("cart_page", cart.optString("page", ""))
+                .put("our_total", r.ourTotal)
+                .put("page_totals", pageTotals)
+                .put("api_totals", api == null ? new JSONObject() : api);
+            if (cart.has("count") && !cart.isNull("count")) body.put("cart_count", cart.optInt("count"));
+            final String name = r.name;
+            call("/api/device/cartreport", body, (status, text) -> {
+                if (cartRun != null) return;   // уже идёт новая сборка — её строка важнее
+                if (status == 200) say(name + ": отчёт на сервере", false);
+                else say(name + ": отчёт не ушёл — " + serverError(status, text), true);
+            });
+        } catch (Exception ignored) { }
+    }
+
+    private String watchScript(CartRun r) {
+        return WATCH_JS.replace("%s", hostsOf(r).toString());
+    }
+
+    private String findCartScript(CartRun r) {
+        return FIND_CART_JS.replace("%s", hostsOf(r).toString());
+    }
+
+    private static JSONArray hostsOf(CartRun r) {
+        JSONArray hosts = r.rules.optJSONArray("hosts");
+        if (hosts != null && hosts.length() > 0) return hosts;
+        JSONArray own = new JSONArray();
+        for (String host : CHAINS[r.chain][3].split(",")) own.put(host.trim());
+        return own;
+    }
+
+    private static String pickScript(CartRun r, boolean again) {
+        JSONObject p = new JSONObject();
+        try {
+            p.put("add", r.rules.optString("add_name", "^(?:в корзину|добавить в корзину|купить)$"))
+             .put("plus", r.rules.optString("plus_name", "увелич|добавить ещё|плюс|^\\+$"))
+             .put("gone", r.rules.optString("gone", "нет в наличии|закончил|раскупил"))
+             .put("selectors", r.rules.optJSONArray("selectors") == null ? new JSONArray()
+                                                                          : r.rules.optJSONArray("selectors"))
+             .put("below", r.rules.optInt("below", 700))
+             .put("again", again);
+        } catch (Exception ignored) { }
+        return PICK_JS.replace("%s", p.toString());
+    }
+
+    /**
+     * Коснуться точки страницы так, как касается палец: событие экрана в WebView, а не
+     * щелчок скрипта. Точки CSS переводятся в пиксели вида по ширине видимой области.
+     */
+    private boolean tapAt(JSONObject at) {
+        if (!at.optBoolean("found")) return false;
+        double vw = at.optDouble("vw", 0);
+        if (vw <= 0 || web.getWidth() <= 0) return false;
+        double k = web.getWidth() / vw;
+        final float x = (float) (at.optDouble("x") * k);
+        final float y = (float) (at.optDouble("y") * k);
+        if (x < 0 || y < 0 || x > web.getWidth() || y > web.getHeight()) return false;
+        final long down = SystemClock.uptimeMillis();
+        MotionEvent press = MotionEvent.obtain(down, down, MotionEvent.ACTION_DOWN, x, y, 0);
+        press.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        web.dispatchTouchEvent(press);
+        press.recycle();
+        handler.postDelayed(() -> {
+            MotionEvent release = MotionEvent.obtain(down, SystemClock.uptimeMillis(),
+                                                     MotionEvent.ACTION_UP, x, y, 0);
+            release.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+            web.dispatchTouchEvent(release);
+            release.recycle();
+        }, 80);
+        return true;
+    }
+
+    private static JSONObject asObject(String result) {
+        try {
+            Object value = new JSONTokener(result == null ? "null" : result).nextValue();
+            if (value instanceof String) return new JSONObject((String) value);
+            if (value instanceof JSONObject) return (JSONObject) value;
+        } catch (Exception ignored) { }
+        return new JSONObject();
+    }
+
+    private static String money(double value) {
+        return String.format(new Locale("ru"), "%,.2f ₽", value);
+    }
+
+    private interface Reply {
+        void got(int status, String text);
+    }
+
+    /** POST на наш сервер с сессией «Моей корзины»; ответ — на главном потоке. */
+    private void call(String path, JSONObject body, Reply reply) {
+        final String session = CookieManager.getInstance().getCookie(SERVER);
+        new Thread(() -> {
+            int code = 0;
+            String text = "";
+            try {
+                HttpURLConnection conn = (HttpURLConnection) new URL(SERVER + path).openConnection();
+                conn.setRequestMethod("POST");
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(60000);
+                conn.setDoOutput(true);
+                conn.setInstanceFollowRedirects(false);
+                conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                if (session != null) conn.setRequestProperty("Cookie", session);
+                try (OutputStream os = conn.getOutputStream()) {
+                    os.write(body.toString().getBytes(StandardCharsets.UTF_8));
+                }
+                code = conn.getResponseCode();
+                InputStream is = code < 400 ? conn.getInputStream() : conn.getErrorStream();
+                if (is != null) text = new String(readAll(is), StandardCharsets.UTF_8);
+                conn.disconnect();
+            } catch (Exception e) {
+                text = "{\"error\":\"Сервер недоступен\"}";
+            }
+            final int status = code;
+            final String answer = text;
+            handler.post(() -> reply.got(status, answer));
+        }).start();
+    }
+
+    private static String serverError(int status, String text) {
+        if (status == 401 || status == 302 || status == 303) {
+            return "Сначала войдите в «Мою корзину» своим номером.";
+        }
+        String msg = status == 0 ? "Сервер недоступен" : "Ошибка " + status;
+        try { msg = new JSONObject(text).optString("error", msg); } catch (Exception ignored) { }
+        return msg;
     }
 
     // ── Вход в магазин ──
