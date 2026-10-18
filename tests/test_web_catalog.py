@@ -358,6 +358,35 @@ def test_links_names_what_is_confirmed(web):
     assert "89,90" in page
 
 
+def test_links_shows_base_candidates_with_a_confirm_button(web):
+    """Слабую связь единой базы подтверждают на «Связях»: кандидат должен быть виден.
+
+    До ревью 18.10.2026 кандидаты базы лежали в базе, а экран их не показывал, и
+    обещание «уедут после вашего подтверждения» было не выполнить.
+    """
+    pid = add("Йогурт Активиа 2,9% 150 г")
+    workspace()
+    try:
+        store = repo.get_store("lenta")
+        sp_id = repo.upsert_store_product(store.id, "10", "Йогурт АКТИВИА клубника 2,9% 150г")
+        repo.confirm_mapping(pid, sp_id, confirmed=False, method="master")
+    finally:
+        users.deactivate()
+
+    page = text(web.get(f"/links?product={pid}&store=lenta"))
+    assert "Йогурт АКТИВИА клубника 2,9% 150г" in page and 'value="10"' in page
+    assert "Подтвердить" in page
+
+    web.post("/links", data={"action": "confirm", "product": str(pid), "store": "lenta",
+                             "sku": "10"})
+    workspace()
+    try:
+        assert repo.confirmed_mapping(pid, repo.get_store("lenta").id)["sku"] == "10"
+        assert repo.mapping_method(pid, sp_id) is None       # теперь это выбор человека
+    finally:
+        users.deactivate()
+
+
 def test_dropping_a_link_explains_what_it_costs(web):
     """Снятая связь тихо выкидывает товар из расчёта — об этом надо сказать заранее."""
     pid = add("Творог 5% 200 г")

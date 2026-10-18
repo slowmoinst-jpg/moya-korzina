@@ -526,6 +526,12 @@ def basket_doubts(basket_id: int) -> list[dict]:
             mapping = repo.confirmed_mapping(product.id, store_id)
             if not mapping:
                 continue
+            # Подтверждённое единой базой уже прошло её правила (штрихкод, мост,
+            # равные слова или полное сокращение чека при той же фасовке), а
+            # похожесть букв с усечённым именем эталона из чека («Паст простоквашино
+            # 2 5») засыпала бы «Результат» ложными сомнениями (критика 17.10.2026).
+            if repo.mapping_method(product.id, mapping["id"]) == "master":
+                continue
             raw = mapping.get("raw_name") or ""
             flags = doubts(product, raw, mapping.get("weight_g"))
             score = round(similarity(product.name, raw), 3)

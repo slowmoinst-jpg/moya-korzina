@@ -48,3 +48,17 @@ def no_network():
     yield
     socket.socket.connect = _connect
     socket.socket.connect_ex = _connect_ex
+
+
+@pytest.fixture(autouse=True)
+def no_background_linking(monkeypatch):
+    """Фоновое сопоставление с единой базой в тестах не запускается само.
+
+    Вход и загрузка чеков зовут app/catalog/link.link_soon, а тот поднимает поток,
+    который открыл бы настоящий data/catalog.db и пережил бы сам тест. Тесты,
+    которым сопоставление нужно, зовут link.link_products прямо и со своим
+    временным каталогом; проверить сам вызов можно, подменив link_soon.
+    """
+    from app.catalog import link
+
+    monkeypatch.setattr(link, "link_soon", lambda phone, sync=False: False)

@@ -35,11 +35,86 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from app import config
-from app.matcher.normalize import normalize_name, parse_weight
+from app.matcher.normalize import gtin, gtin_trusted, normalize_name, parse_weight
 
 UNITS = {"г", "гр", "кг", "мл", "л", "шт", "мг", "уп", "пач", "бут"}
 _NUMERIC = re.compile(r"^\d+([.,]\d+)?$")
 _CAPS = re.compile(r"\b[А-ЯЁA-Z]{3,}\b")
+# Как написано название — решает его первое настоящее слово: не число, не единица
+# и не короче трёх букв. «Молоко ПРОСТОКВАШИНО 930 мл», «Сыр ЛАМБЕР 230г» — названия
+# со строчными, и ЗАГЛАВНЫЕ в них — марка (так пишет Лента). «ПИВО СВЕТЛОЕ 0,45л ж/б»,
+# «МОЛОКО … 930мл бзмж» — названия заглавными: строчные хвосты (единицы, тара,
+# надписи) не делают каждое слово маркой (ревью 18.10.2026). Цена правила: название,
+# начатое заглавной маркой («ЧУДО Йогурт…»), марку из заглавных не даёт — это
+# безопасная сторона, склеек вложением становится меньше.
+_TOKEN = re.compile(r"[^\W_]+")
+_UNIT_TOKENS = frozenset({"г", "гр", "кг", "мг", "мл", "л", "шт", "уп", "x", "х",
+                          "g", "gr", "kg", "ml", "l"})
+
+
+def _mixed_case(name: str) -> bool:
+    for token in _TOKEN.findall(name):
+        if token[0].isdigit() or len(token) < 3 or token.lower() in _UNIT_TOKENS:
+            continue
+        return any(ch.islower() for ch in token)
+    return False
+
+
+# Заглавные слова, которые маркой не бывают: обязательные надписи и размеры.
+# Замер критики 17.10.2026 на каталоге Дикси: ГОСТ стоял маркой у 30 строк, БЗМЖ —
+# у 26, XXL — у 21, и «Молоко … 930мл БЗМЖ» склеивалось с «…Домик в деревне… БЗМЖ».
+_NOT_BRAND = frozenset({"гост", "бзмж", "змж", "сзмж", "беззмж", "xxl", "пэт", "тба", "эко",
+                        "bio", "ту"})
+
+# Штук в упаковке: «Йогурт 4x125г», «Вода 6*0,5л», «Сок 0,2 л x 3 шт», «Яйца 10 шт»,
+# «Чай 25пак*2г», «Чай 100х2г». Фасовка берёт последнее число и считает четыре
+# йогурта одним (замер 17.10.2026: «…4x125г» и «…125г» сходились как один товар),
+# поэтому число штук — отдельный признак. Молчание — одна штука, и это осознанно:
+# «Пиво 0,45 л 6 шт» и «Пиво 0,45 л», «Вода 6 шт 0,5 л» и «Вода 0,5 л» — разные
+# покупки, цена различается в разы (ревью 18.10.2026).
+#
+# Порядок правил: множитель с единицей после второго числа («4x125г», «6х0,5л»,
+# «2х10шт», «100х2г») — самый надёжный; затем хвост «x 3 шт»; затем штуки словом
+# («10 шт», «25 пакетиков», «16 капсул»); и только потом множитель без единицы —
+# он уступает отдельному «N шт» («Мешки 30 шт 50х60» — 30, а не 50). Размеры — не
+# штуки: «24x24 см», «10x7x3 см», «29х10м», в латинице адресов «24kh24 sm».
+_UNIT_AFTER = r"\s*(?:г|гр|кг|мл|л|шт|g|gr|kg|ml|l|sht)(?![а-яёa-z])"
+_NOT_SIZE = r"(?!\d|[.,]\d|\s*[xх×*]\s*\d|\s*(?:см|мм|м|cm|mm|sm|m)\b)"
+_MULTI_UNIT = re.compile(r"(?<![\d.,])(\d{1,3})\s*[xх×*]\s*\d+(?:[.,]\d+)?" + _UNIT_AFTER)
+_MULTI = re.compile(r"(?<![\d.,])(\d{1,2})\s*[xх×*]\s*\d+(?:[.,]\d+)?" + _NOT_SIZE)
+_MULTI_TAIL = re.compile(r"[xх×*]\s*(\d{1,3})\s*шт")
+_PIECE_WORDS = (r"шт|пак(?:етик(?:ов|а|и)?|ет(?:ов|а|ы)?)?|капсул|саше|стик(?:ов|а|и)?"
+                r"|пирамид(?:ок|ки|ка)?|таблет(?:ок|ки|ка)?")
+_PIECES = re.compile(r"(?<![\d.,])(\d{1,3})\s*(?:" + _PIECE_WORDS + r")\.?(?![а-яё])")
+# Названия латиницей из адреса карточки (Дикси, Монетка, Перекрёсток, Впрок) пишут
+# штуки как «2sht» или «10st», а «х» множителя — как «kh» или «h»: «4kh125g». Без
+# этого у них всегда одна штука. Только для названий без кириллицы: в русском
+# названии «st» и «h» ничего такого не значат. «h» — множитель, только слитно с
+# числами или отдельным словом («48h 150ml» — это часы); «st b» — стеклянная бутылка.
+_CYRILLIC = re.compile(r"[а-яё]")
+_LAT_X = r"(?:\s*kh\s*|h|\s+h\s+|\s*[x*]\s*)"
+_MULTI_UNIT_LAT = re.compile(r"(?<![\d.,])(\d{1,3})" + _LAT_X + r"\d+(?:[.,]\d+)?" + _UNIT_AFTER)
+_MULTI_LAT = re.compile(r"(?<![\d.,])(\d{1,2})" + _LAT_X + r"\d+(?:[.,]\d+)?" + _NOT_SIZE)
+_MULTI_TAIL_LAT = re.compile(r"(?:[x*]|kh|h)\s*(\d{1,3})\s*(?:sht|st(?!\s*b\b))(?![a-z])")
+_PIECES_LAT = re.compile(r"(?<![\d.,])(\d{1,3})\s*(?:sht|st(?!\s*b\b)|paketikov|paketika|pak"
+                         r"|kapsul|sashe|sase|stikov|piramidok|tabletok)(?![a-z])")
+
+
+def pack_count(name: str | None) -> int:
+    """Сколько штук в упаковке по названию. Не сказано — одна."""
+    text = (name or "").lower()
+    if _CYRILLIC.search(text):
+        rules = (_MULTI_UNIT, _MULTI_TAIL, _PIECES, _MULTI)
+    else:
+        rules = (_MULTI_UNIT_LAT, _MULTI_TAIL_LAT, _PIECES_LAT, _MULTI_LAT)
+    for rx in rules:
+        found = rx.search(text)
+        if found:
+            try:
+                return max(1, int(found.group(1)))
+            except ValueError:
+                return 1
+    return 1
 
 # --- ПРОЦЕНТ И РАЗНОВИДНОСТЬ: чем товары отличаются, когда слова одинаковы -----
 #
@@ -171,12 +246,70 @@ def fold(text: str | None) -> str:
         s = s.replace(pair, one)
     # «y» осталась только там, где пришла латиницей: приравниваем её к «i», иначе
     # «krestyanskoe» и «krestanskoe» разойдутся на одну букву.
-    return s.replace("y", "i")
+    s = s.replace("y", "i")
+    # «й» часть адресов пишет удвоенным «jj» (Монетка, часть Перекрёстка:
+    # «dobryjj» — это «добрый»). Замер 17.10.2026 по разбору каталога: без этого
+    # такие строки не встречали кириллицу ни одной сети.
+    return s.replace("jj", "i")
 
 
 def fold_words(words) -> frozenset[str]:
     """Свод набора слов. Пустые после свода отбрасываем: они ничего не различают."""
     return frozenset(w for w in (fold(x) for x in words) if len(w) >= 2)
+
+
+# --- ТАРА, НАДПИСИ И ОТРИЦАНИЯ: одни правила для базы и для товаров людей ------
+#
+# ЗАЧЕМ (ревью 18.10.2026). Тару и обязательные надписи одни сети и чеки пишут,
+# другие нет: «…0,5Л ПЭТ», «…930МЛ БЗМЖ», «…0,5Л СТ/Б». О товаре они ничего не
+# говорят. Пока их убирало только сопоставление товара человека (app/catalog/link.py),
+# два товара базы, разошедшиеся одним таким словом, для человека становились равными
+# — и выходило «сомнительно». Поэтому чистка здесь, в prepare: её видят и склейка
+# базы, и сопоставление людей.
+#
+# «без X» — одно слово («без газа» → «безгаза»), иначе «без» терялось, и чек «ВОДА …
+# ГАЗ» находил «… без газа». «Н/ГАЗ» и «Б/К» в чеке — тоже отрицание: «НЕГАЗ»,
+# «БЕЗК». «С ЗМЖ» (с заменителем молочного жира) — слово «СЗМЖ», и оно остаётся:
+# такой продукт не равен молочному. Голое «змж» шумом не считается по той же
+# причине; шум — «БЗМЖ» и склеенное «без змж».
+NOISE = frozenset(fold(w) for w in (
+    "пэт", "pet", "тп", "тба", "бзмж", "беззмж", "безгмо", "без",
+    "весов", "весовой", "весовая", "весовое", "весовые", "жб", "стб", "плб"))
+_LETTER = "А-Яа-яЁёA-Za-z"
+_TARE_SLASH = re.compile(rf"(?<![{_LETTER}])(?:ст|пл|пэт|ж|с)\s*/\s*б(?:ут)?\.?(?![{_LETTER}])", re.I)
+_ZMZH = re.compile(rf"(?<![{_LETTER}])([бБсСbBsS])\s*[/.\-]?\s*(змж|zmzh)(?![{_LETTER}])", re.I)
+_SLASH_NEG = re.compile(rf"(?<![{_LETTER}])([нНбБ])\s*/\s*(?=[^\W\d_])")
+_WITHOUT_WORD = re.compile(r"\b(без|bez)\s+(?=[^\W\d_])", re.I)
+
+
+def _zmzh(m: re.Match) -> str:
+    head, tail = m.group(1), m.group(2)
+    latin = head.lower() in "bs"
+    if head.lower() in "бb":
+        word = "bezzmzh" if latin else "беззмж"
+    else:
+        word = "szmzh" if latin else "сзмж"
+    return word.upper() if (head.isupper() and tail.isupper()) else word
+
+
+def _slash_neg(m: re.Match) -> str:
+    head = m.group(1)
+    word = "не" if head.lower() == "н" else "без"
+    return word.upper() if head.isupper() else word
+
+
+def glue(text: str | None) -> str:
+    """Тару убрать, отрицания склеить в одно слово. Регистр сохраняется: по нему
+    узнаётся марка, и чек целиком заглавными не должен стать «со строчными»."""
+    text = _TARE_SLASH.sub(" ", text or "")
+    text = _ZMZH.sub(_zmzh, text)
+    text = _SLASH_NEG.sub(_slash_neg, text)
+    return _WITHOUT_WORD.sub(lambda m: m.group(1), text)
+
+
+def quiet(words) -> list[str]:
+    """Слова без тары и надписей (по своду письма), в прежнем порядке."""
+    return [w for w in words if fold(w) not in NOISE]
 
 
 @lru_cache(maxsize=8)
@@ -212,6 +345,16 @@ class Row:
     fbrand: frozenset[str] = frozenset()
     pct: float | None = None       # жирность, крепость: «Сметана 15 %» -> 15.0
     marks: frozenset[str] = frozenset()   # «без глютена», «zero», «детская»
+    # Штрихкод в одном виде (normalize.gtin) — по нему сравнивают и группируют.
+    # Сам barcode остаётся как его написала сеть. Замер 17.10.2026: чек отдаёт
+    # GTIN-14 с ведущим нулём, METRO — EAN-13, и буквальное сравнение разводило
+    # один товар. Приводится только ДОВЕРЕННЫЙ код (normalize.gtin_trusted).
+    # Внутренний код магазина (весовая этикетка, свой код сети) у каждой сети
+    # свой: такие коды идут подряд с малых номеров и у двух сетей совпадают на
+    # разных товарах («Бананы весовые» и «Свинина шея» — ревью 18.10.2026). Его
+    # ключ — «сеть#код»: решает он только внутри своей сети.
+    bkey: str | None = None
+    packs: int = 1                 # штук в упаковке: «4x125г» — четыре
 
 
 def meaningful(text: str | None) -> frozenset[str]:
@@ -242,10 +385,26 @@ def prepare(product: dict) -> Row:
     if not weight:
         weight, _ = parse_weight(name)
     brand = product.get("brand") or None
-    caps = {w for w in meaningful(" ".join(_CAPS.findall(name)))}
-    brand_words = meaningful(brand) | caps
-    order = tuple(ordered_words(name))
-    words = frozenset(order) | meaningful(brand)
+    # Слова — по склеенному названию без тары и надписей (glue, NOISE). Само название,
+    # процент, метки, штуки и фасовка — по тому, как написала сеть.
+    text = glue(name)
+    # Заглавные — марка, только если название написано со строчными: так пишет марки
+    # Лента («Молоко ПРОСТОКВАШИНО 930 мл»). Название целиком заглавными (строка
+    # чека, часть строк Дикси) иначе делало маркой каждое слово, и любое вложение
+    # слов проходило как «общая марка» (критика 17.10.2026). Склеенное отрицание
+    # («БЕЗГАЗА») маркой не бывает.
+    caps = (frozenset(quiet(w for w in meaningful(" ".join(_CAPS.findall(text)))
+                            if w not in _NOT_BRAND and not w.startswith("без")))
+            if _mixed_case(name) else frozenset())
+    own = frozenset(quiet(meaningful(brand)))
+    brand_words = own | caps
+    order = tuple(quiet(ordered_words(text)))
+    words = frozenset(order) | own
+    barcode = (str(product["barcode"]).strip() or None) if product.get("barcode") else None
+    code = gtin(barcode) if barcode else None
+    bkey = None
+    if barcode:
+        bkey = code if gtin_trusted(code) else f"{product['chain']}#{barcode}"
     return Row(id=int(product["id"]), chain=product["chain"], name=name,
                words=words, order=order, brand_words=brand_words,
                fwords=fold_words(words),
@@ -253,35 +412,71 @@ def prepare(product: dict) -> Row:
                fbrand=fold_words(brand_words),
                pct=parse_percent(name), marks=variant_marks(name),
                brand=brand, weight_g=weight or None, unit=product.get("unit") or None,
-               barcode=(str(product["barcode"]).strip() or None) if product.get("barcode") else None,
+               barcode=barcode, bkey=bkey, packs=pack_count(name),
                category=product.get("category"))
+
+
+def trusted_key(bkey: str | None) -> bool:
+    """Ключ штрихкода — настоящий GTIN, а не внутренний код одной сети."""
+    return bool(bkey) and "#" not in bkey
+
+
+def same_pack(a: Row, b: Row) -> bool:
+    """Число штук не спорит: разное число штук — разные покупки.
+
+    Четыре йогурта по 125 г — не один йогурт 125 г, хотя фасовка из названия у них
+    одна (последнее число). Молчание здесь улика, и это осознанно (ревью 18.10.2026):
+    «Пиво 0,45 л 6 шт» против «Пиво 0,45 л», «Вода 6 шт 0,5 л» против «Вода 0,5 л»,
+    «Сырок 40 г 5 шт» против «Сырок 40 г» — фасовка одной штуки, и правило «молчание
+    не улика» вернуло бы ошибку цены в 5–24 раза. Исключения «6 шт 300 г» = «300 г»
+    нет: по тексту не отличить общую фасовку пачки от фасовки одной штуки, а не
+    связать лучше, чем связать не то.
+    """
+    return a.packs == b.packs
+
+
+def compatible(a: Row, b: Row) -> bool:
+    """Охраны без слов: ничто, кроме названия, не говорит, что это разные товары.
+
+    Те же проверки, с которых начинается same_product; вынесены, чтобы сопоставление
+    товара человека с единой базой (app/catalog/link.py) судило по тем же правилам,
+    а не по своим.
+    """
+    if a.unit and b.unit and a.unit != b.unit:
+        return False
+    if not weights_agree(a.weight_g, b.weight_g):
+        return False
+    if not same_pack(a, b):
+        return False
+    # Процент — такая же жёсткая улика, как фасовка. Замер 20.09.2026: без него
+    # «Сметана Большая кружка 15 %» и она же 20 % склеивались в один товар, потому
+    # что числа выброшены как шум и наборы слов у них одинаковые.
+    if not percents_agree(a.pct, b.pct):
+        return False
+    # Метка разновидности на одной стороне и её отсутствие на другой — довод
+    # против. «Спагетти Barilla 450 г» и «Спагетти Barilla без глютена 400 г» —
+    # разные покупки, и человек узнаёт об этом уже дома.
+    if a.marks != b.marks:
+        return False
+    # Спор марок проверяется ПО СВОДУ, иначе он сам же и рубит межписьменные пары:
+    # «Простоквашино» и prostokvasino общих слов не имеют, и до сравнения названий
+    # дело бы не дошло — пара отсеялась бы как «марки спорят».
+    if a.fbrand and b.fbrand and not (a.fbrand & b.fbrand):
+        return False
+    return True
 
 
 def same_product(a: Row, b: Row, brand_vocab: frozenset[str] = frozenset()
                  ) -> tuple[bool, str, float]:
     """Один ли это товар. Возвращает (да/нет, способ, уверенность)."""
-    if a.barcode and b.barcode:
-        return (a.barcode == b.barcode), "barcode", 1.0
+    # Решает штрихкод, если оба кода настоящие или оба внутренние одной сети. Если
+    # настоящий только у одной стороны, а у другой — внутренний код магазина, коды
+    # ничего не говорят друг о друге: решают слова.
+    if a.bkey and b.bkey and (a.chain == b.chain or (trusted_key(a.bkey) and trusted_key(b.bkey))):
+        return (a.bkey == b.bkey), "barcode", 1.0
     if not a.words or not b.words:
         return False, "", 0.0
-    if a.unit and b.unit and a.unit != b.unit:
-        return False, "", 0.0
-    if not weights_agree(a.weight_g, b.weight_g):
-        return False, "", 0.0
-    # Процент — такая же жёсткая улика, как фасовка. Замер 20.09.2026: без него
-    # «Сметана Большая кружка 15 %» и она же 20 % склеивались в один товар, потому
-    # что числа выброшены как шум и наборы слов у них одинаковые.
-    if not percents_agree(a.pct, b.pct):
-        return False, "", 0.0
-    # Метка разновидности на одной стороне и её отсутствие на другой — довод
-    # против. «Спагетти Barilla 450 г» и «Спагетти Barilla без глютена 400 г» —
-    # разные покупки, и человек узнаёт об этом уже дома.
-    if a.marks != b.marks:
-        return False, "", 0.0
-    # Спор марок проверяется ПО СВОДУ, иначе он сам же и рубит межписьменные пары:
-    # «Простоквашино» и prostokvasino общих слов не имеют, и до сравнения названий
-    # дело бы не дошло — пара отсеялась бы как «марки спорят».
-    if a.fbrand and b.fbrand and not (a.fbrand & b.fbrand):
+    if not compatible(a, b):
         return False, "", 0.0
     if a.words == b.words:
         return True, "words", 0.95 if (a.weight_g and b.weight_g) else 0.8
@@ -346,8 +541,8 @@ def cluster(products: list[dict]) -> list[list[tuple[Row, str, float]]]:
     by_barcode: dict[str, list[Row]] = defaultdict(list)
     by_head: dict[str, list[Row]] = defaultdict(list)
     for r in rows:
-        if r.barcode:
-            by_barcode[r.barcode].append(r)
+        if r.bkey:
+            by_barcode[r.bkey].append(r)
         # Корзины — ПО СВОДУ ПИСЬМА, а не по самому слову. Иначе «молоко» и moloko
         # попадают в разные корзины и не встречаются никогда: перебор идёт только
         # внутри корзины, и второй заход по своду в same_product до них не дошёл бы.
@@ -383,7 +578,7 @@ def cluster(products: list[dict]) -> list[list[tuple[Row, str, float]]]:
             continue
         for i, a in enumerate(group):
             for b in group[i + 1:]:
-                if a.chain == b.chain and not (a.barcode and b.barcode):
+                if a.chain == b.chain and not (a.bkey and b.bkey):
                     continue   # два артикула одной сети с одним названием — не склеиваем
                 if union.find(a.id) == union.find(b.id):
                     continue   # уже одна группа: ни сравнение, ни склейка ничего не изменят
@@ -441,6 +636,9 @@ def _split_chained(group: list[tuple[Row, str, float]], vocab: frozenset[str]
         # бы трёх тысяч сравнений вместо восьмидесяти.
         pct = seed[0].pct
         marks = seed[0].marks
+        # Число штук копится так же: молчащий эталон «Сосиски 300 г» не должен держать
+        # при себе и «6 шт 300 г», и «10 шт 300 г».
+        packs = seed[0].packs if seed[0].packs > 1 else None
         for item in rest:
             row = item[0]
             if item is seed:
@@ -451,6 +649,9 @@ def _split_chained(group: list[tuple[Row, str, float]], vocab: frozenset[str]
             if marks and row.marks and marks != row.marks:
                 dropped.append(item)
                 continue
+            if packs is not None and row.packs > 1 and row.packs != packs:
+                dropped.append(item)
+                continue
             if not same_product(seed[0], row, vocab)[0]:
                 dropped.append(item)
                 continue
@@ -459,6 +660,8 @@ def _split_chained(group: list[tuple[Row, str, float]], vocab: frozenset[str]
                 pct = row.pct
             if not marks:
                 marks = row.marks
+            if packs is None and row.packs > 1:
+                packs = row.packs
         out.append(kept)
         rest = dropped
     return out
@@ -480,6 +683,11 @@ def canonical(group: list[tuple[Row, str, float]]) -> dict:
     # norm — слова НАЗВАНИЯ в его порядке (первое слово — обычно сам товар), затем
     # остальные слова группы и марка: поиск сначала смотрит на начало названия
     tail = set().union(*(r.words for r in rows)) - set(best.order)
+    # fnorm — все слова группы и марки в общем своде письма, с пробелами по краям:
+    # поиск товара человека ищет « основа», то есть начало слова, и находит одной
+    # строкой и кириллицу, и латиницу, и полное слово по сокращению чека.
+    folded = set().union(*(r.fwords | r.fbrand for r in rows))
     return {"name": best.name, "weight_g": weight, "brand": brand,
             "barcode": barcode, "unit": unit, "category": category,
-            "norm": " ".join(best.order + tuple(sorted(tail)))}
+            "norm": " ".join(best.order + tuple(sorted(tail))),
+            "fnorm": f" {' '.join(sorted(folded))} " if folded else None}

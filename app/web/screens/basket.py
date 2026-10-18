@@ -327,15 +327,22 @@ def _agrees_with_mapping(product_id: int, offer) -> bool:
     Исключение — артикул-заглушка из резервного CSV («vkusvill-strachatella-200»):
     сеть такого не знает, ссылка на корзину по нему не строится, и настоящая
     находка главнее.
+
+    Если человек убрал связь с сетью («Связь неверная — убрать её»), находку тоже не
+    берём: обещание «до нового подтверждения товар в расчёт по этой сети не попадёт»
+    держит и опрос цен (ревью 18.10.2026). После ручного подтверждения на «Связях»
+    отказ снят, и опрос снова обновляет цену.
     """
     store = repo.get_store(offer.store_code)
     if store is None:
         return True
     mapping = repo.confirmed_mapping(product_id, store.id)
     if not mapping:
-        return True
+        return not repo.chain_rejected(product_id, store.id)
     known = str(mapping.get("sku") or "")
-    return known == str(offer.sku) or known.startswith(f"{offer.store_code}-")
+    if known == str(offer.sku):
+        return True
+    return known.startswith(f"{offer.store_code}-") and not repo.chain_rejected(product_id, store.id)
 
 
 # ---------- цены позиций ----------
@@ -592,7 +599,9 @@ def page():
                      "best": _best_of(prices)})
 
     in_basket = {int(i["product_id"]) for i in items}
-    matrix = repo.mapping_matrix()
+    # «Готов в сети» — есть настоящий артикул, как в наряде: заглушка строки чека в
+    # корзину сети не уедет (repo.mapping_matrix, real_only).
+    matrix = repo.mapping_matrix(real_only=True)
     suggestions = [p for p in (repo.list_products() or [])
                    if p.id not in in_basket
                    and (not query or query.lower() in (p.name or "").lower())]
@@ -619,6 +628,9 @@ def page():
         approx=_approx(rows),
         usual={"date": date, "count": count, "mine": _usual_count() if not items else 0},
         job=job_of(basket_id),
+        # Что не уедет в корзину каждого магазина: там у товара нет артикула
+        # (cartplan.build). Только чтение — показ страницы ничего не ищет и не пишет.
+        coverage=[c for c in repo.coverage(basket_id) if c["unknown"]] if rows else [],
         result_path=SCREEN_BY_KEY["result"].path,
         receipts_path=SCREEN_BY_KEY["receipts"].path,
         plural_items=plural_items, rub=rub, num=num, pct=pct, unit_label=unit_label,
@@ -648,7 +660,7 @@ def suggest():
         return {"q": query, "items": []}
 
     stores = repo.list_stores()
-    matrix = repo.mapping_matrix()
+    matrix = repo.mapping_matrix(real_only=True)
     # Того, что уже лежит в корзине, в подсказке быть не должно: нажатие на него
     # молча переставило бы количество в единицу, и человек потерял бы набранное.
     in_basket = {int(i["product_id"]) for i in repo.basket_items(basket_id)} if basket_id else set()

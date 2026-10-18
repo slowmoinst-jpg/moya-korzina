@@ -111,9 +111,11 @@ def test_extra_qualifiers_need_a_brand_and_a_pack_size(catalog):
 def test_brand_conflict_separates_and_barcode_wins(catalog):
     store.upsert_products("lenta", [P("1", "Молоко 2,5% 930 мл", brand="Простоквашино")])
     store.upsert_products("magnit", [P("2", "Молоко 2,5% 930 мл", brand="Домик в деревне")])
-    store.upsert_products("vkusvill", [P("3", "Молочко детское 200 мл", barcode="4600000000019"),
-                                       P("4", "Совсем другой товар", barcode="4600000000026")])
-    store.upsert_products("dixy", [P("5", "Молочко 200 мл", barcode="4600000000019")])
+    # Коды — настоящие EAN-13 с верной контрольной цифрой: между сетями решает только
+    # такой код, внутренний код магазина значит что-то лишь внутри своей сети.
+    store.upsert_products("vkusvill", [P("3", "Молочко детское 200 мл", barcode="4600000000015"),
+                                       P("4", "Совсем другой товар", barcode="4600000000022")])
+    store.upsert_products("dixy", [P("5", "Молочко 200 мл", barcode="4600000000015")])
     summary = refresh.match_all()
     # марки спорят — два товара; штрихкод склеивает разные названия — один; плюс отдельный
     assert summary["items"] == 4
@@ -437,7 +439,8 @@ def test_link_products_recognises_receipt_items(catalog, user_db):
 
     milk = repo.upsert_product(Product(id=None, name="Молоко Простоквашино 2,5% 930 мл", unit="pcs"))
     peaches = repo.upsert_product(Product(id=None, name="Персики консервированные 500 г", unit="pcs"))
-    assert refresh.link_products() == {"tried": 2, "linked": 1}
+    found = refresh.link_products()
+    assert (found["tried"], found["linked"], found["strong"]) == (2, 1, 1)
 
     stores = {s.code: s.id for s in repo.list_stores()}
     assert repo.confirmed_mapping(milk, stores["lenta"])["sku"] == "80424"

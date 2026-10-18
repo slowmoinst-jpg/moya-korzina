@@ -37,6 +37,22 @@ class ChainProduct:
 
 Progress = Callable[[str], None]
 
+# Артикулы-заглушки: строка чека (app/connectors/history.PREFIX), строка прайса
+# (app/pricelist.SKU_PREFIX) и строка справочника data/fallback_prices.csv — она
+# пишется как «<код сети>-…» (так сопоставлено демо). Это источники ЦЕНЫ, а не коды
+# товара в сети: по такому «артикулу» сеть свой товар не узнает, и класть его в
+# корзину или мостить через него единую базу нельзя. Одно правило на всё приложение:
+# наряд, карточка покрытия, дозор цен и единая база спрашивают его здесь.
+PLACEHOLDER_PREFIXES = ("hist-", "list-")
+
+
+def placeholder_sku(sku: str | None, store_code: str | None = None) -> bool:
+    """Заглушка, а не настоящий артикул сети. store_code — узнать и «<сеть>-…»."""
+    text = str(sku or "")
+    if text.startswith(PLACEHOLDER_PREFIXES):
+        return True
+    return bool(store_code) and text.startswith(f"{store_code}-")
+
 
 class Crawler(ABC):
     """Сборщик каталога одной сети: перечисляет товары, ничего не записывая.

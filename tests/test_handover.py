@@ -575,19 +575,19 @@ def test_the_report_names_every_position_and_says_why(db, shop):
         MOLOKO: Card("Молоко Простоквашино 930 мл. Нет в наличии", []),
     })
     got = cart.deliver("magnit", "79990000041", naryad([
-        ("magnit-1", 1, "Творог Простоквашино 5%", "pcs", TVOROG),
-        ("magnit-2", 1, "Молоко Простоквашино 930 мл", "pcs", MOLOKO),
-        ("magnit-3", 1, "Хлеб Бородинский", "pcs", None),
+        ("100001", 1, "Творог Простоквашино 5%", "pcs", TVOROG),
+        ("100002", 1, "Молоко Простоквашино 930 мл", "pcs", MOLOKO),
+        ("100003", 1, "Хлеб Бородинский", "pcs", None),
     ]))
 
-    assert got["ok"] == ["magnit-1"]
+    assert got["ok"] == ["100001"]
     rows = {r["sku"]: r for r in cart.report("magnit")}
     assert len(rows) == 3, "позиция пропала из отчёта — человек о ней не узнает"
-    assert rows["magnit-1"]["ok"] is True
-    assert rows["magnit-1"]["name"] == "Творог Простоквашино 5%"
-    assert rows["magnit-2"]["ok"] is False
-    assert "нет в наличии" in rows["magnit-2"]["why"]
-    assert "нет адреса карточки" in rows["magnit-3"]["why"]
+    assert rows["100001"]["ok"] is True
+    assert rows["100001"]["name"] == "Творог Простоквашино 5%"
+    assert rows["100002"]["ok"] is False
+    assert "нет в наличии" in rows["100002"]["why"]
+    assert "нет адреса карточки" in rows["100003"]["why"]
 
 
 def test_a_rounded_position_keeps_its_note_even_when_it_lands(db, shop):
@@ -599,7 +599,7 @@ def test_a_rounded_position_keeps_its_note_even_when_it_lands(db, shop):
     """
     shop({SYR: Card("Сыр Российский 45%. Цена 240 ₽", [Node("в корзину")])})
     cart.deliver("magnit", "79990000041",
-                 naryad([("magnit-7", 0.7, "Сыр Российский 45%", "kg", SYR)]))
+                 naryad([("100007", 0.7, "Сыр Российский 45%", "kg", SYR)]))
 
     row = cart.report("magnit")[0]
     assert row["ok"] is True, "позиция должна была лечь"
@@ -620,15 +620,15 @@ def test_a_broken_browser_does_not_swallow_the_untouched_positions(db, shop, mon
 
     monkeypatch.setattr(cart.driver, "run", dead)
     cart.deliver("magnit", "79990000041", naryad([
-        ("magnit-1", 1, "Творог", "pcs", TVOROG),
-        ("magnit-2", 1, "Молоко", "pcs", MOLOKO),
-        ("magnit-3", 2.4, "Сыр", "kg", SYR),
+        ("100001", 1, "Творог", "pcs", TVOROG),
+        ("100002", 1, "Молоко", "pcs", MOLOKO),
+        ("100003", 2.4, "Сыр", "kg", SYR),
     ]))
 
     rows = cart.report("magnit")
-    assert [r["sku"] for r in rows] == ["magnit-1", "magnit-2", "magnit-3"]
+    assert [r["sku"] for r in rows] == ["100001", "100002", "100003"]
     assert all(r["ok"] is False for r in rows)
-    assert sorted(cart.failed_skus("magnit")) == ["magnit-1", "magnit-2", "magnit-3"]
+    assert sorted(cart.failed_skus("magnit")) == ["100001", "100002", "100003"]
 
 
 def test_a_position_that_landed_in_part_is_topped_up_and_not_doubled(db, shop):
@@ -641,24 +641,24 @@ def test_a_position_that_landed_in_part_is_topped_up_and_not_doubled(db, shop):
     """
     plus = Flaky("+", works=1)
     shop({MOLOKO: Card("Молоко Простоквашино. Цена 95 ₽", [Node("в корзину"), plus])})
-    plan = naryad([("magnit-1", 3, "Молоко Простоквашино", "pcs", MOLOKO)])
+    plan = naryad([("100001", 3, "Молоко Простоквашино", "pcs", MOLOKO)])
     cart.deliver("magnit", PHONE, plan)
 
     row = cart.report("magnit")[0]
     assert row["ok"] is False, "часть позиции не легла — значит она не легла"
     assert (row["put"], row["times"]) == (2, 3), "сколько именно легло, отчёт не запомнил"
-    assert cart.failed_skus("magnit") == ["magnit-1"]
+    assert cart.failed_skus("magnit") == ["100001"]
 
     # Наряд на повтор: та же позиция, но недостающим количеством.
-    lines, already = cart._shortlist("magnit", plan, ["magnit-1"])
+    lines, already = cart._shortlist("magnit", plan, ["100001"])
     assert [ln.qty for ln in lines] == [1], \
         "повтор понёс бы все три — в корзине человека стало бы пять"
-    assert already == {"magnit-1": 2}
+    assert already == {"100001": 2}
 
     # И заход по этому наряду нажимает ровно один раз.
     fresh = Node("в корзину")
     shop({MOLOKO: Card("Молоко Простоквашино. Цена 95 ₽", [fresh, Node("+")])})
-    cart._progress("magnit", items=cart._carry("magnit", {"magnit-1"}))
+    cart._progress("magnit", items=cart._carry("magnit", {"100001"}))
     cart.deliver("magnit", PHONE, cart._Naryad(lines, already))
 
     assert fresh.clicks == 1, "повтор нажал больше, чем не хватало"
@@ -684,16 +684,16 @@ def test_a_card_the_browser_did_not_answer_for_is_never_repeated(db, shop, monke
 
     monkeypatch.setattr(cart.driver, "run", slow)
     cart.deliver("magnit", PHONE, naryad([
-        ("magnit-1", 2, "Творог", "pcs", TVOROG),
-        ("magnit-2", 1, "Молоко", "pcs", MOLOKO)]))
+        ("100001", 2, "Творог", "pcs", TVOROG),
+        ("100002", 1, "Молоко", "pcs", MOLOKO)]))
 
     rows = {r["sku"]: r for r in cart.report("magnit")}
-    assert rows["magnit-1"]["unknown"] is True, "неизвестное выдано за неудачу"
-    assert "не знает" in rows["magnit-1"]["why"], "человеку не сказали, что это неизвестность"
-    assert "корзину в магазине" in rows["magnit-1"]["why"], "не назван следующий шаг"
-    assert rows["magnit-2"]["unknown"] is False, "до неё передача не дошла — это твёрдое «не легло»"
+    assert rows["100001"]["unknown"] is True, "неизвестное выдано за неудачу"
+    assert "не знает" in rows["100001"]["why"], "человеку не сказали, что это неизвестность"
+    assert "корзину в магазине" in rows["100001"]["why"], "не назван следующий шаг"
+    assert rows["100002"]["unknown"] is False, "до неё передача не дошла — это твёрдое «не легло»"
 
-    assert cart.failed_skus("magnit") == ["magnit-2"], \
+    assert cart.failed_skus("magnit") == ["100002"], \
         "позиция, про которую браузер молчит, ушла в повтор — она легла бы второй раз"
 
 
@@ -729,7 +729,7 @@ def test_the_launcher_refuses_a_second_handover_while_the_first_runs(db):
                    total=16, at=7, done=6, now="Творог", items=[])
     assert cart.running("magnit") is True
     assert cart.start("magnit", "79990000041",
-                      naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)])) is False
+                      naryad([("100001", 1, "Творог", "pcs", TVOROG)])) is False
 
 
 def test_a_handover_that_died_with_the_server_stops_blocking(db, monkeypatch):
@@ -740,14 +740,14 @@ def test_a_handover_that_died_with_the_server_stops_blocking(db, monkeypatch):
     """
     cart._progress("magnit", started_at="2026-09-17T18:42:00", finished_at=None,
                    total=16, at=7, done=6, now="Творог",
-                   items=[{"sku": "magnit-2", "name": "Молоко", "ok": False,
+                   items=[{"sku": "100002", "name": "Молоко", "ok": False,
                            "why": "нет в наличии", "note": "", "earlier": False}])
     assert cart.running("magnit") is True
     assert cart.failed_skus("magnit") == [], "пока идёт — повторять нечего"
 
     monkeypatch.setattr(cart, "STALE_AFTER", 0)
     assert cart.running("magnit") is False
-    assert cart.failed_skus("magnit") == ["magnit-2"], "мёртвый заход можно повторить"
+    assert cart.failed_skus("magnit") == ["100002"], "мёртвый заход можно повторить"
 
 
 def test_an_old_mark_without_a_pulse_is_not_taken_for_a_live_one(db):
@@ -775,16 +775,16 @@ def test_a_repeat_touches_only_what_did_not_land(db, shop):
     moloko_gone = Card("Молоко Простоквашино 930 мл. Нет в наличии", [])
     shop({TVOROG: Card("Творог Простоквашино. Цена 89 ₽", [tvorog]), MOLOKO: moloko_gone})
 
-    plan = naryad([("magnit-1", 1, "Творог Простоквашино", "pcs", TVOROG),
-                   ("magnit-2", 1, "Молоко Простоквашино 930 мл", "pcs", MOLOKO)])
+    plan = naryad([("100001", 1, "Творог Простоквашино", "pcs", TVOROG),
+                   ("100002", 1, "Молоко Простоквашино 930 мл", "pcs", MOLOKO)])
     cart.deliver("magnit", "79990000041", plan)
     assert tvorog.clicks == 1
-    assert cart.failed_skus("magnit") == ["magnit-2"]
+    assert cart.failed_skus("magnit") == ["100002"]
 
     # Второй заход: молоко появилось, творог трогать нельзя.
     page = shop({TVOROG: Card("Творог Простоквашино. Цена 89 ₽", [tvorog]),
                  MOLOKO: Card("Молоко Простоквашино 930 мл. Цена 95 ₽", [Node("в корзину")])})
-    only = [ln for ln in plan.lines if ln.sku == "magnit-2"]
+    only = [ln for ln in plan.lines if ln.sku == "100002"]
     cart.deliver("magnit", "79990000041", cart._Naryad(only))
 
     assert tvorog.clicks == 1, "удавшаяся позиция легла второй раз — корзина испорчена"
@@ -799,24 +799,24 @@ def test_a_repeat_keeps_in_the_report_what_already_lies_in_the_cart(db, shop):
     """
     cart._progress("magnit", started_at="2026-09-17T18:00:00",
                    finished_at="2026-09-17T18:03:00", done=2, total=2, items=[
-                       {"sku": "magnit-1", "name": "Творог Простоквашино", "qty": 1,
+                       {"sku": "100001", "name": "Творог Простоквашино", "qty": 1,
                         "unit": "pcs", "ok": True, "why": "", "note": "", "earlier": False},
-                       {"sku": "magnit-2", "name": "Молоко Простоквашино", "qty": 1,
+                       {"sku": "100002", "name": "Молоко Простоквашино", "qty": 1,
                         "unit": "pcs", "ok": False, "why": "нет в наличии", "note": "",
                         "earlier": False}])
 
-    carried = cart._carry("magnit", {"magnit-2"})
-    assert [r["sku"] for r in carried] == ["magnit-1"]
+    carried = cart._carry("magnit", {"100002"})
+    assert [r["sku"] for r in carried] == ["100001"]
     assert carried[0]["earlier"] is True, "лежащее с прошлого раза должно быть помечено"
 
     page = shop({MOLOKO: Card("Молоко Простоквашино. Цена 95 ₽", [Node("в корзину")])})
     cart._progress("magnit", items=carried)
     cart.deliver("magnit", "79990000041",
-                 cart._Naryad([PlanLine(sku="magnit-2", qty=1, name="Молоко Простоквашино",
+                 cart._Naryad([PlanLine(sku="100002", qty=1, name="Молоко Простоквашино",
                                         unit="pcs", price=None, url=MOLOKO)]))
 
     rows = cart.report("magnit")
-    assert [r["sku"] for r in rows] == ["magnit-1", "magnit-2"]
+    assert [r["sku"] for r in rows] == ["100001", "100002"]
     assert rows[0]["earlier"] is True and rows[0]["ok"] is True
     assert rows[1]["earlier"] is False and rows[1]["ok"] is True
     assert page.opened == [MOLOKO]
@@ -859,8 +859,9 @@ def seed_basket() -> int:
     cheese = repo.upsert_product(Product(id=None, name="Сыр Российский 45%", unit="kg"))
     for code, price_milk, price_cheese in (("magnit", 89.0, 240.0), ("pyaterochka", 95.0, 260.0)):
         store = repo.get_store(code)
-        milk_sp = repo.upsert_store_product(store.id, f"{code}-1", "Молоко Простоквашино 930 мл")
-        cheese_sp = repo.upsert_store_product(store.id, f"{code}-2", "Сыр Российский 45%")
+        head = {"magnit": "10000", "pyaterochka": "20000"}[code]   # настоящие на вид артикулы
+        milk_sp = repo.upsert_store_product(store.id, f"{head}1", "Молоко Простоквашино 930 мл")
+        cheese_sp = repo.upsert_store_product(store.id, f"{head}2", "Сыр Российский 45%")
         repo.confirm_mapping(milk, milk_sp, confirmed=True)
         repo.confirm_mapping(cheese, cheese_sp, confirmed=True)
         repo.save_price(milk_sp, price_milk)
@@ -888,7 +889,7 @@ def test_the_live_progress_is_a_small_answer_and_not_the_whole_page(web):
     users.open_workspace(PHONE)
     cart._progress("magnit", started_at="2026-09-17T18:42:00", finished_at=None,
                    total=16, at=7, done=6, now="Творог Простоквашино",
-                   items=[{"sku": "magnit-2", "name": "Сыр Российский", "qty": 0.7,
+                   items=[{"sku": "100002", "name": "Сыр Российский", "qty": 0.7,
                            "unit": "kg", "ok": True, "why": "",
                            "note": "0,7 кг нажатием не положить — взяли 1 упаковку",
                            "earlier": False}])
@@ -950,10 +951,10 @@ def test_the_screen_shows_the_report_with_names_and_reasons(web):
     cart._progress("magnit", started_at="2026-09-17T18:42:00",
                    finished_at="2026-09-17T18:45:00", total=2, done=2, at=0, now="",
                    note="1 позиц. не легло — причины ниже, их можно повторить.",
-                   items=[{"sku": "magnit-1", "name": "Молоко Простоквашино 930 мл",
+                   items=[{"sku": "100001", "name": "Молоко Простоквашино 930 мл",
                            "qty": 2, "unit": "pcs", "ok": True, "why": "", "note": "",
                            "earlier": False},
-                          {"sku": "magnit-2", "name": "Сыр Российский 45%", "qty": 0.7,
+                          {"sku": "100002", "name": "Сыр Российский 45%", "qty": 0.7,
                            "unit": "kg", "ok": False,
                            "why": "карточка говорит, что товара нет в наличии",
                            "note": "0,7 кг нажатием не положить — взяли 1 упаковку",
@@ -1007,9 +1008,9 @@ def test_the_repeat_button_counts_only_what_it_will_actually_repeat(web):
     users.open_workspace(PHONE)
     cart._progress("magnit", started_at="2026-09-17T18:42:00",
                    finished_at="2026-09-17T18:45:00", total=2, done=2,
-                   items=[{"sku": "magnit-2", "name": "Сыр", "qty": 0.7, "unit": "kg",
+                   items=[{"sku": "100002", "name": "Сыр", "qty": 0.7, "unit": "kg",
                            "ok": False, "why": "нет в наличии", "note": "", "earlier": False},
-                          {"sku": "magnit-404", "name": "Гречка, которой в корзине уже нет",
+                          {"sku": "10000404", "name": "Гречка, которой в корзине уже нет",
                            "qty": 1, "unit": "pcs", "ok": False, "why": "нет в наличии",
                            "note": "", "earlier": False}])
 
@@ -1030,9 +1031,9 @@ def test_the_repeat_button_sends_only_what_did_not_land(web, monkeypatch):
     users.open_workspace(PHONE)
     cart._progress("magnit", started_at="2026-09-17T18:42:00",
                    finished_at="2026-09-17T18:45:00", total=2, done=2,
-                   items=[{"sku": "magnit-1", "name": "Молоко", "qty": 2, "unit": "pcs",
+                   items=[{"sku": "100001", "name": "Молоко", "qty": 2, "unit": "pcs",
                            "ok": True, "why": "", "note": "", "earlier": False},
-                          {"sku": "magnit-2", "name": "Сыр", "qty": 0.7, "unit": "kg",
+                          {"sku": "100002", "name": "Сыр", "qty": 0.7, "unit": "kg",
                            "ok": False, "why": "нет в наличии", "note": "", "earlier": False}])
 
     done = threading.Event()
@@ -1051,8 +1052,8 @@ def test_the_repeat_button_sends_only_what_did_not_land(web, monkeypatch):
     assert "sent=magnit" in answer.headers["Location"]
     assert done.wait(timeout=5), "повтор не начался — человек ждал бы напрасно"
 
-    assert seen["skus"] == ["magnit-2"], "повтор потащил в корзину то, что уже там лежит"
-    assert seen["carried"] == [("magnit-1", True)], \
+    assert seen["skus"] == ["100002"], "повтор потащил в корзину то, что уже там лежит"
+    assert seen["carried"] == [("100001", True)], \
         "положенное в прошлый раз выпало из отчёта — человек решит, что корзина пуста"
 
 
@@ -1405,9 +1406,9 @@ def test_the_order_clicks_the_button_of_this_product_not_the_first_one(db, shop)
                        [panel, real, *carousel], title_top=356)})
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог Простоквашино 5%", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог Простоквашино 5%", "pcs", TVOROG)]))
 
-    assert got["ok"] == ["magnit-1"]
+    assert got["ok"] == ["100001"]
     assert real.clicks == 1, "нажали не кнопку товара"
     assert panel.clicks == 0, "нажали панель — это она перерисовывалась под пальцем"
     assert sum(c.clicks for c in carousel) == 0, "нажали карусель «с этим покупают»"
@@ -1426,7 +1427,7 @@ def test_a_card_without_a_title_still_gets_its_button(db, shop):
     shop({TVOROG: Card("Творог. Цена 89 ₽", [lower, top], title_top=0)})
 
     cart.deliver("magnit", "79990000041",
-                 naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                 naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     assert top.clicks == 1 and lower.clicks == 0
 
@@ -1447,7 +1448,7 @@ def test_when_the_page_refuses_to_choose_the_order_still_tries(db, shop, monkeyp
     monkeypatch.setattr(Shop, "evaluate", broken)
 
     cart.deliver("magnit", "79990000041",
-                 naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                 naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     assert only.clicks == 1, "запасной перебор не сработал"
 
@@ -1465,9 +1466,9 @@ def test_the_verdict_names_what_the_shop_cart_shows(db, shop):
     page.cart_count = 3
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
-    assert got["ok"] == ["magnit-1"]
+    assert got["ok"] == ["100001"]
     assert "3" in got["note"] and "корзина магазина" in got["note"].lower()
 
 
@@ -1481,9 +1482,9 @@ def test_an_empty_shop_cart_after_a_successful_order_is_shouted_about(db, shop):
     page.cart_count = 0
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
-    assert got["ok"] == ["magnit-1"], "нажатие-то прошло"
+    assert got["ok"] == ["100001"], "нажатие-то прошло"
     assert "ВНИМАНИЕ" in got["note"]
     assert "ноль" in got["note"], "не сказано, что именно не так"
 
@@ -1499,9 +1500,9 @@ def test_a_cart_without_a_visible_counter_invents_nothing(db, shop):
     page.cart_count = None
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
-    assert got["ok"] == ["magnit-1"]
+    assert got["ok"] == ["100001"]
     assert "ВНИМАНИЕ" not in got["note"] and "корзина магазина" not in got["note"].lower()
 
 
@@ -1516,7 +1517,7 @@ def test_a_failed_order_is_not_second_guessed_by_the_counter(db, shop):
     page.cart_count = 2
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     assert not got["ok"]
     assert "2" not in got["note"]
@@ -1538,7 +1539,7 @@ def test_the_order_stops_before_the_first_card_when_no_shop_is_chosen(db, shop):
                       "актуальный каталог Не сейчас Выбрать")
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     assert not got["ok"] and not got["failed"]
     assert page.opened == [], "открыли карточку, хотя класть всё равно было некуда"
@@ -1551,9 +1552,9 @@ def test_a_chosen_shop_does_not_stop_the_order(db, shop):
     page.home_text = "Магнит Магазин: Санкт-Петербург, Королёва 20 Каталог Акции Корзина"
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
-    assert got["ok"] == ["magnit-1"]
+    assert got["ok"] == ["100001"]
 
 
 def test_the_shop_choice_is_never_made_for_the_person():
@@ -1615,7 +1616,7 @@ def test_a_real_captcha_still_says_so(db, shop, monkeypatch):
                                           "guard": "check"})
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     assert "я не робот" in got["note"] and "пройдите" in got["note"].lower()
 
@@ -1636,7 +1637,7 @@ def test_the_person_is_told_which_point_the_calculation_used(db, shop, monkeypat
         places.Point(chain, "798387", "Санкт-Петербург, Королёва 20 корп.1", "адрес места")])
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     assert "Королёва 20" in got["note"], "не названа точка, по которой считали"
 
@@ -1650,7 +1651,7 @@ def test_an_unknown_point_is_not_invented(db, shop, monkeypatch):
     monkeypatch.setattr(places, "points", lambda chain: [])
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     assert "считало по" not in got["note"]
     assert "выберите свою точку" in got["note"].lower(), "просьба выбрать должна остаться"
@@ -1681,7 +1682,7 @@ def test_the_window_gets_the_point_the_calculation_used(db, shop, monkeypatch):
     monkeypatch.setattr(cart.driver, "open_store",
                         lambda chain, phone, **kw: seen.update(kw) or None)
 
-    cart.deliver("magnit", "79990000041", naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+    cart.deliver("magnit", "79990000041", naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     got = {c["name"]: c["value"] for c in (seen.get("state") or {}).get("cookies", [])}
     assert got.get("shopCode") == "%22264856%22", "корзина уехала бы в магазин витрины"
@@ -1708,7 +1709,7 @@ def test_a_shop_with_no_online_storefront_stops_the_order_instead_of_filling_a_s
                         lambda code: Location(store_id="628425", shop_type="MM_MINI"))
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     assert not got["ok"] and not got["failed"]
     assert page.opened == [], "открыли карточку в магазине, из которого не заказать"
@@ -1729,9 +1730,9 @@ def test_the_verdict_names_the_point_the_cart_was_filled_in(db, shop, monkeypatc
         places.Point(chain, "264856", "Москва, Авиаконструктора Микояна, 12", "адрес места")])
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
-    assert got["ok"] == ["magnit-1"]
+    assert got["ok"] == ["100001"]
     assert "Микояна, 12" in got["note"]
 
 
@@ -1746,7 +1747,7 @@ def test_a_card_that_never_opens_does_not_blame_the_markup(db, shop):
     shop({TVOROG: Card("Не удалось загрузить\nПопробуйте обновить страницу или зайдите позже")})
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     why = got["failed"][0]["why"]
     assert "вёрстку" not in why, "снова винят магазин в том, чего он не делал"
@@ -1775,9 +1776,9 @@ def test_the_order_closes_the_shop_window_itself_when_the_point_is_already_ours(
                         lambda code: Location(store_id="264856", shop_type="MM"))
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
-    assert got["ok"] == ["magnit-1"], "наряд встал там, где вопрос уже был закрыт"
+    assert got["ok"] == ["100001"], "наряд встал там, где вопрос уже был закрыт"
     assert page.opened == [TVOROG]
 
 
@@ -1794,7 +1795,7 @@ def test_without_a_point_the_window_is_not_closed_behind_the_persons_back(db, sh
     page.home_buttons = [Dismiss(page)]
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     assert page.home_buttons[0].clicks == 0, "согласились за человека на чужой магазин"
     assert not got["ok"]
@@ -1814,7 +1815,7 @@ def test_a_window_that_will_not_close_still_stops_the_order(db, shop, monkeypatc
                         lambda code: Location(store_id="264856", shop_type="MM"))
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     assert page.opened == [], "пошли по карточкам сквозь окно, которое не ушло"
     assert "выберите свою точку" in got["note"].lower()
@@ -1843,7 +1844,7 @@ def test_the_counter_does_not_read_prices_off_product_tiles(db, shop):
     ]
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     assert "показывает 1 позиц" in got["note"], got["note"]
     assert "208" not in got["note"] and "9738" not in got["note"]
@@ -1855,9 +1856,9 @@ def test_an_empty_header_counter_is_still_not_a_zero(db, shop):
     page.cart_nodes = [(3, "Перейти в корзину Корзина")]
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
-    assert got["ok"] == ["magnit-1"]
+    assert got["ok"] == ["100001"]
     assert "ВНИМАНИЕ" not in got["note"], "отсутствие числа принято за ноль"
     assert "показывает" not in got["note"]
 
@@ -1879,7 +1880,7 @@ def test_a_click_the_network_ignored_is_not_called_a_success(db, shop):
     page.cart_seen = []
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     assert not got["ok"], "нажатие в пустоту снова объявлено успехом"
     assert "не обратилась к своей корзине" in got["failed"][0]["why"]
@@ -1897,9 +1898,9 @@ def test_a_network_that_did_send_the_request_is_not_doubted(db, shop):
     page.cart_seen = [["https://magnit.ru/webgate/v1/cart/add", 200]]
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
-    assert got["ok"] == ["magnit-1"]
+    assert got["ok"] == ["100001"]
 
 
 def test_a_network_we_never_measured_is_not_accused(db, shop, monkeypatch):
@@ -1914,9 +1915,9 @@ def test_a_network_we_never_measured_is_not_accused(db, shop, monkeypatch):
     monkeypatch.setitem(cart.SENDS_CART, "magnit", ())
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
-    assert got["ok"] == ["magnit-1"]
+    assert got["ok"] == ["100001"]
     assert page.watching is False, "поставили счётчик там, где считать не умеем"
 
 
@@ -1945,7 +1946,7 @@ def test_a_stranger_counter_is_not_mistaken_for_the_shops_own_cart(db, shop):
     ]
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     assert not got["ok"], "чужой счётчик снова сошёл за обращение к корзине"
     assert "не обратилась к своей корзине" in got["failed"][0]["why"]
@@ -1961,7 +1962,7 @@ def test_the_networks_refusal_is_named_by_its_code(db, shop):
     page.cart_seen = [["https://magnit.ru/webgate/v1/cart/add", 401]]
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
     assert not got["ok"]
     assert "не считает вас вошедшим" in got["failed"][0]["why"]
@@ -1978,9 +1979,9 @@ def test_one_refusal_among_successes_does_not_condemn_the_transfer(db, shop):
                       ["https://magnit.ru/webgate/v1/cart/add", 200]]
 
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
 
-    assert got["ok"] == ["magnit-1"]
+    assert got["ok"] == ["100001"]
 
 
 def test_the_rule_that_tells_our_requests_from_strangers_is_checked_directly():
@@ -2051,7 +2052,7 @@ def test_a_carousel_button_is_never_taken_for_the_products_own(db, shop):
     carousel = Node("в корзину", top=300 + 800)
     shop({TVOROG: Card("Творог Простоквашино 5% 200 г. Цена 89 ₽", [carousel], title_top=300)})
     got = cart.deliver("magnit", "79990000041",
-                       naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)]))
+                       naryad([("100001", 1, "Творог", "pcs", TVOROG)]))
     assert got["ok"] == [] and carousel.clicks == 0
 
 
@@ -2106,12 +2107,12 @@ def test_a_second_full_handover_is_asked_about_not_done(db, shop, monkeypatch):
     monkeypatch.setattr(users, "deactivate", lambda: None)
     monkeypatch.setattr(collector, "accept", lambda data: None)
     shop({TVOROG: Card("Творог. Цена 89 ₽", [Node("в корзину")])})
-    plan = naryad([("magnit-1", 1, "Творог", "pcs", TVOROG)])
+    plan = naryad([("100001", 1, "Творог", "pcs", TVOROG)])
 
     assert cart.start("magnit", "79990000041", plan, wait=True) is True
     assert cart.already_sent("magnit")["landed"] == 1
     assert cart.start("magnit", "79990000041", plan, wait=True) is False
-    assert cart.start("magnit", "79990000041", plan, wait=True, only=["magnit-1"]) is True
+    assert cart.start("magnit", "79990000041", plan, wait=True, only=["100001"]) is True
     assert cart.start("magnit", "79990000041", plan, wait=True, again=True) is True
 
 
@@ -2129,8 +2130,8 @@ def test_pressing_send_after_a_finished_handover_asks_first(web):
     users.open_workspace(PHONE)
     finished = (dt.datetime.now() - dt.timedelta(minutes=5)).isoformat(timespec="seconds")
     cart._progress("magnit", started_at=finished, finished_at=finished, total=2, at=0, done=2,
-                   now="", items=[{"sku": "magnit-1", "name": "Молоко", "ok": True},
-                                  {"sku": "magnit-2", "name": "Сыр", "ok": False, "why": "нет"}])
+                   now="", items=[{"sku": "100001", "name": "Молоко", "ok": True},
+                                  {"sku": "100002", "name": "Сыр", "ok": False, "why": "нет"}])
 
     answer = web.post("/accounts", data={"do": "send:magnit"})
     assert answer.status_code == 302
@@ -2148,9 +2149,9 @@ def test_a_shop_counter_below_what_was_put_is_called_out(db, shop):
                  MOLOKO: Card("Молоко. Цена 79 ₽", [Node("в корзину")])})
     page.cart_count = 1
     got = cart.deliver("magnit", "79990000041", naryad([
-        ("magnit-1", 1, "Творог", "pcs", TVOROG),
-        ("magnit-2", 1, "Молоко", "pcs", MOLOKO)]))
-    assert got["ok"] == ["magnit-1", "magnit-2"]
+        ("100001", 1, "Творог", "pcs", TVOROG),
+        ("100002", 1, "Молоко", "pcs", MOLOKO)]))
+    assert got["ok"] == ["100001", "100002"]
     assert "показывает 1" in got["note"] and "ВНИМАНИЕ" in got["note"]
 
 
@@ -2205,7 +2206,7 @@ def test_the_result_screen_asks_before_filling_the_same_cart_twice(web):
     store_accounts.mark_connected("magnit", gives=[store_accounts.CART])
     finished = (dt.datetime.now() - dt.timedelta(minutes=3)).isoformat(timespec="seconds")
     cart._progress("magnit", started_at=finished, finished_at=finished, total=1, at=0, done=1,
-                   now="", items=[{"sku": "magnit-1", "name": "Молоко", "ok": True}])
+                   now="", items=[{"sku": "100001", "name": "Молоко", "ok": True}])
 
     page = text(web.get(f"/result?basket={basket_id}&mode=single"))
     assert "уже передана" in page and "удвоит корзину" in page
