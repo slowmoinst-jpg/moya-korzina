@@ -21,6 +21,20 @@
 страницы и числа из ответов сайта о корзине. Только суммы и имена полей. Адресов,
 имён и телефонов телефон не шлёт, а поля с такими словами отбрасываются здесь ещё
 раз тем же правилом, что у записи корзины.
+
+САМА, В ФОНЕ (приложение 1.13). Пока человек смотрит корзину на телефоне, приложение
+собирает её во всех сетях, где он вошёл, — скрытым окном на сеть, сети параллельно,
+внутри сети один поток. Наряд говорит, какую корзину он описывает (basket и её
+отпечаток stamp): по отпечатку приложение видит, менялась ли корзина с прошлой сборки
+в этой сети, и без перемен не собирает. Ход идёт в progress, итог — в тот же отчёт.
+
+ПОВЕРХ ЛЕЖАЩЕГО — ТОЛЬКО НЕДОСТАЮЩЕЕ. Сеть кладёт поверх того, что уже в корзине, и
+повторная сборка удвоила бы её. Поэтому приложение помнит, что само положило в каждую
+сеть, и докладывает только разницу: позиция, которая уже лежит, в отчёте «kept».
+Лишнее (было в корзине человека, теперь нет) приложение не убирает — это решает
+человек, — а называет в отчёте (extra). Где сеть отвечает на запись корзиной целиком
+(full_cart), её ответ поправляет память телефона: человек мог оформить заказ или
+убрать товар сам.
 """
 from __future__ import annotations
 
@@ -91,6 +105,31 @@ API_TOTALS: dict[str, list[dict]] = {
     ],
 }
 
+# Ответы сети на запись корзины, в которых лежит ВСЯ её корзина — у каждой позиции
+# артикул и количество. Магнит, замер на эмуляторе 18.10.2026: PUT carts/lite после
+# «В корзину» вернул в items и только что положенный товар, и лежавший раньше, с qnty у
+# каждого; checkout/preview отдаёт корзину в suborders[].items[]. По такому ответу
+# телефон знает, что на самом деле лежит в корзине сети, а не только что он клал сам.
+FULL_CART: dict[str, tuple[str, ...]] = {
+    "magnit": ("/webgate/v1/carts/lite", "/webgate/v1/checkout/preview"),
+}
+
+# Сети, чей запрос записи корзины СТАВИТ количество, а не прибавляет: повтор с тем же
+# числом ничего не удваивает, и прибавка к лежащей позиции — тот же запрос с итоговым
+# числом. Магнит, замер на эмуляторе 18.10.2026: «В корзину» шлёт PUT carts/lite с одной
+# позицией и qnty 1, а «+» на карточке, где Алёнки лежало 2, — ВСЮ корзину с qnty 3 у
+# Алёнки и прежними числами у остальных; в ответе Алёнки 3, прочие на месте. Значит,
+# перечисленным позициям запрос ставит число, неперечисленные не трогает. Остальным
+# сетям, пока не замерено, прибавку телефон делает касаниями «+», по одной упаковке.
+QTY_SETS: tuple[str, ...] = ("magnit",)
+
+# Корзина сети пуста — так пишут её страницы. Если приложение помнит, что клало сюда,
+# а сеть показывает пустую корзину, человек оформил заказ или очистил её сам.
+EMPTY_CART = (r"корзина пуста|в корзине пока|в корзине пусто|в корзине нет товаров|"
+              r"в корзине ничего нет|пустая корзина")
+
+HOWS = ("tap", "request", "kept")
+
 REPORT_KEY = "phonecart.last."
 # Столько незнакомых позиций за один наряд ищем поиском самой сети. Поиск — запрос
 # к сети на каждую позицию, а телефон ждёт ответа наряда не дольше минуты.
@@ -128,6 +167,12 @@ def rules(store: str) -> dict:
         # Сеть, у которой замерено: нажатие обязано уйти запросом к корзине. Нет
         # запроса — не легло (cart.SENDS_CART, замер Магнита 20.09.2026).
         "sends_cart": store in cart.SENDS_CART,
+        # Кука входа: по ней приложение само видит, вошёл ли человек в сеть у себя в
+        # окне, даже если сервер сохранённого входа не знает (Магнит, 16.10.2026).
+        "auth_cookies": list(signals.AUTH_COOKIE.get(store) or ()),
+        "full_cart": list(FULL_CART.get(store, ())),
+        "qty_sets": store in QTY_SETS,
+        "empty_cart": EMPTY_CART,
     }
 
 
@@ -157,12 +202,26 @@ def plan(body: dict) -> dict:
     picked = {k: v for k, v in body.items() if k in ("basket", "lines")}
     found = {"linked": 0} if picked.get("lines") is not None else _link(picked, store)
     lines, empty_note = api._plan_lines(picked, store)
+    basket_id = _basket_id(picked)
     built = cartplan.build(store, lines, force=True)
     rows = []
+    by_sku: dict[str, dict] = {}
     for line in built.lines[:cart.LINE_LIMIT]:
         clicks, rounded = cart.pieces_of(line)
         row = line.as_dict()
         row.update(clicks=int(clicks), rounding=rounded)
+        # Два товара корзины на одном артикуле сети (дубль из чека и каталога) — одна
+        # позиция с суммой упаковок. Иначе сеть, что ставит количество (QTY_SETS), взяла
+        # бы число второй строки вместо суммы: замер на эмуляторе 18.10.2026, Алёнка 3 + 2.
+        same = by_sku.get(str(row.get("sku") or "")) if row.get("sku") else None
+        if same is not None:
+            same["clicks"] += row["clicks"]
+            same["qty"] = round(float(same.get("qty") or 0) + float(row.get("qty") or 0), 3)
+            if row.get("price") is not None:
+                same["price"] = round(float(same.get("price") or 0) + float(row["price"]), 2)
+            continue
+        if row.get("sku"):
+            by_sku[str(row["sku"])] = row
         rows.append(row)
     note = built.note
     if not rows:
@@ -175,7 +234,30 @@ def plan(body: dict) -> dict:
                     f"{found['in_catalog']}, поиском самой сети — {found['by_search']} "
                     f"из {found['searched']}.")
     return {"ok": True, "store": store, "lines": rows, "unknown": list(built.unknown),
-            "total": built.total, "note": note, "linked": found["linked"], "rules": rules(store)}
+            "total": built.total, "note": note, "linked": found["linked"], "rules": rules(store),
+            # Какую корзину описывает наряд и её отпечаток: по нему телефон узнаёт, менялась
+            # ли корзина с прошлой сборки в этой сети, и без перемен её не повторяет.
+            "basket": basket_id,
+            "stamp": _stamp(basket_id)}
+
+
+def _basket_id(picked: dict) -> int | None:
+    """Номер корзины наряда: названная или самая свежая. Присланный список — не корзина."""
+    if picked.get("lines") is not None:
+        return None
+    if picked.get("basket") is not None:
+        try:
+            return int(picked["basket"])
+        except (TypeError, ValueError):
+            return None
+    baskets = repo.list_baskets()
+    return int(baskets[0]["id"]) if baskets else None
+
+
+def _stamp(basket_id: int | None) -> str:
+    from app import cartrun
+
+    return cartrun.stamp_of(basket_id) if basket_id is not None else ""
 
 
 def _link(picked: dict, store: str) -> dict:
@@ -300,8 +382,9 @@ def accept_report(body: dict) -> dict:
             "why": _text(raw.get("why"), 200),
             "put": _count(raw.get("put")) or 0,
             "times": _count(raw.get("times")) or 0,
-            # Чем легла позиция: касанием кнопки сайта или повтором запроса сети.
-            "how": raw.get("how") if raw.get("how") in ("tap", "request") else "tap",
+            # Чем легла позиция: касанием кнопки сайта, повтором запроса сети или уже
+            # лежала в корзине сети с прошлой сборки (kept) — тогда её не трогали.
+            "how": raw.get("how") if raw.get("how") in HOWS else "tap",
             # Какие запросы к корзине ушли после нажатий: «PUT /webgate/v1/carts/lite 201».
             # Путь телефон уже свернул ({id}); здесь сворачиваем ещё раз.
             "calls": [_call(c) for c in (raw.get("calls") or [])[:6] if isinstance(c, str)],
@@ -336,6 +419,12 @@ def accept_report(body: dict) -> dict:
         if clean:
             found[cartrecord.template_path(_text(path, 200))] = clean
 
+    extra = []
+    for raw in (body.get("extra") or [])[:ITEMS_LIMIT]:
+        if isinstance(raw, dict) and _text(raw.get("name"), 120):
+            extra.append({"name": _text(raw.get("name"), 120), "sku": _text(raw.get("sku"), 40),
+                          "more": _count(raw.get("more")) or 1})
+
     report = {
         "store": store,
         "at": datetime.now().isoformat(timespec="seconds"),
@@ -348,6 +437,12 @@ def accept_report(body: dict) -> dict:
         "items": items,
         "page_totals": page,
         "api_totals": found,
+        # Сама, в скрытом окне, пока человек смотрел корзину, — или кнопкой «Собрать».
+        "background": bool(body.get("background")),
+        "basket": _count(body.get("basket")),
+        "stamp": _text(body.get("stamp"), 40),
+        "extra": extra,
+        "seconds": _count(body.get("seconds")),
     }
     repo.set_setting(REPORT_KEY + store, json.dumps(report, ensure_ascii=False))
     log.info("корзина с телефона, %s: легло %d из %d, итог сети %s, полей из ответов %d",
@@ -357,6 +452,26 @@ def accept_report(body: dict) -> dict:
     return {"ok": True, "store": store, "landed": report["landed"],
             "planned": report["planned"], "total": total_of(report),
             "network": network_total(report)}
+
+
+def progress(body: dict) -> dict:
+    """Ход сборки телефона в одной сети — в строку «Сборки корзин» (cartrun.progress).
+
+    Телефон шлёт его, начиная сборку, на каждой позиции и когда сборка кончилась без
+    отчёта («класть нечего», сеть увела на страницу входа). Форма: {store, basket,
+    stamp, planned, at, now, state, note}. Сеть, куда сейчас кладёт сервер, отвечает
+    отказом — ValueError, и телефон отступает.
+    """
+    from app import cartrun
+
+    store = _store(body)
+    row = cartrun.progress({
+        "store": store, "basket": body.get("basket"), "stamp": _text(body.get("stamp"), 40),
+        "planned": _count(body.get("planned")) or 0, "at": _count(body.get("at")) or 0,
+        "now": _text(body.get("now"), 160), "state": _text(body.get("state"), 10),
+        "note": _text(body.get("note"), 400),
+    }, by=cartrun.DEVICE)
+    return {"ok": True, "store": store, "state": row.state}
 
 
 def _page(report: dict, kind: str) -> float | None:
@@ -394,14 +509,28 @@ def _to_row(report: dict) -> None:
                      "discount": discount, "delivery": _page(report, "delivery"),
                      "count": network["count"] if network else report.get("cart_count")}
         items = report.get("items") or []
-        cartrun.accept({
+        kept = sum(1 for item in items if item.get("ok") and item.get("how") == "kept")
+        note = ("собрано с телефона само, пока была открыта корзина" if report.get("background")
+                else "собрано с телефона кнопками сайта")
+        if kept:
+            note += f"; {kept} поз. уже лежали в корзине сети с прошлой сборки — их не трогали"
+        if report.get("extra"):
+            note += ("; в корзине сети осталось и прежнее, чего в вашей корзине теперь нет — "
+                     "приложение его не убирает")
+        reply = {
             "store": report["store"],
             "landed": [item["name"] for item in items if item.get("ok")],
             "missing": [{"name": item["name"], "why": item.get("why") or "не легло"}
                         for item in items if not item.get("ok")],
             "total": total,
-            "note": "собрано с телефона кнопками сайта",
-        }, by=cartrun.DEVICE)
+            "note": note,
+            "extra": report.get("extra") or [],
+        }
+        if report.get("basket"):
+            reply["basket"] = report["basket"]
+        if report.get("stamp"):
+            reply["stamp"] = report["stamp"]
+        cartrun.accept(reply, by=cartrun.DEVICE)
     except Exception:  # noqa: BLE001
         log.warning("%s: строка «Сборки корзин» не обновилась отчётом телефона",
                     report.get("store"), exc_info=True)
@@ -472,5 +601,5 @@ def last(store: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-__all__ = ["CHAINS", "CART_PAGES", "KINDS", "API_TOTALS", "rules", "plan", "accept_report",
-           "network_total", "total_of", "last"]
+__all__ = ["CHAINS", "CART_PAGES", "KINDS", "API_TOTALS", "FULL_CART", "QTY_SETS", "EMPTY_CART",
+           "rules", "plan", "accept_report", "progress", "network_total", "total_of", "last"]

@@ -11,6 +11,17 @@
       "autoPort": true
     },
     {
+      "name": "web-emu",
+      "runtimeExecutable": "F:\\AI\\МояКорзина\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "-m",
+        "app.web.server",
+        "--port",
+        "8611"
+      ],
+      "port": 8611
+    },
+    {
       "name": "mockups",
       "runtimeExecutable": "F:\\AI\\МояКорзина\\.venv\\Scripts\\python.exe",
       "runtimeArgs": [
