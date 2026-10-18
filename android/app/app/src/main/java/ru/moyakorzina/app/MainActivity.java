@@ -459,7 +459,9 @@ public class MainActivity extends Activity {
       + "var MARK='data-korzina-add',ADD=/^(в корзину|добавить в корзину|купить)$/i,H=window.innerHeight||100000;"
       + "var NEVER=/очист|удал|убра|оформ|оплат|clear|remove|delete|checkout/i;"
       + "[].slice.call(document.querySelectorAll('['+MARK+']')).forEach(function(e){e.removeAttribute(MARK);});"
-      + "var els=[].slice.call(document.querySelectorAll('a,button,[role=button],[role=link],[role=tab]')),best=null,bestS=9;"
+      // Пункт меню тоже дорога: у Магнита с доставкой «Мигом» нижнее меню — это
+      // li[role=menuitem], а кнопка «Перейти в корзину» нулевого размера (эмулятор, 18.10.2026).
+      + "var els=[].slice.call(document.querySelectorAll('a,button,[role=button],[role=link],[role=tab],[role=menuitem]')),best=null,bestS=9;"
       // Детали значка (svg и всё внутри) не в счёт: у «Корзины» нижнего меню Магнита
       // картинка из многих частей, и по общему числу потомков кнопка выглядела плиткой.
       + "function kids(e){return e.querySelectorAll('*').length-e.querySelectorAll('svg, svg *').length;}"
@@ -586,8 +588,8 @@ public class MainActivity extends Activity {
     private static final int PICK_TRIES = 3;
     private static final int PICK_RETRY_MS = 1500;
     /** Сколько раз перечитать страницу корзины, если итога на ней ещё нет, и через сколько. */
-    private static final int READ_TRIES = 3;
-    private static final int READ_RETRY_MS = 2000;
+    private static final int READ_TRIES = 5;
+    private static final int READ_RETRY_MS = 2500;
 
     private WebView web;
     private ProgressBar progress;
@@ -922,6 +924,7 @@ public class MainActivity extends Activity {
         int tries = 0;     // сколько раз ещё раз искали кнопку на этой карточке
         int readTries = 0;            // сколько раз перечитывали страницу корзины без итога
         boolean cartPageTried = false; // открывали ли адрес корзины из наряда
+        String cartFrom = null;        // путь страницы, с которой пошли в корзину
         final JSONArray items = new JSONArray();
         boolean stopped = false;
         // Запрос сети «положить в корзину» выучен по первому касанию (LEARN_JS): дальше
@@ -1341,6 +1344,7 @@ public class MainActivity extends Activity {
     private void openCart(final CartRun r) {
         if (!alive(r)) return;
         say(r.name + ": открываю корзину сети", false);
+        r.cartFrom = pathOf(web.getUrl());
         web.evaluateJavascript(findCartScript(r), value -> {
             if (!alive(r)) return;
             JSONObject got = asObject(value);
@@ -1380,9 +1384,13 @@ public class MainActivity extends Activity {
             if (!alive(r)) return;
             final JSONObject cart = asObject(value);
             if (!hasTotal(cart)) {
+                String open = web.getUrl() == null ? "" : web.getUrl();
+                // Всё ещё на странице, с которой шли в корзину, — касание её не открыло:
+                // ждать дорисовки нечего, сразу адрес корзины (ниже).
+                boolean stuck = r.cartFrom != null && r.cartFrom.equals(pathOf(open));
                 // Итога нет — страница корзины ещё дорисовывается: у Магнита через VPN
-                // эмулятора заголовок «Корзина» пришёл раньше строк (18.10.2026).
-                if (r.readTries < READ_TRIES) {
+                // эмулятора суммы пришли позже 9 с после заголовка (18.10.2026).
+                if (!stuck && r.readTries < READ_TRIES) {
                     r.readTries++;
                     handler.postDelayed(() -> readCart(r), READ_RETRY_MS);
                     return;
@@ -1391,7 +1399,6 @@ public class MainActivity extends Activity {
                 // страницу товара («Доставка, 99 руб.»). Тогда — адрес корзины из наряда.
                 JSONArray pages = r.rules.optJSONArray("cart_pages");
                 String page = pages != null && pages.length() > 0 ? pages.optString(0, "") : "";
-                String open = web.getUrl() == null ? "" : web.getUrl();
                 if (!r.cartPageTried && !page.isEmpty() && !page.equals(open)
                         && (pathOf(page) == null || !pathOf(page).equals(pathOf(open)))) {
                     r.cartPageTried = true;
