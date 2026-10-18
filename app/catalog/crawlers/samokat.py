@@ -266,8 +266,14 @@ class SamokatCrawler(Crawler):
                 "ON p.store_product_id = sp.id "
                 "WHERE sp.store_id=?", (store.id,)
             ).fetchall()
+        from app.catalog.model import placeholder_sku
+
         for r in rows:
             if not r["sku"] or not r["raw_name"]:
+                continue
+            # Строка чека (hist-), прайса (list-) или справочника («<сеть>-…») —
+            # источник цены, а не артикул сети: в каталог сети ей нельзя (ревью 18.10.2026).
+            if placeholder_sku(str(r["sku"]), self.code):
                 continue
             weight_g, _ = parse_weight(r["raw_name"])
             yield ChainProduct(

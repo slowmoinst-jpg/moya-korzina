@@ -137,13 +137,12 @@ def stale(product_ids: list[int], store, hours: float,
     Дозору там делать нечего.
     """
     from app import freshness, repo
-    from app.connectors.history import PREFIX
+    from app.catalog.model import placeholder_sku
 
-    made_up = (PREFIX, f"{store.code}-")
     out: list[int] = []
     for product_id in product_ids:
         mapping = repo.confirmed_mapping(product_id, store.id)
-        if not mapping or str(mapping.get("sku") or "").startswith(made_up):
+        if not mapping or placeholder_sku(mapping.get("sku"), store.code):
             continue                    # в этой сети товар не опознан — спрашивать нечего
         snap = repo.latest_price(int(mapping["id"]))
         if (snap and snap.get("source") != freshness.REFERENCE

@@ -62,6 +62,14 @@ def enter():
     users.deactivate()                 # база снимается тут же: её выберет before_request
     auth.sign_in(phone)
     log.info("вход: %s", users.display(phone))
+    # Товары из чеков, ещё не привязанные к единой базе, находят себя в ней фоном
+    # (app/catalog/link.py): привязанные не трогаются, вход не ждёт.
+    try:
+        from app.catalog import link
+
+        link.link_soon(phone)
+    except Exception:  # noqa: BLE001 — сопоставление не повод не пустить человека
+        log.exception("единая база: не удалось запустить сопоставление при входе")
     return redirect(_safe_next(request.form.get("next")))
 
 

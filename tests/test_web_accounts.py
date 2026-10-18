@@ -60,7 +60,7 @@ def seed_basket() -> int:
     users.open_workspace(PHONE)
     product_id = repo.upsert_product(Product(id=None, name="Молоко 3.2% 900 мл", unit="pcs"))
     store = repo.get_store("magnit")
-    sp_id = repo.upsert_store_product(store.id, "magnit-1", "Молоко Простоквашино 900 мл")
+    sp_id = repo.upsert_store_product(store.id, "100001", "Молоко Простоквашино 900 мл")
     repo.confirm_mapping(product_id, sp_id, confirmed=True)
     repo.save_price(sp_id, 89.9)
     basket_id = repo.create_basket("Неделя 38")
@@ -180,7 +180,7 @@ def test_sending_starts_a_real_delivery(web, monkeypatch):
 
     assert started.wait(timeout=5), "передача не началась — человек ждал бы напрасно"
     assert seen["chain"] == "magnit"
-    assert seen["skus"] == ["magnit-1"]
+    assert seen["skus"] == ["100001"]
 
 
 def test_sending_an_empty_basket_says_so(web):
@@ -259,8 +259,8 @@ def test_the_screen_shows_how_the_last_handover_ended(web):
     collector.accept({
         "store": "magnit",
         "collected_at": "2026-09-17T18:42:00",
-        "cart_result": {"ok": ["magnit-1", "magnit-2"],
-                        "failed": [{"sku": "magnit-9", "why": "нет в наличии"}]},
+        "cart_result": {"ok": ["100001", "100002"],
+                        "failed": [{"sku": "100009", "why": "нет в наличии"}]},
     })
 
     page = web.get("/accounts").data.decode("utf-8")

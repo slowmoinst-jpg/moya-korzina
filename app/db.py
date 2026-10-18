@@ -148,6 +148,17 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE INDEX IF NOT EXISTS idx_prices_sp ON store_prices(store_product_id, fetched_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sp_store ON store_products(store_id);
 CREATE INDEX IF NOT EXISTS idx_mapping_product ON product_mapping(product_id);
+
+-- Связи, которые человек убрал. Без этой памяти единая база вернула бы их при
+-- следующем сопоставлении, и обещание «до нового подтверждения товар в расчёт по
+-- этой сети не попадёт» стало бы неправдой (критика проекта 17.10.2026).
+CREATE TABLE IF NOT EXISTS link_rejects (
+    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    sku TEXT NOT NULL,
+    at TEXT NOT NULL,
+    PRIMARY KEY (product_id, store_id, sku)
+);
 CREATE INDEX IF NOT EXISTS idx_history_date ON purchase_history(date);
 CREATE INDEX IF NOT EXISTS idx_receipts_date ON receipts(date);
 """
@@ -206,6 +217,20 @@ LATE_COLUMNS: list[tuple[str, str, str]] = [
     ("store_products", "ean", "TEXT"),
     ("purchase_history", "receipt_key", "TEXT"),
     ("store_prices", "source", "TEXT"),
+    # Привязка товара человека к единой базе (решение владельца 17.10.2026): номер
+    # единого товара в data/catalog.db, как найден (barcode, bridge, words, abbrev)
+    # и когда. Номер постоянный между пересборками каталога (refresh.match_all).
+    ("products", "master_id", "INTEGER"),
+    ("products", "master_method", "TEXT"),
+    ("products", "master_at", "TEXT"),
+    # Откуда сопоставление: NULL — человек или живой поиск, «master» — из единой
+    # базы. Выбор человека единая база не перебивает (app/catalog/link.py).
+    ("product_mapping", "method", "TEXT"),
+    # Название товара сети в момент подтверждения не базой. Сеть может отдать
+    # артикул другому товару; тогда выбор человека больше не мост к другим сетям
+    # (link._choices, ревью 18.10.2026). store_products.raw_name для этого не годится:
+    # его переписывают и коннекторы, и единая база.
+    ("product_mapping", "seen_name", "TEXT"),
 ]
 
 

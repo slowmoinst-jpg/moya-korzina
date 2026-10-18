@@ -86,13 +86,26 @@ def _queue(products, stores, matrix, query: str) -> list[dict]:
 
 
 def _pair(product, store) -> dict:
-    """Всё, что известно про одну пару «товар — сеть»."""
-    mapping = repo.confirmed_mapping(product.id, store.id)
+    """Всё, что известно про одну пару «товар — сеть».
+
+    base — кандидаты единой базы (слабая связь): база нашла товар, но сама в нём не
+    уверена, и в корзину он уедет только после подтверждения здесь.
+    """
+    # «Подтверждено» — только настоящий артикул сети. Заглушка (цена из чека или
+    # прайса) показывается отдельно: в корзину сети по ней ничего не положить, и
+    # кандидаты базы с поиском остаются на виду (ревью 18.10.2026).
+    mapping = repo.confirmed_mapping(product.id, store.id, real_only=True)
     if not mapping:
-        return {"confirmed": None, "doubts": [], "price": None}
-    return {"confirmed": mapping, "doubts": _doubts(product, mapping.get("raw_name"),
-                                                   mapping.get("weight_g")),
-            "price": repo.latest_price_for(product.id, store.id)}
+        stub = repo.confirmed_mapping(product.id, store.id)
+        base = [{"sku": c.get("sku"), "name": (c.get("raw_name") or "")[:NAME_LIMIT],
+                 "weight_g": c.get("weight_g"),
+                 "doubts": _doubts(product, c.get("raw_name"), c.get("weight_g"))}
+                for c in repo.base_candidates(product.id, store.id)]
+        return {"confirmed": None, "stub": stub, "doubts": [], "base": base,
+                "price": repo.latest_price(stub["id"]) if stub else None}
+    return {"confirmed": mapping, "stub": None, "doubts": _doubts(product, mapping.get("raw_name"),
+                                                                 mapping.get("weight_g")),
+            "price": repo.latest_price(mapping["id"])}
 
 
 def _doubts(product, raw_name: str | None, weight_g=None) -> list[str]:
@@ -141,16 +154,42 @@ def _do_link_catalog(products) -> None:
     if not products:
         flash("Опознавать пока нечего — список товаров пуст.", "info")
         return
+    from app import users
+    from app.catalog import link
+
+    phone = users.current()
+    if link.running(phone):
+        # Фоновый проход этого рабочего места уже идёт (вход, загрузка чеков): второй
+        # параллельный делал бы ту же работу. Нажатие превращается в сверку сразу
+        # после него (ревью 18.10.2026).
+        link.link_soon(phone, sync=True)
+        flash("Сверка с единым каталогом уже идёт фоном — очередь ниже обновится, когда она"
+              " закончится.", "info")
+        return
     try:
         found = link_products()
     except Exception as exc:  # noqa: BLE001
         log.exception("опознание в едином каталоге не удалось")
         flash(f"Опознание не удалось: {exc}. Остальное на экране работает.", "bad")
         return
+    if found.get("failed"):
+        flash(f"Не записано из-за сбоя — {found['failed']}: эти товары пройдут при следующей"
+              " сверке, можно нажать ещё раз.", "warn")
     if found["linked"]:
+        weak = found.get("weak") or 0
+        doubtful = found.get("doubtful") or 0
+        extra = ""
+        if weak:
+            extra += (f" Под вопросом — {weak}: артикулы записаны кандидатами и уедут в"
+                      " корзину, когда вы подтвердите их у товара по сети.")
+        if doubtful:
+            extra += f" Не уверены — {doubtful}: подходят несколько товаров, угадывать не стали."
         flash(f"Опознано {found['linked']} из {found['tried']}: артикулы сетей записаны, "
-              "цены по адресу спросит «Обновить цены».", "ok")
-    else:
+              f"цены по адресу спросит «Обновить цены».{extra}", "ok")
+    elif found.get("doubtful"):
+        flash(f"Не уверены — {found['doubtful']}: подходят несколько товаров каталога,"
+              " угадывать не стали. Ниже — живой подбор.", "info")
+    elif not found.get("failed"):
         flash(f"Ни один из {found['tried']} товаров в каталоге не опознан — либо каталог "
               "ещё не собран, либо названия расходятся. Ниже — живой подбор.", "info")
 
@@ -213,6 +252,21 @@ def _do_find(product, store) -> None:
         flash("Ничего не нашли. Попробуйте название покороче — например, без граммовки.", "warn")
 
 
+def _resync(product) -> None:
+    """Сверить товар с единым каталогом сразу после решения человека.
+
+    Выбор в одной сети — мост к другим, отказ — повод снять то, что на нём держалось.
+    Ждать ночной пересборки незачем: это доли секунды на один товар (ревью 18.10.2026).
+    Само решение человека при сбое сверки остаётся в силе.
+    """
+    try:
+        from app.catalog import link
+
+        link.link_products([product.id], sync=True)
+    except Exception:  # noqa: BLE001
+        log.exception("сверка товара с единым каталогом после решения человека не удалась")
+
+
 def _do_confirm(product, store, sku: str) -> None:
     from app import matcher
 
@@ -222,12 +276,15 @@ def _do_confirm(product, store, sku: str) -> None:
         log.exception("подтверждение не прошло")
         flash(f"Не получилось связать: {exc}", "bad")
         return
+    repo.clear_rejects(product.id, store.id)        # «до нового подтверждения» — оно пришло
+    _resync(product)
     session.pop(CANDIDATES, None)
     flash(f"Готово: «{product.name}» связан с «{store.name}» по артикулу {sku}.", "ok")
 
 
 def _do_drop(product, store) -> None:
     repo.drop_mapping(product.id, store.id)
+    _resync(product)
     session.pop(CANDIDATES, None)
     flash(f"Связь «{product.name}» с «{store.name}» убрана. До нового подтверждения этот "
           "товар в расчёт по этой сети не попадёт.", "info")
@@ -263,7 +320,9 @@ def page():
         return redirect(_back(request.form.get("product"), request.form.get("store"),
                               request.form.get("q") or ""))
 
-    matrix = repo.mapping_matrix()
+    # Подтверждённой считается связь с настоящим артикулом: заглушка строки чека в
+    # корзину сети не уедет, и пара с ней ещё ждёт работы.
+    matrix = repo.mapping_matrix(real_only=True)
     product = next((p for p in products if str(p.id) == request.args.get("product")), None)
     store = next((s for s in stores if s.code == request.args.get("store")), None)
 

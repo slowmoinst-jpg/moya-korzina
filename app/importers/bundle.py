@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Any
 
 from app import chains, repo
 from app.db import init_db
 from app.importers.ofd_pdf import Receipt, _ensure_product, _remember_barcode, _resolve_store_id
 from app.importers.sources import parse_receipt_json
+
+log = logging.getLogger(__name__)
 
 
 def fingerprint(receipt: Receipt) -> str:
@@ -242,6 +245,20 @@ def store_receipts(items: list[dict], store_code: str | None = None,
     # уже отмечен загруженным, и в «осталось» он не попадёт.
     for entry in catalogue or []:
         repo.note_receipt(entry["key"], entry["date"], entry["store"], entry["total"], source)
+
+    if imported:
+        # Товары из чеков находят себя в единой базе фоном: у новых появятся артикулы
+        # сетей, и корзина соберётся там, где база их знает (app/catalog/link.py). Новая
+        # строка чека у известного товара — тоже довод (штрихкод, процент, другое
+        # написание), поэтому зовём на любой загруженный чек: неизменные товары проход
+        # пропускает по памяти. Фоном — чтобы загрузка не ждала поиска по каталогу.
+        try:
+            from app import users
+            from app.catalog import link
+
+            link.link_soon(users.current())
+        except Exception:  # noqa: BLE001 — сопоставление не повод ронять загрузку чеков
+            log.exception("единая база: не удалось запустить сопоставление новых товаров")
 
     dates = [r["date"] for r in imported if r["date"]]
     stores = {r["store"] for r in imported if r["store"]}

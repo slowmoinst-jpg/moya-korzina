@@ -154,40 +154,175 @@ def delete_offer(offer_id: int) -> None:
 # ---------- store_products / mapping / prices ----------
 def upsert_store_product(store_id: int, sku: str, raw_name: str, weight_g: float | None = None,
                          unit: str | None = None, url: str | None = None,
-                         ean: str | None = None) -> int:
+                         ean: str | None = None, keep_known: bool = False) -> int:
+    """Товар сети в базу человека. keep_known — не затирать известные фасовку,
+    единицу и адрес пустыми: так пишет единая база, у части сетей этих полей нет
+    вовсе (у Дикси пуст unit, METRO его не задаёт), а коннектор их уже знал."""
+    keep = (" weight_g=COALESCE(excluded.weight_g, store_products.weight_g),"
+            " unit=COALESCE(excluded.unit, store_products.unit),"
+            " url=COALESCE(excluded.url, store_products.url),") if keep_known else (
+            " weight_g=excluded.weight_g, unit=excluded.unit, url=excluded.url,")
     with get_conn() as c:
         c.execute("INSERT INTO store_products (store_id, sku, raw_name, weight_g, unit, url, ean)"
                   " VALUES (?,?,?,?,?,?,?)"
                   " ON CONFLICT(store_id, sku) DO UPDATE SET raw_name=excluded.raw_name,"
-                  " weight_g=excluded.weight_g, unit=excluded.unit, url=excluded.url,"
+                  + keep +
                   " ean=COALESCE(excluded.ean, store_products.ean)",
                   (store_id, sku, raw_name, weight_g, unit, url, ean))
         c.commit()
         return c.execute("SELECT id FROM store_products WHERE store_id=? AND sku=?", (store_id, sku)).fetchone()["id"]
 
 
-def confirm_mapping(product_id: int, store_product_id: int, confirmed: bool = True) -> None:
+def confirm_mapping(product_id: int, store_product_id: int, confirmed: bool = True,
+                    method: str | None = None) -> None:
+    """Записать сопоставление. method — откуда оно: None — человек или живой поиск,
+    «master» — из единой базы (app/catalog/link.py).
+
+    Подтверждение не базой (method=None) кандидата, которого записала база, делает
+    связь выбором человека: метка «master» снимается. Иначе следующее сопоставление
+    сочло бы связь своей и, если сама база в ней не уверена, сняло бы подтверждение
+    (ревью 18.10.2026). Уже подтверждённую базой связь повторное подтверждение (живой
+    поиск «Узнать цены по магазинам» нашёл тот же артикул) не трогает.
+    """
     with get_conn() as c:
-        c.execute("INSERT INTO product_mapping (product_id, store_product_id, confirmed, confirmed_at)"
-                  " VALUES (?,?,?,?) ON CONFLICT(product_id, store_product_id)"
-                  " DO UPDATE SET confirmed=excluded.confirmed, confirmed_at=excluded.confirmed_at",
-                  (product_id, store_product_id, int(confirmed), NOW() if confirmed else None))
+        have = {r["name"] for r in c.execute("PRAGMA table_info(product_mapping)")}
+        if method is None:
+            fresh = "excluded.confirmed=1 AND product_mapping.confirmed=0"
+            mark = (f", method=CASE WHEN {fresh} THEN NULL ELSE product_mapping.method END"
+                    if "method" in have else "")
+            # Снимок названия — при подтверждении, по нынешнему названию товара сети.
+            seen = (", seen_name=CASE WHEN excluded.confirmed=1 AND (product_mapping.confirmed=0"
+                    " OR product_mapping.seen_name IS NULL)"
+                    " THEN (SELECT raw_name FROM store_products WHERE id=excluded.store_product_id)"
+                    " ELSE product_mapping.seen_name END" if "seen_name" in have else "")
+            first = ("INSERT INTO product_mapping (product_id, store_product_id, confirmed,"
+                     " confirmed_at, seen_name) VALUES (?,?,?,?,"
+                     " CASE WHEN ?=1 THEN (SELECT raw_name FROM store_products WHERE id=?) END)"
+                     if "seen_name" in have else
+                     "INSERT INTO product_mapping (product_id, store_product_id, confirmed,"
+                     " confirmed_at) VALUES (?,?,?,?)")
+            args = ((product_id, store_product_id, int(confirmed), NOW() if confirmed else None,
+                     int(confirmed), store_product_id) if "seen_name" in have else
+                    (product_id, store_product_id, int(confirmed), NOW() if confirmed else None))
+            c.execute(first + " ON CONFLICT(product_id, store_product_id)"
+                      " DO UPDATE SET confirmed=excluded.confirmed, confirmed_at=excluded.confirmed_at"
+                      + mark + seen, args)
+        else:
+            # Запись единой базы — одним оператором, чтобы SQLite сам проверил, что за
+            # время прохода человек ничего не решил: не перебивать его подтверждение и
+            # не писать в сеть, от которой он отказался (гонка с фоновым проходом,
+            # ревью 18.10.2026).
+            if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table'"
+                             " AND name='link_rejects'").fetchone():
+                c.execute("CREATE TABLE IF NOT EXISTS link_rejects (product_id INTEGER NOT NULL,"
+                          " store_id INTEGER NOT NULL, sku TEXT NOT NULL, at TEXT NOT NULL,"
+                          " PRIMARY KEY (product_id, store_id, sku))")
+            c.execute("INSERT INTO product_mapping (product_id, store_product_id, confirmed,"
+                      " confirmed_at, method) SELECT ?,?,?,?,? WHERE NOT EXISTS ("
+                      "SELECT 1 FROM link_rejects lr JOIN store_products sp ON sp.store_id = lr.store_id"
+                      " WHERE lr.product_id=? AND sp.id=?)"
+                      " ON CONFLICT(product_id, store_product_id)"
+                      " DO UPDATE SET confirmed=excluded.confirmed, confirmed_at=excluded.confirmed_at,"
+                      " method=excluded.method"
+                      " WHERE NOT (product_mapping.method IS NULL AND product_mapping.confirmed=1)",
+                      (product_id, store_product_id, int(confirmed), NOW() if confirmed else None,
+                       method, product_id, store_product_id))
         c.commit()
+
+
+CHAIN_REJECT = "*"      # отметка отказа от сети целиком в link_rejects
 
 
 def drop_mapping(product_id: int, store_id: int) -> None:
+    """Убрать связь товара с сетью и ЗАПОМНИТЬ отказ: единая база её не вернёт.
+
+    Отказ — от СЕТИ, а не от одного артикула: экран обещает «до нового
+    подтверждения этот товар в расчёт по этой сети не попадёт», а у единого товара
+    в сети бывает несколько карточек, и сеть перевыкладывает товар под новым
+    артикулом (ревью 18.10.2026). Убранные артикулы пишутся рядом — для истории.
+    """
+    from app.catalog.model import placeholder_sku
+
     with get_conn() as c:
+        code = (c.execute("SELECT code FROM stores WHERE id=?", (store_id,)).fetchone() or {"code": ""})["code"]
+        held = c.execute(
+            "SELECT sp.id, sp.sku, m.confirmed FROM product_mapping m"
+            " JOIN store_products sp ON sp.id = m.store_product_id"
+            " WHERE m.product_id=? AND sp.store_id=?", (product_id, store_id)).fetchall()
+        real = [r for r in held if r["confirmed"] and not placeholder_sku(r["sku"], code)]
+        stubs = [r["id"] for r in held if r["confirmed"] and placeholder_sku(r["sku"], code)]
+        if stubs and not real:
+            # Убирают заглушку (цену из чека или прайса), а не связь с сетью: отказа от
+            # сети нет, кандидаты единой базы остаются на «Связях» (ревью 18.10.2026).
+            c.executemany("DELETE FROM product_mapping WHERE product_id=? AND store_product_id=?",
+                          [(product_id, sp_id) for sp_id in stubs])
+            c.commit()
+            return
+        skus = [r["sku"] for r in held]
         c.execute("DELETE FROM product_mapping WHERE product_id=? AND store_product_id IN"
                   " (SELECT id FROM store_products WHERE store_id=?)", (product_id, store_id))
+        try:
+            c.executemany("INSERT OR REPLACE INTO link_rejects (product_id, store_id, sku, at)"
+                          " VALUES (?,?,?,?)",
+                          [(product_id, store_id, s, NOW()) for s in [*skus, CHAIN_REJECT]])
+        except Exception:  # noqa: BLE001 — база прежней версии: таблицы ещё нет
+            pass
         c.commit()
 
 
-def confirmed_mapping(product_id: int, store_id: int) -> dict | None:
-    """Подтверждённое сопоставление эталона в магазине или None."""
+def rejected_skus(product_id: int, store_id: int) -> set[str]:
+    """Артикулы этой сети, которые человек у товара убрал (и отметка «*» — вся сеть)."""
+    with get_conn() as c:
+        try:
+            return {r["sku"] for r in c.execute(
+                "SELECT sku FROM link_rejects WHERE product_id=? AND store_id=?",
+                (product_id, store_id))}
+        except Exception:  # noqa: BLE001 — таблицы ещё нет: отказов не было
+            return set()
+
+
+def chain_rejected(product_id: int, store_id: int) -> bool:
+    """Человек убирал связь товара с этой сетью: автоматике сюда хода нет."""
+    return bool(rejected_skus(product_id, store_id))
+
+
+def clear_rejects(product_id: int, store_id: int) -> None:
+    """Человек сам подтвердил связь с сетью — отказ от неё снят («до нового подтверждения»)."""
+    with get_conn() as c:
+        try:
+            c.execute("DELETE FROM link_rejects WHERE product_id=? AND store_id=?",
+                      (product_id, store_id))
+            c.commit()
+        except Exception:  # noqa: BLE001 — таблицы ещё нет: и снимать нечего
+            pass
+
+
+def real_sku_sql(sp: str = "sp", s: str = "s") -> str:
+    """Условие SQL «артикул настоящий»: не hist-, не list- и не «<код сети>-…».
+
+    То же правило, что app/catalog/model.placeholder_sku, — для запросов, где
+    store_products соединена со stores (алиасы sp и s).
+    """
+    from app.catalog.model import PLACEHOLDER_PREFIXES
+
+    parts = [f"{sp}.sku NOT LIKE '{p}%'" for p in PLACEHOLDER_PREFIXES]
+    parts.append(f"substr({sp}.sku, 1, length({s}.code) + 1) != {s}.code || '-'")
+    return " AND ".join(parts)
+
+
+def confirmed_mapping(product_id: int, store_id: int, real_only: bool = False) -> dict | None:
+    """Подтверждённое сопоставление эталона в магазине или None.
+
+    real_only — только настоящий артикул сети, без заглушек строки чека (hist-),
+    прайса (list-) и справочника («<сеть>-…»): это источники цены, а в корзину сети
+    по ним ничего не положить.
+    """
+    skip = f" AND {real_sku_sql()}" if real_only else ""
     with get_conn() as c:
         r = c.execute(
             "SELECT sp.* FROM product_mapping m JOIN store_products sp ON sp.id = m.store_product_id"
-            " WHERE m.product_id=? AND sp.store_id=? AND m.confirmed=1"
+            " JOIN stores s ON s.id = sp.store_id"
+            f" WHERE m.product_id=? AND sp.store_id=? AND m.confirmed=1{skip}"
             # Подтверждений у товара в одном магазине может быть несколько: прежнее
             # на артикул-заглушку из резервного CSV и новое на настоящий код сети.
             # Без порядка побеждало произвольное — на деле старое, и ссылка на корзину
@@ -196,11 +331,173 @@ def confirmed_mapping(product_id: int, store_id: int) -> dict | None:
     return dict(r) if r else None
 
 
-def mapping_matrix() -> dict[tuple[int, int], bool]:
-    """(product_id, store_id) -> confirmed. Для экрана Номенклатура."""
+def product_mappings(product_id: int) -> list[dict]:
+    """Все подтверждённые сопоставления товара по сетям: артикул, код сети, откуда.
+
+    method читается, если колонка уже есть: база, которую после обновления ещё не
+    открывали (приёмная дверь не зовёт init_db), отвечает без него.
+    """
     with get_conn() as c:
-        rows = c.execute("SELECT m.product_id, sp.store_id, MAX(m.confirmed) AS confirmed FROM product_mapping m"
+        have = {r["name"] for r in c.execute("PRAGMA table_info(product_mapping)")}
+        method = "m.method" if "method" in have else "NULL"
+        seen = "m.seen_name" if "seen_name" in have else "NULL"
+        rows = c.execute(
+            f"SELECT sp.id AS store_product_id, sp.sku, sp.ean, sp.store_id, s.code AS store_code,"
+            f" sp.raw_name, m.confirmed_at, {method} AS method, {seen} AS seen_name"
+            " FROM product_mapping m"
+            " JOIN store_products sp ON sp.id = m.store_product_id"
+            " JOIN stores s ON s.id = sp.store_id"
+            " WHERE m.product_id=? AND m.confirmed=1 ORDER BY m.confirmed_at DESC, sp.id DESC",
+            (product_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mapping_method(product_id: int, store_product_id: int) -> str | None:
+    """Откуда сопоставление: «master» — из единой базы, None — человек или прежнее."""
+    with get_conn() as c:
+        try:
+            r = c.execute("SELECT method FROM product_mapping WHERE product_id=? AND store_product_id=?",
+                          (product_id, store_product_id)).fetchone()
+        except Exception:  # noqa: BLE001 — база прежней версии: колонки ещё нет
+            return None
+    return r["method"] if r else None
+
+
+def unconfirm_mapping(product_id: int, store_product_id: int) -> None:
+    """Снять подтверждение (строка остаётся: история цен по артикулу не пропадает)."""
+    with get_conn() as c:
+        c.execute("UPDATE product_mapping SET confirmed=0, confirmed_at=NULL"
+                  " WHERE product_id=? AND store_product_id=?", (product_id, store_product_id))
+        c.commit()
+
+
+def drop_base_candidates(product_id: int, store_id: int, keep: int | None = None) -> None:
+    """Убрать неподтверждённых кандидатов единой базы в сети, кроме keep.
+
+    Кандидат базы в сети один — нынешний; прежние (база сменила строку, сеть сняла
+    товар) только путали бы на «Связях». Товар сети и его цены остаются: удаляется
+    одна запись сопоставления.
+    """
+    with get_conn() as c:
+        have = {r["name"] for r in c.execute("PRAGMA table_info(product_mapping)")}
+        if "method" not in have:
+            return
+        c.execute("DELETE FROM product_mapping WHERE product_id=? AND confirmed=0"
+                  " AND method='master' AND store_product_id != ? AND store_product_id IN"
+                  " (SELECT id FROM store_products WHERE store_id=?)",
+                  (product_id, keep if keep is not None else -1, store_id))
+        c.commit()
+
+
+def drop_base_links(product_id: int) -> None:
+    """Убрать всё, что единая база записала товару: правила больше не находят его в ней.
+
+    Выбор человека и живого поиска (method не «master») не трогается.
+    """
+    with get_conn() as c:
+        have = {r["name"] for r in c.execute("PRAGMA table_info(product_mapping)")}
+        if "method" not in have:
+            return
+        c.execute("DELETE FROM product_mapping WHERE product_id=? AND method='master'", (product_id,))
+        c.commit()
+
+
+def raw_names(product_id: int, limit: int = 3) -> list[str]:
+    """Строки чеков, которыми товар приходил, свежие первыми.
+
+    Название эталона — уже нормализованное и теряет голову и процент строки чека:
+    «МОЛ.ПАСТ.ПРОСТОКВАШИНО 2,5%» становится «Паст простоквашино 2 5». Искать
+    товар в единой базе и судить о жирности надо по исходной строке (17.10.2026).
+    """
+    with get_conn() as c:
+        rows = c.execute("SELECT raw_name, MAX(date) AS last FROM purchase_history"
+                         " WHERE product_id=? AND raw_name IS NOT NULL AND raw_name != ''"
+                         " GROUP BY raw_name ORDER BY last DESC LIMIT ?",
+                         (product_id, int(limit))).fetchall()
+    return [r["raw_name"] for r in rows]
+
+
+def master_of(product_id: int) -> dict | None:
+    """Привязка товара к единой базе: {master_id, method, at} или None."""
+    with get_conn() as c:
+        have = {r["name"] for r in c.execute("PRAGMA table_info(products)")}
+        if "master_id" not in have:
+            return None
+        r = c.execute("SELECT master_id, master_method, master_at FROM products WHERE id=?",
+                      (product_id,)).fetchone()
+    if not r or r["master_id"] is None:
+        return None
+    return {"master_id": int(r["master_id"]), "method": r["master_method"], "at": r["master_at"]}
+
+
+def set_master(product_id: int, master_id: int | None, method: str | None) -> None:
+    """Привязать товар к единому товару (или снять привязку, master_id=None)."""
+    with get_conn() as c:
+        c.execute("UPDATE products SET master_id=?, master_method=?, master_at=? WHERE id=?",
+                  (master_id, method if master_id is not None else None,
+                   NOW() if master_id is not None else None, product_id))
+        c.commit()
+
+
+def coverage(basket_id: int) -> list[dict]:
+    """Какие товары корзины не уедут в корзину каждой сети: [{code, name, known, of, unknown}].
+
+    «Уедет» — есть подтверждённый НАСТОЯЩИЙ артикул: только по нему товар попадёт в
+    корзину сети (cartplan.build). Один запрос на всю корзину, а не по соединению на
+    каждую пару «товар — сеть». Порядок — как в справочнике магазинов.
+    """
+    items = basket_items(basket_id)
+    ids = sorted({int(it["product_id"]) for it in items if it.get("product_id")})
+    known: set[tuple[int, int]] = set()
+    if ids:
+        marks = ",".join("?" for _ in ids)
+        with get_conn() as c:
+            known = {(int(r[0]), int(r[1])) for r in c.execute(
+                "SELECT DISTINCT m.product_id, sp.store_id FROM product_mapping m"
+                " JOIN store_products sp ON sp.id = m.store_product_id"
+                " JOIN stores s ON s.id = sp.store_id"
+                f" WHERE m.confirmed=1 AND m.product_id IN ({marks}) AND {real_sku_sql()}", ids)}
+    out: list[dict] = []
+    for store in list_stores():
+        unknown = [it.get("name") or "—" for it in items
+                   if (it.get("product_id"), store.id) not in known]
+        out.append({"code": store.code, "name": store.name, "known": len(items) - len(unknown),
+                    "of": len(items), "unknown": unknown})
+    return out
+
+
+def base_candidates(product_id: int, store_id: int) -> list[dict]:
+    """Кандидаты единой базы в этой сети: записаны ею без подтверждения (слабая связь).
+
+    Их показывают на «Связях» с кнопкой «Подтвердить»: в корзину они уедут только
+    после выбора человека.
+    """
+    with get_conn() as c:
+        have = {r["name"] for r in c.execute("PRAGMA table_info(product_mapping)")}
+        if "method" not in have:
+            return []
+        rows = c.execute(
+            "SELECT sp.* FROM product_mapping m JOIN store_products sp ON sp.id = m.store_product_id"
+            " WHERE m.product_id=? AND sp.store_id=? AND m.confirmed=0 AND m.method='master'"
+            " ORDER BY sp.id DESC", (product_id, store_id)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mapping_matrix(real_only: bool = False) -> dict[tuple[int, int], bool]:
+    """(product_id, store_id) -> confirmed. Для экрана Номенклатура.
+
+    real_only — подтверждённой считается только связь с настоящим артикулом сети;
+    пара, где подтверждена одна заглушка, получает False: что-то есть, но в корзину
+    сети не уедет. Так считают «Корзина» и «Связи», чтобы их подсказки не расходились
+    с нарядом (ревью 18.10.2026).
+    """
+    real = (f"CASE WHEN m.confirmed=1 AND {real_sku_sql()} THEN 1 ELSE 0 END"
+            if real_only else "m.confirmed")
+    with get_conn() as c:
+        rows = c.execute(f"SELECT m.product_id, sp.store_id, MAX({real}) AS confirmed"
+                         " FROM product_mapping m"
                          " JOIN store_products sp ON sp.id = m.store_product_id"
+                         " JOIN stores s ON s.id = sp.store_id"
                          " GROUP BY m.product_id, sp.store_id").fetchall()
     return {(r["product_id"], r["store_id"]): bool(r["confirmed"]) for r in rows}
 

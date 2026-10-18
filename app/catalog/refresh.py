@@ -72,8 +72,139 @@ def run_chain(crawler: Crawler, progress: Callable[[str], None] | None = None,
             "updated": updated, "gone": gone, "note": note}
 
 
+def _greedy(votes: dict[tuple[int, int], int], voters: dict[int, int], groups,
+            keep: list[int | None], taken: set[int], allowed: set[int] | None = None) -> None:
+    """Раздать номера по голосам: крупнейшее совпадение, затем чистота, затем размер."""
+    def key(kv):
+        (gi, old), count = kv
+        purity = count / max(1, voters.get(gi, 0))
+        return (-count, -purity, -len(groups[gi]), old)
+
+    for (gi, old), _ in sorted(votes.items(), key=key):
+        if keep[gi] is None and old not in taken and (allowed is None or old in allowed):
+            keep[gi] = old
+            taken.add(old)
+
+
+def _keep_numbers(groups, live: dict[int, int], dropped: dict[int, int] | None = None,
+                  allow=None) -> tuple[list[int | None], dict[int, int]]:
+    """Какой прежний номер достаётся каждой новой группе и куда ведут исчезнувшие.
+
+    ЗАЧЕМ ПОСТОЯННЫЕ НОМЕРА (решение владельца 17.10.2026). Единая база — это
+    заранее сопоставленные товары всех сетей, а товары людей привязываются к ней
+    один раз номером единого товара. Пересборка же шла с чистого листа и выдавала
+    каждой группе новый номер: привязки людей рвались бы каждую ночь.
+
+    ГОЛОСА ДВУХ СОРТОВ (ревью 18.10.2026). Живой — номер, который строка носила до
+    пересборки. Сброшенный — номер, который строка помнит после сброса привязки
+    (смена названия, фасовки или штрихкода, ночь вне обхода). Сброшенный весит
+    меньше: строка, переименованная в другой товар, иначе уводила бы номер кефира
+    к ряженке, а неизменный кефир получал бы новый номер.
+
+    Правило: сначала номера раздаются по живым голосам — группе достаётся номер, с
+    которым у неё больше всего общих строк; при равенстве — той, что чище (больше
+    доля её голосов за этот номер), и только потом крупнее. Сброшенными голосами
+    добираются лишь номера, на которые не претендует ни одна живая строка. Прежний
+    номер, не доставшийся никому (группы слились или развалились), уходит в
+    item_aliases и ведёт туда, куда переехала большая часть его строк. Номер только
+    со сброшенными голосами достаётся группе и переадресуется к ней, лишь если группа
+    — тот же товар (allow(индекс группы, номер), ревью 18.10.2026): строка,
+    переименованная в ряженку, не уносит номер кефира, даже если остальные строки
+    кефира спят.
+
+    live и dropped — {id строки сети: номер}. Возвращает список номеров по группам
+    (None — нужен новый) и {прежний номер: индекс группы} для переадресации.
+    """
+    dropped = dropped or {}
+    votes: dict[tuple[int, int], int] = {}
+    late: dict[tuple[int, int], int] = {}
+    voters: dict[int, int] = {}
+    late_voters: dict[int, int] = {}
+    for gi, group in enumerate(groups):
+        for row, _, _ in group:
+            if row.id in live:
+                key = (gi, live[row.id])
+                votes[key] = votes.get(key, 0) + 1
+                voters[gi] = voters.get(gi, 0) + 1
+            elif row.id in dropped:
+                key = (gi, dropped[row.id])
+                late[key] = late.get(key, 0) + 1
+                late_voters[gi] = late_voters.get(gi, 0) + 1
+    keep: list[int | None] = [None] * len(groups)
+    taken: set[int] = set()
+    _greedy(votes, voters, groups, keep, taken)
+    claimed = {old for (_, old) in votes}
+    if allow is not None:
+        late = {pair: n for pair, n in late.items() if pair[1] in claimed or allow(*pair)}
+    _greedy(late, late_voters, groups, keep, taken,
+            allowed={old for (_, old) in late if old not in claimed})
+    moved: dict[int, int] = {}
+    for (gi, old), _ in sorted(votes.items(), key=lambda kv: (-kv[1], kv[0][1])):
+        if old not in taken and old not in moved:
+            moved[old] = gi
+    for (gi, old), _ in sorted(late.items(), key=lambda kv: (-kv[1], kv[0][1])):
+        if old not in taken and old not in claimed and old not in moved:
+            moved[old] = gi
+    return keep, moved
+
+
+def _same_item(before: dict | None, canon: dict) -> bool:
+    """Прежний единый товар и новая группа — один товар: можно вести к ней прежний номер.
+
+    Судят слова, фасовка и марка, а не штрихкод: сброс привязки часто и вызван
+    исправлением штрихкода, и прежний код спорил бы с новым.
+    """
+    if not before:
+        return False
+    fields = ("name", "brand", "weight_g", "unit")
+    old = matching.prepare({"id": 1, "chain": "before", **{k: before.get(k) for k in fields}})
+    new = matching.prepare({"id": 2, "chain": "after", **{k: canon.get(k) for k in fields}})
+    return matching.same_product(old, new)[0]
+
+
+def _last_records(conn, numbers) -> dict[int, dict]:
+    """Последняя запись номеров: из catalog_items, а ушедших — из item_last."""
+    out: dict[int, dict] = {}
+    numbers = sorted(set(numbers))
+    for i in range(0, len(numbers), 500):
+        chunk = numbers[i:i + 500]
+        marks = ",".join("?" * len(chunk))
+        for r in conn.execute(f"SELECT id, name, brand, weight_g, unit FROM item_last"
+                              f" WHERE id IN ({marks})", chunk):
+            out[int(r["id"])] = dict(r)
+        for r in conn.execute(f"SELECT id, name, brand, weight_g, unit FROM catalog_items"
+                              f" WHERE id IN ({marks})", chunk):
+            out[int(r["id"])] = dict(r)
+    return out
+
+
+def _keep_last_records(conn, kept: set[int], stamp: str) -> None:
+    """Номера, не доставшиеся никому в этой пересборке, оставляют свою последнюю запись.
+
+    Спящий номер записи в catalog_items не имеет, и без неё пересборка не узнала бы,
+    тот ли товар вернулся (ревью 18.10.2026). Номер, снова живой, свою запись теряет.
+    """
+    gone = [int(r[0]) for r in conn.execute("SELECT id FROM catalog_items") if int(r[0]) not in kept]
+    for i in range(0, len(gone), 500):
+        chunk = gone[i:i + 500]
+        conn.execute("INSERT INTO item_last (id, name, brand, weight_g, unit, since)"
+                     " SELECT id, name, brand, weight_g, unit, ? FROM catalog_items"
+                     f" WHERE id IN ({','.join('?' * len(chunk))})"
+                     " ON CONFLICT(id) DO UPDATE SET name=excluded.name, brand=excluded.brand,"
+                     " weight_g=excluded.weight_g, unit=excluded.unit, since=excluded.since",
+                     [stamp, *chunk])
+    alive = sorted(kept)
+    for i in range(0, len(alive), 500):
+        chunk = alive[i:i + 500]
+        conn.execute(f"DELETE FROM item_last WHERE id IN ({','.join('?' * len(chunk))})", chunk)
+
+
 def match_all(progress: Callable[[str], None] | None = None) -> dict:
-    """Пересобрать единые товары из всех живых строк каталогов."""
+    """Пересобрать единые товары из всех живых строк каталогов.
+
+    Номера единых товаров сохраняются между пересборками (_keep_numbers): к ним
+    привязаны товары людей.
+    """
     say = progress or (lambda msg: log.info("сопоставление: %s", msg))
     store.init()
     started = store.now()
@@ -83,29 +214,93 @@ def match_all(progress: Callable[[str], None] | None = None) -> dict:
     groups = matching.cluster(products)
 
     with store.connect() as conn:
+        live: dict[int, int] = {}
+        dropped: dict[int, int] = {}
+        for r in conn.execute("SELECT id, item_id, prev_item_id FROM chain_products"
+                              " WHERE item_id IS NOT NULL OR prev_item_id IS NOT NULL"):
+            if r["item_id"] is not None:
+                live[int(r["id"])] = int(r["item_id"])
+            else:
+                dropped[int(r["id"])] = int(r["prev_item_id"])
+        # «Занят живой строкой» — только по строкам групп. Строка, снятая с витрины в
+        # этот обход, номер не занимает: иначе номер, уведённый сброшенным голосом,
+        # прошёл бы мимо сверки _same_item (ревью 18.10.2026).
+        in_groups = [row.id for group in groups for row, _, _ in group]
+        claimed = {live[i] for i in in_groups if i in live}
+        late_numbers = sorted({dropped[i] for i in in_groups if i in dropped} - claimed)
+        before = _last_records(conn, late_numbers)
+        canon_of: dict[int, dict] = {}
+
+        def allow(gi: int, old: int) -> bool:
+            record = before.get(old)
+            if record is None:            # о номере ничего не помнят: строки возвращают свой
+                return True
+            if gi not in canon_of:
+                canon_of[gi] = matching.canonical(groups[gi])
+            return _same_item(record, canon_of[gi])
+
+        keep, moved = _keep_numbers(groups, live, dropped, allow=allow)
+        late_set = {old for old in moved if old not in claimed}
         run = conn.execute("INSERT INTO match_runs (started_at, products) VALUES (?, ?)",
                            (started, len(products)))
         run_id = int(run.lastrowid)
+        # Последний номер каждой строки — в её память, пока DELETE его не стёр: строка,
+        # выпавшая из обхода на ночь, принесёт его назад (store.resolve_alias, спящий номер).
+        conn.execute("UPDATE chain_products SET prev_item_id=item_id WHERE item_id IS NOT NULL")
+        _keep_last_records(conn, {n for n in keep if n is not None}, started)
         conn.execute("DELETE FROM catalog_items")
-        multi = 0
-        for group in groups:
+        multi = kept = 0
+        numbers: list[int] = []
+        canons: list[dict] = []
+        for group, number in zip(groups, keep):
             canon = matching.canonical(group)
-            cur = conn.execute(
-                "INSERT INTO catalog_items (name, norm, brand, weight_g, unit, category, barcode,"
-                " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                (canon["name"], canon["norm"], canon["brand"], canon["weight_g"], canon["unit"],
-                 canon["category"], canon["barcode"], started, started))
-            item_id = int(cur.lastrowid)
+            canons.append(canon)
+            values = (canon["name"], canon["norm"], canon["brand"], canon["weight_g"], canon["unit"],
+                      canon["category"], canon["barcode"], canon["fnorm"], started, started)
+            if number is None:
+                cur = conn.execute(
+                    "INSERT INTO catalog_items (name, norm, brand, weight_g, unit, category, barcode,"
+                    " fnorm, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", values)
+                item_id = int(cur.lastrowid)
+            else:
+                conn.execute(
+                    "INSERT INTO catalog_items (id, name, norm, brand, weight_g, unit, category,"
+                    " barcode, fnorm, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (number, *values))
+                item_id = number
+                kept += 1
+            numbers.append(item_id)
             chains = {row.chain for row, _, _ in group}
             multi += int(len(chains) > 1)
             for row, method, score in group:
                 conn.execute("UPDATE chain_products SET item_id=?, link_method=?, link_score=? WHERE id=?",
                              (item_id, method, score, row.id))
+        # Номер, который снова жив, старой переадресацией никуда больше не ведёт.
+        alive = [n for n in keep if n is not None]
+        for i in range(0, len(alive), 500):
+            chunk = alive[i:i + 500]
+            conn.execute(f"DELETE FROM item_aliases WHERE old_id IN ({','.join('?' * len(chunk))})",
+                         chunk)
+        redirected = 0
+        for old, gi in moved.items():
+            if old in late_set and not _same_item(before.get(old), canons[gi]):
+                continue        # строку переименовали в другой товар: к чужому номер не ведёт
+            target = numbers[gi]
+            # Прежние переадресации на слившийся номер ведут теперь сразу к живому.
+            conn.execute("UPDATE item_aliases SET new_id=? WHERE new_id=?", (target, old))
+            conn.execute("INSERT INTO item_aliases (old_id, new_id, since) VALUES (?,?,?)"
+                         " ON CONFLICT(old_id) DO UPDATE SET new_id=excluded.new_id,"
+                         " since=excluded.since", (old, target, started))
+            redirected += 1
         conn.execute("UPDATE match_runs SET finished_at=?, items=?, multi=?, note=? WHERE id=?",
-                     (store.now(), len(groups), multi, f"{time.time() - t0:.1f} с", run_id))
+                     (store.now(), len(groups), multi,
+                      f"{time.time() - t0:.1f} с; номеров сохранено {kept}, переадресовано {redirected}",
+                      run_id))
         conn.commit()
-    say(f"единых товаров: {len(groups)}, известных нескольким сетям: {multi}")
-    return {"products": len(products), "items": len(groups), "multi": multi}
+    say(f"единых товаров: {len(groups)}, известных нескольким сетям: {multi},"
+        f" прежних номеров сохранено: {kept}")
+    return {"products": len(products), "items": len(groups), "multi": multi,
+            "kept": kept, "moved": redirected}
 
 
 def adopt(item_id: int, product_id: int | None = None) -> int:
@@ -120,6 +315,8 @@ def adopt(item_id: int, product_id: int | None = None) -> int:
     from app.models import Product
 
     from app.matcher.normalize import sold_by_weight
+
+    from app.catalog import link
 
     data = store.item(item_id)
     if not data:
@@ -137,21 +334,17 @@ def adopt(item_id: int, product_id: int | None = None) -> int:
             id=None, name=data["name"], brand=data.get("brand"), barcode=data.get("barcode"),
             weight_g=data.get("weight_g"), unit=unit if unit in ("pcs", "kg") else "pcs",
             category=data.get("category")))
-    for row in data["chains"]:
-        st = repo.get_store(row["chain"])
-        if not st:
-            continue
-        sp_id = repo.upsert_store_product(st.id, str(row["sku"]), row["name"],
-                                          weight_g=row.get("weight_g"), unit=row.get("unit"),
-                                          url=row.get("url"))
-        repo.confirm_mapping(product_id, sp_id, confirmed=True)
-        found = price_for_me(row)
-        if found is not None:
-            price, in_stock, seen = found
-            # Весовой товар сети каталог хранит в рублях за кг — снимку это надо
-            # сказать явно, иначе расчёт не отличит цену килограмма от цены пачки.
-            per_kg = price if (row.get("unit") or "").lower() == "kg" else None
-            repo.save_price(sp_id, price, price_per_kg=per_kg, in_stock=in_stock, fetched_at=seen)
+    # Строки сетей — по правилам единой базы (link.materialize), а не все подряд:
+    # в одном едином товаре бывают и «Йогурт Активиа 2,9 %», и «…клубника 2,9 %», и
+    # выбранный человеком вариант не должен уехать в корзину другим (ревью 18.10.2026).
+    # Строка, похожая на товар сама, подтверждается; прочие ждут на «Связях»
+    # кандидатами. Выбор человека в сети и его отказ от сети materialize соблюдает.
+    product = repo.get_product(product_id)
+    if product is not None:
+        with store.connect() as conn:
+            link.materialize(product, item_id, True, conn=conn)
+        if repo.master_of(product_id) is None:
+            repo.set_master(product_id, item_id, "words")
     return product_id
 
 
@@ -231,26 +424,13 @@ def resolve(name: str, brand: str | None = None, weight_g: float | None = None,
 
 
 def link_products() -> dict:
-    """Опознать товары человека в едином каталоге и привязать артикулы всех сетей.
+    """Опознать товары человека в единой базе и разложить артикулы сетей.
 
-    Берутся товары, известные не во всех сетях, где каталог есть. Возвращает
-    {tried, linked}. Ничего не удаляет и не переспрашивает: найденное — подтверждено,
-    как решил владелец 15.09.2026 для живого поиска.
+    Кнопка «Связать с каталогом» на «Связях». Делает то же, что фоновое
+    сопоставление после чеков и при входе (app/catalog/link.py), и заодно
+    перекладывает артикулы уже привязанных товаров по обновлённой базе.
+    Возвращает {tried, linked} и подробности прохода.
     """
-    from app import repo
-    from app.catalog.worker import chains
+    from app.catalog import link
 
-    covered = set(chains())
-    stores = {s.code: s.id for s in repo.list_stores()}
-    matrix = repo.mapping_matrix()
-    tried = linked = 0
-    for product in repo.list_products():
-        known = {code for code in covered if matrix.get((product.id, stores.get(code)))}
-        if known >= covered:
-            continue
-        tried += 1
-        item = resolve(product.name, product.brand, product.weight_g, product.unit, product.barcode)
-        if item:
-            adopt(int(item["id"]), product_id=product.id)
-            linked += 1
-    return {"tried": tried, "linked": linked}
+    return link.link_products(sync=True).as_dict()

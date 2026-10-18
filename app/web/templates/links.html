@@ -81,7 +81,40 @@
       </details>
 
     {% else %}
-      <p class="muted" style="margin:12px 0 4px">Связи с этой сетью нет. Найдите кандидатов
+      {% if pair.stub %}
+        <p class="muted" style="margin:12px 0 4px">Цена сейчас — из ваших чеков или прайса
+          (артикул <code>{{ pair.stub.sku }}</code>{% if pair.price %}, {{ rub(pair.price.price) }}{% endif %}).
+          Артикула сети нет: в корзину магазина по такой цене ничего не положить —
+          подтвердите товар сети ниже.</p>
+      {% endif %}
+      {% if pair.base %}
+        <p class="muted" style="margin:12px 0 4px">Общий список товаров сетей предлагает
+          этот артикул, но сам в нём не уверен. Подтвердите, если это тот же товар, —
+          тогда он попадёт в корзину этой сети.</p>
+        {% for candidate in pair.base %}
+          <div style="border-top:1px solid var(--line);padding:10px 0">
+            <strong>{{ candidate.name or '—' }}</strong><br>
+            <span class="dim">артикул <code>{{ candidate.sku or '—' }}</code></span>
+            {% if candidate.doubts %}
+              <div class="note warn" style="margin:8px 0 0">Матчер возражает:
+                {{ candidate.doubts|join(', ') }}. Если это всё-таки тот же товар —
+                подтверждайте, возражение не запрет.</div>
+            {% endif %}
+            <form method="post" action="{{ screen.path }}" style="margin-top:8px">
+              <input type="hidden" name="action" value="confirm">
+              <input type="hidden" name="product" value="{{ chosen.product.id }}">
+              <input type="hidden" name="store" value="{{ pair.store.code }}">
+              <input type="hidden" name="sku" value="{{ candidate.sku }}">
+              <input type="hidden" name="q" value="{{ query }}">
+              <button class="btn main" type="submit">
+                «{{ chosen.product.name }}» — это {{ candidate.name or 'он' }}. Подтвердить</button>
+            </form>
+          </div>
+        {% endfor %}
+      {% endif %}
+      <p class="muted" style="margin:12px 0 4px">{% if pair.base %}Не тот товар — найдите
+        кандидатов в магазине{% elif pair.stub %}Найдите кандидатов в магазине{% else %}Связи с
+        этой сетью нет. Найдите кандидатов{% endif %}
         и подтвердите тот, который действительно тот же товар.</p>
       <form method="post" action="{{ screen.path }}">
         <input type="hidden" name="action" value="find">

@@ -178,8 +178,16 @@ def auto_match(product_ids: list[int], store_codes: list[str], threshold: float 
                 need_review.append({"product_id": product_id, "store_code": store_code,
                                     "reason": "магазин не найден", "candidates": []})
                 continue
-            if repo.confirmed_mapping(product_id, store.id):
-                continue                                # уже подтверждено — пропускаем
+            # Уже подтверждено настоящим артикулом — пропускаем. Заглушка строки чека
+            # (hist-) сеть не закрывает: по ней в корзину ничего не положить, и
+            # настоящий артикул искать надо (тем же правилом, что cartplan.build).
+            if repo.confirmed_mapping(product_id, store.id, real_only=True):
+                continue
+            # Связь с этой сетью человек убирал: автоматически её не возвращаем, до
+            # нового подтверждения руками (обещание экрана «Связи»).
+            if repo.chain_rejected(product_id, store.id):
+                continue
+            held = repo.confirmed_mapping(product_id, store.id)      # заглушка или ничего
             candidates = find_candidates(product_id, store_code, limit=3)
             if not candidates:
                 need_review.append({"product_id": product_id, "product_name": product.name,
@@ -193,8 +201,16 @@ def auto_match(product_ids: list[int], store_codes: list[str], threshold: float 
                               and digits(best.ean) == digits(getattr(product, "barcode", None)))
             fits = by_barcode or weight_ok(product.weight_g, best.weight_g, tol)
             if best.score >= threshold and fits:
+                from app.catalog.model import placeholder_sku
+
+                stub = placeholder_sku(best.sku, store_code)
+                if stub and held:
+                    # Та же или другая заглушка вместо уже подтверждённой: пустое
+                    # действие или подмена цены чужим чеком. Настоящего артикула поиск
+                    # не нашёл — считать нечего (ревью 18.10.2026).
+                    continue
                 confirm(product_id, store_code, best.sku)
-                auto += 1
+                auto += int(not stub)        # «подтверждено» — только настоящий артикул
             else:
                 need_review.append({
                     "product_id": product_id, "product_name": product.name,

@@ -393,7 +393,7 @@ def basket_with_milk(places):
 
     product_id = repo.upsert_product(Product(id=None, name="Молоко 3.2% 900 мл", unit="pcs"))
     store = repo.get_store("magnit")
-    store_product_id = repo.upsert_store_product(store.id, "magnit-1",
+    store_product_id = repo.upsert_store_product(store.id, "100001",
                                                  "Молоко Простоквашино 900 мл")
     repo.confirm_mapping(product_id, store_product_id, True)
     repo.save_price(store_product_id, 89.9)
@@ -410,7 +410,7 @@ def test_cartplan_takes_the_latest_basket(door, places, basket_with_milk):
                                  {"workplace": ONE, "secret": places[ONE], "store": "magnit"})
     assert code == 200
     assert answer["store"] == "magnit"
-    assert [line["sku"] for line in answer["lines"]] == ["magnit-1"]
+    assert [line["sku"] for line in answer["lines"]] == ["100001"]
     assert answer["lines"][0]["qty"] == 2
     # Сумма — то, с чем человек сверит наполнившуюся корзину глазами. Ноль на этом
     # месте выглядел бы ответом «бесплатно», а не «неизвестно».
@@ -424,7 +424,7 @@ def test_cartplan_takes_sent_lines(door, places, basket_with_milk):
         "lines": [{"product_id": basket_with_milk["product_id"], "name": "Молоко", "qty": 1},
                   {"name": "Творог, которого в Магните нет"}]})
     assert code == 200
-    assert [line["sku"] for line in answer["lines"]] == ["magnit-1"]
+    assert [line["sku"] for line in answer["lines"]] == ["100001"]
     assert answer["unknown"] == ["Творог, которого в Магните нет"]
     assert "вне корзины" in answer["note"]
 
@@ -605,7 +605,7 @@ def test_cartplan_waiting_gives_out_what_was_put_aside(door, places, basket_with
     body = {"workplace": ONE, "secret": places[ONE], "store": "magnit", "waiting": True}
     code, answer, _ = door.knock(api.CARTPLAN, body)
     assert code == 200
-    assert [ln["sku"] for ln in answer["lines"]] == ["magnit-1"]
+    assert [ln["sku"] for ln in answer["lines"]] == ["100001"]
 
     code, again, _ = door.knock(api.CARTPLAN, body)
     assert code == 200

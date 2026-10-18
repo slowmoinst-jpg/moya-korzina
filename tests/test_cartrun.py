@@ -31,7 +31,7 @@ METRO_HASH = "5502aed9f4501b12da05daf6f5347e7b"
 
 # Артикулы METRO — числа из образца ответа её корзины (tests/fixtures/metro_basket.json):
 # запись METRO принимает только числовой артикул.
-SKUS = {"magnit": ("magnit-1", "magnit-2"), "lenta": ("101", "102"),
+SKUS = {"magnit": ("100001", "100002"), "lenta": ("101", "102"),
         "vkusvill": ("201", "202"), "pyaterochka": ("hist-1", "hist-2"),
         "metro": ("117189", "204411")}
 PRICES = {"magnit": (89.0, 45.0), "lenta": (92.0, 48.0), "vkusvill": (99.0, 52.0),
@@ -123,7 +123,7 @@ def test_one_press_fills_every_network_it_can_each_in_its_own_thread(home, roads
     assert roads["deliver"][0][2] == "cartrun-magnit", "у Магнита свой поток"
     assert {code for code, _ in roads["link"]} == {"lenta", "vkusvill"}
     assert {thread for _, thread in roads["link"]} == {"cartrun-lenta", "cartrun-vkusvill"}
-    assert sorted(roads["deliver"][0][1]) == ["magnit-1", "magnit-2"], "вся корзина, не доля варианта"
+    assert sorted(roads["deliver"][0][1]) == ["100001", "100002"], "вся корзина, не доля варианта"
 
     magnit = rows["magnit"]
     assert magnit.state == cartrun.DONE and magnit.planned == 2 and len(magnit.landed) == 2

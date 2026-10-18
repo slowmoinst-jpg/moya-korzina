@@ -184,7 +184,11 @@ def build(store_code: str, lines, *, force: bool = False, verify_prices: bool = 
 
     Артикул берётся из ПОДТВЕРЖДЁННОГО сопоставления и ниоткуда больше. Догадка
     здесь стоила бы дороже пропуска: положить человеку в корзину не тот творог
-    хуже, чем не положить ничего, — второе он увидит, первое нет.
+    хуже, чем не положить ничего, — второе он увидит, первое нет. Подтверждённые
+    артикулы приходят от человека, живого поиска и единой базы — от неё только по
+    сильной связи (app/catalog/link.py). Заглушки строки чека (hist-) и прайса
+    (list-) — источники цены, а не артикулы: сеть по ним товар не узнает, и такая
+    позиция честно уходит в unknown.
     """
     store = repo.get_store(store_code)
     plan = CartPlan(store_code=store_code)
@@ -199,7 +203,7 @@ def build(store_code: str, lines, *, force: bool = False, verify_prices: bool = 
     for line in lines or []:
         name = (getattr(line, "name", None) or getattr(line, "product_name", None) or "—")
         product_id = getattr(line, "product_id", None)
-        mapping = repo.confirmed_mapping(product_id, store.id) if product_id else None
+        mapping = repo.confirmed_mapping(product_id, store.id, real_only=True) if product_id else None
         sku = (mapping or {}).get("sku")
         if not sku:
             plan.unknown.append(name)

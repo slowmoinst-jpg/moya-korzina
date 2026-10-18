@@ -33,9 +33,9 @@ def home(tmp_path, monkeypatch):
     cheese = repo.upsert_product(Product(id=None, name="Сыр Российский 45%", unit="kg"))
     for code, price_milk, price_cheese in (("magnit", 89.0, 240.0), ("pyaterochka", 95.0, 260.0)):
         shop = repo.get_store(code)
-        milk_sp = repo.upsert_store_product(shop.id, f"{code}-1", "Молоко Простоквашино 930 мл",
+        milk_sp = repo.upsert_store_product(shop.id, f"{code}1", "Молоко Простоквашино 930 мл",
                                             url=f"https://{code}.example/1")
-        cheese_sp = repo.upsert_store_product(shop.id, f"{code}-2", "Сыр Российский 45%",
+        cheese_sp = repo.upsert_store_product(shop.id, f"{code}2", "Сыр Российский 45%",
                                               url=f"https://{code}.example/2")
         repo.confirm_mapping(milk, milk_sp, confirmed=True)
         repo.confirm_mapping(cheese, cheese_sp, confirmed=True)
