@@ -134,7 +134,110 @@ def basket():
     items = repo.basket_items(int(current["id"])) if current else []
     rows = [{"pid": int(i["product_id"]), "name": i.get("name") or "—",
              "unit": i.get("unit") or "pcs", "qty": float(i.get("qty") or 0)} for i in items]
-    return _render("basket.html", tab="basket", basket=current, items=rows)
+    return _render("basket.html", tab="basket", basket=current, items=rows,
+                   runs=_runs(current) if rows else None)
+
+
+@bp.get("/basket/runs")
+@needs_phone
+def basket_runs():
+    """Строки «Корзина в магазинах» для опроса, пока телефон собирает: кусок страницы и признак хода."""
+    runs = _runs(_basket())
+    return {"html": render_template("phone/_runs.html", runs=runs, rub=_rub()),
+            "going": runs["going"], "stamp": runs["stamp"]}
+
+
+def _rub():
+    from app.web.screens.basket import rub
+
+    return rub
+
+
+# ---------- корзина в магазинах: сборка телефона ----------
+def _runs(current: dict | None) -> dict:
+    """Корзина в магазинах: строка на сеть — идёт ли сборка, что легло и итог сети.
+
+    ЗАЧЕМ ЗДЕСЬ. Владелец 17.10.2026: человек остаётся в нашем приложении и видит итог
+    каждой сети со всеми акциями. Пока открыта эта страница, приложение само собирает
+    корзину во всех сетях, где человек вошёл (скрытое окно на сеть, android/app), и ход
+    сборки приходит в строки «Сборки корзин» (app/cartrun.py). Здесь те же строки,
+    только этой корзины и без лишних слов: «собираю 2 из 5», «легло 4 из 5 · 1 234 ₽».
+
+    КОМУ СОБИРАТЬ, РЕШАЕТ ПРИЛОЖЕНИЕ: страница отдаёт ему отпечаток корзины (stamp) и
+    что сервер знает о входе в каждую сеть, а оно сверяет со своей памятью — без
+    перемен в корзине повторно не собирает — и со своими куками: в Магнит, например,
+    человек вошёл у себя в окне, а сохранённого входа сервер не знает.
+    """
+    from app import cartrun, phonecart
+    from app.shopbrowser import signals
+
+    basket_id = int(current["id"]) if current else None
+    stamp = cartrun.stamp_of(basket_id) if basket_id is not None else ""
+    names = {s.code: s.name for s in repo.list_stores()}
+    try:
+        stored = {row.code: row for row in cartrun.rows()}
+    except Exception:  # noqa: BLE001 — строки сборки не повод ронять корзину
+        log.warning("строки сборки корзин не прочитались", exc_info=True)
+        stored = {}
+    rows, idle, chains = [], [], []
+    for code in phonecart.CHAINS:
+        if code not in names:
+            continue
+        login = _login(code)
+        row = stored.get(code)
+        # Эту же корзину туда уже положил сервер (браузер или метод сети) — телефону её
+        # не повторять: сеть кладёт поверх лежащего.
+        sent = bool(row is not None and row.by == cartrun.SERVER and row.state == cartrun.DONE
+                    and row.road in (cartrun.BROWSER, cartrun.API)
+                    and row.basket_id == basket_id and row.stamp == stamp)
+        chains.append({"code": code, "login": login,
+                       "cookies": list(signals.AUTH_COOKIE.get(code) or ()), "sent": sent})
+        view = _run_view(row, basket_id, stamp)
+        if view is None:
+            if login:
+                idle.append(names[code])
+                continue
+            view = {"state": "wait", "words": "соберу, пока открыта корзина"
+                    if device.on_phone() else "соберёт приложение на телефоне"}
+        view.update(code=code, name=names[code])
+        rows.append(view)
+    return {"basket": basket_id, "stamp": stamp, "rows": rows, "idle": idle,
+            "going": any(r["state"] == "going" for r in rows),
+            "collect": {"basket": basket_id, "stamp": stamp, "chains": chains}}
+
+
+def _run_view(row, basket_id: int | None, stamp: str) -> dict | None:
+    """Строка сети словами — только если она про эту корзину. Чужая корзина — None."""
+    from app import cartrun
+
+    if row is None or basket_id is None or row.basket_id != basket_id:
+        return None
+    total = row.total
+    money = {"sum": total.sum, "network": total.source == cartrun.NETWORK} if total else None
+    count = len(row.landed or []) + len(row.missing or [])
+    if row.state == cartrun.GOING and cartrun.alive(row):
+        pulse = cartrun.live(row) or {}
+        done, of = int(pulse.get("at") or 0), int(pulse.get("total") or 0)
+        words = f"собираю {done} из {of}" if of else "собираю"
+        return {"state": "going", "words": words, "now": str(pulse.get("now") or ""), "total": None}
+    fresh = bool(stamp) and row.stamp == stamp
+    if not fresh:
+        if row.state == cartrun.DONE and money:
+            return {"state": "old", "words": "до правки корзины", "total": money}
+        return None
+    if row.state == cartrun.DONE:
+        landed = len(row.landed or [])
+        words = f"легло {landed} из {count}" + ("" if money else ", итог сети не прочитан")
+        return {"state": "done", "words": words, "total": money,
+                "gone": sum(1 for m in row.missing or [] if m.get("gone")),
+                # «Кефир 1% +2»: сколько лишнего лежит в корзине сети от прежней сборки.
+                "extra": [f"{e['name']} +{int(e.get('more') or 1)}" for e in row.extra or []
+                          if e.get("name")]}
+    if row.state == cartrun.EMPTY:
+        return {"state": "empty", "words": "класть нечего", "note": row.note, "total": None}
+    if row.state in (cartrun.FAILED, cartrun.REFUSED, cartrun.LOGIN):
+        return {"state": "failed", "words": "не вышло", "note": row.note, "total": None}
+    return None
 
 
 def _change(current: dict | None):

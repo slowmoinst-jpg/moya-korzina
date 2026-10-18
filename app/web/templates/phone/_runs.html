@@ -1,0 +1,31 @@
+{# Корзина в магазинах: строка на сеть — идёт ли сборка телефона, что легло и итог сети
+   (app/web/phone.py, _runs). Тот же кусок отдаёт опрос /phone/basket/runs, пока
+   приложение собирает, поэтому здесь нет ничего, кроме строк. Нажатие на строку
+   открывает сеть в приложении: там её корзина, какой её собрал телефон. #}
+{% if runs and (runs.rows or runs.idle) %}
+  <div class="grp">Корзина в магазинах</div>
+  <div class="card">
+    {% for r in runs.rows %}
+      <a class="row run {{ r.state }}" href="/cabinet?store={{ r.code }}" data-open-store="{{ r.code }}" data-run="{{ r.code }}">
+        <span class="sq" style="background: var(--s-{{ r.code }}, var(--line2))"></span>
+        <span class="grow">
+          {{ r.name }}
+          <span class="fnt small" data-run-words>· {{ r.words }}</span>
+          {% if r.state == 'going' and r.now %}<span class="fnt small sub">{{ r.now }}</span>{% endif %}
+          {% if r.state in ('failed', 'empty') and r.note %}<span class="fnt small sub">{{ r.note }}</span>{% endif %}
+          {% if r.state == 'done' and r.gone %}<span class="fnt small sub">нет в наличии: {{ r.gone }}</span>{% endif %}
+          {% if r.state == 'done' and r.extra %}<span class="fnt small sub">в корзине сети лишнее, не убираю: {{ r.extra|join(', ') }}</span>{% endif %}
+        </span>
+        {% if r.total %}
+          <span class="num {{ 'fnt' if r.state == 'old' }}">{{ rub(r.total.sum) }}</span>
+          {% if r.total.network %}<span class="badge" title="Итог посчитала сама сеть: с её скидками и акциями">сеть</span>{% endif %}
+        {% elif r.state == 'going' %}
+          <span class="spin" aria-hidden="true"></span>
+        {% endif %}
+      </a>
+    {% endfor %}
+    {% if runs.idle %}
+      <a class="row fnt small" href="{{ url_for('phone.settings') }}">Без входа: {{ runs.idle|join(', ') }}</a>
+    {% endif %}
+  </div>
+{% endif %}

@@ -26,9 +26,16 @@
              итог из ответа корзины. Пока нет именного токена, сеть не принимает
              запись, и cartplan.why_not её не пускает: строка говорит это словами.
     phone    Пятёрочка, Самокат, Дикси, Перекрёсток — их витрины нашему серверу
-             закрыты (store_accounts.ABILITIES). Сегодня приложение туда корзину не
-             кладёт. Строка готова принять отчёт исполнителя на телефоне (accept), он
-             придёт в ту же форму.
+             закрыты (store_accounts.ABILITIES). Сервер туда корзину не кладёт, кладёт
+             приложение на телефоне (app/phonecart.py): ход оно сообщает (progress),
+             итог — отчётом (accept), в ту же форму строки.
+
+СБОРКА С ТЕЛЕФОНА В ФОНЕ (приложение 1.13). Пока человек смотрит корзину на телефоне,
+приложение само собирает её в каждой сети, где он вошёл, — скрытым окном на сеть, сети
+параллельно. Ход приходит сюда (progress) и держит строку «идёт» по пульсу: телефон
+шлёт его на каждой позиции, а замолчал дольше PHONE_STALE — сборка оборвалась. Пока
+идёт сборка телефона, сервер в эту сеть не кладёт (start видит живую строку), и
+наоборот: телефону, пришедшему к сети, куда кладёт сервер, отвечают отказом.
 
 СТРОКА СЕТИ — ОДНА ФОРМА ДЛЯ ЛЮБОГО ИСПОЛНИТЕЛЯ (Row ниже). Что легло, чего нет в
 наличии, что сети незнакомо, итог и кто собирал: сервер или телефон. Отчёт исполнителя
@@ -105,6 +112,11 @@ GONE_WHY = re.compile(r"нет в наличии|товара нет|нет в �
 NAME_LIMIT = 200
 LIST_LIMIT = 120       # позиций в одном списке строки: наряд короче (cart.LINE_LIMIT)
 
+# Сколько секунд телефон может молчать посреди сборки, прежде чем строка сочтёт её
+# оборвавшейся. Пульс приходит на каждой позиции; дольше всего телефон ждёт наряда
+# (до минуты: поиск самой сети по незнакомым позициям) и карточки (до 30 с).
+PHONE_STALE = 120
+
 _START = threading.Lock()   # «посмотреть, не идёт ли» + «отметить, что пошла»
 _WRITE = threading.Lock()   # чтение, слияние и запись строк одной настройкой
 
@@ -120,6 +132,9 @@ class Row:
     `missing` — что не легло или чего нет в наличии, у каждой позиции причина и
     признак `gone` («нет в наличии»). `unknown` — позиции, которых сеть не знает:
     они не уезжали вовсе. `total` — итог (carttotal.Total), чей он — в нём же.
+    `at` — сколько позиций уже пройдено (ход сборки телефона). `extra` — что лежит в
+    корзине сети от прежней сборки, а в корзине человека его нет или меньше: сами мы
+    из корзин сетей не убираем, это решает человек.
     """
 
     code: str
@@ -143,6 +158,8 @@ class Row:
     beat: float | None = None
     now: str = ""
     login: str = ""        # «connect» — подключить; «again» — войти заново
+    at: int = 0
+    extra: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         data = asdict(self)
@@ -223,16 +240,21 @@ def alive(row: Row | None) -> bool:
 
     Поток мог умереть вместе с сервером посреди сборки. Живой считаем строку, которую
     трогали не позже cart.STALE_AFTER назад, или ту, чья передача идёт прямо сейчас
-    (у неё свой пульс в cart.progress).
+    (у неё свой пульс в cart.progress). Сборку телефона держит только его пульс, и
+    молчать он может не дольше PHONE_STALE: приложение закрыли — строка это увидит.
     """
     from app.shopbrowser import cart
 
     if row is None or row.state != GOING:
         return False
-    if row.road in (BROWSER, API) and cart.running(row.code):
+    if row.by == DEVICE:
+        limit = PHONE_STALE
+    elif row.road in (BROWSER, API) and cart.running(row.code):
         return True
+    else:
+        limit = cart.STALE_AFTER
     try:
-        return (time.time() - float(row.beat or 0)) < cart.STALE_AFTER
+        return (time.time() - float(row.beat or 0)) < limit
     except (TypeError, ValueError):
         return False
 
@@ -243,6 +265,9 @@ def live(row: Row) -> dict | None:
 
     if row.state != GOING:
         return None
+    if row.by == DEVICE:
+        return {"at": min(row.at, row.planned) if row.planned else row.at,
+                "total": row.planned, "now": row.now}
     if row.road in (BROWSER, API) and cart.running(row.code):
         got = cart.progress(row.code) or {}
         total = int(got.get("total") or 0)
@@ -256,6 +281,13 @@ def _stamp(items) -> str:
     """Отпечаток корзины: другой состав — другая ссылка-корзина."""
     pairs = sorted((int(i["product_id"]), round(float(i.get("qty") or 0), 3)) for i in items)
     return hashlib.sha1(repr(pairs).encode("utf-8")).hexdigest()[:12]
+
+
+def stamp_of(basket_id: int) -> str:
+    """Отпечаток корзины по её номеру. По нему телефон видит, менялась ли она с прошлой сборки."""
+    from app import repo
+
+    return _stamp(repo.basket_items(int(basket_id)))
 
 
 def _lines(code: str, basket_id: int):
@@ -427,11 +459,16 @@ def rows() -> list[Row]:
         row = Row.of(stored.get(code)) or Row(code=code, name=names.get(code, code),
                                               road=road(code))
         if row.state == GOING and not alive(row):
-            row = replace(row, state=FAILED, finished_at=row.finished_at or _now(),
-                          note="Сборка оборвалась на полуслове — скорее всего, сервер "
-                               "перезапустили. Посмотрите, что легло, и соберите ещё раз.")
+            row = replace(row, state=FAILED, finished_at=row.finished_at or _now(), now="",
+                          note=PHONE_LOST if row.by == DEVICE else
+                          "Сборка оборвалась на полуслове — скорее всего, сервер "
+                          "перезапустили. Посмотрите, что легло, и соберите ещё раз.")
         out.append(row)
     return out
+
+
+PHONE_LOST = ("Телефон замолчал посреди сборки: приложение закрыли или пропала связь. "
+              "Откройте корзину в приложении — сборка продолжится с того, что уже легло.")
 
 
 # ---------- нажатие ----------
@@ -458,6 +495,13 @@ def start(phone: str, basket_id: int, *, only: str | None = None,
         for code in codes:
             current = get(code)
             if alive(current):
+                out.append(current)
+                continue
+            if (not again and current is not None and current.by == DEVICE
+                    and current.state == DONE and current.basket_id == int(basket_id)
+                    and current.stamp == stamp):
+                # Эту же корзину сюда уже собрал телефон. Сеть кладёт поверх лежащего, и
+                # сервер положил бы её второй раз; «Ещё раз» (again) — только после очистки.
                 out.append(current)
                 continue
             try:
@@ -656,6 +700,74 @@ def _names(raw, limit: int = LIST_LIMIT) -> list[str]:
     return [" ".join(str(item).split())[:NAME_LIMIT] for item in raw[:limit] if str(item).strip()]
 
 
+def _int(value, default: int = 0) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(number, 10_000))
+
+
+def _basket_of(report: dict, current: Row | None) -> tuple[int | None, str]:
+    """Какую корзину собирали: номер из отчёта, иначе тот, что уже стоит в строке."""
+    basket_id = report.get("basket")
+    try:
+        basket_id = int(basket_id) if basket_id is not None else (current.basket_id if current else None)
+    except (TypeError, ValueError):
+        basket_id = current.basket_id if current else None
+    basket = _basket(basket_id) if basket_id is not None else None
+    return basket_id, str((basket or {}).get("name") or "")
+
+
+def _stamp_text(value) -> str:
+    """Отпечаток корзины из отчёта: короткая шестнадцатеричная строка и ничего больше."""
+    text = str(value or "").strip().lower()
+    return text if re.fullmatch(r"[0-9a-f]{6,40}", text) else ""
+
+
+def progress(report: dict, *, by: str = DEVICE) -> Row:
+    """Ход сборки телефона в одной сети: «кладу 3 из 9». Строка держится живой его пульсом.
+
+    Форма: {"store", "basket", "stamp", "planned", "at", "now", "state"}. state —
+    "going" (по умолчанию), "empty" (класть нечего) или "failed" с причиной в note:
+    так телефон говорит о сборке, которая не дошла до отчёта.
+
+    В сеть, куда прямо сейчас кладёт сервер, телефон не пускаем: две руки в одной
+    корзине положили бы всё дважды. Ответ — ValueError, и приложение отступит.
+    """
+    from app import repo
+    from app.shopbrowser import cart
+
+    if not isinstance(report, dict):
+        raise ValueError("ход сборки должен быть объектом")
+    code = str(report.get("store") or "").strip().lower()
+    if code not in networks():
+        raise ValueError(f"для сети «{code or '—'}» строки сборки нет")
+    state = str(report.get("state") or GOING).strip().lower()
+    if state not in (GOING, EMPTY, FAILED):
+        state = GOING
+    with _START:
+        current = get(code)
+        if state == GOING and ((current is not None and current.by == SERVER and alive(current))
+                               or cart.running(code)):
+            raise ValueError("в эту сеть сейчас кладёт сервер — телефон подождёт")
+        store = repo.get_store(code)
+        basket_id, basket_name = _basket_of(report, current)
+        stamp = _stamp_text(report.get("stamp"))
+        same = (current is not None and current.by == DEVICE and current.state == GOING
+                and current.stamp == stamp and current.basket_id == basket_id)
+        row = Row(code=code, name=store.name if store else code,
+                  road=current.road if current else road(code), state=state,
+                  by=by if by in (SERVER, DEVICE) else DEVICE,
+                  note=" ".join(str(report.get("note") or "").split())[:600],
+                  planned=_int(report.get("planned")), at=_int(report.get("at")),
+                  now=" ".join(str(report.get("now") or "").split())[:160],
+                  basket_id=basket_id, basket_name=basket_name, stamp=stamp,
+                  started_at=current.started_at if same else _now(),
+                  finished_at=None if state == GOING else _now())
+        return save(row)
+
+
 def accept(report: dict, *, by: str = DEVICE) -> Row:
     """Принять отчёт о сборке в одной сети и положить его в строку этой сети.
 
@@ -668,7 +780,8 @@ def accept(report: dict, *, by: str = DEVICE) -> Row:
          "unknown": ["…"],
          "total": {"sum": 1234.5, "source": "network", "discount": 120, "delivery": 0},
          "state": "done" | "failed" | "refused" | "login",   — необязательно
-         "note": "…", "basket": 7}
+         "note": "…", "basket": 7, "stamp": "3fa9c1…",
+         "extra": [{"name": "Кефир 1%", "more": 1}]}
 
     Итог «посчитала сеть» — только с явным "source": "network": объявить итог
     сетевым может лишь тот, кто прочитал его у сети. Поля, которых здесь нет, не
@@ -698,14 +811,17 @@ def accept(report: dict, *, by: str = DEVICE) -> Row:
     if state not in (DONE, FAILED, REFUSED, LOGIN):
         state = DONE if landed else FAILED
 
+    extra: list[dict] = []
+    raw_extra = report.get("extra")
+    for item in (raw_extra if isinstance(raw_extra, list) else [])[:LIST_LIMIT]:
+        if isinstance(item, dict):
+            name = " ".join(str(item.get("name") or "").split())[:NAME_LIMIT]
+            if name:
+                extra.append({"name": name, "more": _int(item.get("more"), 1) or 1})
+
     current = get(code)
     store = repo.get_store(code)
-    basket_id = report.get("basket")
-    try:
-        basket_id = int(basket_id) if basket_id is not None else (current.basket_id if current else None)
-    except (TypeError, ValueError):
-        basket_id = current.basket_id if current else None
-    basket = _basket(basket_id) if basket_id is not None else None
+    basket_id, basket_name = _basket_of(report, current)
     row = Row(code=code, name=store.name if store else code,
               road=current.road if current else road(code),
               state=state, by=by if by in (SERVER, DEVICE) else DEVICE,
@@ -713,10 +829,11 @@ def accept(report: dict, *, by: str = DEVICE) -> Row:
               planned=len(landed) + len(missing), landed=landed, missing=missing,
               unknown=_names(report.get("unknown")),
               total=Total.of(report.get("total")),
-              basket_id=basket_id, basket_name=str((basket or {}).get("name") or ""),
-              stamp=current.stamp if current else "",
+              basket_id=basket_id, basket_name=basket_name,
+              stamp=_stamp_text(report.get("stamp")) or (current.stamp if current else ""),
               started_at=current.started_at if current else None, finished_at=_now(),
-              login="again" if state == LOGIN else "")
+              login="again" if state == LOGIN else "", extra=extra,
+              at=len(landed) + len(missing))
     log.info("%s: отчёт о сборке принят (%s): легло %d, не легло %d", code, row.by,
              len(landed), len(missing))
     return save(row)
@@ -724,5 +841,5 @@ def accept(report: dict, *, by: str = DEVICE) -> Row:
 
 __all__ = ["Row", "Total", "NETWORK", "OURS", "KEY", "LINK", "BROWSER", "API", "PHONE",
            "IDLE", "READY", "GOING", "DONE", "FAILED", "REFUSED", "LOGIN", "SENT", "CANT",
-           "EMPTY", "SERVER", "DEVICE", "networks", "road", "alive", "live", "prepare",
-           "preview", "rows", "start", "accept", "get", "save"]
+           "EMPTY", "SERVER", "DEVICE", "PHONE_STALE", "networks", "road", "alive", "live",
+           "prepare", "preview", "rows", "start", "accept", "progress", "stamp_of", "get", "save"]

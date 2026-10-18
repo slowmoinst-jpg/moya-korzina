@@ -20,6 +20,15 @@
         </div>
       {% endfor %}
     </form>
+    {% if runs %}
+      {# Пока открыта корзина, приложение само собирает её в сетях, где человек вошёл
+         (android/app, 1.13): отпечаток корзины и что сервер знает о входах — ему в
+         data-collect, ход и итоги — опросом строк, пока сборка идёт. #}
+      <section id="kz-runs" data-poll="{{ url_for('phone.basket_runs') }}"
+               data-collect="{{ runs.collect|tojson|forceescape }}" data-going="{{ 1 if runs.going else '' }}">
+        {% include 'phone/_runs.html' %}
+      </section>
+    {% endif %}
   {% else %}
     <div class="empty">Корзина пуста. Повторите заказ из истории — его товары лягут сюда.</div>
   {% endif %}
@@ -33,4 +42,61 @@
       <button class="cta" style="flex: 1; width: auto" type="button" disabled>Где дешевле</button>
     {% endif %}
   </div>
+  <script>
+    /* Корзина в магазинах. Внутри приложения страница отдаёт ему корзину (KorzinaDevice.collect),
+       и оно само решает, в каких сетях собрать: вошёл ли человек и менялась ли корзина
+       с прошлой сборки. Пока сборка идёт, строки сетей обновляются опросом сервера —
+       туда приложение шлёт ход и итог каждой сети. Строка открывает сеть в приложении.
+
+       ПОСЛЕ DOMContentLoaded: korzina-device.js подключён с defer и исполняется после
+       разбора страницы, то есть ПОСЛЕ этого скрипта. Без ожидания KorzinaDevice ещё нет,
+       и корзина не уходила в приложение вовсе (эмулятор, 18.10.2026). */
+    function kzRuns() {
+      var box = document.getElementById('kz-runs');
+      if (!box) { return; }
+      var payload = null, answer = null;
+      try { payload = JSON.parse(box.getAttribute('data-collect') || 'null'); } catch (e) { payload = null; }
+      if (payload && window.KorzinaDevice && KorzinaDevice.collect) { answer = KorzinaDevice.collect(payload); }
+      var skip = (answer && answer.skip) || {};
+      function tell() {
+        // «Соберу» у сети, куда приложение не пойдёт, — пустое обещание: скажем почему.
+        Object.keys(skip).forEach(function (code) {
+          var row = box.querySelector('.run.wait[data-run="' + code + '"] [data-run-words]');
+          if (row) { row.textContent = '· ' + skip[code]; }
+        });
+      }
+      tell();
+      var started = answer && answer.starting && answer.starting.length;
+      // Сколько опрашивать, решает само приложение (busy: что собирается и что ждёт
+      // запуска); у старой сборки без busy — первые 25 секунд и пока сервер говорит «идёт».
+      var until = Date.now() + (started ? 25000 : 0), timer = null;
+      function more(j) {
+        var b = window.KorzinaDevice && KorzinaDevice.busy ? KorzinaDevice.busy() : null;
+        if (b && ((b.going || []).length || (b.soon || []).length)) { return true; }
+        return j.going || (!b && Date.now() < until);
+      }
+      function poll() {
+        clearTimeout(timer);
+        fetch(box.getAttribute('data-poll'), { headers: { Accept: 'application/json' }, credentials: 'same-origin' })
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            box.innerHTML = j.html;
+            tell();
+            if (more(j)) { timer = setTimeout(poll, 2000); }
+          })
+          .catch(function () { if (more({})) { timer = setTimeout(poll, 4000); } });
+      }
+      // Приложение зовёт это, когда сборка в сети началась или кончилась: строка — сразу.
+      window.kzRunsChanged = function () { poll(); };
+      if (started || box.getAttribute('data-going')) { timer = setTimeout(poll, 1500); }
+      box.addEventListener('click', function (e) {
+        var link = e.target.closest('[data-open-store]');
+        if (link && window.KorzinaDevice && KorzinaDevice.openStore(link.getAttribute('data-open-store'))) {
+          e.preventDefault();
+        }
+      });
+    }
+    if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', kzRuns); }
+    else { kzRuns(); }
+  </script>
 {% endblock %}

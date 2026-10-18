@@ -165,3 +165,14 @@ h1.title { margin: 0; font: 600 22px/1.25 'Unbounded', 'Rubik', system-ui, sans-
   flex: 1; min-width: 0; height: 36px; border: 1px solid var(--line2); border-radius: 8px;
   padding: 0 10px; font-size: 15px; background: #FFFFFF;
 }
+
+/* Корзина в магазинах: строка сети под товарами — идёт ли сборка телефона и итог сети.
+   Строка той же высоты, что строки Настроек; вторая строчка (что кладу, чего нет) мелкая. */
+.run { min-height: 40px; padding-top: 5px; padding-bottom: 5px; }
+.run .grow { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 4px; }
+.run .sub { flex-basis: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run.failed [data-run-words] { color: var(--red); }
+.run.old .badge { background: var(--soft); color: var(--ink3); }
+.spin { width: 14px; height: 14px; flex: none; border-radius: 50%;
+        border: 2px solid var(--line2); border-top-color: var(--ink); animation: kz-spin .9s linear infinite; }
+@keyframes kz-spin { to { transform: rotate(360deg); } }

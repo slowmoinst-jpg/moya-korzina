@@ -268,5 +268,13 @@ def device_cartreport():
     return _device_call("cartreport", phonecart.accept_report)
 
 
+@bp.route("/device/cartprogress", methods=["POST"])
+def device_cartprogress():
+    """Ход сборки телефона в сети: «кладу 3 из 9» — строка «Сборки корзин» живёт его пульсом."""
+    from app import phonecart
+
+    return _device_call("cartprogress", phonecart.progress)
+
+
 def install(flask_app):
     flask_app.register_blueprint(bp)

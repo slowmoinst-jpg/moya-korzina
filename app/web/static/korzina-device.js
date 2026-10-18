@@ -7,7 +7,8 @@
    спрашивают KorzinaDevice.available() и зовут методы, не зная устройства WebView.
 
    ЧТО УМЕЕТ МОСТ СЕГОДНЯ. Открыть страницу сети в приложении (openStore),
-   вернуться на наш сайт (openApp) и сказать, что он есть и какой версии (info).
+   вернуться на наш сайт (openApp), сказать, что он есть и какой версии (info), и
+   с 1.13 — взять корзину и собрать её в фоне во всех сетях, где вошёл человек (collect).
    Действия с ответом — «сохранить вход», акции, запись корзины — пока делает
    панель самого приложения на странице сети; когда они переедут сюда, вызовы
    получат ответ, и здесь появится приёмник результата.
@@ -51,5 +52,24 @@ window.KorzinaDevice = (function () {
     return true;
   }
 
-  return { available: available, info: info, openStore: openStore, openApp: openApp };
+  /* Корзина на экране (с приложения 1.13): отдать ему корзину — номер, отпечаток
+     состава и что сервер знает о входе в каждую сеть. Приложение само решает, где
+     собрать её в фоне, и отвечает {starting: [коды], skip: {код: почему нет}}.
+     Вне приложения или в старой сборке — null. */
+  function collect(payload) {
+    var k = bridge();
+    if (!k || typeof k.collect !== 'function') { return null; }
+    try { return JSON.parse(k.collect(JSON.stringify(payload || {}))); } catch (e) { return null; }
+  }
+
+  /* Что приложение собирает в фоне прямо сейчас: {going: [коды], soon: [коды]}.
+     По нему страница знает, опрашивать ли сервер дальше. Нет моста — null. */
+  function busy() {
+    var k = bridge();
+    if (!k || typeof k.busy !== 'function') { return null; }
+    try { return JSON.parse(k.busy()); } catch (e) { return null; }
+  }
+
+  return { available: available, info: info, openStore: openStore, openApp: openApp,
+           collect: collect, busy: busy };
 })();
