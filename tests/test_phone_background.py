@@ -255,6 +255,71 @@ def test_the_basket_gives_the_app_its_stamp_and_what_the_server_knows_of_logins(
     assert "Без входа:" in page
 
 
+def test_a_store_row_opens_the_store_through_the_bridge(client, home):
+    """Строка сети открывает сеть В РЕЖИМЕ СЕТИ, а не простой ссылкой.
+
+    Замер 20.10.2026 на эмуляторе: нажатие на «Магнит · не вышло» вело на нашу страницу
+    кабинета, приложение грузило сеть вне своего режима — и панели с «Раздел» (прочитать
+    карточки) и «Собрать» не было. Человек шёл чинить сборку, а инструментов не получал.
+    Мост openStore открывает сеть в режиме сети и показывает панель.
+    """
+    workspace()
+    save_login("magnit")
+    users.deactivate()
+
+    page = client.get("/phone/basket", headers={"User-Agent": APP_UA}).data.decode("utf-8")
+
+    # ОДИН путь: делегированный обработчик на #kz-runs. Inline onclick на строке
+    # всплывал раньше него и звал мост вторым разом — сеть грузилась дважды.
+    assert 'onclick="return kzOpenStore(this)"' not in page, "inline onclick снова зовёт мост"
+    assert "window.kzOpenStore" not in page, "лишняя копия моста осталась на странице"
+    assert 'data-open-store="magnit"' in page, "вне приложения остаётся обычная ссылка"
+    assert "box.addEventListener('click'" in page and "KorzinaDevice.openStore" in page, \
+        "делегированный обработчик строки сети не найден"
+
+    # И в самой разметке — тот же один путь: строка без onclick, в basket.html нет
+    # второй функции, которая звала бы openStore.
+    with open(os.path.join(ROOT, "app", "web", "templates", "phone", "_runs.html"),
+              encoding="utf-8") as fh:
+        runs_template = fh.read()
+    assert "onclick=" not in runs_template, "в разметке строки сети вернулся inline onclick"
+
+    with open(os.path.join(ROOT, "app", "web", "templates", "phone", "basket.html"),
+              encoding="utf-8") as fh:
+        basket_template = fh.read()
+    assert "kzOpenStore" not in basket_template, "в basket.html остался второй путь к мосту"
+
+
+def test_the_row_says_why_the_assembly_failed(home):
+    """Почему не вышло — в СТРОКЕ сети, а не только в позициях.
+
+    Замер 20.10.2026 на экране «Корзина»: четыре сети показывали «не вышло», а причина
+    (стена «Выключите VPN», «нет входа», «нет в наличии») лежала внутри позиций. Человек
+    видел «не вышло» и не знал, ждать ли, входить или менять адрес.
+    """
+    stamp = cartrun.stamp_of(home["basket"])
+    answer = phonecart.accept_report({
+        "store": "magnit", "basket": home["basket"], "stamp": stamp, "background": True,
+        "items": [{"name": "Молоко", "sku": "m-1", "ok": False,
+                   "why": "Магнит: сеть не пускает этот адрес — показывает «Выключите VPN»"}]})
+
+    assert "Выключите VPN" in cartrun.get("magnit").note
+
+
+def test_two_different_reasons_are_both_named(home):
+    """Причины разные — это тоже ответ: человек видит, что дело не в одной сети."""
+    stamp = cartrun.stamp_of(home["basket"])
+    phonecart.accept_report({
+        "store": "magnit", "basket": home["basket"], "stamp": stamp, "background": True,
+        "items": [{"name": "Молоко", "sku": "m-1", "ok": False, "why": "нет в наличии"},
+                  {"name": "Сыр", "sku": "m-2", "ok": False,
+                   "why": "в корзине сети его не видно"}]})
+
+    note = cartrun.get("magnit").note
+    assert "причины разные" in note, note
+    assert "нет в наличии" in note and "не видно" in note
+
+
 def test_the_rows_say_going_landed_and_the_networks_total(client, home):
     workspace()
     stamp = cartrun.stamp_of(home["basket"])

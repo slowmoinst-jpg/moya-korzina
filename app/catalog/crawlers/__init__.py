@@ -13,9 +13,11 @@
   Fix Price  — только через НАШ браузер: простому запросу витрина отдаёт заглушку
                в 1,8 КБ, окну — страницу с ценами. Товары лежат в состоянии Nuxt,
                по 24 на страницу раздела (замер 20.09.2026).
-  Пятёрочка  — программного канала нет: сайт и API закрыты антиботом ServicePipe
-               даже с российского адреса. Каталог только из чеков и прайса.
-  Самокат    — то же: ServicePipe на сайте и на API. Только чеки.
+  Пятёрочка  — сайт и API закрыты антиботом ServicePipe даже с российского адреса:
+               витрина берётся только браузером через домашний выход владельца
+               (app/homeexit.py), добор — из чеков и прайса.
+  Самокат    — то же: ServicePipe на сайте и на API; витрина — через домашний
+               выход владельца, добор — из чеков и прайса.
 """
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ from typing import Iterator
 
 import requests
 
-from app import config
+from app import config, homeexit
 from app.catalog.model import CrawlBlocked, Crawler
 
 log = logging.getLogger(__name__)
@@ -42,10 +44,27 @@ class Pace:
     С `chain` темп общий с коннекторами той же сети и с другими процессами
     (app/connectors/cache.reserve): ночной обход и живой поиск на экране иначе
     ходили бы в одну сеть каждый в своём темпе, вдвое чаще разрешённого.
+
+    Сеть, которая ходит через домашний выход владельца, идёт ещё реже: потолок
+    берётся как min(общий, домашний) правилом app/homeexit.pace_rps. Через дом идёт
+    адрес владельца, и сеть, заподозрив его, покажет проверку ему самому, в его
+    браузере. До 18.10.2026 правило знали только коннекторы (cache.throttle), а
+    сборщики шли общим темпом — то есть витрина Дикси листалась через дом вдвое чаще
+    разрешённого. Теперь правило одно и живёт здесь.
+
+    ПРАВИЛО rps. Положительный rps — свой темп, он не перебивается ни общим, ни
+    домашним потолком. Ноль и отрицательное считаются «темп не задан»: ноль запросов
+    в секунду — не темп, а остановка, и такого вызова в коде нет. Так `rps=0.0` не
+    может тихо снять домашний потолок (adversarial-проверка 18.10.2026, F4): «не
+    задан» значит «общий потолок и, для сети домашнего выхода, ещё и домашний».
     """
 
     def __init__(self, rps: float | None = None, chain: str | None = None) -> None:
-        rate = float(rps or config.get("catalog.rate_limit_rps") or 1.0)
+        wanted = float(rps or 0)
+        explicit = wanted > 0
+        rate = wanted if explicit else float(config.get("catalog.rate_limit_rps") or 1.0)
+        if chain and not explicit:
+            rate = homeexit.pace_rps(chain, rate)
         self.gap = 1.0 / max(rate, 0.05)
         self.last = 0.0
         self.chain = chain or None
@@ -164,6 +183,171 @@ def sitemap_locs(index_url: str, pace: Pace | None = None, pick: re.Pattern | No
         for el in sub.iter():
             if el.tag.endswith("}loc") and el.text:
                 yield el.text.strip()
+
+
+# Слова, которыми сеть говорит «это не витрина, а страница защиты». Замер 18.10.2026
+# через домашний выход владельца: 5ka.ru отдаёт «Проблемы со связью. Проверьте настройки
+# интернета и VPN … IP: <IP домашнего выхода>» (200, 1,8 КБ), samokat.ru — «Forbidden» (403, 1,3 КБ).
+# Обе страницы называют IP, с которого пришёл запрос, и обе — не каталог.
+BLOCK_WORDS = (
+    "servicepipe",
+    "проверьте настройки интернета и vpn",
+    "если вы считаете блокировку ложной",
+    "if you are not a bot",
+    "forbidden",
+    "доступ ограничен",
+    "пройдите проверку",
+    "разверните картинку",
+)
+
+# Сколько ждать, пока страница защиты нарисует свой текст. Замер 18.10.2026: сразу
+# после domcontentloaded у 5ka в body НОЛЬ символов, а через три секунды — 321, и в них
+# та самая фраза. Поэтому одной проверки сразу после перехода мало: обход всех разделов
+# подряд уходил в «витрина пуста» вместо «витрина закрыта», молча и без паузы источнику.
+BLOCK_SETTLE_MS = 3000
+
+
+def blocked_page(page, settle_ms: int = BLOCK_SETTLE_MS) -> str | None:
+    """Страница защиты вместо витрины? Возвращает найденное слово-признак или None.
+
+    Читает видимый текст, а если он ещё пуст (страница защиты рисуется скриптом) —
+    ждёт до `settle_ms` короткими шагами. Кроме текста смотрит и разметку: у Самоката
+    «Forbidden» лежит в <h1>, у Пятёрочки фраза про VPN появляется в body.
+    """
+    text = ""
+    waited = 0
+    step = 500
+    while True:
+        try:
+            text = page.inner_text("body") or ""
+        except Exception:  # noqa: BLE001 — страница ещё не готова: подождём
+            text = ""
+        if len(text.strip()) >= 40 or waited >= settle_ms:
+            break
+        page.wait_for_timeout(step)
+        waited += step
+    haystack = text.lower()
+    for word in BLOCK_WORDS:
+        if word in haystack:
+            return word
+    try:
+        html = (page.content() or "").lower()
+    except Exception:  # noqa: BLE001 — разметку не отдали: текста достаточно
+        return None
+    for word in ("servicepipe", "если вы считаете блокировку ложной", "if you are not a bot"):
+        if word in html:
+            return word
+    return None
+
+
+# Признак весового товара в ЛАТИНСКОМ названии из адреса карты сайта: сети группы X5
+# пишут в слаге «vesovoj»/«vesovaya» (весовой). Кириллический sold_by_weight этого не
+# знает, и без этой проверки весовой товар считался бы штучным.
+_LATIN_WEIGHED = "vesov"
+
+
+def slug_size(name: str) -> tuple[float | None, str | None]:
+    """Фасовка и единица для названия, собранного из адреса карты сайта.
+
+    ЗАЧЕМ (живой замер 18.10.2026). У Перекрёстка, Впрока и Монетки имя собирается из
+    адреса («maslo-slivochnoe-…-500g» → «maslo slivochnoe … 500g»), и сборщики не
+    разбирали из него ни фасовку, ни единицу: 214 021 строка без веса и без единицы.
+    Фасовка нужна НАРЯДУ: по ней считается, сколько упаковок класть в корзину сети,
+    и она едет в привязку человека. Замер: у владельца 140 привязок METRO и ни одной
+    с весом.
+
+    Разбор уже умеет латиницу: parse_weight читает «500g», «750ml», «1kg», «1 l».
+    Весовой товар узнаём по «vesov» в слаге — иначе «sahar 1kg» (пачка килограмм)
+    стал бы весовым.
+
+    ЕДИНИЦА — ТОЛЬКО КОГДА ОНА ИЗВЕСТНА: «pcs» при названной фасовке (это штучный
+    товар), «kg» при слове «весов…». Название без того и другого ничего не говорит о
+    единице, и выдуманное «pcs» заставило бы сопоставление считать весовой товар
+    штучным (compatible сверяет единицы) — лучше оставить пусто.
+    """
+    from app.matcher.normalize import parse_weight, sold_by_weight
+
+    text = (name or "").lower()
+    if sold_by_weight(text) or _LATIN_WEIGHED in text:
+        return None, "kg"
+    weight, _ = parse_weight(text)
+    return (weight or None), ("pcs" if weight else None)
+
+
+# Строки товаров сети из базы: артикул, имя, штрихкод (он лежит в store_products.ean),
+# адрес карточки и ПОСЛЕДНЯЯ цена. Колонки is_current в store_prices нет и не было, а
+# штрихкод берётся из ean — прежний запрос звал is_current и падал, из-за чего добор из
+# чеков не работал вовсе (тест подменял базу целиком и этого не видел).
+STORE_PRODUCTS_SQL = (
+    "SELECT sp.sku, sp.raw_name, sp.ean AS barcode, sp.url, p.price "
+    "FROM store_products sp "
+    "LEFT JOIN (SELECT store_product_id, price, MAX(fetched_at) AS at "
+    "FROM store_prices GROUP BY store_product_id) p "
+    "ON p.store_product_id = sp.id "
+    "WHERE sp.store_id=?"
+)
+
+
+def store_product_rows(chain: str) -> Iterator[dict]:
+    """Товары сети из store_products: из базы КАЖДОГО человека и из общей базы.
+
+    ЗАЧЕМ ЭТОТ ПОМОЩНИК (разрыв найден 18.10.2026). Обходчик каталога работает с
+    ОБЩЕЙ базой (data/basket.db), а закладка «Забрать цены» (docs/grab-prices.src.js)
+    и чеки человека кладут товары сети в базу ЕГО рабочего места
+    (data/users/<номер>/basket.db). Маршрут «добор известных товаров из базы» читал
+    только текущую базу — то есть общую, — и видел там 0 товаров: единый каталог
+    Самоката и Пятёрочки оставался пустым, а реальный заказ владельца повторять было
+    нечем. Замер: в общей базе 0 товаров сети, в базе владельца 6.
+
+    Общая база нужна не меньше рабочих мест: часть товаров приходит в неё из чеков и
+    прайс-пакетов.
+
+    ПОЧЕМУ ОДНА ФУНКЦИЯ НА ОБЕ СЕТИ. Своё чтение в каждом сборщике уже разъезжалось бы
+    так же, как расходились Python и SQL у правила заглушек
+    (app/catalog/model.placeholder_sql): правил два, а сеть одна.
+
+    Порядок — общая база, потом рабочие места; повтор артикула не отдаём: один и тот
+    же товар лежит и в личной базе, и в общей, а каталогу он нужен один раз. База,
+    которая не открылась, обход не роняет: пишем в журнал и идём дальше. База, бывшая
+    активной ДО вызова, возвращается на место в finally — исключение в одной базе не
+    оставляет приложение в чужой.
+    """
+    from app import repo, users
+
+    previous = users.current()
+    seen: set[str] = set()
+    try:
+        for phone in [None, *users.list_workspaces()]:
+            try:
+                if phone is None:
+                    users.deactivate()          # общая база
+                else:
+                    users.activate(phone)
+                store = repo.get_store(chain)
+                if not store:
+                    continue
+                with repo.get_conn() as conn:
+                    rows = conn.execute(STORE_PRODUCTS_SQL, (store.id,)).fetchall()
+            except Exception as exc:  # noqa: BLE001 — одна база не повод бросить обход
+                log.warning("каталог %s: база %s не прочиталась: %s — пропускаю",
+                            chain, phone or "общая", exc)
+                continue
+            finally:
+                users.deactivate()
+            for row in rows:
+                # dict, а не sqlite3.Row: соединение к этому моменту закрыто, а строку
+                # читает сборщик уже в своём коде.
+                data = dict(row)
+                sku = str(data.get("sku") or "")
+                if not sku or sku in seen:
+                    continue
+                seen.add(sku)
+                yield data
+    finally:
+        if previous is None:
+            users.deactivate()
+        else:
+            users.activate(previous)
 
 
 def registry() -> dict[str, type[Crawler]]:

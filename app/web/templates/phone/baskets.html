@@ -1,0 +1,42 @@
+{# «Корзины» на телефоне: все корзины человека и возврат к прежней.
+
+   ЗАЧЕМ ЭКРАН. «Повторить» в «Истории заказов» заводит новую корзину и делает её
+   свежей, а прежняя с телефона пропадала: списка корзин у телефона не было (живой
+   прогон на эмуляторе 21.10.2026). «Открыть» пишет basket:last — ту же настройку,
+   что читает веб-корзина (app/web/screens/basket.py, LAST_OPEN), поэтому телефон
+   и компьютер дальше показывают одну и ту же корзину.
+
+   Ничего лишнего: имя, когда заведена, сколько товаров, пометка «открыта» и одна
+   кнопка у остальных. Свежие сверху — в том же порядке их отдаёт repo.list_baskets. #}
+{% extends 'phone/base.html' %}
+{% from 'phone/_icons.html' import icon %}
+{% block title %}Корзины — Моя корзина{% endblock %}
+{% block body %}
+  <a class="back" href="{{ url_for('phone.basket') }}">{{ icon('back') }}Корзина</a>
+  <h1 class="title">Корзины</h1>
+
+  {% if not baskets %}
+    <div class="empty">Корзин пока нет. Соберите её из истории заказов или из привычного.</div>
+  {% else %}
+    <section>
+      <div class="grp">Все корзины<span class="right num">{{ baskets|length }}</span></div>
+      <div class="card">
+        {% for b in baskets %}
+          <div class="row">
+            <span class="grow">
+              <span style="display: block">{{ b.name }}</span>
+              <span class="fnt small">создана {{ b.day }} · {{ goods(b.count) }}</span>
+            </span>
+            {% if b.open %}
+              <span class="gd small" style="display: inline-flex; align-items: center; gap: 4px; font-weight: 500">{{ icon('check', 'i s') }}открыта</span>
+            {% else %}
+              <form method="post" action="{{ url_for('phone.open_basket', basket_id=b.id) }}">
+                <button class="bt" type="submit">Открыть</button>
+              </form>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

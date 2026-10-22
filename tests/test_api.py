@@ -77,7 +77,12 @@ class Door:
         for name, value in (headers or {}).items():
             request.add_header(name, value)
         try:
-            with urllib.request.urlopen(request, timeout=10) as answer:
+            # Тридцать секунд, а не десять: на этой машине рядом идут эмулятор, сборка
+            # образа и обход каталога, и десятка не хватало. Падало не утверждение, а
+            # ожидание ответа — тест мигал под нагрузкой (замер 19.10.2026:
+            # test_body_without_length_is_refused упал на urllib.error, в одиночку и
+            # повтором файла проходит). Долгое ожидание бывает только при поломке.
+            with urllib.request.urlopen(request, timeout=30) as answer:
                 payload = answer.read()
                 return answer.status, _json(payload), dict(answer.headers)
         except urllib.error.HTTPError as err:

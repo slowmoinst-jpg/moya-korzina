@@ -1,31 +1,44 @@
 {# Корзина в магазинах: строка на сеть — идёт ли сборка телефона, что легло и итог сети
-   (app/web/phone.py, _runs). Тот же кусок отдаёт опрос /phone/basket/runs, пока
+   (app/web/phone/, _runs). Тот же кусок отдаёт опрос /phone/basket/runs, пока
    приложение собирает, поэтому здесь нет ничего, кроме строк. Нажатие на строку
-   открывает сеть в приложении: там её корзина, какой её собрал телефон. #}
+   открывает сеть в приложении: там её корзина, какой её собрал телефон.
+   Вид 22.10.2026: серая карточка, метка сети с буквой, под названием — что с корзиной. #}
+{% from 'phone/_icons.html' import icon, mark %}
 {% if runs and (runs.rows or runs.idle) %}
   <div class="grp">Корзина в магазинах</div>
   <div class="card">
     {% for r in runs.rows %}
+      {# ОТКРЫТИЕ СЕТИ — ЧЕРЕЗ МОСТ, А НЕ ТОЛЬКО ССЫЛКОЙ. Замер 20.10.2026: строка вела на
+         нашу страницу кабинета, и сеть грузилась в окне ВНЕ режима сети — панель с
+         «Раздел» (прочитать карточки) и «Собрать» не появлялась, хотя строка как раз
+         говорит «легло 1 из 4» или «не вышло»: человек шёл чинить, а инструментов нет.
+         Мост зовёт ОДИН делегированный обработчик на #kz-runs (basket.html): приложение
+         открывает сеть в своём режиме и показывает панель. Inline-обработчик здесь был бы
+         вторым вызовом того же моста — клик открывал бы сеть дважды. Вне приложения
+         остаётся обычная ссылка на «Кабинеты», как было. #}
       <a class="row run {{ r.state }}" href="/cabinet?store={{ r.code }}" data-open-store="{{ r.code }}" data-run="{{ r.code }}">
-        <span class="sq" style="background: var(--s-{{ r.code }}, var(--line2))"></span>
+        {{ mark(r.code, r.name) }}
         <span class="grow">
-          {{ r.name }}
-          <span class="fnt small" data-run-words>· {{ r.words }}</span>
-          {% if r.state == 'going' and r.now %}<span class="fnt small sub">{{ r.now }}</span>{% endif %}
-          {% if r.state in ('failed', 'empty') and r.note %}<span class="fnt small sub">{{ r.note }}</span>{% endif %}
+          <span class="rn">{{ r.name }}</span>
+          <span class="fnt small sub" data-run-words>{{ r.words }}</span>
+          {% if r.state == 'going' and (r.now or r.left) %}<span class="fnt small sub" data-run-now>{{ r.now }}{% if r.left %} · {{ r.left }}{% endif %}</span>{% endif %}
+          {% if r.state in ('failed', 'empty', 'interrupted') and r.note %}<span class="fnt small sub">{{ r.note }}</span>{% endif %}
           {% if r.state == 'done' and r.gone %}<span class="fnt small sub">нет в наличии: {{ r.gone }}</span>{% endif %}
-          {% if r.state == 'done' and r.extra %}<span class="fnt small sub">в корзине сети лишнее, не убираю: {{ r.extra|join(', ') }}</span>{% endif %}
+          {% if r.state == 'done' and r.extra_note %}<span class="fnt small sub">{{ r.extra_note }}</span>{% endif %}
         </span>
         {% if r.total %}
-          <span class="num {{ 'fnt' if r.state == 'old' }}">{{ rub(r.total.sum) }}</span>
-          {% if r.total.network %}<span class="badge" title="Итог посчитала сама сеть: с её скидками и акциями">сеть</span>{% endif %}
+          <span class="num {{ 'fnt' if r.state == 'old' }}" style="font-weight: 800">{{ rub(r.total.sum) }}</span>
+          {% if r.total.network %}<span class="badge white" title="Итог посчитала сама сеть: с её скидками и акциями">сеть</span>{% endif %}
         {% elif r.state == 'going' %}
           <span class="spin" aria-hidden="true"></span>
         {% endif %}
       </a>
     {% endfor %}
     {% if runs.idle %}
-      <a class="row fnt small" href="{{ url_for('phone.settings') }}">Без входа: {{ runs.idle|join(', ') }}</a>
+      <a class="row small" href="{{ url_for('phone.settings') }}">
+        <span class="grow fnt">Без входа: {{ runs.idle|join(', ') }}</span>
+        <span style="font-weight: 600">Подключить</span>{{ icon('next', 'i s') }}
+      </a>
     {% endif %}
   </div>
 {% endif %}

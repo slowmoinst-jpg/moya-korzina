@@ -13,12 +13,13 @@
   <title>{% block title %}Моя корзина{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Unbounded:wght@500;600;700&display=swap">
-  <link rel="stylesheet" href="{{ url_for('static', filename='phone.css') }}">
-  <script src="{{ url_for('static', filename='korzina-device.js') }}" defer></script>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="{{ static_v('phone.css') }}">
+  <script src="{{ static_v('korzina-device.js') }}" defer></script>
+  {% block head %}{% endblock %}
 </head>
 <body>
-<div class="ph">
+<div class="ph {% block ph_class %}{% endblock %}">
   <main class="ph-body">
     {% block body %}{% endblock %}
   </main>
@@ -34,5 +35,6 @@
     {% endif %}
   </div>
 </div>
+{% block scripts %}{% endblock %}
 </body>
 </html>

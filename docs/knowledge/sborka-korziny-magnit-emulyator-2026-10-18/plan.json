@@ -1,0 +1,77 @@
+{
+  "store": "magnit",
+  "at": "2026-10-18T16:00:18",
+  "basket": 1,
+  "stamp": "2d6dc4ec9b85",
+  "note": "12 позиц. этой сети незнакомы — они останутся вне корзины, соберите их обычным поиском.",
+  "unknown": [
+    "Дезодорант-карандаш Axe Ice Chill 50 мл",
+    "Икра лососевая копчёная 180 г",
+    "Персики консервированные 500 г",
+    "Пюре детское банан-яблоко 210 г",
+    "Пюре детское яблоко-груша 200 г",
+    "Салями сырокопчёная",
+    "Слива",
+    "Страчателла 200 г",
+    "Сырок глазированный ванильный 45 г",
+    "Тунец в масле 185 г",
+    "Фиор ди латте",
+    "Хлебцы ржано-пшеничные 240 г"
+  ],
+  "rows": [
+    {
+      "clicks": 1,
+      "name": "Колбаса Вязанка Докторская вареная 400г",
+      "pack_g": 400.0,
+      "per": "pcs",
+      "price": null,
+      "product_id": 13,
+      "qty": 1.0,
+      "rounding": "",
+      "sku": "1000218414",
+      "unit": "pcs",
+      "url": "https://magnit.ru/product/1000218414-vyazanka_kolbasa_doktorskaya_gost_var_0_4kg_p_o_10"
+    },
+    {
+      "clicks": 1,
+      "name": "Нектарины",
+      "pack_g": null,
+      "per": "kg",
+      "price": null,
+      "product_id": 8,
+      "qty": 0.5,
+      "rounding": "0,5 кг нажатием не положить — взяли 1 упаковку",
+      "sku": "1444282012",
+      "unit": "pcs",
+      "url": "https://magnit.ru/product/1444282012-nektariny"
+    },
+    {
+      "clicks": 1,
+      "name": "Огурцы короткоплодные тепличные 450г",
+      "pack_g": 450.0,
+      "per": "pcs",
+      "price": null,
+      "product_id": 1,
+      "qty": 1.0,
+      "rounding": "",
+      "sku": "1000227406",
+      "unit": "pcs",
+      "url": "https://magnit.ru/product/1000227406-ogurtsy_korotkoplodnye_teplichnye_450g"
+    },
+    {
+      "clicks": 1,
+      "name": "Форель Меридиан слабосоленая 200г",
+      "pack_g": 200.0,
+      "per": "pcs",
+      "price": null,
+      "product_id": 4,
+      "qty": 1.0,
+      "rounding": "",
+      "sku": "5555559952",
+      "unit": "pcs",
+      "url": "https://magnit.ru/product/5555559952-meridian_forel_s_s_kusok_200g"
+    }
+  ],
+  "real_rows": 4,
+  "min_rows": 4
+}

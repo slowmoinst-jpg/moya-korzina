@@ -75,6 +75,9 @@ class VkusvillCrawler(Crawler):
 
     def __init__(self) -> None:
         self.cap = int(config.get("catalog.vkusvill.details_per_run") or 2000)
+        # Сколько знакомых карточек за обход перечитываем ради свежей цены. Ноль — не
+        # перечитывать вовсе (так видно, сколько цен успело состариться).
+        self.refresh = int(config.get("catalog.vkusvill.refresh_per_run") or 0)
         self.pace = Pace(chain=self.code)
 
     def universe(self) -> list[str]:
@@ -106,6 +109,9 @@ class VkusvillCrawler(Crawler):
                 yield ChainProduct(sku=sku, name="", seen_only=True)
             else:
                 fresh.append(sku)
+        # Сколько разобрано из перечня — для проверки базы (store.mark_map).
+        here = set(ids)
+        self.map_total, self.map_known, self.map_left = len(here), len(known & here), len(fresh)
         taken = 0
         for n, sku in enumerate(fresh[:self.cap], start=1):
             item = self.details(sku)
@@ -117,3 +123,53 @@ class VkusvillCrawler(Crawler):
                 say(f"карточек спрошено {n} из {min(len(fresh), self.cap)}, взято {taken}")
         if len(fresh) > self.cap:
             say(f"незнакомых ещё {len(fresh) - self.cap} — доберём в следующие обходы")
+        yield from self._refresh(say)
+
+    def _refresh(self, say: Progress) -> Iterator[ChainProduct]:
+        """Перечитать карточки у знакомых строк, чья цена в базе старше всех.
+
+        ЗАЧЕМ. Карточка спрашивается только при первом знакомстве, а знакомство было в
+        сентябре: 13 379 строк, у 10 074 из них цена записана до появления даты цены,
+        ещё 3 132 старше недели. Замер 20.10.2026 по восьми живым карточкам: 3 из 8
+        разошлись с витриной больше чем на процент (129 ₽ в базе против 167 ₽ на
+        витрине, +29,5 %). Такая цена показывает экономию, которой нет.
+
+        ПОЧЕМУ НЕ ВЕСЬ КАТАЛОГ ЗАРАЗ. Одна карточка — один запрос к MCP, темп один
+        запрос в две секунды: 13 379 карточек — это семь с половиной часов, а на сеть
+        целиком ночной обход тратит 180 минут. За обход спрашиваем не больше
+        refresh_per_run (1 500 ≈ 50 минут), ночь за ночью виток замыкается.
+
+        ЧЕГО ЖДАТЬ НЕ СТОИТ. Остатков карточка не отдаёт вовсе (проверено 20.10.2026:
+        полей stock, quantity и available в ответе нет), поэтому in_stock остаётся
+        пустым — наличие приносит только сборка корзины.
+        """
+        if not self.refresh:
+            return
+        from app.catalog import store
+
+        stale = store.stale_price_skus(self.code, self.refresh)
+        if not stale:
+            return
+        # Потолок обхода важнее добора: перечитать меньше карточек и закончить обход как
+        # обычно лучше, чем упереться в потолок и записать ночь неполной.
+        fit = self.cards_left(self.pace.gap)
+        if fit is not None:
+            if fit <= 0:
+                say("свежесть цен: до потолка обхода времени не осталось — пропускаю")
+                return
+            if fit < len(stale):
+                say(f"свежесть цен: ждут {len(stale)}, до потолка влезает {fit} — беру сколько успею")
+                stale = stale[:fit]
+        say(f"свежесть цен: перечитываю {len(stale)} карточек, начиная с самой старой")
+        refreshed = errors = 0
+        for n, sku in enumerate(stale, start=1):
+            item = self.details(sku)
+            product = to_product(item) if item else None
+            if product:
+                refreshed += 1
+                yield product
+            else:
+                errors += 1
+            if n % 200 == 0:
+                say(f"свежесть цен: спрошено {n} из {len(stale)}, обновлено {refreshed}")
+        say(f"свежесть цен: обновлено {refreshed} из {len(stale)}, без ответа {errors}")

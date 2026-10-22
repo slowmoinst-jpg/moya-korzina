@@ -4,6 +4,7 @@ from app.matcher.matcher import (
     confirm,
     find_candidates,
     refresh_prices,
+    refresh_prices_parallel,
     score_candidate,
 )
 from app.matcher.normalize import (
@@ -15,6 +16,7 @@ from app.matcher.normalize import (
 )
 
 __all__ = [
-    "find_candidates", "confirm", "auto_match", "refresh_prices", "score_candidate",
+    "find_candidates", "confirm", "auto_match", "refresh_prices", "refresh_prices_parallel",
+    "score_candidate",
     "normalize_name", "display_name", "parse_weight", "similarity", "weight_ok",
 ]

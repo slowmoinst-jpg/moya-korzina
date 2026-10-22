@@ -47,13 +47,23 @@ def orderable_history(store_id: int | None = None) -> list[dict]:
     фильтр убирает то, что успело лечь раньше: иначе «Как обычно» предлагала бы
     товары, которые приложение заказать не может. Строки без магазина остаются —
     их человек добавил сам, и судить их не по чему.
+
+    Услуги из чека — поездка, аренда, штраф, «Сборка» заказа — тоже не товар: их не
+    повторить и не сравнить по цене, а в «Истории заказов» они стояли с кнопкой
+    «Повторить» (владелец, 21.10.2026). Судит app/catalog/nonfood.py по имени из чека:
+    в нём граммовка, а товарный признак сильнее слова услуги.
     """
     from app import chains
+    from app.catalog import nonfood
 
     allowed = chains.orderable()
     blocked = {s.id for s in repo.list_stores() if s.code not in allowed}
-    return [r for r in repo.list_history(store_id=store_id)
+    rows = [r for r in repo.list_history(store_id=store_id)
             if r.get("product_id") and r.get("store_id") not in blocked]
+    # Вердикт — раз на имя, а не на строку: имён в истории в разы меньше, чем строк.
+    names = {r.get("raw_name") or r.get("product_name") for r in rows}
+    services = {n for n in names if nonfood.is_service_name(n)}
+    return [r for r in rows if (r.get("raw_name") or r.get("product_name")) not in services]
 
 
 def last_purchase_items(store_id: int | None = None) -> tuple[str | None, list[dict]]:

@@ -1,0 +1,64 @@
+{% extends "layout.html" %}
+{% block title %}Замок входа — Моя корзина{% endblock %}
+{% block body %}
+<div class="card" style="max-width:520px;margin:6vh auto;">
+  <div class="eyebrow">Замок входа</div>
+  <h1>PIN на ваш номер</h1>
+  <p class="muted">Пока PIN не задан, на этот адрес входит любой, кто знает номер телефона.
+    С PIN — только вы: номер и PIN спрашиваются вместе на странице входа. PIN — 6 цифр:
+    короче подбирается слишком легко.</p>
+
+  {% if saved == 'set' %}
+    <div class="note ok">PIN поставлен. Теперь без него на сайт не войти.</div>
+  {% elif saved == 'changed' %}
+    <div class="note ok">PIN сменён. Прежний больше не подходит.</div>
+  {% elif saved == 'cleared' %}
+    <div class="note warn">PIN снят. Вход снова только по номеру телефона.</div>
+  {% endif %}
+
+  {% if error %}<div class="note bad">{{ error }}</div>{% endif %}
+
+  {% if pin_set %}
+    <form method="post" action="{{ url_for('auth.pin_save') }}">
+      <label class="dim" for="old_pin">Текущий PIN</label>
+      <input id="old_pin" name="old_pin" type="password" inputmode="numeric"
+             autocomplete="current-password" value="" autofocus>
+      <label class="dim" for="new_pin" style="margin-top:10px">Новый PIN (6 цифр)</label>
+      <input id="new_pin" name="new_pin" type="password" inputmode="numeric"
+             autocomplete="new-password" value="">
+      <div class="row" style="margin-top:12px">
+        <button class="btn main" type="submit" name="do" value="change">Сменить PIN</button>
+      </div>
+    </form>
+
+    {# Снятие — отдельной формой и с тем же старым PIN: замок ставят от чужого
+       доступа, и снимать его должна та же проверка, а не одна открытая вкладка. #}
+    <form method="post" action="{{ url_for('auth.pin_save') }}" style="margin-top:18px">
+      <label class="dim" for="off_pin">Текущий PIN — чтобы снять замок</label>
+      <input id="off_pin" name="old_pin" type="password" inputmode="numeric"
+             autocomplete="current-password" value="">
+      <div class="row" style="margin-top:12px">
+        <button class="btn wide" type="submit" name="do" value="clear">Снять PIN</button>
+      </div>
+    </form>
+  {% else %}
+    <form method="post" action="{{ url_for('auth.pin_save') }}">
+      <input type="hidden" name="do" value="set">
+      <label class="dim" for="new_pin">PIN (6 цифр)</label>
+      <input id="new_pin" name="new_pin" type="password" inputmode="numeric"
+             autocomplete="new-password" value="" autofocus>
+      <div class="row" style="margin-top:12px">
+        <button class="btn main" type="submit">Поставить PIN</button>
+      </div>
+    </form>
+  {% endif %}
+
+  {# Обещать восстановление нельзя: его нет. Сказать об этом здесь — единственное
+     место, где человек ещё может выбрать PIN, который не забудет. #}
+  <p class="dim" style="margin-top:16px">PIN — 6 цифр. Хранится на сервере не открытым
+    текстом, и напоминания у него нет: забытый PIN сбрасывается только на сервере — удалением
+    файла <code>pin.json</code> рядом с базой, в каталоге данных. Пять неверных попыток входа
+    за 15 минут с одного адреса закрывают вход на эти 15 минут. Общий перебор со многих
+    адресов замедляется, но верный PIN проходит.</p>
+</div>
+{% endblock %}

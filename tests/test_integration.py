@@ -32,6 +32,12 @@ def demo_db(tmp_path_factory):
         patch.setattr(freshness, "REFERENCE", "запас из CSV в этом тесте — живая цена")
         config.load_config.cache_clear()
         cfg = config.load_config()
+        # Подмена базы на файл этого теста. ПРЕЖНИЙ путь обязательно вернуть: словарь
+        # конфига кэширован на процесс, и без возврата ВСЯ остальная сессия pytest
+        # работала бы с базой интеграционного теста (выяснилось 21.10.2026: из-за
+        # этого у всех последующих тестов «замок входа» читался из чужого каталога,
+        # и логин внезапно требовал PIN у 263 тестов).
+        was_db_path = cfg.get("db_path")
         cfg["db_path"] = str(db_file)
 
         from app.db import init_db
@@ -54,7 +60,13 @@ def demo_db(tmp_path_factory):
 
         baskets = repo.list_baskets()
         assert baskets, "корзина не создана"
-        yield baskets[0]["id"]
+        try:
+            yield baskets[0]["id"]
+        finally:
+            if was_db_path is None:
+                cfg.pop("db_path", None)
+            else:
+                cfg["db_path"] = was_db_path
 
 
 def test_history_imported(demo_db):

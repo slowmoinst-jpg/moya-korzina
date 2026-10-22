@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 import pytest
 
@@ -22,6 +23,9 @@ from app import geo  # noqa: E402
 def clean_cache(monkeypatch):
     geo._cache.clear()
     geo._coords_cache.clear()
+    # Короткая память о полном отказе сети — состояние процесса, а не ответ службы:
+    # между тестами её надо снимать, иначе упавшая в одном тесте сеть «молчит» в следующем.
+    monkeypatch.setattr(geo, "_down_until", 0.0)
     monkeypatch.delenv("DADATA_TOKEN", raising=False)
     # троттлинг Nominatim в тестах только тратит секунды
     monkeypatch.setattr(geo, "_throttle", lambda: None)
@@ -213,3 +217,36 @@ def test_coords_are_asked_once(monkeypatch):
     assert geo.coords("кувырк-кувырк") is None
     assert geo.coords("кувырк-кувырк") is None
     assert len(calls) == 2, "оба адреса спрошены по одному разу"
+
+
+# ---------- негативный кэш ----------
+def test_a_full_failure_is_remembered_for_a_short_while_not_for_ten_minutes(monkeypatch):
+    """Все провайдеры упали — не ждём их снова 60–120 с, а потом снова пробуем.
+
+    Каждый GET может ждать до десяти секунд (connectors.timeout_sec). Без короткой
+    памяти о сбое набор адреса на каждой букве ждал бы их заново, а с десятиминутной,
+    как у пустого ОТВЕТА, после возврата связи подсказки молчали бы ещё десять минут.
+    """
+    calls: list[str] = []
+    up = {"now": False}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append(url)
+        if not up["now"]:
+            raise OSError("сеть недоступна")
+        return _Answer([{"lat": "55.79", "lon": "37.53"}])
+
+    monkeypatch.setattr(geo.requests, "get", fake_get)
+
+    started = time.time()
+    assert geo.coords("Москва, Ходынский бульвар 4") is None
+    assert len(calls) == 1
+    assert 60 <= geo._down_until - started <= 120, "сбой помним 60–120 с, а не сутки"
+    assert geo.coords("Москва, Ходынский бульвар 4") is None
+    assert len(calls) == 1, "пока идёт короткая пауза, в сеть не ходим"
+
+    # Пауза вышла — провайдер снова спрашивается, а не остаётся «упавшим» навсегда.
+    monkeypatch.setattr(geo, "_down_until", 0.0)
+    up["now"] = True
+    assert geo.coords("Москва, Ходынский бульвар 4") == (55.79, 37.53)
+    assert len(calls) == 2

@@ -1,0 +1,33 @@
+{
+  "summary": {
+    "addedItemsCount": 4.0,
+    "giftsCount": 0.0,
+    "itemsCount": 1.0,
+    "itemsTotalSalePrice": 19900.0,
+    "totalBasePrice": 19900.0,
+    "totalFinalPrice": 29700.0
+  },
+  "items": [
+    {
+      "article": "1000218414",
+      "article_from": "goodId",
+      "name": "Колбаса Вязанка Докторская вареная 400г",
+      "qnty": 1.0,
+      "prices": {
+        "discountPercent": 0.0,
+        "totalBasePrice": 19900.0,
+        "totalFinalPrice": 19900.0
+      },
+      "available": true
+    }
+  ],
+  "items_found": 1,
+  "where": [
+    "suborders[0].items"
+  ],
+  "money_scale": 0.01,
+  "dropped": {
+    "personal_fields": 11,
+    "item_fields": 19
+  }
+}

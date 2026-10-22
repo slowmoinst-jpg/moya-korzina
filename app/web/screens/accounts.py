@@ -53,12 +53,13 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from datetime import datetime
 
 from flask import jsonify, redirect, render_template, request
 
-from app import cartplan, collector, repo, store_accounts
+from app import cartplan, collector, repo, store_accounts, users
 from app.shopbrowser import cart, collect
 from app.shopbrowser import store as shopstore
 from app.web import auth
@@ -68,6 +69,22 @@ from app.web.views import SCREEN_BY_KEY
 log = logging.getLogger(__name__)
 
 PATH = "/accounts"
+
+# Закладка «Забрать цены» лежит в docs рядом с приложением. Путь считается от ЭТОГО
+# файла, а не от config.ROOT: в тестах корень подменяется на временную папку, и
+# закладка «пропала бы» ровно там, где её проверяют (тот же приём — в
+# app/web/screens/receipts.py и app/web/screens/cabinet.py). Строку НЕ пересобираем:
+# человек получает ровно ту закладку, что лежит в репозитории проверенной, — сборка
+# на месте разошлась бы с docs/grab-prices.src.js при первой правке.
+PRICES_BOOKMARKLET = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+    "docs", "grab-prices.min.txt")
+
+# Сети, под которые написана закладка. Обе закрыты ServicePipe: замер 18.10.2026 —
+# пять попыток Пятёрочки и три Самоката, и с сервера, и с домашнего выхода владельца,
+# все отказом; в каталоге по ним ноль товаров. Пропускает только браузер человека,
+# поэтому цены забирает закладка, а не обход.
+GRAB_CHAINS = ("pyaterochka", "samokat")
 
 # «Войти в Пятёрочка» — не опечатка, а то, что получается, если склеивать кнопку
 # из названия справочника. Названия сетей склоняются, и винительный падеж у них
@@ -234,6 +251,108 @@ def _collecting(code: str) -> dict | None:
             "note": got.get("note") or ""}
 
 
+def _prices_bookmarklet() -> str:
+    """Готовая строка закладки «Забрать цены» из docs. Нет файла — пусто, экран скажет."""
+    try:
+        with open(PRICES_BOOKMARKLET, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        log.warning("закладка «Забрать цены» не найдена: %s", PRICES_BOOKMARKLET)
+        return ""
+
+
+def _catalog_count(code: str) -> int | None:
+    """Сколько товаров этой сети в ЕДИНОЙ базе (catalog.db). None — не сосчиталось.
+
+    ЗАЧЕМ ОТДЕЛЬНО ОТ ЛИЧНОЙ. Карточки витрины, прочитанные телефоном, приложение
+    кладёт в единую базу (app/phonecart.accept_cards → refresh.learn_device_rows), а не
+    в личное рабочее место. До 19.10.2026 экран считал только личное и после
+    успешного «Раздела» на телефоне писал «товаров в базе нет» ровно там, где
+    «Магазины» их показывали.
+
+    Отсутствующий файл — это ноль, а не ошибка: каталог ещё не собирали, и создавать
+    его пустым незачем (так же поступает store.product_url). None — когда база есть,
+    но счёт не вышел: занята, битая схема, чужой файл на месте базы.
+    """
+    try:
+        from app.catalog import store as catalog_store
+
+        if not os.path.exists(catalog_store.path()):
+            return 0
+        with catalog_store.connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS n FROM chain_products"
+                               " WHERE chain=? AND active=1", (code,)).fetchone()
+        return int(row["n"] or 0) if row else 0
+    except Exception as exc:  # noqa: BLE001 — число в разделе не повод ронять экран
+        log.warning("единая база: сколько товаров %s — не сосчиталось (%s)", code, exc)
+        return None
+
+
+def _shelf(code: str) -> dict:
+    """Что уже приехало от этой сети: сколько в единой базе и сколько в рабочем месте.
+
+    ДВЕ БАЗЫ, А НЕ ОДНА. Телефон читает витрину и кладёт карточки в единую базу
+    (catalog.db, chain_products) — так приезжают Пятёрочка и Самокат с 19.10.2026.
+    Закладка на компьютере кладёт строки в личное рабочее место (store_products) и
+    снимки цен (store_prices). Показывать надо обе цифры: человек смотрит сюда после
+    «Раздела» на телефоне, и «в базе нет» было бы неправдой.
+
+    Ошибка счёта ОДНОЙ базы не повод ронять раздел: её число остаётся None, экран
+    помечает, что не сосчитал, а вторая цифра показывается как есть.
+    """
+    got = {"code": code, "catalog": _catalog_count(code), "products": None, "at": None}
+    try:
+        shop = repo.get_store(code)
+        if shop is None:
+            raise LookupError(f"сети «{code}» нет в справочнике магазинов")
+        with repo.get_conn() as conn:
+            found = conn.execute("SELECT COUNT(*) AS n FROM store_products WHERE store_id=?",
+                                 (shop.id,)).fetchone()
+            got["products"] = int(dict(found)["n"] or 0) if found else 0
+            last = conn.execute(
+                "SELECT MAX(p.fetched_at) AS at FROM store_prices p"
+                " JOIN store_products sp ON sp.id = p.store_product_id"
+                " WHERE sp.store_id=?", (shop.id,)).fetchone()
+    except Exception as exc:  # noqa: BLE001 — число в разделе не повод ронять экран
+        log.warning("что приехало в рабочее место по %s — не сосчиталось (%s)", code, exc)
+        return got
+    # dict(row), а не row.get(): соединение отдаёт sqlite3.Row (app/db.py), у него
+    # подписи нет вовсе — .get() падал здесь AttributeError, и раздел вместо чисел
+    # показывал «сосчитать не вышло».
+    got["at"] = _when(dict(last)["at"] if last else None)
+    return got
+
+
+def _grab() -> dict:
+    """Всё для раздела «Собрать витрину Пятёрочки и Самоката».
+
+    СЕКРЕТ ПОКАЗЫВАЕТСЯ ТОЛЬКО ЗДЕСЬ. Он берётся у app.api.workplace_secret() — это
+    секрет ТЕКУЩЕГО рабочего места, и создаётся он при первом показе экрана. В журнал
+    он не попадает (это стережёт app/api.py), и в шаблоны других экранов его не
+    передают: человек видит его ровно на этой странице и только пока сам её открыл.
+
+    Демо — общая витрина, и дверь /api/prices её не пускает вовсе (номер «demo» не
+    разбирается как телефон). Сказать это надо здесь же: иначе владелец возьмёт
+    закладку, отправит пакет и получит отказ без объяснения.
+    """
+    from app import api
+
+    phone = auth.current_phone() or ""
+    names = {s.code: s.name for s in repo.list_stores()}
+    return {
+        "bookmarklet": _prices_bookmarklet(),
+        "url": request.host_url.rstrip("/"),
+        # Номер — цифрами: закладка спрашивает «номер рабочего места (телефон)», и
+        # скопировать его из этой строки проще, чем набирать по памяти.
+        "workplace": phone,
+        "workplace_pretty": users.display(phone),
+        "secret": api.workplace_secret(),
+        "demo": phone == users.DEMO,
+        "chains": [{"code": code, "name": names.get(code, code), "into": INTO.get(code, code),
+                    **_shelf(code)} for code in GRAB_CHAINS],
+    }
+
+
 def _row(store, conn) -> dict:
     """Одна сеть: состояние кабинета, что даёт вход и что готово уехать."""
     from app import handover as ho
@@ -338,6 +457,9 @@ def page():
         busy=request.args.get("busy"),
         gone=request.args.get("gone"),
         resend=_resend(request.args.get("resend")),
+        # Раздел «Собрать витрину Пятёрочки и Самоката»: закладка, адрес, секрет.
+        grab=_grab(),
+        secret_note=request.args.get("secret"),
     )
 
 
@@ -361,6 +483,13 @@ def _act():
 
     do = request.form.get("do") or ""
     what, _, code = do.partition(":")
+    if what == "new-secret":
+        # Смена секрета приёмной двери. Стоит ДО проверки сети нарочно: это действие
+        # не про магазин, и «код сети» в форме ему не нужен вовсе.
+        from app import api
+
+        api.renew_workplace_secret()
+        return redirect(f"{PATH}?secret=new")
     if code not in store_accounts.ABILITIES:
         return redirect(PATH)
 

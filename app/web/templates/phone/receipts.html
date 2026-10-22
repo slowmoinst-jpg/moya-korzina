@@ -1,0 +1,218 @@
+{# «Мои чеки» на телефоне. Четыре вещи, ради которых сюда заходят: сколько покупок уже
+   загружено, подключён ли кабинет ФНС, кнопка «Загрузить сейчас» и честный список того,
+   чего этот экран не умеет. Всё остальное (закладка, файл чека, вставка текстом, окно
+   кабинета) осталось на /receipts — «Полная версия» ведёт туда.
+
+   Плашки — это flash из app/web/phone/receipts.py: ключ из закладки и ошибки кабинета
+   показываются на странице, а не в адресе. Ключ при этом в разметку не попадает. #}
+{% extends 'phone/base.html' %}
+{% from 'phone/_icons.html' import icon %}
+{% block title %}Мои чеки — Моя корзина{% endblock %}
+{% block body %}
+  <a class="back" href="{{ url_for('phone.settings') }}">{{ icon('back') }}Настройки</a>
+  <h1 class="title">Мои чеки</h1>
+
+  {% for kind, message in get_flashed_messages(with_categories=true) %}
+    <div class="note {{ kind if kind in ('ok', 'warn', 'bad') else '' }}">{{ message }}</div>
+  {% endfor %}
+
+  {# ---------- сколько уже загружено ---------- #}
+  <section>
+    <div class="grp">Ваша история</div>
+    {% if headline %}<div class="mut small" style="padding: 0 2px">{{ headline }}</div>{% endif %}
+    <div class="card">
+      <div class="row" style="flex-wrap: wrap; gap: 6px; padding-top: 10px; padding-bottom: 10px">
+        {% if have.receipts %}
+          <span class="chip"><span class="mut">Чеков</span> <b class="num">{{ have.receipts }}</b></span>
+        {% endif %}
+        <span class="chip"><span class="mut">Позиций</span> <b class="num">{{ have.rows }}</b></span>
+        {% if have.total %}
+          <span class="chip"><span class="mut">На сумму</span> <b class="num">{{ rub(have.total) }}</b></span>
+        {% endif %}
+        {% if left.receipts %}
+          <span class="chip" style="background: var(--amber-soft); color: var(--amber-ink)">
+            <span>Не загружено</span> <b class="num">{{ left.receipts }}</b></span>
+        {% endif %}
+      </div>
+      {% if have.months %}
+        <div class="row">
+          <span class="grow small mut">Срок истории</span>
+          <span class="small num">{{ have.months }} мес.</span>
+        </div>
+      {% endif %}
+      {% if loose %}
+        <div class="row" style="padding-top: 8px; padding-bottom: 8px">
+          <span class="grow small mut">Позиций, загруженных до того, как появился учёт чеков:
+            {{ loose }}. Какому чеку они принадлежат, теперь уже не узнать.</span>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+
+  {# ---------- кабинет ФНС ---------- #}
+  <section>
+    <div class="grp">Кабинет ФНС</div>
+    <div class="card">
+      <div class="row">
+        {{ icon('receipt') }}
+        <span class="grow">
+          {% if demo %}Демо — общая витрина
+          {% elif connected %}Подключён{% if connected_phone %} · <span class="num">{{ connected_phone }}</span>{% endif %}
+          {% else %}Не подключён{% endif %}
+        </span>
+        {% if connected %}<span class="gd small">подключён</span>
+        {% elif not demo %}<span class="mut small">не подключён</span>{% endif %}
+      </div>
+
+      {% if demo %}
+        <div class="row" style="padding-top: 8px; padding-bottom: 8px">
+          <span class="grow small mut">Демо открывает любой, кто нажал «Посмотреть демо».
+            Ключ от настоящего кабинета ФНС сюда класть нельзя. Войдите по своему номеру.</span>
+        </div>
+      {% elif connected %}
+        <div class="row">
+          <span class="grow small mut">Последняя проверка</span>
+          <span class="small num">{{ synced if synced else 'ещё не было' }}</span>
+        </div>
+        {% if last %}
+          <div class="row" style="padding-top: 8px; padding-bottom: 8px">
+            <span class="grow small">{{ last }}</span>
+          </div>
+        {% endif %}
+        <div class="row">
+          <span class="grow small mut">Загруженные чеки останутся в истории, даже если отключить кабинет.</span>
+          <form method="post" action="{{ url_for('phone.receipts') }}">
+            <input type="hidden" name="do" value="disconnect">
+            <button class="bt ghost" type="submit">Отключить</button>
+          </form>
+        </div>
+      {% else %}
+        <div class="row" style="padding-top: 8px; padding-bottom: 8px">
+          <span class="grow small mut">Кабинет пускает программы только через капчу, поэтому
+            код по СМС из приложения он не даёт. В приложении есть своё окно кабинета:
+            войдите в нём сами — приложение заберёт ключ вашей же сессии. На компьютере
+            работает закладка «Забрать все чеки».</span>
+        </div>
+      {% endif %}
+
+      {% if not demo %}
+        {# Внутри приложения кабинет открывается своим окном: вход и капчу человек
+           проходит сам, а панель по кнопке забирает ключ его сессии. Вне приложения
+           моста нет — кнопка остаётся, но рядом честная подсказка и поле ключа. #}
+        <div class="row" style="padding-top: 6px; padding-bottom: 4px">
+          <button class="bt" type="button" data-open-fns>Войти в кабинет ФНС</button>
+        </div>
+        <div class="note warn" id="fns-hint" style="margin: 4px 0 8px"
+             {% if on_phone %}hidden{% endif %}>
+          Окно кабинета открывается в приложении «Моя корзина». Откройте приложение на
+          телефоне — или вставьте ключ ниже, он подойдёт и с компьютера.
+        </div>
+        {# Ключ приходит телом POST и дальше этого запроса не идёт — ни в адрес, ни в
+           историю браузера. Свернуто, когда кабинет уже подключён: это запасной путь. #}
+        <details id="keys" {% if not connected %}open{% endif %}>
+          <summary class="row" style="list-style: none; cursor: pointer">
+            {{ icon('receipt') }}
+            <span class="grow">{{ 'Вставить новый ключ' if connected else 'Подключить ключом из закладки' }}</span>
+            {{ icon('next', 'i s fnt') }}
+          </summary>
+          <form method="post" action="{{ url_for('phone.receipts') }}"
+                style="padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 8px">
+            <input type="hidden" name="do" value="keys">
+            <textarea name="keys" rows="3" autocomplete="off" autocapitalize="off"
+                      autocorrect="off" spellcheck="false"
+                      placeholder='{"source": "lkdr-keys", "token": "…", "refresh": "…"}'
+                      aria-label="Ключ кабинета ФНС"
+                      style="width: 100%; border: 1px solid var(--line2); border-radius: 8px;
+                             padding: 8px 10px; background: #FFFFFF; color: var(--ink);
+                             font: 400 13px/1.35 'Rubik', system-ui, sans-serif"></textarea>
+            <button class="bt" type="submit" style="align-self: flex-start">Подключить</button>
+          </form>
+        </details>
+      {% endif %}
+    </div>
+  </section>
+
+  {# ---------- как идёт загрузка ---------- #}
+  <section>
+    <div class="grp">Загрузка</div>
+    <div class="card">
+      {% if job and job.running %}
+        <div class="row" style="align-items: flex-start; padding-top: 10px; padding-bottom: 10px">
+          <span class="spin" style="margin-top: 3px"></span>
+          <span class="grow small">
+            <b>{{ job.saying }}</b><br>
+            Идёт {{ job.elapsed }}. Страница обновляется сама каждые {{ refresh }} с; закрыть её
+            можно — загрузка допишется и не оборвётся.
+            {% if job.silent > 60 %}<br>Кабинет молчит уже {{ job.silent }} с — обычно это его
+              медленный ответ, а не обрыв: взятые чеки уже в истории.{% endif %}
+          </span>
+        </div>
+        {% if job.total %}
+          <div class="bar" style="margin: 0 12px 10px">
+            <span style="width: {{ (job.done * 100 / job.total)|round|int }}%"></span>
+          </div>
+        {% endif %}
+      {% elif job and job.error %}
+        <div class="note bad" style="margin: 10px 12px">Кабинет ответил: {{ job.error }}</div>
+      {% elif connected %}
+        <div class="row" style="padding-top: 8px; padding-bottom: 8px">
+          <span class="grow small mut">Новые чеки забираются отдельным потоком: страницу можно
+            закрыть, пока загрузка идёт, и чеки всё равно допишутся в историю.</span>
+        </div>
+      {% else %}
+        <div class="row" style="padding-top: 8px; padding-bottom: 8px">
+          <span class="grow small mut">Пока кабинет не подключён, загружать нечего.</span>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+
+  {# ---------- чего экран не может: обещать это нельзя ---------- #}
+  <section>
+    <div class="grp">Чего этот экран не может</div>
+    <div class="card" style="padding: 10px 12px; display: flex; flex-direction: column; gap: 7px">
+      <div class="small"><b>Вход без человека невозможен.</b> Кабинет требует капчу и код из
+        СМС — их проходит только человек в своём браузере.</div>
+      <div class="small"><b>История может быть неполной.</b> Часть чеков ФНС уже не хранит
+        состава, а покупки, сделанные без вашего номера, в кабинет не попадают вовсе.</div>
+      <div class="small"><b>Привязка позиций к товарам неполная.</b> Сокращённые названия в
+        чеках опознаются не все — часть покупок пока не с чем сравнить.</div>
+      <div class="small"><b>Ключ живёт ограниченно.</b> Когда он истечёт, кабинет попросит
+        подключиться заново; загруженные чеки при этом останутся в истории.</div>
+    </div>
+  </section>
+{% endblock %}
+
+{% block actions %}
+  <div class="actions">
+    {% if connected %}
+      <form method="post" action="{{ url_for('phone.receipts') }}" style="flex: 1; display: flex">
+        <input type="hidden" name="do" value="sync">
+        <button class="cta" type="submit" {% if job and job.running %}disabled{% endif %}>
+          {% if job and job.running %}Загрузка идёт…{% else %}Загрузить сейчас{% endif %}
+        </button>
+      </form>
+    {% elif demo %}
+      <a class="cta ghost" style="flex: 1; width: auto" href="{{ url_for('phone.settings') }}">Войти по номеру</a>
+    {% else %}
+      <a class="cta" style="flex: 1; width: auto" href="#keys">Вставить ключ</a>
+    {% endif %}
+    <a class="cta ghost" href="{{ full_url }}">Полная версия</a>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  /* «Войти в кабинет ФНС»: внутри приложения — его окно кабинета, снаружи — честная
+     подсказка и поле ключа. Моста в браузере нет, поэтому спрашиваем обёртку. */
+  document.addEventListener('click', function (e) {
+    var button = e.target && e.target.closest ? e.target.closest('[data-open-fns]') : null;
+    if (!button) { return; }
+    if (window.KorzinaDevice && KorzinaDevice.openFns()) { e.preventDefault(); return; }
+    var hint = document.getElementById('fns-hint');
+    if (hint) { hint.hidden = false; }
+    var keys = document.getElementById('keys');
+    if (keys) { keys.open = true; keys.scrollIntoView({ block: 'center' }); }
+  });
+</script>
+{% endblock %}

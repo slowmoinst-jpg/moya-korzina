@@ -169,6 +169,8 @@ class FixPriceCrawler(Crawler):
                 browser.close()
 
     def _walk(self, page, progress: Progress | None) -> Iterator[ChainProduct]:
+        self.incomplete = False
+        self.incomplete_note = ""
         sections = self._sections(page)
         if not sections:
             raise CrawlBlocked("витрина не отдала ни одного раздела")
@@ -202,9 +204,17 @@ class FixPriceCrawler(Crawler):
 
         # Обход прошёл, но часть разделов оборвалась — сказать об этом обязаны мы, а
         # не человек, который потом не найдёт в каталоге половину товаров.
+        #
+        # И ЭТОГО МАЛО: база должна знать, что обход НЕПОЛНЫЙ, иначе она объявит
+        # пропавшими все товары, которых в нём не было. Замер 16.10.2026: витрина
+        # отдалась рывками, увидено 1 092 товара, обход записан «ok», и 5 400 живых
+        # строк Fix Price выключились из сопоставления одной ночью. Признак читает
+        # app/catalog/refresh.run_chain: неполный обход — статус partial, пропавших нет.
         if partial:
-            log.warning("fixprice: каталог НЕПОЛНЫЙ, оборвались разделы: %s",
-                        ", ".join(partial[:10]))
+            self.incomplete = True
+            self.incomplete_note = ("каталог неполный, оборвались разделы: "
+                                    + ", ".join(partial[:10]))
+            log.warning("fixprice: %s", self.incomplete_note)
 
     def _sections(self, page) -> list[str]:
         """Разделы каталога. Первая страница обхода переживает таймаут так же, как все.

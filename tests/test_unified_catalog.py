@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from app import cartplan, config, repo
+from app import cartplan, config, repo, users
 from app.catalog import link, match, refresh, store
 from app.catalog.model import ChainProduct as P
 from app.db import init_db
@@ -301,3 +301,77 @@ def test_linked_products_are_rechecked_once_per_generation(catalog, user_db, mon
 
 
 # Когда запускается фоновый проход и что он не теряет — tests/test_unified_catalog_guards.py.
+
+# ---------- отчёт: два знаменателя (замечание владельца 19.10.2026) ----------
+PHONE = "79990000051"
+
+
+@pytest.fixture
+def workplaces(tmp_path, monkeypatch):
+    """Рабочие места в стороне от живых data/users — для прогона инструмента целиком."""
+    monkeypatch.setattr(users, "USERS_DIR", str(tmp_path / "users"))
+    yield tmp_path / "users"
+    users.deactivate()
+
+
+def history(pid: int, raw: str, chain: str | None, key: str) -> None:
+    """Строка чека товара: chain=None — магазин не распознан (такси, платёж, маркетплейс)."""
+    store_id = stores()[chain] if chain else None
+    repo.add_history_row("2026-10-01", store_id, pid, raw, 1, 1.0, 1.0, key)
+
+
+def test_report_counts_products_of_our_chains_separately(catalog, user_db):
+    """«Всего товаров» и «товары наших сетей» — разные знаменатели."""
+    store.upsert_products("lenta", [P("1", "Сыр Ламбер 50% 230г")])
+    refresh.match_all()
+    ours = product("Сыр Ламбер 50% 230г")
+    taxi = product("Такси Яндекс")
+    history(ours, "СЫР ЛАМБЕР 50% 230Г", "lenta", "k1")
+    history(taxi, "ТАКСИ ЯНДЕКС", None, "k2")             # сети нет — не наш товар
+
+    report = link.link_products()
+
+    assert (report.tried, report.linked) == (2, 1)
+    assert (report.network.tried, report.network.linked) == (1, 1)
+    assert report.network.share() == 100.0
+    assert report.network.as_dict()["unknown"] == 0
+
+
+def test_share_of_our_chains_is_counted_over_them(catalog, user_db):
+    """Доля привязки — по товарам наших сетей: не-продукты её не размывают."""
+    store.upsert_products("lenta", [P("1", "Сыр Ламбер 50% 230г")])
+    refresh.match_all()
+    found = product("Сыр Ламбер 50% 230г")
+    missing = product("Кефир Весёлый Молочник 1л")
+    alien = product("Аренда квартиры")
+    history(found, "СЫР ЛАМБЕР 50% 230Г", "lenta", "k1")
+    history(missing, "КЕФИР ВЕСЕЛЫЙ МОЛОЧНИК 1Л", "lenta", "k2")
+    history(alien, "АРЕНДА КВАРТИРЫ", None, "k3")
+
+    report = link.link_products()
+
+    assert (report.tried, report.linked) == (3, 1)         # всё, что искали
+    assert (report.network.tried, report.network.linked) == (2, 1)
+    assert round(report.network.share(), 1) == 50.0
+    assert report.network.unknown == 1
+
+
+def test_cli_prints_both_denominators(catalog, workplaces, capsys):
+    """Владельцу печатаем оба числа словами: всего товаров и товары наших сетей."""
+    store.upsert_products("lenta", [P("1", "Сыр Ламбер 50% 230г")])
+    refresh.match_all()
+    users.open_workspace(PHONE)
+    try:
+        ours = product("Сыр Ламбер 50% 230г")
+        taxi = product("Такси Яндекс")
+        history(ours, "СЫР ЛАМБЕР 50% 230Г", "lenta", "k1")
+        history(taxi, "ТАКСИ ЯНДЕКС", None, "k2")
+    finally:
+        users.deactivate()
+
+    assert link.main(["--phone", PHONE]) == 0
+
+    out = capsys.readouterr().out
+    assert "всего товаров 2" in out
+    assert "из чеков наших сетей 1" in out
+    assert "привязано 1, 100,0 %" in out

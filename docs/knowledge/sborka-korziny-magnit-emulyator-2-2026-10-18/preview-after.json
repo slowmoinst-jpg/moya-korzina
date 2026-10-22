@@ -1,0 +1,37 @@
+{
+  "summary": {
+    "addedItemsCount": 2.0,
+    "giftsCount": 0.0,
+    "itemsCount": 1.0,
+    "itemsTotalSalePrice": 11900.0,
+    "totalBasePrice": 11900.0,
+    "totalFinalPrice": 21700.0
+  },
+  "items": [
+    {
+      "article": "1000227406",
+      "article_from": "goodId",
+      "name": "Огурцы короткоплодные тепличные 450г",
+      "qnty": 1.0,
+      "prices": {
+        "discountPercent": 0.0,
+        "totalBasePrice": 11900.0,
+        "totalFinalPrice": 11900.0
+      },
+      "available": true
+    }
+  ],
+  "items_found": 1,
+  "where": [
+    "suborders[0].items"
+  ],
+  "money_scale": 0.01,
+  "dropped": {
+    "personal_fields": 11,
+    "item_fields": 19
+  },
+  "captured_at": "2026-10-18T20:26:40",
+  "url": "https://magnit.ru/webgate/v1/checkout/preview",
+  "request_id": "4139.5205",
+  "status": 200
+}

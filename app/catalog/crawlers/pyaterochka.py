@@ -18,8 +18,8 @@ import logging
 import re
 from typing import Iterator
 
-from app import config, homeexit, repo
-from app.catalog.crawlers import Pace
+from app import config, homeexit
+from app.catalog.crawlers import Pace, blocked_page, store_product_rows
 from app.catalog.model import ChainProduct, CrawlBlocked, Crawler, Progress
 from app.matcher.normalize import parse_weight, unit_from_name
 
@@ -142,7 +142,9 @@ class PyaterochkaCrawler(Crawler):
     name = "Пятёрочка"
 
     def __init__(self, stores: list[str] | None = None, sections: list[str] | None = None) -> None:
-        self.pace = Pace(chain=self.code)
+        # Темп: общий потолок, но не чаще домашнего выхода — через дом идёт адрес
+        # владельца (app/homeexit.pace_rps, то же правило у коннекторов).
+        self.pace = Pace(chain=self.code, rps=homeexit.pace_rps(self.code))
         if stores and isinstance(stores, list) and any(s in DEFAULT_SECTIONS for s in stores):
             self.sections = stores
             self.stores = []
@@ -150,14 +152,22 @@ class PyaterochkaCrawler(Crawler):
             self.stores = [str(s) for s in (stores or []) if s]
             self.sections = sections or list(DEFAULT_SECTIONS)
         self.max_pages_per_section = int(config.get("catalog.pyaterochka.max_pages") or 20)
+        # Почему витрина не далась в этот раз. Уходит в CrawlBlocked, когда и в базе
+        # пусто: без причины «закрыта ServicePipe» одинаково и при мёртвом туннеле, и
+        # при отказе сети, а разобраться потом нечем (ревью 18.10.2026, T5).
+        self.route_note = ""
 
     def crawl(self, progress: Progress | None = None) -> Iterator[ChainProduct]:
         say = progress or (lambda msg: None)
         say("пятёрочка: запуск обхода каталога")
+        self.route_note = ""
+        self.incomplete = False
+        self.incomplete_note = ""
         seen: set[str] = set()
         crawled_count = 0
 
-        # Маршрут 1: браузерный обход витрины
+        # Маршрут 1: браузерный обход витрины через домашний выход владельца
+        blocked = False
         try:
             for product in self._crawl_browser(say):
                 if product.sku not in seen:
@@ -165,8 +175,10 @@ class PyaterochkaCrawler(Crawler):
                     crawled_count += 1
                     yield product
         except CrawlBlocked as exc:
+            blocked = True
             log.warning("пятёрочка: браузерная витрина заблокирована: %s", exc)
         except Exception as exc:
+            blocked = True
             log.warning("пятёрочка: ошибка браузерного обхода: %s", exc, exc_info=True)
 
         # Маршрут 2: добор известных товаров из базы и чеков
@@ -179,10 +191,42 @@ class PyaterochkaCrawler(Crawler):
 
         say(f"пятёрочка: собрано товаров с витрины {crawled_count}, из базы/чеков {db_count}")
         if not seen:
-            raise CrawlBlocked("пятёрочка: витрина закрыта защитой ServicePipe, а в базе нет сохранённых товаров")
+            raise CrawlBlocked(self._closed_reason())
+        # ВИТРИНА ЗАКРЫТА, А ТОВАРЫ ЕСТЬ — ОБХОД НЕПОЛНЫЙ: строки из базы и чеков не
+        # значат, что сеть обойдена. Полный статус (ok) соврал бы и на экране, и
+        # плановому обходу, который счёл бы сеть свежей и пропустил её 12 часов.
+        if blocked:
+            self.incomplete = True
+            why = f" ({self.route_note})" if self.route_note else ""
+            self.incomplete_note = (f"пятёрочка: витрина закрыта{why}, товары взяты из базы "
+                                    f"и чеков ({db_count}) — обход неполный")
+            log.warning("%s", self.incomplete_note)
+
+    def _closed_reason(self) -> str:
+        """Почему в этот раз пусто. Причину маршрута видно и в статусе обхода."""
+        why = f" ({self.route_note})" if self.route_note else ""
+        return (f"пятёрочка: витрина закрыта защитой ServicePipe{why}, "
+                "а в базе нет сохранённых товаров")
+
+    def _browser_route(self, say: Progress) -> str | None:
+        """Маршрут браузерного обхода: адрес домашнего выхода или None.
+
+        Витрина 5ka серверу отдаёт заглушку ServicePipe («Проверьте настройки интернета
+        и VPN»), поэтому идти напрямую некуда — без выхода браузер не поднимаем вовсе.
+        Лишний стук — это ещё одна проверка на адресе владельца, а причина отказа
+        остаётся в route_note и уходит в CrawlBlocked, когда и в базе пусто.
+        """
+        proxy_url, note = homeexit.route(self.code)
+        self.route_note = note
+        if note:
+            say(f"пятёрочка: {note}")
+        return proxy_url
 
     def _crawl_browser(self, say: Progress) -> Iterator[ChainProduct]:
-        """Обход каталога через Playwright Chromium."""
+        """Обход каталога через Playwright Chromium — через домашний выход владельца."""
+        proxy_url = self._browser_route(say)
+        if proxy_url is None and self.route_note:
+            return
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
@@ -190,7 +234,6 @@ class PyaterochkaCrawler(Crawler):
 
         from app.shopbrowser import store as shopstore
 
-        proxy_url = homeexit.for_chain(self.code)
         launch_args = ["--no-sandbox", "--disable-dev-shm-usage"]
         proxy_opts = {"server": proxy_url} if proxy_url else None
 
@@ -209,16 +252,30 @@ class PyaterochkaCrawler(Crawler):
                 for section in self.sections:
                     sec_url = f"{SITE}/catalog/{section}/"
                     say(f"пятёрочка: обход раздела {section}")
+                    self.pace.wait()          # через дом — не чаще его темпа, не общего
                     try:
                         res = page.goto(sec_url, timeout=30000, wait_until="domcontentloaded")
                     except Exception as e:
                         log.info("пятёрочка: раздел %s не открылся: %s", section, e)
                         continue
 
-                    # Проверка блокировки антиботом
-                    body_text = page.inner_text("body")[:1000]
-                    if "проверьте настройки интернета и vpn" in body_text.lower() or "servicepipe" in body_text.lower():
-                        raise CrawlBlocked("пятёрочка: витрина заблокирована ServicePipe (проверьте VPN / домашний выход)")
+                    # Проверка блокировки антиботом. Через дом это проверка на адресе
+                    # владельца — значит пауза для всех, кто ходит через дом, а не
+                    # только для нас (app/homeexit.py, 27.09.2026).
+                    #
+                    # ЖДЁМ, ПОКА СТРАНИЦА НАРИСУЕТСЯ. Замер 18.10.2026 на бою: сразу
+                    # после перехода у страницы защиты 5ka в body НОЛЬ символов, фраза
+                    # про VPN появляется через три секунды. Прежняя проверка читала текст
+                    # в тот же миг, ничего не находила и молча обходила все двенадцать
+                    # разделов по 1,8 КБ заглушки, а в журнал уходило «витрина пуста».
+                    block = blocked_page(page)
+                    if block:
+                        if proxy_url:
+                            homeexit.note_refusal(self.code)
+                            self.route_note = (f"через дом витрина показала проверку "
+                                               f"«{block}» — пауза для всех, кто ходит через дом")
+                        raise CrawlBlocked("пятёрочка: витрина заблокирована ServicePipe"
+                                           f" («{block}», проверьте VPN / домашний выход)")
 
                     # Извлечение ссылок на товары
                     cards_data = page.evaluate("""() => {
@@ -265,26 +322,13 @@ class PyaterochkaCrawler(Crawler):
                 browser.close()
 
     def _from_store_products(self) -> Iterator[ChainProduct]:
-        """Товары Пятёрочки из базы пользователя (чеки, прайс-пакеты)."""
-        store = repo.get_store(self.code)
-        if not store:
-            return
-        with repo.get_conn() as conn:
-            rows = conn.execute(
-                "SELECT sp.sku, sp.raw_name, sp.ean AS barcode, sp.url, p.price "
-                "FROM store_products sp "
-                # Последний снимок цены каждого товара. Колонки is_current в
-                # store_prices нет и не было, а штрихкод у store_products лежит в
-                # ean: запрос падал, и добор из чеков не работал вовсе (тест
-                # подменял базу целиком и этого не видел).
-                "LEFT JOIN (SELECT store_product_id, price, MAX(fetched_at) AS at "
-                "FROM store_prices GROUP BY store_product_id) p "
-                "ON p.store_product_id = sp.id "
-                "WHERE sp.store_id=?", (store.id,)
-            ).fetchall()
+        """Товары Пятёрочки из баз всех людей и из общей (чеки, прайс, закладка)."""
         from app.catalog.model import placeholder_sku
 
-        for r in rows:
+        # Чтение — общим помощником на обе сети: обходчик работает с общей базой, а
+        # закладка «Забрать цены» и чеки человека лежат в базах рабочих мест
+        # (app/catalog/crawlers/__init__.store_product_rows).
+        for r in store_product_rows(self.code):
             if not r["sku"] or not r["raw_name"]:
                 continue
             # Строка чека (hist-), прайса (list-) или справочника («<сеть>-…») —
@@ -301,7 +345,9 @@ class PyaterochkaCrawler(Crawler):
                 price=float(r["price"]) if r["price"] else None,
                 url=r["url"] or f"{SITE}/product/{r['sku']}/",
                 in_stock=True,
+                price_from_base=True,   # цена из нашей базы: метку свежести не ставим
             )
 
 
 __all__ = ["PyaterochkaCrawler", "to_product", "sku_from_url", "parse_card_text"]
+

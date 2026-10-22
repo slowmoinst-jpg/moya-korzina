@@ -1,0 +1,18 @@
+{
+  "summary": {
+    "addedItemsCount": 0.0,
+    "giftsCount": 0.0,
+    "itemsCount": 0.0,
+    "itemsTotalSalePrice": 0.0,
+    "totalBasePrice": 0.0,
+    "totalFinalPrice": 0.0
+  },
+  "items": [],
+  "items_found": 0,
+  "where": [],
+  "money_scale": 0.01,
+  "dropped": {
+    "personal_fields": 11,
+    "item_fields": 0
+  }
+}

@@ -904,6 +904,10 @@ def test_the_screen_hands_over_the_bookmarklet_itself(web):
     Без этого вся дорога «вход с телефона» остаётся описанием: поле для вставки
     есть, а взять вставляемое негде. Молчаливое отсутствие хуже любой ошибки —
     оно выглядит как работающая возможность.
+
+    Адрес в закладке — чистый /cabinet, без t: закладка ходит кукой в браузере, где
+    человек уже вошёл, а phone= в адресе она не шлёт. Секрет рабочего места ей не
+    нужен и в истории браузера не место; адрес в закладке закодирован целиком.
     """
     enter(web)
     page = web.get("/cabinet?store=magnit").data.decode("utf-8")
@@ -911,6 +915,8 @@ def test_the_screen_hands_over_the_bookmarklet_itself(web):
     assert "javascript:" in page, "строки закладки на экране нет"
     assert "перетащите" in page.lower()
     assert "__APP_URL__" not in page, "адрес приложения обязан подставляться в закладку"
+    assert "%2Fcabinet" in page, "закладка не ведёт на экран кабинета"
+    assert "%3Ft%3D" not in page, "в адресе закладки снова секрет"
 
 
 def test_cabinet_accepts_vhod_via_url_query_parameter(web):

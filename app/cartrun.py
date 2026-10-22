@@ -160,6 +160,7 @@ class Row:
     login: str = ""        # «connect» — подключить; «again» — войти заново
     at: int = 0
     extra: list[dict] = field(default_factory=list)
+    lost: bool = False     # сборку телефона оборвало молчание, а не отказ сети
 
     def as_dict(self) -> dict:
         data = asdict(self)
@@ -242,6 +243,11 @@ def alive(row: Row | None) -> bool:
     трогали не позже cart.STALE_AFTER назад, или ту, чья передача идёт прямо сейчас
     (у неё свой пульс в cart.progress). Сборку телефона держит только его пульс, и
     молчать он может не дольше PHONE_STALE: приложение закрыли — строка это увидит.
+
+    ЕСЛИ ПУЛЬСА ЕЩЁ НЕ БЫЛО, СТРОКА НЕ УМИРАЕТ СРАЗУ. Свежая сборка телефона успевает
+    записать started_at и только потом присылает первый пульс; считать её мёртвой
+    в эту щель значило бы показать «прервано» через секунду после «начал». Поэтому
+    при пустом beat берём время начала попытки, и только если нет и его — «не живая».
     """
     from app.shopbrowser import cart
 
@@ -253,10 +259,26 @@ def alive(row: Row | None) -> bool:
         return True
     else:
         limit = cart.STALE_AFTER
-    try:
-        return (time.time() - float(row.beat or 0)) < limit
-    except (TypeError, ValueError):
+    beat = _pulse_at(row)
+    if beat is None:
         return False
+    return (time.time() - beat) < limit
+
+
+def _pulse_at(row: Row) -> float | None:
+    """Когда строку последний раз трогали: пульс, иначе начало попытки. Нет обоих — None."""
+    try:
+        beat = float(row.beat) if row.beat is not None else 0.0
+    except (TypeError, ValueError):
+        beat = 0.0
+    if beat > 0:
+        return beat
+    if not row.started_at:
+        return None
+    try:
+        return datetime.fromisoformat(str(row.started_at)).timestamp()
+    except (TypeError, ValueError):
+        return None
 
 
 def live(row: Row) -> dict | None:
@@ -449,7 +471,11 @@ def preview(basket_id: int) -> list[Row]:
 
 
 def rows() -> list[Row]:
-    """Последняя сборка: строка на каждую сеть, умершая «идёт» — как оборвавшаяся."""
+    """Последняя сборка: строка на каждую сеть, умершая «идёт» — как оборвавшаяся.
+
+    Оборванная сборка телефона помечается `lost`: это не отказ сети и не «не вышло»,
+    а замолчавший телефон, и экран говорит об этом своим состоянием «прервано».
+    """
     from app import repo
 
     stored = _all()
@@ -459,8 +485,10 @@ def rows() -> list[Row]:
         row = Row.of(stored.get(code)) or Row(code=code, name=names.get(code, code),
                                               road=road(code))
         if row.state == GOING and not alive(row):
-            row = replace(row, state=FAILED, finished_at=row.finished_at or _now(), now="",
-                          note=PHONE_LOST if row.by == DEVICE else
+            lost = row.by == DEVICE
+            row = replace(row, state=FAILED, lost=lost,
+                          finished_at=row.finished_at or _now(), now="",
+                          note=PHONE_LOST if lost else
                           "Сборка оборвалась на полуслове — скорее всего, сервер "
                           "перезапустили. Посмотрите, что легло, и соберите ещё раз.")
         out.append(row)
@@ -755,7 +783,11 @@ def progress(report: dict, *, by: str = DEVICE) -> Row:
         basket_id, basket_name = _basket_of(report, current)
         stamp = _stamp_text(report.get("stamp"))
         same = (current is not None and current.by == DEVICE and current.state == GOING
-                and current.stamp == stamp and current.basket_id == basket_id)
+                and current.stamp == stamp and current.basket_id == basket_id
+                # Продолжение, а не новая попытка: прошлый пульс ещё жив. Замолчавшую
+                # строку телефон начинает заново, и время начала сбрасывается — иначе
+                # оценка «осталось» считалась бы от брошенной попытки.
+                and alive(current))
         row = Row(code=code, name=store.name if store else code,
                   road=current.road if current else road(code), state=state,
                   by=by if by in (SERVER, DEVICE) else DEVICE,

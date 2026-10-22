@@ -35,6 +35,7 @@ nearest_store). Подобранный код и формат точки ухо�
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from app import repo
 from app.models import Location
@@ -45,6 +46,10 @@ KEY_ADDRESS = "address"        # адрес клиента, общий для в
 # Когда адрес сменился в последний раз. Снимки цен сетей с ценами по точке, снятые
 # раньше, — цены ПРЕЖНЕГО адреса (service.line_price помечает их как несвежие).
 KEY_MOVED = "address.changed_at"
+# Точка, которую человек поставил пином на карте: «широта,долгота». Это НЕ источник
+# цен — цены считаются по адресу; точка нужна, чтобы карта открылась там же, где
+# человек её оставил, и чтобы обратный геокод было с чем сверить.
+KEY_POINT = "address.point"
 
 # Сети, чьи цены считаются по адресу клиента. Остальные берут своё место из
 # config.yaml — то есть показывают всем одну и ту же точку.
@@ -104,6 +109,78 @@ def moved_at() -> str | None:
         return repo.get_setting(KEY_MOVED)
     except Exception:  # noqa: BLE001 — нет базы — нет и отметки
         return None
+
+
+# ---------- точка с карты ----------
+def point() -> tuple[float, float] | None:
+    """Точка, поставленная пином: (широта, долгота). None — точки нет или она битая.
+
+    Зачем хранить. Экран настроек открывает карту заново после каждого захода;
+    без сохранённой точки она каждый раз прыгала бы в центр города, а человек
+    искал бы свой дом заново. Адрес при этом остаётся главным: цены считаются по
+    нему, и точка их не подменяет (см. начало модуля).
+    """
+    raw = (repo.get_setting(KEY_POINT) or "").strip()
+    if not raw:
+        return None
+    parts = raw.replace(";", ",").split(",")
+    if len(parts) != 2:
+        return None
+    return _as_point(parts[0], parts[1])
+
+
+def point_key() -> str | None:
+    """Точка пина ключом снимка цены: «широта,долгота» с пятью знаками. None — нет точки.
+
+    Тем же ключом matcher помечает снимок (app/matcher/matcher.py, _place_mark), а
+    freshness.price_for ищет цену именно этой точки. Без общего правила формат
+    разошёлся бы, и экран читал бы не свой снимок, а общий — или никакого.
+    """
+    try:
+        found = point()
+    except Exception:                                # noqa: BLE001 — нет базы — нет и точки
+        return None
+    if not found:
+        return None
+    try:
+        latitude, longitude = float(found[0]), float(found[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return f"{latitude:.5f},{longitude:.5f}"
+
+
+def save_point(lat: Any, lon: Any) -> bool:
+    """Сохранить точку с карты. None в обоих — стереть. True — точка сохранена.
+
+    Битые и невозможные значения (широта 120, «ноль-ноль») не сохраняются и не
+    стирают прежнюю точку молча: экран, приславший мусор, не должен обнулять то,
+    что человек уже выбрал.
+    """
+    value = _as_point(lat, lon)
+    if value is None:
+        if lat is None and lon is None:
+            repo.set_setting(KEY_POINT, None)
+        return False
+    repo.set_setting(KEY_POINT, f"{value[0]:.6f},{value[1]:.6f}")
+    return True
+
+
+def _as_point(lat: Any, lon: Any) -> tuple[float, float] | None:
+    """Пара чисел из формы или настройки; всё сомнительное отсеивается здесь.
+
+    Та же защита, что в app/geo.py, _point: «ноль-ноль» — точка в Гвинейском
+    заливе, а не адрес, и сохранять её как выбранное место нельзя.
+    """
+    try:
+        latitude = float(str(lat).replace(",", "."))
+        longitude = float(str(lon).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    if not (-90.0 <= latitude <= 90.0) or not (-180.0 <= longitude <= 180.0):
+        return None
+    if latitude == 0.0 and longitude == 0.0:
+        return None
+    return latitude, longitude
 
 
 def nearby(addr: str | None = None) -> list[dict]:

@@ -107,10 +107,54 @@ def create_app() -> Flask:
     device.install(flask_app)
     views.install(flask_app)
     # Телефон — после входа: его главная ведёт приложение на четыре своих экрана,
-    # а решать это можно, только зная, кто пришёл (app/web/phone.py).
+    # а решать это можно, только зная, кто пришёл (app/web/phone/).
     phone.install(flask_app)
     web_api.install(flask_app)
+    _install_page_headers(flask_app)
+    _install_static_version(flask_app)
     return flask_app
+
+
+def _install_static_version(flask_app: Flask) -> None:
+    """static_v(файл) в шаблонах — адрес статики с отпечатком содержимого (?v=…).
+
+    Статику телефон держит в кэше, страницы — нет (см. ниже). Новые шаблоны после
+    выкладки встречали бы старый phone.css, и экран разваливался, пока кэш не протух
+    (смена вида 22.10.2026). Отпечаток меняется вместе с файлом: новый файл — новый
+    адрес. Считается раз на процесс: выкладка перезапускает сервер.
+    """
+    import hashlib
+    from functools import cache
+
+    from flask import url_for
+
+    @cache
+    def stamp(filename: str) -> str:
+        with open(os.path.join(flask_app.static_folder, filename), "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()[:10]
+
+    @flask_app.template_global()
+    def static_v(filename: str) -> str:
+        return url_for("static", filename=filename, v=stamp(filename))
+
+
+def _install_page_headers(flask_app: Flask) -> None:
+    """Страницы не кэшировать: телефон иначе показывает вчерашнюю.
+
+    ЗАМЕР 20.10.2026. Экран «Кабинеты» в приложении показывал красную плашку
+    «Не вышло: … Invalid cookie fields», а в журнале сервера за сутки не было ни одной
+    такой ошибки: WebView отдал СТАРУЮ страницу из своего кэша. Для страниц это
+    недопустимо — они живые (состояние входа, корзины, цены), а кэш показывает прошлое.
+    Статике кэш нужен, её не трогаем.
+    """
+
+    @flask_app.after_request
+    def _no_cache_html(answer):
+        if answer.mimetype == "text/html":
+            answer.headers["Cache-Control"] = "no-store, max-age=0"
+            answer.headers["Pragma"] = "no-cache"
+            answer.headers["Expires"] = "0"
+        return answer
 
 
 __all__ = ["create_app", "secret_key"]

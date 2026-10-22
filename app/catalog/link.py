@@ -13,6 +13,10 @@
   3. слова строк чека и эталона: кандидаты — store.search_folded (общий свод письма,
      начала слов) и прежний store.search_items; решает match.same_product, а сокращения
      чека («МОЛ.ПАСТ.ПРОСТОКВАШИНО») — взаимное покрытие слов при общей марке.
+  3.1. записанные написания (name_variants, T4 18.10.2026): если строка чека слово в
+     слово совпала с тем, как эту покупку записали раньше, товар берётся и без
+     совпадения слов названия — кандидатом на «Связях», а написание, подтверждённое
+     человеком (source=human), — сильной связью. В наряд кандидат сам не идёт.
   Ключи дали разные товары или два товара равно хороши — не угадываем: «сомнительно».
   Артикулы, записанные самой базой, доводом не служат: иначе ошибочная связь сама себя
   закрепляла бы. Выбор не базой служит доводом для других сетей, только если он сам
@@ -52,8 +56,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import contextvars
 import logging
 import re
+import sqlite3
 import threading
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
@@ -62,7 +69,7 @@ from datetime import datetime, timedelta
 from app import repo
 from app.catalog import match as matching
 from app.catalog import store
-from app.matcher.normalize import display_name, gtin, gtin_trusted
+from app.matcher.normalize import _PREFIX_RE, display_name, gtin, gtin_trusted
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +96,8 @@ DESCRIPTORS = frozenset(matching.fold(w) for w in (
 SORT_WORDS = frozenset(matching.fold(w) for w in (
     "натуральное", "натуральный", "натуральная", "классическое", "классический",
     "классическая", "традиционное", "традиционный", "традиционная"))
+# Двухбуквенные слова, которые сокращением не считаются: единицы («мл», «шт») и шум.
+_ABBREV_SKIP = frozenset(matching.fold(w) for w in matching._UNIT_TOKENS) | matching.NOISE
 # Точка между буквами в строке чека — сокращение, а не конец предложения.
 _ABBR_DOT = re.compile(r"(?<=[A-Za-zА-Яа-яЁё])\.(?=[A-Za-zА-Яа-яЁё])")
 
@@ -108,10 +117,33 @@ class Found:
 
 
 @dataclass
+class Tally:
+    """Счёт товаров: сколько искали и чем кончилось. Нужен на два знаменателя."""
+    tried: int = 0
+    linked: int = 0
+    strong: int = 0
+    weak: int = 0
+    doubtful: int = 0
+    unknown: int = 0
+    failed: int = 0
+
+    def as_dict(self) -> dict:
+        return {"tried": self.tried, "linked": self.linked, "strong": self.strong,
+                "weak": self.weak, "doubtful": self.doubtful, "unknown": self.unknown,
+                "failed": self.failed}
+
+    def share(self) -> float:
+        """Доля привязанных, % — по этому счёту."""
+        return 100.0 * self.linked / self.tried if self.tried else 0.0
+
+
+@dataclass
 class Report:
     """Что сделал проход: для журнала, «Связей» и инструмента.
 
     Каждый товар — ровно в одной корзине: tried = linked + doubtful + unknown + failed.
+    Счёт двойной: всё, что искали (свои поля), и отдельно товары наших сетей
+    (network) — тех, у кого есть строка чека с распознанным магазином.
     """
     tried: int = 0
     linked: int = 0          # привязано (и записано, если проход пишет)
@@ -121,22 +153,33 @@ class Report:
     unknown: int = 0
     failed: int = 0          # сбой на товаре: проход идёт дальше, товар — в следующий раз
     chains: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    # Товары наших сетей: у товара есть хоть одна строка purchase_history с распознанным
+    # магазином (store_id IS NOT NULL). Строки без сети — такси, платежи, аренда,
+    # маркетплейсы — в этот счётчик не идут вовсе (замечание владельца 19.10.2026).
+    network: Tally = field(default_factory=Tally)
 
     def as_dict(self) -> dict:
         return {"tried": self.tried, "linked": self.linked, "strong": self.strong,
                 "weak": self.weak, "doubtful": self.doubtful, "unknown": self.unknown,
-                "failed": self.failed, "chains": dict(self.chains)}
+                "failed": self.failed, "chains": dict(self.chains),
+                "network": self.network.as_dict()}
 
-    def count(self, found: Found) -> None:
+    def count(self, found: Found, network: bool = False) -> None:
         self.linked += 1
         self.strong += int(found.strong)
         self.weak += int(not found.strong)
+        if network:
+            self.network.linked += 1
+            self.network.strong += int(found.strong)
+            self.network.weak += int(not found.strong)
 
-    def missed(self, result) -> None:
+    def missed(self, result, network: bool = False) -> None:
         if result == DOUBTFUL:
             self.doubtful += 1
+            self.network.doubtful += int(network)
         else:
             self.unknown += 1
+            self.network.unknown += int(network)
 
 
 # ---------- правила ----------
@@ -169,16 +212,98 @@ def _by_weight(a: matching.Row, b: matching.Row) -> bool:
     return a.unit == "kg" and b.unit == "kg" and not a.weight_g and not b.weight_g
 
 
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def _numbers(row: matching.Row) -> list[str]:
+    """Числа названия без числа штук: «Pampers 4 46 шт» → ['4'], «Яйцо С1 10 шт» → ['1']."""
+    nums = [n.replace(",", ".") for n in _NUMBER.findall(matching.glue(row.name).lower())]
+    if row.packs > 1 and str(row.packs) in nums:
+        nums.remove(str(row.packs))
+    return sorted(nums)
+
+
+def _counted(a: matching.Row, b: matching.Row) -> bool:
+    """Обе стороны посчитаны штуками, и прочие числа названий сходятся.
+
+    ЗАЧЕМ (18.10.2026, находка №7). Яйца и салфетки «N шт» без массы получали только
+    слабую связь: сильная требовала известной фасовки (_close) или обеих сторон на
+    весу (_by_weight), и подтверждать приходилось в каждой сети по разу на товар.
+    Прочие числа обязаны совпасть, иначе «Pampers 4» и «Pampers 5», «60W» и «75W»,
+    «7» и «12 злаков» стали бы одним товаром: числа выпадают из слов.
+    """
+    if not (a.packs == b.packs > 1 and not a.weight_g and not b.weight_g):
+        return False
+    if "kg" in (a.unit, b.unit):
+        return False
+    return _numbers(a) == _numbers(b)
+
+
 def _prep(row: dict, receipt: bool = False) -> matching.Row:
     """Строка сети, единого товара или чека — в вид для сравнения (match.prepare).
 
     Тару и надписи убирает и отрицания склеивает сам match.prepare. Здесь — только то,
     что нужно строке чека: точка между буквами — сокращение («МОЛ.ПАСТ.»).
+
+    Склейка идёт ДО снятия точек (находка №2, 18.10.2026): «Н.ГАЗ» и «Н-ГАЗ» — тоже
+    отрицание, а _ABBR_DOT раньше превращал их в «Н ГАЗ», где «Н» выбрасывалось как
+    однобуквенное, и чек сильно подтверждал противоположный товар.
     """
     name = row.get("name") or ""
     if receipt:
-        name = _ABBR_DOT.sub(" ", name)
+        name = _ABBR_DOT.sub(" ", matching.glue(name))
     return matching.prepare({**row, "id": int(row.get("id") or 0), "name": name})
+
+
+def _same_negation(a: str, b: str) -> bool:
+    """Слова не спорят словами: равны или одно — начало другого с учётом отрицания."""
+    if a == b:
+        return True
+    na, nb = _negation(a), _negation(b)
+    return bool(na and nb and (na.startswith(nb) or nb.startswith(na)))
+
+
+def _significant(words) -> frozenset[str]:
+    """Значимые слова строки чека: короткие обрывки («сл», «вк») разновидность не делят."""
+    return frozenset(w for w in words if len(w) >= 3)
+
+
+def _contradicting_variants(receipts: list[str]) -> bool:
+    """Расходятся ли строки чека с одним display_name по склеенным словам.
+
+    ЗАЧЕМ (18.10.2026, находка №3). Импорт чеков сводит строки по display_name, а он
+    теряет однобуквенные «Н/», «С/», «Б/» (normalize.py:159): «С/ГАЗ» и «Н/ГАЗ»,
+    «Б/А» и обычное пиво, «С/ЗМЖ» и «Б/ЗМЖ» становятся одним товаром, и link сильно
+    подтверждает ту разновидность, что есть в базе. Пример: семья 22 раза купила
+    «Н/ГАЗ» и один раз «С/ГАЗ» — разовая покупка переводит товар в сильную связь с
+    газированной. При таком противоречии строк нет вовсе: не угадываем. «без…» и
+    «не…» — одно отрицание.
+
+    Префикс поставщика снимается, и сравниваются ЗНАЧИМЫЕ слова (ревью 18.10.2026):
+    «СЕТЬ.СЫР СТРАЧАТЕЛЛА 200г» и «СЫР СТРАЧАТЕЛЛА 200г» — строки одного товара, а не
+    спор разновидностей, и обнулять их нельзя. В «ВК/ПОЛ.» точку держит normalize_name,
+    а prepare видит «вк» и «пол» обычными словами, если префикс не в NOISE_WORDS.
+    """
+    groups: dict[str, list[frozenset[str]]] = defaultdict(list)
+    for name in receipts:
+        if not name:
+            continue
+        clean = _PREFIX_RE.sub(" ", name.lower())
+        row = _prep({"id": 0, "chain": "mine", "name": clean}, receipt=True)
+        groups[display_name(name).strip().lower()].append(_significant(row.fwords))
+    for variants in groups.values():
+        first = variants[0]
+        for other in variants[1:]:
+            if any(not any(_same_negation(x, y) for y in other) for x in first):
+                return True
+            if any(not any(_same_negation(x, y) for y in first) for x in other):
+                return True
+    return False
+
+
+def _variants_conflict(product) -> bool:
+    """Строки чека этого товара сводят противоположные разновидности (см. выше)."""
+    return _contradicting_variants(repo.raw_names(product.id))
 
 
 def _rows_of_person(product, raw_names: list[str]) -> list[matching.Row]:
@@ -193,19 +318,26 @@ def _rows_of_person(product, raw_names: list[str]) -> list[matching.Row]:
     Процент, число штук и метки разновидности берутся по строкам чека: название
     эталона их теряет («МОЛ.ПАСТ.ПРОСТОКВАШИНО 2,5%» → «Паст простоквашино 2 5»,
     «ВОДА ШИШКИН ЛЕС 6*0,5Л» → «Вода шишкин лес 6 500 г»). Строки чека назвали разное
-    число штук — не угадываем: строк нет.
+    число штук — не угадываем: строк нет. Строки чека с одним display_name разошлись
+    склеенными словами (находка №3) — тоже строк нет.
     """
     receipts = [n for n in raw_names if n]
+    if _contradicting_variants(receipts):
+        return []
     own = (product.name or "").strip().lower()
     derived = bool(receipts) and own in {display_name(n).strip().lower() for n in receipts}
-    etalons = [display_name(matching.glue(n)) for n in receipts] if derived else [product.name]
+    # Точку снимаем ДО normalize_name: иначе _PREFIX_RE съедает голову эталона
+    # («КЕФ.ПРОСТОКВАШИНО» → «Простоквашино»), и выведенный эталон оспаривает тот же
+    # выбор человека (находка №14, 18.10.2026).
+    etalons = ([display_name(_ABBR_DOT.sub(" ", matching.glue(n))) for n in receipts]
+               if derived else [product.name])
     names = list(dict.fromkeys(receipts + [e for e in etalons if e]))
     pct = next((p for p in (matching.parse_percent(n) for n in names) if p is not None), None)
     said = {matching.pack_count(matching.glue(n)) for n in receipts} - {1}
     if len(said) > 1:
         return []
     packs = next(iter(said), None)
-    marks = frozenset().union(*(matching.variant_marks(n) for n in receipts))
+    marks = frozenset().union(*(matching.variant_marks(matching.glue(n)) for n in receipts))
     out: list[matching.Row] = []
     for name in names:
         row = _prep({"id": 0, "chain": "mine", "name": name, "brand": product.brand,
@@ -251,22 +383,64 @@ def _abbrev(mine: matching.Row, cand: matching.Row) -> int:
     Слово чека, равное слову кандидата, покрывает только его: «КОФЕ» не покрывает ещё
     и «кофеина». Непокрытый сорт («натуральный») — связь слабая. «НЕГАЗ» из чека и
     «без газа» в сети — одно отрицание.
+
+    ЯКОРЬ НУЖЕН И БЕЗ МАРКИ (замер 19.10.2026, task-19). Товары, собранные закладкой
+    «Забрать цены» (строки 5ka.ru и samokat.ru), приходят БЕЗ марки: pricebundle кладёт
+    только имя, вес, единицу, ссылку и цену. Прежнее «нет марки — нет связи» оставляло
+    такие строки неразобранными ровно там, где чек сокращён («Сараф мор зеф эск ван гл
+    8 75 г»). Поэтому марка ищется в самом чеке: самое длинное слово от четырёх букв,
+    начинающее слово кандидата («сараф» → «сарафаново», «тема» → «тема»). Без якоря
+    связи нет вовсе — «Коктейль молочный» по-прежнему не находит «Молоко», а покрытие
+    слов кандидата и запрет на непокрытое вне SORT_WORDS/DESCRIPTORS остаются как были.
+    СВЯЗЬ БЕЗ МАРКИ — ТОЛЬКО СЛАБАЯ (решение 19.10.2026): марка и есть доказательство,
+    что «сараф» и «сарафаново» — одно имя, а без неё совпадение слов остаётся догадкой.
+    Такая пара ложится кандидатом на «Связях» и ждёт человека, в наряд сама не идёт:
+    положить не тот творог хуже, чем не положить ничего.
+
+    Двухбуквенный обрывок чека («гл» → «глазури») покрывает слово кандидата так же,
+    как слово от трёх букв: раньше он выпадал из said, и «глазированный» оставался
+    непокрытым.
     """
     said = [w for w in mine.forder if len(w) >= 3]
-    if len(said) < 2 or not cand.fbrand:
+    if len(said) < 2:
         return 0
     words = set(cand.fwords)
+    brand = set(cand.fbrand)
+    if not brand:
+        anchors = [r for r in said if len(r) >= 4 and any(c.startswith(r) for c in words)]
+        if not anchors:
+            return 0
+        anchor = max(anchors, key=len)
+        # Слово-якорь кандидата выбирается упорядоченно: у одного якоря бывает
+        # несколько начал, и от выбора не должен зависеть вердикт.
+        brand = {sorted((c for c in cand.fwords if c.startswith(anchor)),
+                        key=lambda c: (-len(c), c))[0]}
     if not all(any(_starts(c, r) for c in words) for r in said):
         return 0
     exact = {r for r in said if r in words}
-    loose = [r for r in said if r not in words]
-    rest = words - set(cand.fbrand) - DESCRIPTORS
+    # Покрывают ВСЕ слова чека, включая двухбуквенные обрывки: «гл» — это «глазури».
+    loose = [r for r in mine.forder if r not in words]
+    rest = words - brand - DESCRIPTORS
     uncovered = {c for c in rest if c not in exact
                  and not any(_starts(c, r) or _starts(r, c) for r in loose)}
     if uncovered - SORT_WORDS:
         return 0
-    if not any(len(r) >= 4 and any(b.startswith(r) for b in cand.fbrand) for r in said):
+    if not any(len(r) >= 4 and any(b.startswith(r) for b in brand) for r in said):
         return 0
+    # ЗАЧЕМ (18.10.2026, находка №1). «СЛ/ГАЗ» и «СР/ГАЗ»: двухбуквенное «сл»/«ср»
+    # в said не попадало, и чек сильно подтверждал ГАЗированное. Двухбуквенное слово
+    # чека, которое не равно слову кандидата и не начинает его, — сокращение не выше
+    # слабого. Единицы и шум («мл», «шт», «тп») сюда не считаются.
+    for w in mine.forder:
+        if len(w) != 2 or w in _ABBREV_SKIP:
+            continue
+        if w in words or any(c.startswith(w) for c in words):
+            continue
+        return 1
+    # Без марки якорь разрешает поиск, но сильной связи не даёт: это кандидат на
+    # «Связях», и подтвердит его человек (решение 19.10.2026, см. докстринг).
+    if not cand.fbrand:
+        return 1
     return 1 if uncovered else 2
 
 
@@ -278,7 +452,7 @@ def _judge(mine: matching.Row, cand: matching.Row, vocab: frozenset[str]
     if ok:
         close = _close(mine.weight_g, cand.weight_g)
         if mine.words == cand.words:
-            return close or _by_weight(mine, cand), score, "words"
+            return close or _by_weight(mine, cand) or _counted(mine, cand), score, "words"
         # Вложение, где лишние слова — только описание обработки: тот же товар, если
         # фасовка та же. Всё прочее вложение — слабая связь.
         small, big = sorted((mine.fwords, cand.fwords), key=len)
@@ -288,7 +462,7 @@ def _judge(mine: matching.Row, cand: matching.Row, vocab: frozenset[str]
     if matching.compatible(mine, cand):
         level = _abbrev(mine, cand)
         if level == 2:
-            return _close(mine.weight_g, cand.weight_g), 0.8, "abbrev"
+            return (_close(mine.weight_g, cand.weight_g) or _counted(mine, cand)), 0.8, "abbrev"
         if level == 1:
             return False, 0.75, "abbrev"
     return None
@@ -361,6 +535,38 @@ def _same_name(seen: str, row: dict) -> bool:
     return matching.same_product(replace(before, bkey=None), replace(now, bkey=None), vocab)[0]
 
 
+def _covers(a: str, b: str) -> bool:
+    """Слова — об одном: равны, одно начинает другое или это одно отрицание."""
+    return a == b or _starts(a, b) or _starts(b, a)
+
+
+_NEUTRAL = DESCRIPTORS | SORT_WORDS | matching.NOISE
+
+
+def _disputed_extra(person: list[matching.Row], cand: matching.Row) -> bool:
+    """Строки человека расходятся с выбором СЛОВАМИ, а не только признаками.
+
+    ЗАЧЕМ (18.10.2026, находка №14). Строгая ветка искала общее слово ЦЕЛИКОМ: у чека
+    «КЕФ.ПРОСТОКВ.» и выбора «Ряженка Простоквашино» общего слова не было, и
+    переназначенный артикул оставался мостом на ряженку. Ярлык человека, ничем не
+    похожий на выбор («Что-то совсем другое по названию»), как и раньше, не спорит:
+    это его выбор, и он мост (tests/test_unified_catalog.py:163). Поэтому слова
+    человека сверяются с выбором, только если хоть одно из них выбору не чуждо.
+    """
+    significant = [[w for w in mine.fwords if len(w) >= 3
+                    and not any(n.startswith(w) for n in _NEUTRAL)] for mine in person]
+    words = set(cand.fwords)
+    opened = [[w for w in sig if not any(_covers(c, w) for c in words)] for sig in significant]
+    if not any(len(o) < len(s) for o, s in zip(opened, significant)):
+        return False                       # ярлык человека выбору не возражает
+    said = [o for o, s in zip(opened, significant) if s]
+    if said and all(said):
+        return True                        # каждая связанная строка называет лишнее
+    all_said = set().union(*(m.fwords for m in person))
+    return any(not any(_covers(c, r) for r in all_said)
+               for c in words - set(cand.fbrand) - DESCRIPTORS - SORT_WORDS)
+
+
 def _disputed(person: list[matching.Row], cand: matching.Row, strict: bool) -> bool:
     """Строки человека возражают выбору: он не тождество, а замена.
 
@@ -383,6 +589,8 @@ def _disputed(person: list[matching.Row], cand: matching.Row, strict: bool) -> b
         own = cand.fwords - cand.fbrand
         if any(mine.fwords & own for mine in person) and all(
                 _judge(mine, cand, cand.brand_words) is None for mine in person):
+            return True
+        if _disputed_extra(person, cand):
             return True
     return False
 
@@ -415,10 +623,14 @@ def _choices(product, mappings: list[dict], person: list[matching.Row], conn) ->
 
 
 def _codes(product, mappings: list[dict], choices: list[dict]) -> set[str]:
-    """Доверенные штрихкоды товара: его собственный и у выборов не базой, кроме спорных."""
+    """Доверенные штрихкоды товара: его собственный и у выборов не базой, кроме спорных.
+
+    Строки чека свели противоположные разновидности — собственный код не решает: он
+    помнит только первую загруженную строку (находка №3, 18.10.2026).
+    """
     spoiled = {m["store_product_id"] for m in choices if not m["trusted"]}
-    raw = [product.barcode] + [m.get("ean") for m in _human(mappings)
-                               if m["store_product_id"] not in spoiled]
+    raw = ([] if _variants_conflict(product) else [product.barcode])
+    raw += [m.get("ean") for m in _human(mappings) if m["store_product_id"] not in spoiled]
     return {c for c in (_trusted(x) for x in raw) if c}
 
 
@@ -460,7 +672,8 @@ def _retired_items(person: list[matching.Row], conn, pairs=(), codes=()) -> set[
         if alive is None or alive in out or not _exists(alive, conn):
             continue
         before = _prep(row)
-        if person and _disputed(person, before, strict=False):
+        # Снимка названия у снятой строки нет — значит, строгий суд (находка №14).
+        if person and _disputed(person, before, strict=True):
             continue
         rows = [_prep(r) for r in _rows_of_item(alive, conn)]
         vocab = matching.brand_vocabulary(rows + [before])
@@ -504,7 +717,9 @@ def find_master(product, raw_names: list[str], mappings: list[dict], conn,
                 person: list[matching.Row] | None = None) -> Found | str | None:
     """Единый товар для товара человека. DOUBTFUL — есть, но не однозначно; None — нет."""
     person = _rows_of_person(product, raw_names) if person is None else person
-    own = _own_items(product, conn)
+    # Противоположные разновидности в строках чека сводят товар в один: собственный
+    # штрихкод его не решает — код помнит только первая загруженная строка (находка №3).
+    own = set() if _variants_conflict(product) else _own_items(product, conn)
     if len(own) == 1:
         return Found(next(iter(own)), "barcode", 1.0, True)
     if len(own) > 1:
@@ -523,6 +738,61 @@ def find_master(product, raw_names: list[str], mappings: list[dict], conn,
     return found
 
 
+_VARIANT_HUMAN = "human"     # написание, подтверждённое человеком: сильный довод
+_VARIANT_RECEIPT = "receipt"  # как написал чек: кандидат, в наряд сам не идёт
+
+
+def _item_row(item_id: int, conn) -> dict | None:
+    """Строка единого товара из catalog_items — для кандидата из словаря написаний."""
+    row = conn.execute("SELECT * FROM catalog_items WHERE id=?", (int(item_id),)).fetchone()
+    return dict(row) if row is not None else None
+
+
+def _variant_row(variant: str | None) -> matching.Row:
+    """Записанное написание в виде строки для сравнения — так же, как строка чека."""
+    return _prep({"id": 0, "chain": "mine", "name": variant or ""}, receipt=True)
+
+
+def _matching_variants(person: list[matching.Row], conn) -> dict[int, str]:
+    """Единые товары, чьё ЗАПИСАННОЕ написание совпадает со строкой человека.
+
+    ЗАЧЕМ (18.10.2026, T4). Сокращение чека считается алгоритмом на лету, и он не
+    берёт строку, когда чек молчит о вкусе или сорте и когда у кандидата нет марки
+    («ЙОГУРТ ДАНИС» против «Йогурт Даниссимо»). Словарь альтернативных названий
+    (store.search_variants) помнит, как написали ту же покупку сеть и подтвердивший
+    её человек. Поиск — только индекс: товар берётся, лишь когда наборы слов строки и
+    написания СОВПАЛИ. Иначе «Н/ГАЗ» нашёл бы «С/ГАЗ» по общему «aqua», и
+    разновидность уехала бы в наряд.
+
+    Совпадения слов мало (F1, adversarial-проверка 18.10.2026): в самом написании
+    записаны процент, число штук и метки, и человек мог назвать другое. «Сметана
+    20 % 300г» по написанию подтверждала чек «Сметана 15 % 300г», и в наряд уходил не
+    тот процент. Поэтому написание сверяется с человеком теми же правилами, что и
+    строка сети (match.compatible: единица, фасовка, штуки, процент, метки, марка):
+    спор — это написание не годится вовсе. Потерять связь лучше, чем подменить товар.
+
+    Возвращает {item_id: источник}; «human» — написание подтвердил человек, он
+    сильнее остальных. Написаний у товара бывает несколько, и рассматриваются ВСЕ
+    (F2): раньше search_variants схлопывал их до самого частого, и чек ровно со вторым
+    написанием связи не получал. Источник «chain» новых слов не добавляет (он и есть
+    имя товара) — такой товар просто попадает в кандидаты; решение принимает источник
+    «receipt» (кандидат) и «human» (сильная связь). На базе прежней версии таблицы
+    нет — вернётся пусто.
+    """
+    out: dict[int, str] = {}
+    for mine in person:
+        terms = list(mine.forder) + sorted(set(mine.fwords) - set(mine.forder))
+        for hit in store.search_variants(terms, 80, conn):
+            written = _variant_row(hit.get("variant"))
+            if written.fwords != mine.fwords or not matching.compatible(written, mine):
+                continue
+            item_id = int(hit["item_id"])
+            source = str(hit.get("source") or "")
+            if source == _VARIANT_HUMAN or item_id not in out:
+                out[item_id] = _VARIANT_HUMAN if source == _VARIANT_HUMAN else source
+    return out
+
+
 def _by_words(product, raw_names: list[str], conn,
               person: list[matching.Row] | None = None) -> Found | str | None:
     person = _rows_of_person(product, raw_names) if person is None else person
@@ -530,6 +800,9 @@ def _by_words(product, raw_names: list[str], conn,
     cache: dict[int, list[dict]] = {}
     prepared: dict[int, list[matching.Row]] = {}
     searched: dict[tuple, tuple[dict, frozenset]] = {}
+    # Написания, которыми эту же покупку записали раньше: словарь отдаёт кандидата,
+    # решает он только совпавшим написанием (см. _matching_variants).
+    variants = _matching_variants(person, conn)
     for mine in person:
         terms = list(mine.forder) + sorted(set(mine.fwords) - set(mine.forder))
         query = " ".join(mine.order[:2]) if mine.order else ""
@@ -539,6 +812,11 @@ def _by_words(product, raw_names: list[str], conn,
             if query:
                 for c in store.search_items(query, limit=40, conn=conn):
                     found.setdefault(int(c["id"]), c)
+            for cid in variants:         # кандидат из словаря написаний
+                if cid not in found:
+                    row = _item_row(cid, conn)
+                    if row is not None:
+                        found[cid] = row
             cands = {cid: _prep({**c, "id": cid, "chain": "catalog"}) for cid, c in found.items()}
             searched[key] = (cands, matching.brand_vocabulary(list(cands.values())))
         cands, vocab = searched[key]
@@ -548,6 +826,18 @@ def _by_words(product, raw_names: list[str], conn,
             if cid not in prepared:
                 prepared[cid] = [_prep(r) for r in _rows_of_item(cid, conn, cache)]
             verdict = _item_verdict(mine, cand, prepared[cid], vocab)
+            source = variants.get(cid)
+            if source is not None and not _conflict(mine, prepared[cid]):
+                # Написание совпало слово в слово, а слова названия — нет: это и есть
+                # дыра, которую закрывает словарь. Решение словарь принимает только по
+                # двум источникам: подтверждённое человеком написание — сильная связь,
+                # написание из чека — кандидат (в наряд само не пойдёт). Вариант строки
+                # сети новых слов не добавляет: он лишь кладёт товар в кандидаты, решают
+                # обычные проверки выше (T4, 18.10.2026).
+                if source == _VARIANT_HUMAN and (verdict is None or not verdict[0]):
+                    verdict = (True, 0.9, "variant")
+                elif source == _VARIANT_RECEIPT and verdict is None:
+                    verdict = (False, 0.7, "variant")
             if verdict and (cid not in best or verdict[:2] > best[cid][:2]):
                 best[cid] = verdict
     if not best:
@@ -616,7 +906,8 @@ def _evidence(product, item_id: int, mappings: list[dict], rows: list[dict],
     for r in store.retired_rows(dormant, codes, conn):
         if store.resolve_alias(r["number"], conn) == int(item_id):
             before = _prep(r)
-            if not (person and _disputed(person, before, strict=False)):
+            # У спящей строки снимка названия тоже нет — судим строго (находка №14).
+            if not (person and _disputed(person, before, strict=True)):
                 anchors.append(before)
     anchor_codes = {c for c in (_trusted(a.barcode) for a in anchors) if c}
     return _Evidence(codes, person, prepared, vocab, strong_ids, anchors, anchor_codes)
@@ -679,7 +970,70 @@ def _price(sp_id: int, row: dict) -> None:
     repo.save_price(sp_id, price, price_per_kg=per_kg, in_stock=in_stock, fetched_at=seen)
 
 
-def materialize(product, item_id: int, strong: bool, conn=None
+_PICKED: contextvars.ContextVar[bool] = contextvars.ContextVar("catalog_picked", default=False)
+
+
+@contextlib.contextmanager
+def picked():
+    """Обёртка явного выбора человека: «＋» у товара каталога (refresh.adopt без product_id).
+
+    ЗАЧЕМ (18.10.2026, находка №8). «＋» у товара без фасовки (яйца «10 шт», батон без
+    веса) оставлял строки кандидатами: _judge даёт слабую связь, наряды пусты, а
+    phonecart после adopt считает позицию связанной и сеть не ищет. Внутри обёртки
+    строка без фасовки проходит, если обе стороны без фасовки и не kg, слова равны
+    выбранному названию, числа названий кроме числа штук сходятся и _agrees согласен.
+    Строку подтверждаем как выбор человека (confirm_mapping без method) — иначе
+    следующий link_products снял бы подтверждение. Автоматика (фон, поиск) правила не
+    получает: там равные слова без фасовки остаются слабой связью.
+    """
+    token = _PICKED.set(True)
+    try:
+        yield
+    finally:
+        _PICKED.reset(token)
+
+
+def _picked_ok(person: list[matching.Row], row: dict, own_code: str | None) -> bool:
+    """Строка сети — та самая запись каталога, которую человек выбрал «＋»."""
+    code = _trusted(row.get("barcode"))
+    if code and own_code and code != own_code:
+        return False
+    cand = _prep(row)
+    if cand.weight_g or cand.unit == "kg" or not person or not _agrees(person, cand):
+        return False
+    return any(m.words == cand.words and not m.weight_g and m.unit != "kg"
+               and _numbers(m) == _numbers(cand) for m in person)
+
+
+def _confirm_picked(product, item_id: int, conn, confirmed: dict, pending: dict) -> None:
+    """Подтвердить строку, которая и есть выбор человека «＋», и убрать её из кандидатов."""
+    person = _rows_of_person(product, repo.raw_names(product.id))
+    if not person:
+        return
+    own_code = _trusted(product.barcode)
+    shops = {s.code: s for s in repo.list_stores()}
+    rows = [r for r in store.item_rows(item_id, conn) if _real(r["chain"], r["sku"])]
+    for chain in list(pending):
+        shop = shops.get(chain)
+        if shop is None or repo.chain_rejected(product.id, shop.id):
+            continue
+        fits = [r for r in rows if r["chain"] == chain and _picked_ok(person, r, own_code)]
+        if not fits:
+            continue
+        fits.sort(key=lambda r: (r.get("name") != product.name, str(r["sku"])))
+        row = fits[0]
+        sp_id = repo.upsert_store_product(shop.id, str(row["sku"]), row.get("name") or product.name,
+                                          weight_g=row.get("weight_g"), unit=row.get("unit"),
+                                          url=row.get("url"), ean=row.get("barcode"),
+                                          keep_known=True)
+        repo.confirm_mapping(product.id, sp_id, confirmed=True)   # выбор человека, без method
+        repo.drop_base_candidates(product.id, shop.id, keep=sp_id)
+        _price(sp_id, row)
+        confirmed[chain] = str(row["sku"])
+        pending.pop(chain, None)
+
+
+def materialize(product, item_id: int, strong: bool, conn=None, picked: bool | None = None
                 ) -> tuple[dict[str, str], dict[str, str]]:
     """Артикулы сетей единого товара — в базу человека.
 
@@ -688,7 +1042,11 @@ def materialize(product, item_id: int, strong: bool, conn=None
     иначе кандидатом. Сеть, где у товара больше нет живой строки (снята с витрины,
     ушла в другой товар), теряет подтверждение базы: в наряд мёртвый артикул не
     пойдёт. Прежние кандидаты базы в сети, кроме нынешнего, убираются.
+
+    picked — явный выбор человека «＋» (или обёртка link.picked()); None — взять из
+    обёртки. Под ним строку без фасовки можно подтвердить выбором человека: см. _picked_ok.
     """
+    human_pick = _PICKED.get() if picked is None else bool(picked)
     own = conn is None
     conn = conn or store.connect()
     try:
@@ -736,6 +1094,8 @@ def materialize(product, item_id: int, strong: bool, conn=None
             repo.drop_base_candidates(product.id, shop.id, keep=sp_id)
             _price(sp_id, row)
             (confirmed if confirm else pending)[chain] = str(row["sku"])
+        if human_pick:
+            _confirm_picked(product, item_id, conn, confirmed, pending)
         return confirmed, pending
     finally:
         if own:
@@ -869,7 +1229,8 @@ def _recheck(product, current: dict, raw_names: list[str], mappings: list[dict],
 
 
 def _link_one(product, conn, generation: int, db_key: str, report: Report, *,
-              force: bool, sync: bool, write: bool) -> None:
+              force: bool, sync: bool, write: bool, network: bool = False) -> None:
+    """Один товар. network — товар наших сетей: его итог идёт и во второй знаменатель."""
     current = repo.master_of(product.id)
     raw_names = repo.raw_names(product.id)
     mappings = repo.product_mappings(product.id)
@@ -879,7 +1240,7 @@ def _link_one(product, conn, generation: int, db_key: str, report: Report, *,
             done = _SYNCED.get(key)
         if done:
             report.count(Found(current["master_id"], current.get("method") or "",
-                               1.0, not (current.get("method") or "").endswith("?")))
+                               1.0, not (current.get("method") or "").endswith("?")), network)
             return
     person = _rows_of_person(product, raw_names)
     if current and not force:
@@ -892,14 +1253,14 @@ def _link_one(product, conn, generation: int, db_key: str, report: Report, *,
         if not isinstance(found, Found):
             if write:
                 _unlink(product)
-            report.missed(found)
+            report.missed(found, network)
             return
     else:
         with _STATE_LOCK:
             seen = key in _SEEN and not force
             result = _SEEN.get(key)
         if seen:
-            report.missed(result)
+            report.missed(result, network)
             return
         result = find_master(product, raw_names, mappings, conn, person)
         if not isinstance(result, Found):
@@ -907,11 +1268,11 @@ def _link_one(product, conn, generation: int, db_key: str, report: Report, *,
                 _SEEN[key] = result
             if write and current:          # --force: правила больше не находят прежний товар
                 _unlink(product)
-            report.missed(result)
+            report.missed(result, network)
             return
         found = result
     if not write:
-        report.count(found)
+        report.count(found, network)
         return
     confirmed, pending = materialize(product, found.item_id, found.strong, conn=conn)
     # Сильная связь, не подтвердившая ни одной сети, честно записывается слабой: в
@@ -925,9 +1286,31 @@ def _link_one(product, conn, generation: int, db_key: str, report: Report, *,
         repo.set_master(product.id, found.item_id, found.mark)
     with _STATE_LOCK:
         _SYNCED[key] = True
-    report.count(found)
+    report.count(found, network)
     for chain in confirmed:
         report.chains[chain] += 1
+
+
+def _network_products() -> set[int]:
+    """Товары, которых касаются НАШИ сети: есть строка чека с распознанным магазином.
+
+    ЗАЧЕМ (19.10.2026, замечание владельца). В чеках не только продукты: такси,
+    авансовый платёж, аренда, сборка заказа, Myprotein, чехлы на Xiaomi. Считая все
+    товары рабочего места, отчёт размывал знаменатель: «1 159 товаров, 784 не найдено»
+    — честное число про чеки вообще, а не про продуктовые покупки. Строка без
+    распознанной сети (store_id пуст) в этот счётчик не идёт вовсе.
+
+    Один запрос на проход, а не запрос на товар. База прежней версии, битая или без
+    истории — счётчика просто нет: считаем как раньше, проход от этого не падает.
+    """
+    try:
+        with repo.get_conn() as c:
+            rows = c.execute(
+                "SELECT DISTINCT product_id FROM purchase_history"
+                " WHERE product_id IS NOT NULL AND store_id IS NOT NULL").fetchall()
+    except sqlite3.Error:      # базы нет или она прежней версии — не повод падать
+        return set()
+    return {int(r["product_id"]) for r in rows}
 
 
 def link_products(product_ids: list[int] | None = None, *, force: bool = False,
@@ -940,6 +1323,8 @@ def link_products(product_ids: list[int] | None = None, *, force: bool = False,
     перекладываются, слабые связи ищутся заново. sync=True — сверить привязанных сейчас,
     даже если в этом поколении уже сверяли (кнопка на «Связях», --sync). force=True —
     искать всё заново. write=False — только посчитать, что нашлось бы.
+
+    Отчёт двойной: всё, что искали, и отдельно товары наших сетей (_network_products).
     """
     from app import config
 
@@ -947,21 +1332,27 @@ def link_products(product_ids: list[int] | None = None, *, force: bool = False,
     store.init()
     wanted = set(product_ids) if product_ids is not None else None
     products = [p for p in repo.list_products() if wanted is None or p.id in wanted]
+    network_products = _network_products()
     db_key = config.db_path()
     with store.connect() as conn:
         generation = _generation(conn)
         _prune(db_key, generation)
         for product in products:
+            ours = product.id in network_products
             report.tried += 1
+            report.network.tried += int(ours)
             try:
                 _link_one(product, conn, generation, db_key, report,
-                          force=force, sync=sync, write=write)
+                          force=force, sync=sync, write=write, network=ours)
             except Exception:  # noqa: BLE001 — один товар не должен обрывать проход
                 report.failed += 1
+                report.network.failed += int(ours)
                 log.exception("единая база: товар %s сопоставить не удалось", product.id)
-    log.info("единая база: товаров %s, привязано %s (сильно %s, слабо %s), сомнительно %s,"
-             " не найдено %s, сбоев %s", report.tried, report.linked, report.strong, report.weak,
-             report.doubtful, report.unknown, report.failed)
+    log.info("единая база: всего товаров %s, привязано %s (сильно %s, слабо %s), сомнительно %s,"
+             " не найдено %s, сбоев %s; из чеков наших сетей %s, привязано %s (%.1f %%)",
+             report.tried, report.linked, report.strong, report.weak,
+             report.doubtful, report.unknown, report.failed,
+             report.network.tried, report.network.linked, report.network.share())
     return report
 
 
@@ -1050,9 +1441,17 @@ def main(argv: list[str] | None = None) -> int:
             users.open_workspace(phone)
             report = link_products(force=args.force, sync=args.sync, write=not args.dry_run)
             chains = ", ".join(f"{k} {v}" for k, v in sorted(report.chains.items())) or "—"
-            print(f"{_masked(phone)}: товаров {report.tried}, привязано {report.linked}"
-                  f" (сильно {report.strong}, слабо {report.weak}), сомнительно {report.doubtful},"
-                  f" не найдено {report.unknown}, сбоев {report.failed};"
+            # Два знаменателя словами: «продукты наших сетей» — это товары с распознанным
+            # магазином в строке чека, без такси, платежей и маркетплейсов (19.10.2026).
+            share = f"{report.network.share():.1f}".replace(".", ",")
+            print(f"{_masked(phone)}: всего товаров {report.tried} (привязано {report.linked};"
+                  f" сильно {report.strong}, слабо {report.weak}; сомнительно {report.doubtful},"
+                  f" не найдено {report.unknown}, сбоев {report.failed})")
+            print(f"  из чеков наших сетей {report.network.tried}"
+                  f" (привязано {report.network.linked}, {share} %;"
+                  f" сильно {report.network.strong}, слабо {report.network.weak};"
+                  f" сомнительно {report.network.doubtful}, не найдено {report.network.unknown},"
+                  f" сбоев {report.network.failed});"
                   f" подтверждено артикулов по сетям: {chains}")
         finally:
             users.deactivate()

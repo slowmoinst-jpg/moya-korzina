@@ -91,7 +91,8 @@ def _shop_by_weight(snap: dict) -> bool:
 
 
 def line_price(product_id: int, store: Store, qty: float, unit: str,
-               ref_weight_g: float | None = None, weighed: bool | None = None) -> dict | None:
+               ref_weight_g: float | None = None, weighed: bool | None = None,
+               point_key: str | None = None) -> dict | None:
     """Во что обойдётся позиция корзины в магазине. None — сравнимой цены нет.
 
     Возвращает {"value", "adjust", "in_stock", "note"}:
@@ -101,6 +102,11 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
     Цена — только действующая (app/freshness.py): устаревшая, справочная и снятая
     по прежнему адресу в расчёт не идут, магазин по этой позиции просто выпадает,
     а не предлагается по цене, которой уже нет. Личные акции человека в ней уже учтены.
+
+    point_key — точка, которую человек поставил на карте (location.point_key).
+    Передаётся в freshness.price_for, чтобы цена магазина у адреса читалась из
+    снимка ЭТОЙ точки, а не из общего: у Ленты, Магнита и METRO цена своя в каждом
+    магазине. Не передали — берём сохранённую точку сами (её нет — None).
 
     Количество — по тому же правилу, по которому его положат в корзину
     (app/purchase.pieces): расчёт и корзина не спорят.
@@ -122,7 +128,9 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
         неё считаются пороги доставки и минимального заказа; разница с ценой,
         приведённой к весу эталона, идёт в adjust — по ней выбирается вариант.
     """
-    snap = freshness.price_for(product_id, store.id)
+    if point_key is None:
+        point_key = location.point_key()
+    snap = freshness.price_for(product_id, store.id, point_key=point_key)
     if not snap:
         return None
     price = snap.get("price")
@@ -189,17 +197,96 @@ def line_price(product_id: int, store: Store, qty: float, unit: str,
 
 def _price_for_line(product_id: int, store: Store, qty: float, unit: str,
                     ref_weight_g: float | None = None,
-                    weighed: bool | None = None) -> tuple[float | None, bool]:
+                    weighed: bool | None = None,
+                    point_key: str | None = None) -> tuple[float | None, bool]:
     """Стоимость позиции целиком в магазине: (деньги, в наличии)."""
-    found = line_price(product_id, store, qty, unit, ref_weight_g, weighed)
+    found = line_price(product_id, store, qty, unit, ref_weight_g, weighed,
+                       point_key=point_key)
     if not found:
         return None, False
     return found["value"], found["in_stock"]
 
 
+# Во сколько раз цена может отличаться от соседей, чтобы по ней считать деньги.
+# ЗАМЕР 19.10.2026: у Дикси в базе 469 строк с ценой 1.99 ₽ (старый разбор карточки) —
+# и такая цена попадала и в «самую низкую», и в подытог сети, а подытог решает, какой
+# магазин выбрать для всей корзины.
+SANE_LOW = 0.2
+SANE_HIGH = 5.0
+
+# Другой счёт для ОДНОЙ цены, когда сверить не с чем, кроме её собственной истории:
+# та же упаковка, тот же магазин, но тридцать дней назад. Тут границы уже, чем у соседей
+# по сети: «втрое ниже» и «вдвое выше» — это либо разбор не той упаковки, либо не тот
+# товар; акция в 50 % встречается, а вот в 66 % — нет.
+PLAN_LOW = 0.33
+PLAN_HIGH = 2.0
+
+
+def price_suspect(chain: str, sku: str, price: float | None) -> str | None:
+    """Похожа ли цена на настоящую — по истории этого же товара в этом магазине.
+
+    ЗАЧЕМ. В расчёте корзины цену можно сверить с соседями по сети
+    (`_drop_implausible`), а в НАРЯДЕ ДЛЯ ТЕЛЕФОНА соседей нет: там цена одной сети и
+    одной позиции. Судить её можно только историей (app/catalog/store.price_history):
+    если нынешняя цена втрое ниже обычной или вдвое выше — это, скорее всего, разбор не
+    той упаковки, а не выгода.
+
+     Возвращает причину словами или None. Хватает ли истории — решает
+    `store.usual_trusted`: трёх изменений цены или недели наблюдений (история пишется
+    только при СМЕНЕ цены, поэтому у стабильного товара в ней одна строка — и «не меньше
+    трёх» не сработало бы никогда, замер 20.10.2026).
+    """
+    if not price or price <= 0:
+        return None
+    from app.catalog import store as catalog_store
+
+    try:
+        if not catalog_store.usual_trusted(chain, sku, days=30):
+            return None
+        usual = catalog_store.usual_price(chain, sku, days=30)
+    except Exception:  # noqa: BLE001 — история не должна ломать наряд
+        return None
+    if not usual or usual <= 0:
+        return None
+    if price < usual * PLAN_LOW:
+        return f"цена {price:.2f} ₽ втрое ниже обычной ({usual:.2f} ₽) — не похоже на правду"
+    if price > usual * PLAN_HIGH:
+        return f"цена {price:.2f} ₽ вдвое выше обычной ({usual:.2f} ₽) — не похоже на правду"
+    return None
+
+
+def _drop_implausible(line: BasketLine) -> None:
+    """Убрать из строки цену, не похожую на настоящую: мусор в данных магазина.
+
+    ЗАМЕР 19.10.2026. У Дикси 469 строк с ценой 1.99 ₽ (старый разбор карточки). Пока
+    такая цена стояла в prices[store], она входила в подытог сети, а подытог решает,
+    какой магазин выбрать для ВСЕЙ корзины, — мусор мог перевернуть выбор.
+
+    Правило то же, что в сравнении: цена вне 20–500 % от медианы по сети не участвует;
+    меньше трёх цен — судить не о чем, оставляем как есть. Убранная цена не исчезает
+    молча: в note строки сказано, почему её нет.
+    """
+    values = sorted(float(v) for v in line.prices.values())
+    if len(values) < 3:
+        return
+    median = values[len(values) // 2]
+    if median <= 0:
+        return
+    low, high = median * SANE_LOW, median * SANE_HIGH
+    for code, price in list(line.prices.items()):
+        if not (low <= float(price) <= high):
+            line.prices.pop(code)
+            line.in_stock.pop(code, None)
+            line.adjust.pop(code, None)
+            line.notes[code] = "цена не похожа на настоящую — в расчёт не берём"
+
+
 def build_basket_lines(basket_id: int) -> list[BasketLine]:
     """Строки корзины с ценами по всем магазинам, где есть подтверждённое сопоставление."""
     stores = repo.list_stores()
+    # Точка с карты читается один раз на корзину, а не на каждую пару «товар ×
+    # магазин»: у Ленты, Магнита и METRO цена своя в каждой точке.
+    point_key = location.point_key()
     lines: list[BasketLine] = []
     for item in repo.basket_items(basket_id):
         line = BasketLine(
@@ -211,7 +298,7 @@ def build_basket_lines(basket_id: int) -> list[BasketLine]:
         weighed = is_weighed(line.product_id, line.unit, item.get("name"))
         for store in stores:
             found = line_price(line.product_id, store, line.qty, line.unit, item.get("weight_g"),
-                               weighed)
+                               weighed, point_key=point_key)
             if found is None:
                 continue
             line.prices[store.code] = found["value"]
@@ -220,6 +307,7 @@ def build_basket_lines(basket_id: int) -> list[BasketLine]:
                 line.adjust[store.code] = found["adjust"]
             if found["note"]:
                 line.notes[store.code] = found["note"]
+        _drop_implausible(line)
         lines.append(line)
     return lines
 
@@ -251,6 +339,7 @@ def baseline_by_product(basket_id: int) -> dict[int, float]:
     варианту в «экономию» — дешевле ведь, раз его не купили.
     """
     base_store = repo.get_store(config.get("baseline_store", "pyaterochka"))
+    point_key = location.point_key()
     out: dict[int, float] = {}
     for item in repo.basket_items(basket_id):
         qty, unit, pid = float(item["qty"]), item["unit"] or "pcs", item["product_id"]
@@ -259,7 +348,8 @@ def baseline_by_product(basket_id: int) -> dict[int, float]:
         hp = _history_price(pid)
         price = round(hp * qty, 2) if hp is not None else None
         if price is None and base_store:
-            found = line_price(pid, base_store, qty, unit, grams, weighed)
+            found = line_price(pid, base_store, qty, unit, grams, weighed,
+                               point_key=point_key)
             # Товара нет в базовом магазине — его «цена» там не база: Магнит на
             # отсутствующий товар пишет ноль с пометкой «нет».
             # База — в рублях, как и «Заплатим»: экономия на экране обязана быть
@@ -270,12 +360,33 @@ def baseline_by_product(basket_id: int) -> dict[int, float]:
         if price is None:
             others = []
             for store in repo.list_stores():
-                p, _ = _price_for_line(pid, store, qty, unit, grams, weighed)
+                p, _ = _price_for_line(pid, store, qty, unit, grams, weighed,
+                                       point_key=point_key)
                 if p:
                     others.append(p)
-            price = min(others) if others else 0.0
+            cheapest_sane = _sane_min(others)
+            price = cheapest_sane if cheapest_sane is not None else 0.0
         out[int(pid)] = round(float(price), 2)
     return out
+
+
+def _sane_min(values: list[float]) -> float | None:
+    """Самая низкая цена среди тех, кому можно верить: одинокие выбросы не в счёт.
+
+    Ориентир — медиана остальных: одна ошибка разбора не должна двигать его. Меньше
+    трёх цен — судить не о чем, берём как есть. Если правило выбросило бы всё (цены
+    разошлись слишком сильно) — честнее вернуть самую низкую, чем ничего.
+    """
+    if not values:
+        return None
+    if len(values) < 3:
+        return min(values)
+    ordered = sorted(float(v) for v in values)
+    median = ordered[len(ordered) // 2]
+    if median <= 0:
+        return ordered[0]
+    kept = [v for v in ordered if median * SANE_LOW <= v <= median * SANE_HIGH]
+    return (kept or ordered)[0]
 
 
 def baseline_total(basket_id: int) -> float:
@@ -311,11 +422,17 @@ def price_coverage(basket_id: int) -> dict[str, tuple[int, int]]:
 
 
 def calculate(basket_id: int, refresh: bool = True,
-              progress=None) -> tuple[list[Variant], float]:
+              progress=None, refresh_budget: float | None = None
+              ) -> tuple[list[Variant], float]:
     """Главный расчёт: (топ-N вариантов, baseline).
 
     refresh=True сначала обновляет цены коннекторами по подтверждённым сопоставлениям.
     Падение коннектора не блокирует расчёт — идём на последних известных ценах (раздел 9).
+
+    refresh_budget (секунды) — «цена в моменте»: обновление идёт по всем сетям разом
+    (matcher.refresh_prices_parallel) и обязано уложиться в срок, потому что за ним
+    ждёт экран. Без бюджета — прежний последовательный обход: кнопка «Обновить» и
+    дозор цен спрашивают сети по одной и показывают ход.
     """
     items = repo.basket_items(basket_id)
     if not items:
@@ -323,10 +440,15 @@ def calculate(basket_id: int, refresh: bool = True,
 
     if refresh:
         try:
-            from app.matcher import refresh_prices
+            from app.matcher import refresh_prices, refresh_prices_parallel
 
             store_codes = [s.code for s in repo.list_stores()]
-            refresh_prices([it["product_id"] for it in items], store_codes, progress=progress)
+            product_ids = [it["product_id"] for it in items]
+            if refresh_budget:
+                refresh_prices_parallel(product_ids, store_codes, progress=progress,
+                                        total_deadline=float(refresh_budget))
+            else:
+                refresh_prices(product_ids, store_codes, progress=progress)
         except Exception as exc:  # коннектор/матчер недоступен — работаем на снимках цен
             log.warning("Обновление цен не удалось, считаем по последним снимкам: %s", exc)
 

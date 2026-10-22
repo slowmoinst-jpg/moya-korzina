@@ -137,7 +137,13 @@ def test_a_saved_login_comes_back(db):
              "origins": []}
     store.save("magnit", state, account="Карта Магнит Плюс •••4321")
 
-    assert store.load("magnit") == state
+    # С 20.10.2026 load отдаёт состояние, пригодное для Chromium: поля приведены к
+    # допустимым (path, expires, sameSite), а имя, значение и домен — те же.
+    got = store.load("magnit")
+    cookie = got["cookies"][0]
+    assert (cookie["name"], cookie["value"], cookie["domain"]) == ("mg_at", "секрет", ".magnit.ru")
+    assert cookie["sameSite"] in ("Lax", "Strict", "None")
+    assert isinstance(cookie["expires"], float)
     assert store.saved_stores() == ["magnit"]
 
 
@@ -249,11 +255,20 @@ def test_only_known_keys_may_be_pressed():
 
 
 def test_every_chain_with_a_cabinet_has_an_entrance():
-    """У каждой сети, где вход что-то даёт, браузеру есть куда её открыть."""
+    """У каждой сети, где вход что-то даёт, браузеру есть куда её открыть.
+
+    Сети, у которой вход не даёт ничего измеренного, серверного окна не нужно.
+    Такой сетью стал Fix Price (21.10.2026): её витрину для цен читает обход
+    каталога, а корзину кладёт телефон в своём окне сети — сервер туда не ходит,
+    и адрес входа ему не нужен. Поэтому спрашиваем про сети с умениями: у них
+    окно обязано быть, иначе экран нарисует кнопку в пустоту.
+    """
     from app import store_accounts
 
-    assert set(driver.LOGIN_URL) == set(store_accounts.ABILITIES)
-    for chain in store_accounts.ABILITIES:
+    with_cabinet = {code for code, ability in store_accounts.ABILITIES.items()
+                    if ability.gives}
+    assert set(driver.LOGIN_URL) == with_cabinet
+    for chain in with_cabinet:
         assert signals.ENTERED.get(chain), f"{chain}: не описан признак входа"
         # Запись в словаре — половина дела. Признак входа у всех шести сетей ОДИН
         # (signals.ENTERED собран из одного значения), и такой словарь не может

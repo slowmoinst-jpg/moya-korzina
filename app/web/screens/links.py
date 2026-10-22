@@ -20,7 +20,16 @@
 видно вовсе: человек выбирал товар наугад и не знал, много ли осталось.
 
 СЕТЬ ДЁРГАЕТСЯ ТОЛЬКО НАЖАТИЕМ. Подбор и опрос цен — это минуты и сотни запросов;
-открытие страницы читает только базу.
+открытие страницы читает только базу. Само нажатие при этом отмечается как проход
+единого каталога: без метки второе нажатие и одновременный чек из ФНС поднимали два
+прохода разом (ревью 18.10.2026, находка №10).
+
+ОТКАЗ ОТ СЕТИ И ЦЕНА-ЗАГЛУШКА — РАЗНОЕ. Подтверждение настоящего артикула значит
+«сеть мне подходит» и снимает прежний отказ. Подтверждение заглушки (строка чека,
+прайса или справочника) не значит ничего, кроме «эта цена мне годится»: в корзину
+сети по ней ничего не положить, и отказ человека она не снимает — иначе убранный
+артикул возвращался бы в наряд через подменённую связь (находка №4). У цены-заглушки
+своя подпись и своё действие «убрать только её» — без отказа от сети (находка №11).
 
 ПОЧЕМУ КАНДИДАТЫ ЖИВУТ В СЕССИИ. matcher.find_candidates сохраняет найденное в базу как
 неподтверждённые сопоставления, но НЕ сохраняет похожесть — она считается на лету и
@@ -33,11 +42,13 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 from flask import flash, redirect, render_template, request, session
 from urllib.parse import urlencode
 
 from app import repo
+from app.catalog.model import placeholder_sku
 from app.web.screens.products import num, rub, unit_label
 from app.web.views import SCREEN_BY_KEY
 
@@ -60,12 +71,49 @@ def _back(product_id=None, store_code: str | None = None, query: str = "") -> st
 
 
 # ---------- что показать ----------
-def _queue(products, stores, matrix, query: str) -> list[dict]:
+def _states() -> dict[tuple[int, int], str]:
+    """Состояние каждой пары «товар — сеть»: done / seen / stub / new — одним запросом.
+
+    Четыре состояния пары различать обязательно: подтверждён настоящий артикул (done);
+    есть неподтверждённый настоящий кандидат (seen); подтверждена одна заглушка, и
+    настоящего артикула у пары нет (stub); не искали вовсе (new). Слить stub и seen
+    значило бы позвать человека искать там, где уже искали, или наоборот спрятать
+    цену, которая уже есть. Считать это по паре отдельными запросами нельзя: на
+    очереди в сотни товаров это сотни запросов на каждое открытие страницы. Поэтому
+    один GROUP BY — тем же real_sku_sql, что и остальное приложение (ревью
+    18.10.2026, №11).
+    """
+    with repo.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT m.product_id AS pid, sp.store_id AS sid,"
+            f" MAX(CASE WHEN m.confirmed=1 AND {repo.real_sku_sql()} THEN 1 ELSE 0 END) AS real_done,"
+            " MAX(CASE WHEN m.confirmed=1 THEN 1 ELSE 0 END) AS any_done,"
+            " MAX(CASE WHEN m.confirmed=0 THEN 1 ELSE 0 END) AS candidate"
+            " FROM product_mapping m"
+            " JOIN store_products sp ON sp.id = m.store_product_id"
+            " JOIN stores s ON s.id = sp.store_id"
+            " GROUP BY m.product_id, sp.store_id").fetchall()
+    out: dict[tuple[int, int], str] = {}
+    for r in rows:
+        if r["real_done"]:
+            out[(r["pid"], r["sid"])] = "done"
+        elif r["candidate"]:
+            out[(r["pid"], r["sid"])] = "seen"
+        elif r["any_done"]:
+            out[(r["pid"], r["sid"])] = "stub"
+        else:
+            out[(r["pid"], r["sid"])] = "new"
+    return out
+
+
+def _queue(products, stores, states, query: str) -> list[dict]:
     """Очередь: у каждого товара — сколько сетей опознано и каких не хватает.
 
     Три состояния пары, и различать их обязательно: подтверждена; искали, но человек
     ещё не выбрал; не искали вовсе. Слить последние два в «не опознано» значило бы
     отправить человека искать там, где уже искали и не нашли ничего подходящего.
+    Четвёртое, «цена из чека без артикула», — не опознано и не искали: у пары есть
+    строка чека или прайса, но товара сети за ней нет.
     """
     out = []
     for product in products:
@@ -74,15 +122,55 @@ def _queue(products, stores, matrix, query: str) -> list[dict]:
         marks = []
         done = 0
         for store in stores:
-            state = matrix.get((product.id, store.id))
-            done += 1 if state else 0
-            marks.append({"code": store.code, "name": store.name,
-                          "state": "done" if state else ("seen" if state is False else "new")})
+            state = states.get((product.id, store.id), "new")
+            done += 1 if state == "done" else 0
+            marks.append({"code": store.code, "name": store.name, "state": state})
         out.append({"id": product.id, "name": product.name, "marks": marks,
                     "done": done, "total": len(stores), "left": len(stores) - done})
     # Незаконченные — наверх: экран про работу, и работа должна быть первой на глазах.
     out.sort(key=lambda r: (r["left"] == 0, -r["left"], r["name"] or ""))
     return out
+
+
+def _human_date(day) -> str | None:
+    """«2026-08-14T10:00:09» → «14.08.2026». Цена без даты выглядит сегодняшней."""
+    try:
+        return date.fromisoformat(str(day)[:10]).strftime("%d.%m.%Y") if day else None
+    except ValueError:
+        return str(day)
+
+
+def _stub_words(stub: dict, product, store) -> dict:
+    """Что это за заглушка: откуда цена, чья она и идёт ли она в сравнение.
+
+    Одна подпись «Цена сейчас — из ваших чеков или прайса» врала дважды: справочную
+    цену файла приложения называла ценой из чека, а двухмесячную строку чека —
+    «ценой сейчас». По такой подписи человек решает, доверять ли числу, и решает
+    неверно (ревью 18.10.2026, №11).
+    """
+    from app import freshness, pricelist
+    from app.connectors import history
+
+    sku = str(stub.get("sku") or "")
+    if sku.startswith(history.PREFIX):
+        kind = "receipt"
+    elif sku.startswith(pricelist.SKU_PREFIX):
+        kind = "list"
+    else:
+        kind = "reference"
+    when = None
+    foreign = False
+    if kind == "receipt":
+        pid = history._product_id(sku)
+        # Строка чека чужого товара — не редкость: «Подобрать всё» подставляет
+        # ближайшую по названию строку, и у молока 2,5 % это молоко 3,2 %.
+        foreign = pid is not None and pid != product.id
+        row = history.last_prices(store.code).get(pid) if pid else None
+        when = row.get("date") if row else None
+    elif kind == "list":
+        when = pricelist.updated_at(store.code) or None
+    return {"stub_kind": kind, "stub_foreign": foreign, "stub_date": _human_date(when),
+            "stub_counts": freshness.price_for(product.id, store.id) is not None}
 
 
 def _pair(product, store) -> dict:
@@ -101,8 +189,11 @@ def _pair(product, store) -> dict:
                  "weight_g": c.get("weight_g"),
                  "doubts": _doubts(product, c.get("raw_name"), c.get("weight_g"))}
                 for c in repo.base_candidates(product.id, store.id)]
-        return {"confirmed": None, "stub": stub, "doubts": [], "base": base,
-                "price": repo.latest_price(stub["id"]) if stub else None}
+        out = {"confirmed": None, "stub": stub, "doubts": [], "base": base,
+               "price": repo.latest_price(stub["id"]) if stub else None}
+        if stub:
+            out.update(_stub_words(stub, product, store))
+        return out
     return {"confirmed": mapping, "stub": None, "doubts": _doubts(product, mapping.get("raw_name"),
                                                                  mapping.get("weight_g")),
             "price": repo.latest_price(mapping["id"])}
@@ -139,6 +230,50 @@ def _stashed(product_id: int, store_code: str) -> list[dict]:
 
 
 # ---------- действия ----------
+def _claim(phone: str | None) -> bool:
+    """Занять проход к единому каталогу за это рабочее место.
+
+    Тем же замком и тем же множеством, что link.link_soon: свой, второй замок дал бы
+    ровно то, от чего метка и заводится, — два прохода разом. Пока кнопка работает
+    синхронно, проход идёт в запросе, и без метки вход или загрузка чеков поднимали
+    бы вдобавок фоновый поток: двойная работа сервера и двойные снимки цен (ревью
+    18.10.2026, находка №10).
+
+    Держится на состоянии link (_RUNNING, _AGAIN, _RUNNING_LOCK), см. link.claim/release:
+    когда они появятся в app/catalog/link.py, эту пару надо звать вместо внутренностей.
+    """
+    from app.catalog import link
+
+    if not phone:
+        return True
+    with link._RUNNING_LOCK:
+        if phone in link._RUNNING:
+            # Звали, пока шёл проход. Просьбу не теряем: её отдаст _release, а если
+            # проход фоновый — он сам увидит _AGAIN и повторит сверку.
+            link._AGAIN[phone] = link._AGAIN.get(phone, False) or True
+            return False
+        link._RUNNING.add(phone)
+        return True
+
+
+def _release(phone: str | None) -> None:
+    """Отпустить проход и отдать накопленное фону, а не потерять.
+
+    Пока кнопка работала, вход или загрузка чеков могли позвать link_soon: он увидел
+    метку, записал _AGAIN и своего потока не поднял. Забыть про эту просьбу значит
+    потерять сверку; выполнить её здесь, в запросе, — задержать ответ на минуты.
+    """
+    from app.catalog import link
+
+    if not phone:
+        return
+    with link._RUNNING_LOCK:
+        link._RUNNING.discard(phone)
+        again = link._AGAIN.pop(phone, None)
+    if again is not None:
+        link.link_soon(phone, sync=again)
+
+
 def _do_link_catalog(products) -> None:
     """Опознать товары в едином каталоге сетей: артикулы всех сетей разом, без поиска.
 
@@ -155,15 +290,13 @@ def _do_link_catalog(products) -> None:
         flash("Опознавать пока нечего — список товаров пуст.", "info")
         return
     from app import users
-    from app.catalog import link
 
     phone = users.current()
-    if link.running(phone):
+    if not _claim(phone):
         # Фоновый проход этого рабочего места уже идёт (вход, загрузка чеков): второй
         # параллельный делал бы ту же работу. Нажатие превращается в сверку сразу
         # после него (ревью 18.10.2026).
-        link.link_soon(phone, sync=True)
-        flash("Сверка с единым каталогом уже идёт фоном — очередь ниже обновится, когда она"
+        flash("Сверка с единым каталогом уже идёт — очередь ниже обновится, когда она"
               " закончится.", "info")
         return
     try:
@@ -172,6 +305,8 @@ def _do_link_catalog(products) -> None:
         log.exception("опознание в едином каталоге не удалось")
         flash(f"Опознание не удалось: {exc}. Остальное на экране работает.", "bad")
         return
+    finally:
+        _release(phone)
     if found.get("failed"):
         flash(f"Не записано из-за сбоя — {found['failed']}: эти товары пройдут при следующей"
               " сверке, можно нажать ещё раз.", "warn")
@@ -221,7 +356,12 @@ def _do_refresh_prices(product_ids, store_codes) -> None:
         flash("Список товаров пуст.", "info")
         return
     try:
-        result = matcher.refresh_prices(product_ids, store_codes)
+        # Ручное «обновить сейчас»: сети спрашиваются разом с общим сроком, чтобы
+        # восемь последовательных запросов не держали экран минутами. force=True —
+        # это нажатие человека, кулдаун фонового обновления здесь не указ; паузу
+        # заблокированной сети force не обходит (matcher.refresh_prices_parallel).
+        result = matcher.refresh_prices_parallel(product_ids, store_codes,
+                                                 total_deadline=120, force=True)
     except Exception as exc:  # noqa: BLE001
         log.exception("обновление цен не удалось")
         flash(f"Не удалось обновить цены: {exc}. Остальное на экране работает.", "bad")
@@ -267,6 +407,39 @@ def _resync(product) -> None:
         log.exception("сверка товара с единым каталогом после решения человека не удалась")
 
 
+def _remember_variant(product, row: dict, chain: str) -> None:
+    """Запомнить написание сети как решение ЧЕЛОВЕКА — сильную ветку словаря названий.
+
+    ЗАЧЕМ. Словарь (app/catalog/store.py, name_variants) наполнялся сам: как пишут
+    сети (chain) и как пишут чеки (receipt). Но сильную связь по его правилам даёт
+    только источник «human», а его не писал никто: подтверждение человека на «Связях»
+    нигде не оседало, и словарь не мог дать ни одного нового товара — замер на боевой
+    базе 18.10.2026: 295 020 написаний сетей и 124 чека, а привязка та же 343 из 1159.
+    Здесь решение человека и записывается: та же строка в следующем чеке находит товар
+    сильной связью, а не кандидатом.
+
+    Пишем только по настоящей связи и только когда товар привязан к единому: заглушка
+    (строка чека, прайса, справочника) настоящей связи не даёт, а без номера единого
+    товара написание не к чему привязать. Сбой словаря решения человека не отменяет —
+    подтверждение уже записано, и терять его из-за словаря нельзя.
+    """
+    master = repo.master_of(product.id)
+    if not master:
+        return
+    name = str((row or {}).get("raw_name") or "").strip()
+    if not name:
+        return
+    try:
+        from app.catalog import store as catalog_store
+
+        if not catalog_store.remember_variant(int(master["master_id"]), name, "human", chain):
+            # Пустой свод: в названии не осталось ни одного слова — привязывать нечего.
+            log.warning("написание «%s» в словарь не легло: после свода не осталось слов", name)
+    except Exception:  # noqa: BLE001 — словарь не повод терять подтверждение
+        log.warning("написание «%s» в словарь не записалось (единый товар %s)",
+                    name, master["master_id"], exc_info=True)
+
+
 def _do_confirm(product, store, sku: str) -> None:
     from app import matcher
 
@@ -276,10 +449,34 @@ def _do_confirm(product, store, sku: str) -> None:
         log.exception("подтверждение не прошло")
         flash(f"Не получилось связать: {exc}", "bad")
         return
-    repo.clear_rejects(product.id, store.id)        # «до нового подтверждения» — оно пришло
-    _resync(product)
+    # «До нового подтверждения» наступает только от настоящего артикула сети. Заглушка
+    # — это цена, а не связь: сеть по ней товара не узнаёт, и снятый отказ вернул бы
+    # убранный артикул в наряд через ту же подменённую пару (ревью 18.10.2026, №4).
+    stub = placeholder_sku(sku, store.code)
+    # Кандидаты прошлого подбора — результат действия, а не состояние экрана: после
+    # ЛЮБОГО решения по паре они устарели. Сброс стоял только в ветке заглушки, и после
+    # подтверждения настоящего артикула список возвращался по «Убрать связь»
+    # (adversarial-проверка 18.10.2026, T11).
     session.pop(CANDIDATES, None)
-    flash(f"Готово: «{product.name}» связан с «{store.name}» по артикулу {sku}.", "ok")
+    if stub:
+        # Про отказ говорим, только если он есть: без него это была бы выдумка о
+        # решении человека (adversarial-проверка 18.10.2026, T11).
+        tail = ("Отказ от сети, поставленный раньше, остаётся в силе, пока вы не подтвердите"
+                " настоящий артикул." if repo.chain_rejected(product.id, store.id) else
+                "Настоящего артикула сети в ней нет, и в корзину магазина по ней ничего не"
+                " положить.")
+        flash(f"Цена «{product.name}» в «{store.name}» записана по строке {sku}. {tail}", "info")
+    else:
+        repo.clear_rejects(product.id, store.id)
+        # Строку сети, которую человек только что подтвердил, запоминаем его решением:
+        # сильная ветка словаря названий живёт только этим (T13, 18.10.2026). Банк
+        # названия берём из подтверждённой строки и сверяем артикул: подтвердить
+        # могли не то, что лежало в паре раньше.
+        row = repo.confirmed_mapping(product.id, store.id)
+        if row and str(row.get("sku")) == str(sku):
+            _remember_variant(product, row, store.code)
+        flash(f"Готово: «{product.name}» связан с «{store.name}» по артикулу {sku}.", "ok")
+    _resync(product)
 
 
 def _do_drop(product, store) -> None:
@@ -288,6 +485,37 @@ def _do_drop(product, store) -> None:
     session.pop(CANDIDATES, None)
     flash(f"Связь «{product.name}» с «{store.name}» убрана. До нового подтверждения этот "
           "товар в расчёт по этой сети не попадёт.", "info")
+
+
+def _do_drop_stub(product, store, sku: str) -> None:
+    """Убрать одну цену-заглушку, не отказываясь от сети.
+
+    «Убрать связь» тут не годится: она пишет отказ от сети целиком, а человек
+    возражает не против сети, а против конкретной цены — справочной из файла,
+    строки чужого чека или старой. Поэтому уходит ровно заглушка, а кандидаты и
+    поиск остаются: отказ здесь был бы враньём о решении человека (ревью 18.10.2026,
+    находка №11).
+
+    repo.drop_mapping для пары без настоящего артикула удаляет подтверждённые
+    заглушки и НЕ пишет link_rejects — это ровно нужное поведение. Присланный из
+    формы артикул сверяем с тем, что лежит в базе: иначе подделанная форма убрала бы
+    чужую связь.
+    """
+    stub = repo.confirmed_mapping(product.id, store.id)
+    if (not stub or str(stub.get("sku")) != str(sku)
+            or not placeholder_sku(sku, store.code)):
+        flash("Убирать нечего: эту цену уже сменили.", "warn")
+        return
+    repo.drop_mapping(product.id, store.id)
+    _resync(product)
+    session.pop(CANDIDATES, None)
+    # Про отказ человека говорим, только если он есть: пара могла быть убрана раньше
+    # целиком, и тогда «вы не отказывались» — неправда (adversarial-проверка
+    # 18.10.2026, T11).
+    tail = ("Отказ от сети, поставленный раньше, остаётся в силе — убрана только цена."
+            if repo.chain_rejected(product.id, store.id) else
+            f"От сети «{store.name}» вы не отказывались: поиск и кандидаты остаются.")
+    flash(f"Цена по строке {sku} убрана. {tail}", "info")
 
 
 def page():
@@ -314,6 +542,8 @@ def page():
             _do_find(product, store)
         elif action == "confirm":
             _do_confirm(product, store, request.form.get("sku") or "")
+        elif action == "drop_stub":
+            _do_drop_stub(product, store, request.form.get("sku") or "")
         elif action == "drop":
             _do_drop(product, store)
 
@@ -322,7 +552,7 @@ def page():
 
     # Подтверждённой считается связь с настоящим артикулом: заглушка строки чека в
     # корзину сети не уедет, и пара с ней ещё ждёт работы.
-    matrix = repo.mapping_matrix(real_only=True)
+    states = _states()
     product = next((p for p in products if str(p.id) == request.args.get("product")), None)
     store = next((s for s in stores if s.code == request.args.get("store")), None)
 
@@ -332,8 +562,7 @@ def page():
             "product": product,
             "unit": unit_label(product.unit),
             "stores": [{"code": s.code, "name": s.name,
-                        "state": "done" if matrix.get((product.id, s.id))
-                                 else ("seen" if matrix.get((product.id, s.id)) is False else "new")}
+                        "state": states.get((product.id, s.id), "new")}
                        for s in stores],
         }
 
@@ -348,7 +577,7 @@ def page():
             candidate["doubts"] = _doubts(product, candidate.get("name"),
                                           candidate.get("weight_g"))
 
-    done = sum(1 for p in products for s in stores if matrix.get((p.id, s.id)))
+    done = sum(1 for p in products for s in stores if states.get((p.id, s.id)) == "done")
     total = len(products) * len(stores)
 
     return render_template(
@@ -358,7 +587,7 @@ def page():
         query=query,
         stats=[("Товаров", str(len(products))),
                ("Связок подтверждено", f"{done} из {total}")],
-        queue=_queue(products, stores, matrix, query.lower()),
+        queue=_queue(products, stores, states, query.lower()),
         chosen=chosen,
         pair=pair,
         back=_back(product.id if product else None, store.code if store else None, query),

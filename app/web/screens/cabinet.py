@@ -39,7 +39,7 @@ import urllib.parse
 
 from flask import flash, g, jsonify, redirect, render_template, request
 
-from app import collector, repo, store_accounts
+from app import collector, repo, store_accounts, users
 from app.shopbrowser import driver, handoff, signals, store as shopstore
 from app.web import auth
 from app.web.views import SCREEN_BY_KEY
@@ -68,6 +68,14 @@ def _bookmarklet() -> str:
     По аналогии с закладкой ФНС (app/web/screens/receipts.py), адрес приложения
     подставляется прямо в закладку, чтобы по нажатию на сайте магазина она
     автоматически возвращала человека в приложение с сохранёнными куками сессии.
+
+    Адрес — ЧИСТЫЙ, без t (секрета рабочего места). Закладка срабатывает в браузере,
+    где человек уже вошёл: кука (SameSite=Lax) уезжает с обычным переходом, а phone=
+    закладка не шлёт вовсе. Путь с phone= закрыт секретом (app/web/auth.py), но
+    закладке он не нужен — положив секрет в адрес, мы выдали бы его в историю
+    браузера и на чужую страницу, где закладку нажимают, ничего этим не защитив.
+    Свою часть «?store=…&vhod=…» закладка добавит сама: увидев в адресе «?», она
+    возьмёт «&».
     """
     try:
         with open(BOOKMARKLET, encoding="utf-8") as fh:

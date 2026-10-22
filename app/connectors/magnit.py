@@ -99,6 +99,24 @@ STORES_URL = f"{GATEWAY}/v1/stores-facade/search/detail"
 STORE_TYPE = "dostavka"
 CATALOG_TYPE = "3"
 
+# ПОТОЛОК ЗАПРОСА ШЛЮЗА (замер 21.10.2026, живой шлюз). На `term` длиннее ~66 символов
+# Магнит отвечает **400 Bad Request** — и это хуже, чем «ничего не нашлось»: сборщик
+# трактует 400 как отказ сети и уходит в запасной путь, а человек видит «сервер: сеть
+# ничего не нашла». Замер по длинам: 64 символа → 200, 67 → 400. Режем до 64 по границе
+# слова: канон «Молоко Neo High Protein, 0,5%, безлактозное, ультрапастеризованное 950 г»
+# (81) не проходил целиком, а «Молоко Neo High Protein» (22) находится.
+TERM_LIMIT = 64
+
+
+def _clamp_term(query: str, limit: int = TERM_LIMIT) -> str:
+    """Обрезать запрос до потолка шлюза по границе слова."""
+    text = " ".join(str(query or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    return (cut[:space] if space >= limit // 2 else cut).strip()
+
 # Магазин, чьи цены показываем, когда адреса нет и в config.yaml пусто. Тот же
 # краснодарский магазин, на котором стоит общий каталог: у него самая широкая полка.
 DEFAULT_STORE = "992301"
@@ -426,6 +444,7 @@ class MagnitConnector(HttpCatalogConnector):
         store = self._store_code()
         if store is None:
             return []
+        query = _clamp_term(query)
         body = {"term": query, "storeCode": store, "storeType": STORE_TYPE,
                 "catalogType": CATALOG_TYPE, "includeAdultGoods": True,
                 "pagination": {"offset": 0, "limit": max(limit, 10)},

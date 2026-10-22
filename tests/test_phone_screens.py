@@ -20,8 +20,8 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from app import repo, users  # noqa: E402
-from app.models import Product  # noqa: E402
+from app import freshness, repo, users  # noqa: E402
+from app.models import Product, StoreBreakdown, Variant, VariantLine  # noqa: E402
 
 PHONE = "79990000071"
 APP_UA = "Mozilla/5.0 (Linux; Android 14; wv) KorzinaApp/1.6"
@@ -241,6 +241,206 @@ def test_ordering_without_login_leads_to_connecting_the_store(web):
     assert "/phone/settings?connect=magnit" in answer.headers["Location"]
 
 
+# ---------- «Быстрее» и подписи свежести (Z3+4) ----------
+def _one_place(code: str, name: str, amount: float, *, lines: int = 2,
+               missing: int = 0) -> Variant:
+    """Место «вся корзина в одной сети» — тот же вариант расчёта, только собранный руками."""
+    rows = [VariantLine(store_code=code, store_name=name, card_id=None, card_name=None,
+                        product_id=n, product_name=f"Товар {n}", qty=1.0,
+                        price=round(amount / max(1, lines), 2))
+            for n in range(lines)]
+    return Variant(
+        stores=[StoreBreakdown(store_code=code, store_name=name, subtotal=amount,
+                               delivery=0.0, discount=0.0, total=amount, lines=rows)],
+        total=amount, baseline=amount + 100.0,
+        missing_products=[f"Нет {n}" for n in range(missing)])
+
+
+def _two_places(first: str, second: str, amount: float) -> Variant:
+    """Разбивка на две сети, где всё на месте: дешевле одного заказа — и это не «быстрее»."""
+    def part(code: str, n: int, price: float) -> StoreBreakdown:
+        name = code.title()
+        return StoreBreakdown(
+            store_code=code, store_name=name, subtotal=price, delivery=0.0, discount=0.0,
+            total=price,
+            lines=[VariantLine(store_code=code, store_name=name, card_id=None, card_name=None,
+                               product_id=n, product_name=f"Товар {n}", qty=1.0, price=price)])
+
+    half = round(amount / 2, 2)
+    return Variant(stores=[part(first, 0, half), part(second, 1, amount - half)],
+                   total=amount, baseline=amount + 100.0)
+
+
+def _a_basket() -> int:
+    """Текущая корзина для страницы: содержимое ей не нужно, варианты подменены."""
+    return repo.create_basket("Неделя")
+
+
+def _substituted(monkeypatch, *variants, positions: int = 2) -> None:
+    """Подменить расчёт «Результата» готовыми вариантами: экран рисуется из них.
+
+    Через свёрток, а не через цены в базе: подписи источника и «быстрее» решаются
+    вариантами, и собирать для каждого случая настоящий расчёт значило бы проверять
+    не то правило (app/web/screens/result.py, _bundle).
+    """
+    from app.web.screens import result
+
+    bundle = {"variants": list(variants), "baseline": 120.0, "positions": positions,
+              "from_receipts": [], "phone_places": list(variants)}
+    monkeypatch.setattr(result, "_bundle", lambda basket_id, again=False: bundle)
+
+
+def test_cheaper_offers_one_order_for_the_whole_basket(web):
+    """Полный односетевой вариант — блок «Быстрее» рядом с ответом, без обещания срока."""
+    enter(web)
+    workspace()
+    _priced_basket(stores=("magnit",))
+
+    page = text(web.get("/phone/cheaper"))
+    assert "Быстрее" in page
+    assert "Одним заказом, всё есть" in page
+    assert "без обещания срока" in page
+
+
+def test_cheaper_does_not_promise_one_order_when_no_store_has_everything(web, monkeypatch):
+    """Нет сети, где есть всё, — блока нет: обещать «одним заказом» не из чего."""
+    enter(web)
+    workspace()
+    _a_basket()
+    _substituted(monkeypatch, _one_place("magnit", "Магнит", 90.0, lines=1, missing=1))
+
+    page = text(web.get("/phone/cheaper"))
+    assert "Сколько стоит в каждом месте" in page
+    assert "Одним заказом, всё есть" not in page
+
+
+def test_the_extra_for_one_order_is_named(web, monkeypatch):
+    """Разбивка дешевле — блок говорит, сколько стоит взять всё одним заказом."""
+    enter(web)
+    workspace()
+    _a_basket()
+    _substituted(monkeypatch, _two_places("magnit", "pyaterochka", 100.0),
+                 _one_place("magnit", "Магнит", 110.0))
+
+    page = text(web.get("/phone/cheaper"))
+    assert "Одним заказом, всё есть" in page
+    assert "дороже самого выгодного на" in page
+
+
+def test_each_place_says_where_its_price_comes_from(web):
+    """У каждого места — источник и свежесть: витрина у адреса или наша копия цен."""
+    enter(web)
+    workspace()
+    _priced_basket()
+
+    page = text(web.get("/phone/cheaper"))
+    assert "витрина у адреса, " in page      # Магнит считает по адресу (location.ADDRESS_STORES)
+    assert "кэш, " in page                   # Пятёрочка — только наш снимок цен
+
+
+def test_the_cabinet_sum_is_signed_by_the_store_and_its_time(web, monkeypatch):
+    """Сумму посчитала сама сеть — так и подписана, со временем её итога."""
+    from app import cartrun
+    from app.carttotal import NETWORK, Total
+
+    enter(web)
+    workspace()
+    basket_id = _a_basket()
+    cartrun.save(cartrun.Row(
+        code="magnit", name="Магнит", road=cartrun.BROWSER, state=cartrun.DONE,
+        basket_id=basket_id, stamp=cartrun.stamp_of(basket_id),
+        total=Total(sum=110.0, source=NETWORK, at="2026-10-21T02:14:00"),
+        finished_at="2026-10-21T02:15:00"))
+    _substituted(monkeypatch, _one_place("magnit", "Магнит", 110.0))
+
+    page = text(web.get("/phone/cheaper"))
+    assert "корзина кабинета, 21.10 02:14" in page
+
+
+def _cabinet_row(cartrun, basket_id: int | None, stamp: str, amount: float = 110.0):
+    from app.carttotal import NETWORK, Total
+
+    return cartrun.Row(
+        code="magnit", name="Магнит", road=cartrun.BROWSER, state=cartrun.DONE,
+        basket_id=basket_id, stamp=stamp,
+        total=Total(sum=amount, source=NETWORK, at="2026-10-21T02:14:00"),
+        finished_at="2026-10-21T02:15:00")
+
+
+def test_another_baskets_cabinet_sum_is_not_shown(web, monkeypatch):
+    """Строка сборки живёт в настройке рабочего места и переживает правку корзины.
+
+    Итог ПРЕЖНЕЙ сборки — не итог текущей корзины: подпись «корзина кабинета»
+    показывается, только когда совпали basket_id и отпечаток состава.
+    """
+    from app import cartrun
+
+    enter(web)
+    workspace()
+    basket_id = _a_basket()
+    cartrun.save(_cabinet_row(cartrun, basket_id + 1, cartrun.stamp_of(basket_id)))
+    _substituted(monkeypatch, _one_place("magnit", "Магнит", 110.0))
+
+    page = text(web.get("/phone/cheaper"))
+    assert "корзина кабинета" not in page
+
+
+def test_a_cabinet_sum_of_another_basket_composition_is_not_shown(web, monkeypatch):
+    """Та же корзина, но состав с тех пор поменялся — итог снова чужой."""
+    from app import cartrun
+
+    enter(web)
+    workspace()
+    basket_id = _a_basket()
+    cartrun.save(_cabinet_row(cartrun, basket_id, "старый-отпечаток"))
+    _substituted(monkeypatch, _one_place("magnit", "Магнит", 110.0))
+
+    page = text(web.get("/phone/cheaper"))
+    assert "корзина кабинета" not in page
+
+
+def test_a_catalog_snapshot_does_not_make_a_showcase_at_the_address(web, monkeypatch):
+    """Справочная цена из CSV — не витрина у адреса: подписи «витрина у адреса» нет."""
+    enter(web)
+    workspace()
+    milk = add_product("Молоко 930 мл")
+    store = repo.get_store("magnit")
+    sp_id = repo.upsert_store_product(store.id, "sku-catalog", "Молоко 930 мл")
+    repo.confirm_mapping(milk, sp_id, confirmed=True)
+    repo.save_price(sp_id, 1.0, source=freshness.REFERENCE)
+    basket_id = repo.create_basket("Неделя")
+    repo.set_basket_item(basket_id, milk, 1.0)
+
+    _substituted(monkeypatch, _one_place("magnit", "Магнит", 110.0))
+
+    page = text(web.get("/phone/cheaper"))
+    assert "витрина у адреса" not in page
+    assert "свежесть неизвестна" in page
+
+
+def test_a_phone_only_store_is_checked_by_the_phone(web, monkeypatch):
+    """Пятёрочка, Самокат, Дикси и Перекрёсток серверу витрину не отдают — так и пишем."""
+    enter(web)
+    workspace()
+    _a_basket()
+    _substituted(monkeypatch, _one_place("pyaterochka", "Пятёрочка", 120.0))
+
+    page = text(web.get("/phone/cheaper"))
+    assert "проверяется телефоном" in page
+    assert "Быстрее" in page
+
+
+def test_a_place_without_a_moment_does_not_invent_freshness(web, monkeypatch):
+    """Цена есть, а когда снята — не знаем: «свежесть неизвестна», а не выдуманное время."""
+    enter(web)
+    workspace()
+    _a_basket()
+    _substituted(monkeypatch, _one_place("metro", "METRO", 120.0))
+
+    page = text(web.get("/phone/cheaper"))
+    assert "свежесть неизвестна" in page
+
+
 # ---------- Настройки ----------
 def test_settings_list_stores_receipts_and_the_way_back_to_the_web(web):
     enter(web)
@@ -282,9 +482,46 @@ def test_controls_are_not_bigger_than_the_text(web):
 
     Размер в точках тест не измерит, но поймает переименованный класс или
     возвращённые крупные кнопки: правила плотности стоят в phone.css буквально.
+    Размеры — вида по мотивам Магнита, принятого владельцем 22.10.2026: счётчик 32 px,
+    строка товара 56 px (с фото).
     """
     with open(CSS, encoding="utf-8") as fh:
         css = fh.read()
-    assert ".q { width: 28px; height: 28px;" in css
+    assert ".q { width: 32px; height: 32px;" in css
     assert "height: 48px;" in css                       # главная кнопка внизу
-    assert ".it { display: flex; align-items: center; gap: 6px; min-height: 40px;" in css
+    assert ".it { display: flex; align-items: center; gap: 10px; min-height: 56px;" in css
+
+
+def test_a_basket_row_shows_the_chain_photo(web):
+    """Фото в строке корзины — из единой базы сетей (вид 22.10.2026).
+
+    У Пятёрочки картинок нет: фото берётся у другой сети того же единого товара.
+    Товар без связи с сетями остаётся без фото, и корзина от этого не падает.
+    """
+    from app.catalog import store
+    from app.web.phone.basket import _photos
+
+    enter(web)
+    workspace()
+    milk = add_product("Молоко 930 мл")
+    bread = add_product("Хлеб Бородинский")
+    sp_id = repo.upsert_store_product(repo.get_store("pyaterochka").id, "4442656", "Молоко 930 мл")
+    repo.confirm_mapping(milk, sp_id, confirmed=True)
+    store.init()
+    seen = "2026-10-22T10:00:00"
+    with store.connect() as conn:
+        conn.execute("INSERT INTO catalog_items (id, name, created_at, updated_at) VALUES (7, 'Молоко', ?, ?)",
+                     (seen, seen))
+        conn.execute("INSERT INTO chain_products (chain, sku, name, first_seen, last_seen, item_id)"
+                     " VALUES ('pyaterochka', '4442656', 'Молоко', ?, ?, 7)", (seen, seen))
+        conn.execute("INSERT INTO chain_products (chain, sku, name, image, first_seen, last_seen, item_id)"
+                     " VALUES ('magnit', '1000', 'Молоко', 'https://img.example/m.jpg', ?, ?, 7)", (seen, seen))
+
+    assert _photos([milk, bread]) == {milk: "https://img.example/m.jpg"}
+    basket_id = repo.create_basket("Неделя")
+    repo.set_basket_item(basket_id, milk, 1.0)
+    repo.set_basket_item(basket_id, bread, 2.0)
+    page = text(web.get("/phone/basket"))
+    assert 'src="https://img.example/m.jpg"' in page
+    assert 'aria-label="Убрать: Молоко 930 мл"' in page       # одна штука — «−» с корзинкой
+    assert 'aria-label="Меньше: Хлеб Бородинский"' in page

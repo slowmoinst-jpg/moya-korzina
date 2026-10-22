@@ -26,6 +26,31 @@
 <path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"></path><path d="M9 8h6M9 12h6M9 16h3"></path>
 {%- elif name == 'out' -%}
 <path d="M14 4h6v6"></path><path d="M20 4l-9 9"></path><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"></path>
+{%- elif name == 'minus' -%}
+<path d="M5 12h14"></path>
+{%- elif name == 'plus' -%}
+<path d="M12 5v14M5 12h14"></path>
+{%- elif name == 'trash' -%}
+<path d="M4.5 7h15"></path><path d="M9.5 7V4.5h5V7"></path><path d="M6.5 7l.9 12.1a1.8 1.8 0 0 0 1.8 1.7h5.6a1.8 1.8 0 0 0 1.8-1.7l.9-12.1"></path>
+{%- elif name == 'bag' -%}
+<path d="M5.5 8h13l-1 12.5a1 1 0 0 1-1 .9H7.5a1 1 0 0 1-1-.9z"></path><path d="M9 8V6.5a3 3 0 0 1 6 0V8"></path>
 {%- endif -%}
 </svg>
+{%- endmacro %}
+
+{# Фото товара в серой плитке: адрес — из единой базы сетей (app/web/phone/basket.py,
+   _photos). Чужой сервер картинок не узнаёт, откуда пришли (no-referrer); не открылась
+   картинка — остаётся пустая плитка, а не значок битой картинки. #}
+{% macro pic(row) -%}
+<span class="pic">{% if row.photo %}<img src="{{ row.photo }}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.remove()">{% else %}{{ icon('bag') }}{% endif %}</span>
+{%- endmacro %}
+
+{# Метка сети: квадратик её цвета с буквой — как вкладки «Магнит», «Аптека» у Магнита
+   (вёрстка 22.10.2026). Буква — своя у каждой сети: у Пятёрочки «5», как на вывеске, у
+   METRO латинская M; незнакомая сеть — первая буква названия. Рядом всегда стоит
+   название, поэтому для чтения с экрана метка немая. #}
+{% macro mark(code, name='') -%}
+{%- set letters = {'magnit': 'М', 'pyaterochka': '5', 'vkusvill': 'В', 'lenta': 'Л', 'dixy': 'Д',
+                   'samokat': 'С', 'metro': 'M', 'perekrestok': 'П', 'fixprice': 'F'} -%}
+<span class="lg s-{{ code }}" style="background: var(--s-{{ code }}, var(--ink3))" aria-hidden="true">{{ letters.get(code) or ((name or code or '?')[:1])|upper }}</span>
 {%- endmacro %}

@@ -322,6 +322,7 @@ def quiet_run(catalog, monkeypatch):
     """Обход без сетей: две сети, поддельные сборщики, счёт обходов и сопоставлений."""
     seen: dict[str, list] = {"crawled": [], "matched": []}
     monkeypatch.setattr(worker, "chains", lambda: ["magnit", "metro"])
+    monkeypatch.setattr(worker, "lanes", lambda: 1)      # по очереди: порядок проверяем
     monkeypatch.setattr(worker.places, "points", lambda code: [])
     monkeypatch.setattr(worker, "make", lambda code, spots: code)
     monkeypatch.setattr(worker.refresh, "run_chain", lambda crawler, progress=None, **kw: (
@@ -362,6 +363,116 @@ def test_a_failed_or_blocked_crawl_is_not_fresh(quiet_run):
     worker.run_all(fresh=12)
 
     assert quiet_run["crawled"] == ["magnit", "metro"]
+
+
+def test_a_crashed_night_still_leaves_a_health_snapshot(quiet_run, monkeypatch):
+    """Ночь упала целиком — проверка базы всё равно идёт, а отметка «идёт обход» снимается.
+
+    ЗАЧЕМ (разбор 20.10.2026). Проверка базы стояла ПОСЛЕ цикла сетей и вызывалась только
+    при удачном ходе. Упади ночь — не было бы ни снимка для сравнения, ни замечаний, а
+    отметка «обход идёт» висела бы до утра и держала сторожа выкладки. Теперь проверка
+    в finally, а отметка получает 'failed'.
+    """
+    from app.catalog import checkup
+
+    def boom(crawler, progress=None, **kw):
+        raise RuntimeError("сеть сломала обход")
+
+    monkeypatch.setattr(worker.refresh, "run_chain", boom)
+
+    with pytest.raises(RuntimeError):
+        worker.run_all()
+
+    assert store.sweep_state() == "failed", "отметка «идёт обход» обязана сняться"
+    assert checkup.previous() is not None, "снимок для следующей ночи обязан остаться"
+
+
+def test_a_quiet_night_marks_the_sweep_done(quiet_run):
+    worker.run_all()
+
+    assert store.sweep_state() == "done"
+
+
+def test_a_matching_crash_does_not_take_the_rest_of_the_night(quiet_run, monkeypatch):
+    """Сбой сопоставления не отменяет остальные сети — ночь продолжается.
+
+    Разбор 20.10.2026: ночь встала после Пятёрочки, Самокат так и не начался, и следа не
+    осталось. Шаг сопоставления стоял внутри цикла без защиты: его сбой уносил все сети,
+    которые ещё не обошлись.
+    """
+    def boom(progress=None):
+        raise RuntimeError("сопоставление упало")
+
+    monkeypatch.setattr(worker.refresh, "match_all", boom)
+
+    rows = worker.run_all()                      # не должно бросить наружу
+
+    assert quiet_run["crawled"] == ["magnit", "metro"], "все сети обязаны обойтись"
+    assert [r["chain"] for r in rows] == ["magnit", "metro"], rows
+    assert store.sweep_state() == "done"
+
+
+def test_lanes_are_loaded_evenly_by_the_measured_time(monkeypatch):
+    """Самая долгая сеть — в свою полосу, короткие — рядом: иначе ночь длиннее, чем нужно.
+
+    Замер 20.10.2026: Лента 166 мин, METRO 135, FixPrice 37. При раскладке «по кругу»
+    Лента и METRO попадали в одну полосу (301 мин), а FixPrice ждал в другой. С раскладкой
+    по времени полосы получаются 166 и 172 минуты.
+    """
+    from app import homeexit
+
+    monkeypatch.setattr(homeexit, "configured", lambda code: None)
+
+    groups = worker._split_lanes(["lenta", "metro", "fixprice"], 2,
+                                 {"lenta": 166, "metro": 135, "fixprice": 37})
+
+    assert groups == [["lenta"], ["metro", "fixprice"]], groups
+
+
+def test_the_home_exit_chains_always_share_one_lane(monkeypatch):
+    """Дикси, Магнит, Пятёрочка и Самокат ходят через туннель владельца — их не параллелим.
+
+    У туннеля общий потолок 0.5 запроса в секунду и домашний адрес владельца: две полосы
+    через него удвоили бы нагрузку на этот адрес (рамка сбора: темп не чаще разрешённого).
+    """
+    from app import homeexit
+
+    monkeypatch.setattr(homeexit, "configured",
+                        lambda code: "socks5://x" if code in ("dixy", "magnit") else None)
+
+    groups = worker._split_lanes(["magnit", "metro", "dixy", "lenta"], 2)
+
+    home = next(group for group in groups if "magnit" in group)
+    assert set(home) == {"magnit", "dixy"}, groups
+    assert all("lenta" not in group or "magnit" not in group for group in groups)
+
+
+def test_two_lanes_walk_all_chains_and_match_once(catalog, monkeypatch):
+    """Две полосы: сети идут параллельно, сопоставление — ОДИН раз в конце.
+
+    Сопоставление держит запись к базе одной транзакцией ~15 минут; при полосах делать его
+    после каждой сети значило бы, что остальные полосы стоят и ждут.
+    """
+    walked: list[str] = []
+    matched: list[int] = []
+    monkeypatch.setattr(worker, "chains", lambda: ["magnit", "metro", "lenta", "dixy"])
+    monkeypatch.setattr(worker, "lanes", lambda: 2)
+    monkeypatch.setattr(worker.places, "points", lambda code: [])
+    monkeypatch.setattr(worker, "make", lambda code, spots: code)
+
+    def run_chain(crawler, progress=None, **kw):
+        walked.append(crawler)            # разные полосы пишут в один список — он потокобезопасен
+        return {"chain": crawler, "status": "ok", "seen": 1, "added": 1}
+
+    monkeypatch.setattr(worker.refresh, "run_chain", run_chain)
+    monkeypatch.setattr(worker.refresh, "match_all",
+                        lambda progress=None: (matched.append(1) or {"items": 1}))
+
+    rows = worker.run_all()
+
+    assert sorted(walked) == ["dixy", "lenta", "magnit", "metro"], walked
+    assert len(matched) == 1, f"сопоставление звали {len(matched)} раз — должно быть один"
+    assert [row["chain"] for row in rows][:4] == ["magnit", "metro", "lenta", "dixy"], rows
 
 
 def test_matching_runs_once_per_crawled_chain_and_not_again_at_the_end(quiet_run):
@@ -758,3 +869,59 @@ def test_old_lenta_portion_prices_become_kilo_prices(catalog):
     store.init()
     prices = {r["sku"]: r["price"] for r in store.products_of_chain("lenta")}
     assert prices == {"1": 750.0, "2": None, "3": 90.0}
+
+
+def test_base_fill_does_not_stamp_price_freshness(tmp_path, monkeypatch):
+    """Цена из НАШЕЙ базы не получает свежий price_seen — иначе свежесть подделывается.
+
+    Замер 21.10.2026: частичный обход Пятёрочки (витрина закрыта) добрал 93 известных
+    товара из базы и чеков, и `upsert_products` поставил им `price_seen=now` — они попали
+    в 6-часовое окно доверия приложения, хотя сеть их сегодня не подтверждала.
+    """
+    from app.catalog import store
+    from app.catalog.model import ChainProduct
+
+    monkeypatch.setattr(store, "path", lambda: str(tmp_path / "catalog.db"))
+    store.init()
+
+    # Сеть назвала цену — метка ставится
+    store.upsert_products("pyaterochka", [ChainProduct(sku="1", name="Молоко", price=99.0)])
+    # Цена взята из нашей базы — метка не ставится
+    store.upsert_products("pyaterochka", [
+        ChainProduct(sku="2", name="Хлеб", price=49.0, price_from_base=True)])
+
+    with store.connect() as conn:
+        rows = {row["sku"]: dict(row) for row in conn.execute(
+            "SELECT sku, price, price_seen FROM chain_products")}
+    assert rows["1"]["price_seen"], "цена от сети — метка обязана быть"
+    assert rows["2"]["price"] == 49.0, "цену из базы сохраняем"
+    assert rows["2"]["price_seen"] is None, "но свежести ей не приписываем"
+
+
+def test_touch_seen_revives_known_row_without_touching_its_data(tmp_path, monkeypatch):
+    """Телефон видел карточку — строка жива: last_seen свежий, active=1, данные не тронуты.
+
+    Вопрос мобильной части 21.10.2026. Зовущий обязан убедиться, что наблюдение настоящее
+    (с карточки прочитана цена) — при «страница не отдалась» человека там не было.
+    """
+    from app.catalog import store
+
+    monkeypatch.setattr(store, "path", lambda: str(tmp_path / "catalog.db"))
+    store.init()
+    with store.connect() as conn:
+        conn.execute("INSERT INTO chain_products (chain, sku, name, price, price_seen,"
+                     " first_seen, last_seen, active) VALUES ('dixy','2000642072',"
+                     " 'Молоко Neo (имя сети)', 199.9, '2026-09-16T15:18:48',"
+                     " '2026-09-16T15:18:48', '2026-10-21T03:30:06', 0)")
+        conn.commit()
+
+    touched = store.touch_seen("dixy", ["2000642072"])
+
+    with store.connect() as conn:
+        row = dict(conn.execute("SELECT name, price, last_seen, active FROM chain_products"
+                                " WHERE chain='dixy' AND sku='2000642072'").fetchone())
+    assert touched == 1, touched
+    assert row["active"] == 1, "строка должна ожить"
+    assert row["last_seen"] > "2026-10-21T03:30", "живость сдвинулась на сегодня"
+    assert row["name"] == "Молоко Neo (имя сети)" and row["price"] == 199.9, \
+        "данные обхода телефон не переписывает"

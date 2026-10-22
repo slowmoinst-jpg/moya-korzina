@@ -74,6 +74,27 @@ def test_the_crawler_is_registered_and_the_worker_knows_it():
     assert "metro" in worker.chains()
 
 
+def test_the_price_feed_stops_when_the_sweep_ceiling_is_gone():
+    """Фаза цен идёт ДО названий — значит она же обязана считать остаток потолка.
+
+    Без этого счёта 1 600 страниц цен (весь перечень сети) могли съесть всю ночь сети, и
+    названия не собрались бы вовсе: обход записался бы неполным «из-за цен».
+    """
+    import time
+
+    from app.catalog.crawlers.perekrestok import PerekrestokCrawler
+
+    crawler = PerekrestokCrawler()
+    crawler.pace.gap = 1.0
+    crawler.deadline = time.monotonic() - 1.0        # потолок уже позади
+    said: list[str] = []
+
+    prices = crawler._ask_api({"cookies": "x"}, said.append)
+
+    assert prices == {}
+    assert any("потолка обхода" in line for line in said), said
+
+
 def test_only_product_maps_are_downloaded():
     """В индексе лежат ещё отзывы, бренды и магазины — качать их незачем."""
     from app.catalog.crawlers.perekrestok import PRODUCT_MAPS

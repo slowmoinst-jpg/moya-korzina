@@ -35,7 +35,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from app import config
-from app.matcher.normalize import gtin, gtin_trusted, normalize_name, parse_weight
+from app.matcher.normalize import (gtin, gtin_trusted, normalize_name, parse_weight,
+                                   sold_by_weight)
 
 UNITS = {"г", "гр", "кг", "мл", "л", "шт", "мг", "уп", "пач", "бут"}
 _NUMERIC = re.compile(r"^\d+([.,]\d+)?$")
@@ -99,16 +100,60 @@ _MULTI_TAIL_LAT = re.compile(r"(?:[x*]|kh|h)\s*(\d{1,3})\s*(?:sht|st(?!\s*b\b))(
 _PIECES_LAT = re.compile(r"(?<![\d.,])(\d{1,3})\s*(?:sht|st(?!\s*b\b)|paketikov|paketika|pak"
                          r"|kapsul|sashe|sase|stikov|piramidok|tabletok)(?![a-z])")
 
+# ЗАЧЕМ (18.10.2026, находка №5). «УП.12», «КОР. 27», «УПАКОВКА 12 БУТ», «ПАК 6»,
+# «0,5Л Х 12» читались одной штукой: слова тары выбрасывает normalize.NOISE_WORDS, а
+# pack_count чисел при них не искал. Тогда упаковка METRO или Магнита без штрихкодов
+# сильно подтверждалась чеком одной бутылки и уходила в наряд. Число после слова тары
+# берём только с левой границей слова и с отсечкой единицы и процента следом — иначе
+# «СУП 250Г» читалось бы как 250, «УПАКОВКА 300 Г» как 300, а «КОР. 45%» как 45.
+# ЗАЧЕМ (18.10.2026, находка №3 ревью). Отсечка после числа запрещала и запятую, и
+# точку вовсе: «Вода, упаковка 12, 0,5 л» не читалась (запятая — разделитель, а не
+# дробь), хотя «12,5» числом 12 быть не должно. Запрещаем ровно то, что делает число
+# другим: следующую цифру («123» — не 12) и дробный хвост «,5»/«.5».
+_PACK_NUMBER = (r"(?!\d|[.,]\d)(?!\s*(?:г|гр|кг|мг|мл|л|шт|см|мм|м|%|g|gr|kg|ml|l)"
+                r"(?![а-яёa-z]))")
+_WORD_N = re.compile(r"(?<![а-яё])(?:упаковка|упак|уп|коробка|кор|пак|блок)(?![а-яё])\.?\s*"
+                     r"(?:по\s+)?(\d{1,2})" + _PACK_NUMBER)
+_N_WORD = re.compile(r"(?<![\d.,])(\d{1,3})\s*(?:бут(?:ыл(?:ок|ки|ка))?"
+                     r"|уп(?:ак(?:овк[аи]|овок)?)?|кор(?:об(?:ок|ки|ка))?"
+                     r"|бан(?:ок|ки|ка)|пач(?:ек|ки|ка))\.?(?![а-яё])")
+_TAIL_BARE = re.compile(r"(?:г|гр|кг|мл|л)\.?\s*[xх×*]\s*(\d{1,3})" + _PACK_NUMBER)
+# ЗАЧЕМ (18.10.2026, находка №6 ревью). Перекрёсток, Впрок и Монетка пишут названия
+# латиницей из адреса карточки — это около двух третей каталога, — а правила упаковки
+# словами стояли только в кириллической ветке: «Voda up.12 0,5l» и «Pivo pak 6 0,45l»
+# читались одной штукой, и чек одной бутылки сильно подтверждал упаковку. Те же слова
+# тары, только транслитом: up(akovka), kor(obka), pak, blok, but(ylka), ban(ka),
+# pach(ka). Число после слова — с той же отсечкой (_PACK_NUMBER), что и в кириллице.
+_LAT_TARE = (r"upakovka|upak|up|korobka|kor|pak|blok"
+             r"|but(?:yl(?:ok|ki|ka))?|ban(?:ok|ki|ka)?|pach(?:ek|ki|ka)")
+_WORD_N_LAT = re.compile(rf"(?<![a-z\d])(?:{_LAT_TARE})(?![a-z])\.?\s*"
+                         rf"(?:po\s+)?(\d{{1,2}})" + _PACK_NUMBER)
+# Число ПЕРЕД словом тары — «12 up», «6 pak» — как в кириллической ветке. Разделитель
+# (пробел или точка) обязателен: без него «7up 0,5l» — это напиток «7up», а не семь упаковок.
+_N_WORD_LAT = re.compile(rf"(?<![\d.,])(\d{{1,3}})(?:\s+|\.)\s*(?:{_LAT_TARE})\.?(?![a-z])")
+# Множитель в латинице — не только «x»: Перекрёсток и Монетка пишут «kh» и «h»
+# (_LAT_X), поэтому «voda 0,5l kh 12» — та же упаковка, что «Вода 0,5л х 12».
+_TAIL_BARE_LAT = re.compile(r"(?:g|gr|kg|ml|l)\.?\s*" + _LAT_X + r"(\d{1,3})" + _PACK_NUMBER)
+# «3в1 стик 20шт»: _PIECES берёт «1 стик» из «3в1», потому что взгляд назад пропускает
+# букву. Вырезаем само «N в 1» («3 в 1», «3-в-1», «All in 1», «все в 1») только перед
+# правилом штук — иначе «Smile15шт» и «FINISH60ШТ» стали бы одной штукой.
+_IN_ONE = re.compile(r"(?:(?<![\d.,])\d{1,2}|\ball|\bвсе|\bвсё)\s*-?\s*(?:в|in|v)"
+                     r"\s*-?\s*1(?![\d.,])")
+
 
 def pack_count(name: str | None) -> int:
     """Сколько штук в упаковке по названию. Не сказано — одна."""
     text = (name or "").lower()
     if _CYRILLIC.search(text):
-        rules = (_MULTI_UNIT, _MULTI_TAIL, _PIECES, _MULTI)
+        rules = (_MULTI_UNIT, _MULTI_TAIL, _PIECES, _N_WORD, _WORD_N, _TAIL_BARE, _MULTI)
+        pieces = _PIECES
     else:
-        rules = (_MULTI_UNIT_LAT, _MULTI_TAIL_LAT, _PIECES_LAT, _MULTI_LAT)
+        rules = (_MULTI_UNIT_LAT, _MULTI_TAIL_LAT, _PIECES_LAT, _N_WORD_LAT, _WORD_N_LAT,
+                 _TAIL_BARE_LAT, _MULTI_LAT)
+        pieces = _PIECES_LAT
     for rx in rules:
-        found = rx.search(text)
+        probe = _IN_ONE.sub(" ", text) if rx is pieces else text
+        found = rx.search(probe)
         if found:
             try:
                 return max(1, int(found.group(1)))
@@ -192,12 +237,23 @@ def variant_marks(name: str | None) -> frozenset[str]:
     Считаются ПО СВОДУ ПИСЬМА, иначе метка сама бы и ломала межписьменные пары:
     «Каша детская Gipopo» имела бы метку, а kasa detskaa gipopo — нет, и вместо
     защиты от переклейки вышла бы новая дыра в сопоставлении.
+
+    ЗАЧЕМ сравнение началом слова (18.10.2026, находка №14). Чек пишет «Б/САХ» и
+    «Б/ЛАКТ», и склеенное «БЕЗСАХ» не равнялось метке «безсахара» — товар с меткой
+    не находился вовсе. Короче пяти букв началом слова не сверяем: сам «без» и «беза»
+    из «Б/А» меткой не бывают.
     """
     text = (name or "").lower()
     glued = _WITHOUT.sub(lambda m: "без" + m.group(1), text)
     known = _marks_folded()
-    out = {fold(w.strip(",.;:()«»\"'")) for w in glued.split()}
-    return frozenset(w for w in out if w in known)
+    words = {fold(w.strip(",.;:()«»\"'")) for w in glued.split()}
+    out = {w for w in words if w in known}
+    # Начало слова приводим к САМОЙ метке, иначе «Б/САХ» дал бы метку «безсах», а
+    # «без сахара» — «безсахара», и они бы снова разошлись.
+    for w in words - out:
+        if len(w) >= 5:
+            out |= {m for m in known if m.startswith(w)}
+    return frozenset(out)
 
 # --- ОБЩИЙ СВОД ПИСЬМА: кириллица и чужая латиница как одно слово ------------
 #
@@ -274,12 +330,43 @@ def fold_words(words) -> frozenset[str]:
 # причине; шум — «БЗМЖ» и склеенное «без змж».
 NOISE = frozenset(fold(w) for w in (
     "пэт", "pet", "тп", "тба", "бзмж", "беззмж", "безгмо", "без",
-    "весов", "весовой", "весовая", "весовое", "весовые", "жб", "стб", "плб"))
+    "весов", "весовой", "весовая", "весовое", "весовые", "жб", "стб", "плб",
+    # СЛУЖЕБНЫЕ СЛОВА — ЭТО НЕ ТОВАР (замер 20.10.2026). Головой корзины берутся два
+    # первых смысловых слова названия, и предлог «для», стоящий вторым («Смесь для…»,
+    # «Корм для…»), делал корзину из 16 076 строк: перебор 129,2 млн пар — 27,7 % всей
+    # работы сопоставления (всего пар 466,4 млн). При этом «для» не отличает один товар
+    # от другого: у него нет смысла в названии. Тот же довод у остальных предлогов.
+    "для", "из", "на", "по", "от", "до", "со", "во", "об", "при", "под", "над", "за",
+))
 _LETTER = "А-Яа-яЁёA-Za-z"
-_TARE_SLASH = re.compile(rf"(?<![{_LETTER}])(?:ст|пл|пэт|ж|с)\s*/\s*б(?:ут)?\.?(?![{_LETTER}])", re.I)
+# Тара пишется и через косую, и через точки: «СТ/Б», «Ж/Б», «ПЛ.Б.», «СТ.Б.ГАЗ».
+# ЗАЧЕМ ЗДЕСЬ ТОЧКА (18.10.2026, находка №8 ревью). Пока правило знало только «/»,
+# в «ВОДА СТ.Б.ГАЗ 0,5Л» оставалось «Б.ГАЗ», и _NEG_DOT читал это как «без газа»:
+# ГАЗИРОВАННАЯ вода становилась негазированной — не потеря связи, а НЕ ТОТ товар.
+# Заодно «СТ» больше не остаётся в названии мусорным словом.
+_TARE = re.compile(rf"(?<![{_LETTER}])(?:ст|пл|пэт|ж|с)\s*[/.]\s*б(?:ут)?(?![{_LETTER}])\.?", re.I)
 _ZMZH = re.compile(rf"(?<![{_LETTER}])([бБсСbBsS])\s*[/.\-]?\s*(змж|zmzh)(?![{_LETTER}])", re.I)
 _SLASH_NEG = re.compile(rf"(?<![{_LETTER}])([нНбБ])\s*/\s*(?=[^\W\d_])")
-_WITHOUT_WORD = re.compile(r"\b(без|bez)\s+(?=[^\W\d_])", re.I)
+# ЗАЧЕМ (18.10.2026, находка №2). «Н.ГАЗ», «Б.САХ», «Н-ГАЗ», «Н\ГАЗ» _SLASH_NEG не
+# знает (он только про «/»), а link._prep убирал точку раньше склейки — и чек сильно
+# подтверждал противоположный товар. Точка, дефис и обратная черта отрицают перед
+# ОСНОВОЙ ОТ ДВУХ БУКВ: «Н-Р» (набор) и инициалы «Б.Ю.АЛЕКСАНДРОВ» не трогаются, а
+# отрицательный взгляд назад на букву не даёт склеить «БАНАН-КЛУБНИКА». «/» оставлен
+# _SLASH_NEG с одной буквой: правило «основа от двух букв» и для «/» ломает «Б/А»
+# (светлое пиво подтверждалось бы алкогольным) и «Б/К» (терялось «без кожи»).
+_NEG_DOT = re.compile(rf"(?<![{_LETTER}])([нНбБ])\s*[.\\\-]\s*(?=[^\W\d_]{{2}})")
+# ЗАЧЕМ (18.10.2026, находка №8 ревью). «Б.А.» и «Б-А» — безалкогольное пиво, а
+# _NEG_DOT требует после знака ОСНОВУ ОТ ДВУХ БУКВ (так охраняются «Н-Р» — набор — и
+# инициалы «Б.Ю.АЛЕКСАНДРОВ»). У «Б.А.» основа однобуквенная, обе буквы выбрасывались,
+# и светлое безалкогольное пиво сходилось с алкогольным — то есть со своим антиподом.
+# Здесь ровно этот случай и ничего больше: «Б», точка или дефис, «А» и сразу конец
+# слова («Б.А.ИВАНОВ» и «Б.Ю.АЛЕКСАНДРОВ» не трогаются: после «А» — точка и буква,
+# то есть инициалы, а не метка). Выход — как у «Б/А» (_slash_neg): «БЕЗА», поэтому
+# две записи одного товара читаются одинаково.
+_NEG_BA = re.compile(rf"(?<![{_LETTER}])([бБ])\s*[.\-]\s*(?=[аА](?:\.(?![{_LETTER}])|(?![.{_LETTER}])))")
+# «НЕ ГАЗ», «НЕ ФИЛЬТР», «НЕ РАФ» — отрицание словом, а не «/»: без этого «не» из двух
+# букв выбрасывалось и оставалось «газ», которое сильно подтверждало газированное.
+_WITHOUT_WORD = re.compile(r"\b(без|bez|не)(?:\s+|\s*[/\\]\s*)(?=[^\W\d_])", re.I)
 
 
 def _zmzh(m: re.Match) -> str:
@@ -301,9 +388,11 @@ def _slash_neg(m: re.Match) -> str:
 def glue(text: str | None) -> str:
     """Тару убрать, отрицания склеить в одно слово. Регистр сохраняется: по нему
     узнаётся марка, и чек целиком заглавными не должен стать «со строчными»."""
-    text = _TARE_SLASH.sub(" ", text or "")
+    text = _TARE.sub(" ", text or "")
     text = _ZMZH.sub(_zmzh, text)
     text = _SLASH_NEG.sub(_slash_neg, text)
+    text = _NEG_BA.sub(_slash_neg, text)
+    text = _NEG_DOT.sub(_slash_neg, text)
     return _WITHOUT_WORD.sub(lambda m: m.group(1), text)
 
 
@@ -405,13 +494,20 @@ def prepare(product: dict) -> Row:
     bkey = None
     if barcode:
         bkey = code if gtin_trusted(code) else f"{product['chain']}#{barcode}"
+    # ЗАЧЕМ (18.10.2026, находка №9). Сборщик METRO единицу не ставит вовсе, а в
+    # названии пишет «…, весовые». Без этого весовое без единицы склеивалось с
+    # фасованным: канон брал единицу одной строки и фасовку другой, и покупатель
+    # терял сеть. Слово «весов…» в названии — и есть названная сетью единица.
+    unit = product.get("unit") or None
+    if unit is None and sold_by_weight(name):
+        unit = "kg"
     return Row(id=int(product["id"]), chain=product["chain"], name=name,
                words=words, order=order, brand_words=brand_words,
                fwords=fold_words(words),
                forder=tuple(dict.fromkeys(w for w in (fold(x) for x in order) if len(w) >= 2)),
                fbrand=fold_words(brand_words),
-               pct=parse_percent(name), marks=variant_marks(name),
-               brand=brand, weight_g=weight or None, unit=product.get("unit") or None,
+               pct=parse_percent(name), marks=variant_marks(text),
+               brand=brand, weight_g=weight or None, unit=unit,
                barcode=barcode, bkey=bkey, packs=pack_count(name),
                category=product.get("category"))
 
@@ -419,6 +515,28 @@ def prepare(product: dict) -> Row:
 def trusted_key(bkey: str | None) -> bool:
     """Ключ штрихкода — настоящий GTIN, а не внутренний код одной сети."""
     return bool(bkey) and "#" not in bkey
+
+
+def item_payload(bkey: str | None) -> str | None:
+    """12 знаков товара в GTIN-14: без индикатора (первой цифры) и контрольной (последней).
+
+    ЗАЧЕМ (замер 21.10.2026). У одного и того же айрана Метро отдаёт код штуки
+    `04680000192903`, а Лента — КОРОБОЧНЫЙ код `14680000192900`: у них общий номер
+    товара (468000019290), а различаются индикатор упаковки и контрольная цифра.
+    Правило «коды разные — товары разные» держало такие строки врозь, хотя фасовка
+    и название совпадали: в базе нашлось 355 групп товаров из разных сетей с одинаковым
+    именем, маркой и весом, но разными едиными товарами. Сравнение цен из-за этого
+    терялось. Коробочный код — это не улика «другой товар», это молчание о штуке.
+    """
+    if not bkey or not trusted_key(bkey) or len(bkey) != 14 or not bkey.isdigit():
+        return None
+    return bkey[1:13]
+
+
+def same_payload(a: str | None, b: str | None) -> bool:
+    """Коды разные, но номер товара у них один (штука против коробки)."""
+    left, right = item_payload(a), item_payload(b)
+    return bool(left) and left == right and a != b
 
 
 def same_pack(a: Row, b: Row) -> bool:
@@ -435,6 +553,17 @@ def same_pack(a: Row, b: Row) -> bool:
     return a.packs == b.packs
 
 
+def _weighed_vs_packed(a: Row, b: Row) -> bool:
+    """Весовое без фасовки спорит с невесовой строкой, у которой фасовка названа.
+
+    ЗАЧЕМ (18.10.2026, находка №9). Лента «…, весовые» и METRO «… 250г» склеивались,
+    когда единицу назвала только одна сторона: канон брал единицу одной строки и
+    фасовку другой. Оговорка «b не kg» обязательна: без неё отрывается весовой товар
+    с фасовкой порции (у него unit=kg и вес назван).
+    """
+    return a.unit == "kg" and not a.weight_g and b.unit != "kg" and bool(b.weight_g)
+
+
 def compatible(a: Row, b: Row) -> bool:
     """Охраны без слов: ничто, кроме названия, не говорит, что это разные товары.
 
@@ -443,6 +572,8 @@ def compatible(a: Row, b: Row) -> bool:
     а не по своим.
     """
     if a.unit and b.unit and a.unit != b.unit:
+        return False
+    if _weighed_vs_packed(a, b) or _weighed_vs_packed(b, a):
         return False
     if not weights_agree(a.weight_g, b.weight_g):
         return False
@@ -472,8 +603,11 @@ def same_product(a: Row, b: Row, brand_vocab: frozenset[str] = frozenset()
     # Решает штрихкод, если оба кода настоящие или оба внутренние одной сети. Если
     # настоящий только у одной стороны, а у другой — внутренний код магазина, коды
     # ничего не говорят друг о друге: решают слова.
+    # КОРОБКА ПРОТИВ ШТУКИ (21.10.2026): если коды разные, но у них ОДИН номер товара
+    # (см. same_payload), это не улика «разные товары», а молчание о фасовке: решают слова.
     if a.bkey and b.bkey and (a.chain == b.chain or (trusted_key(a.bkey) and trusted_key(b.bkey))):
-        return (a.bkey == b.bkey), "barcode", 1.0
+        if not same_payload(a.bkey, b.bkey):
+            return (a.bkey == b.bkey), "barcode", 1.0
     if not a.words or not b.words:
         return False, "", 0.0
     if not compatible(a, b):
@@ -667,10 +801,26 @@ def _split_chained(group: list[tuple[Row, str, float]], vocab: frozenset[str]
     return out
 
 
+def has_cyrillic(text: str | None) -> bool:
+    """Есть ли в строке русские буквы."""
+    if not text:
+        return False
+    return any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in text)
+
+
 def canonical(group: list[tuple[Row, str, float]]) -> dict:
     """Имя и признаки единого товара: самое подробное название, фасовка, марка, штрихкод."""
     rows = [g[0] for g in group]
-    best = max(rows, key=lambda r: (len(r.words), len(r.name)))
+    # ИМЯ — ПО-РУССКИ, ЕСЛИ ОНО ЕСТЬ (замер 21.10.2026). У молочки владельца каноническим
+    # именем стала латинская транслитерация: «moloko ultrapasterizovannoe parmalat pitevoe
+    # proteinovoe bezlaktoznoe 18 bez zmzh 1l rossiya». Правило «самое подробное имя»
+    # выбрало её, потому что в ней больше слов. А имя единого товара — это и то, что видит
+    # человек, и ЗАПРОС в витрины: телефон искал в Магните, Ленте и Пятёрочке латиницей и
+    # получал пустую выдачу на всех позициях (живая сборка 21.10: у Магнита и Ленты 0 из 4).
+    # Поэтому сначала выбираем среди имён с кириллицей, а латиницу берём, только если
+    # русских имён у товара нет вовсе (импорт, латинские марки).
+    russian = [r for r in rows if has_cyrillic(r.name)]
+    best = max(russian or rows, key=lambda r: (len(r.words), len(r.name)))
     weight = next((r.weight_g for r in rows if r.weight_g), None)
     # марка — как её пишет сеть полем; заглавные из названия — только если поля нет ни у кого
     brand = next((r.brand for r in rows if r.brand), None)

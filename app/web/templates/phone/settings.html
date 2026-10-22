@@ -4,27 +4,43 @@
    сети у самого телефона (вход — номер, код из СМС, капча — человек делает сам), вне
    приложения ведёт в окно магазина на сервере. #}
 {% extends 'phone/base.html' %}
-{% from 'phone/_icons.html' import icon %}
+{% from 'phone/_icons.html' import icon, mark %}
 {% block title %}Настройки — Моя корзина{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='leaflet/leaflet.css') }}">
+{% endblock %}
 {% block body %}
   <h1 class="title">Настройки</h1>
 
   {% if saved == 'address' %}
     <div class="note ok">Адрес сохранён. Цены по нему обновятся сами.</div>
   {% endif %}
+  {% if nearby_text %}
+    <div class="note ok">{{ nearby_text }}</div>
+  {% endif %}
   {% if connect %}
     <div class="note warn">Чтобы заказать {{ where(connect) }}, подключите магазин — войдите в него своим номером.</div>
   {% endif %}
+  {% if saved == 'disconnected' %}
+    <div class="note ok">{% if disconnected_name %}Вход в «{{ disconnected_name }}» отключён.{% else %}Вход отключён.{% endif %} На этом телефоне сеть может помнить вход, пока не выйдете в её окне.</div>
+  {% endif %}
+  {% if no_stores %}
+    <div class="note">Магазины не настроены — в приложении пока нет ни одной сети.</div>
+  {% elif first_run %}
+    <div class="note warn">Пока не подключён ни один магазин. Подключите хотя бы один — и приложение соберёт корзину в его кабинете само.</div>
+  {% endif %}
 
-  <div class="card tint" style="padding: 12px; display: flex; flex-direction: column; gap: 7px">
+  {% if stores %}
+  <div class="card" style="padding: 14px; display: flex; flex-direction: column; gap: 8px">
     <div style="display: flex; align-items: baseline; gap: 8px">
-      <span style="font-weight: 600">Магазины</span>
+      <span style="font-weight: 700">Магазины</span>
       <span class="mut small">подключено</span>
-      <span class="disp num" style="margin-left: auto; font-size: 16px; font-weight: 600">{{ connected|length }} из {{ stores|length }}</span>
+      <span class="num" style="margin-left: auto; font-size: 22px; font-weight: 800">{{ connected|length }} из {{ stores|length }}</span>
     </div>
     <div class="bar"><span style="width: {{ ((connected|length) * 100 / (stores|length)) if stores else 0 }}%"></span></div>
     <div class="mut small">Подключённые магазины дают ваши личные цены и скидки и заказ прямо в их корзине.</div>
   </div>
+  {% endif %}
 
   {% if waiting %}
     <section>
@@ -32,9 +48,9 @@
       <div class="card">
         {% for s in waiting %}
           <div class="row">
-            <span class="sq" style="background: var(--s-{{ s.code }}, var(--line2))"></span>
-            <span class="grow">{{ s.name }}{% if s.again %}<span class="fnt small"> · вход истёк</span>{% endif %}</span>
-            <a class="bt" href="/cabinet?store={{ s.code }}" data-open-store="{{ s.code }}">{{ 'Войти снова' if s.again else 'Подключить' }}</a>
+            {{ mark(s.code, s.name) }}
+            <span class="grow">{{ s.name }}{% if s.again %}<span class="fnt small"> · вход истёк — войти снова{% if s.last %} · последняя попытка {{ s.last }}{% endif %}</span>{% endif %}</span>
+            <a class="bt ghost" href="/cabinet?store={{ s.code }}" data-open-store="{{ s.code }}">{{ 'Войти снова' if s.again else 'Подключить' }}</a>
           </div>
         {% endfor %}
       </div>
@@ -45,10 +61,18 @@
     <section>
       <div class="grp">Подключено</div>
       <div class="card">
-        <div class="row" style="flex-wrap: wrap; gap: 6px; padding-top: 9px; padding-bottom: 9px">
-          {% for s in connected %}
-            <span class="chip"><span class="sq" style="background: var(--s-{{ s.code }}, var(--line2)); width: 9px; height: 9px"></span>{{ s.name }}</span>
-          {% endfor %}
+        {% for s in connected %}
+          <div class="row">
+            {{ mark(s.code, s.name) }}
+            <span class="grow">{{ s.name }}</span>
+            <form method="post" action="{{ url_for('phone.disconnect_store') }}">
+              <input type="hidden" name="store" value="{{ s.code }}">
+              <button class="bt ghost" type="submit">Отключить вход</button>
+            </form>
+          </div>
+        {% endfor %}
+        <div class="row" style="flex-wrap: wrap; gap: 6px; padding-top: 8px; padding-bottom: 8px">
+          <span class="mut small">«Отключить вход» стирает сохранённые куки на сервере. На этом телефоне сеть может помнить вход, пока не выйдете в её окне.</span>
           <a class="mut small" href="/accounts" style="margin-left: auto">Изменить</a>
         </div>
       </div>
@@ -58,7 +82,7 @@
   <section>
     <div class="grp">Чеки</div>
     <div class="card">
-      <a class="row" href="/receipts">
+      <a class="row" href="{{ url_for('phone.receipts') }}">
         {{ icon('receipt') }}
         <span class="grow">Мои чеки (ФНС)</span>
         {% if fns.connected %}
@@ -72,7 +96,7 @@
 
   <section>
     <div class="grp">Телефон и адрес</div>
-    <div class="card">
+    <div class="card addr-card">
       <div class="row">
         {{ icon('phone') }}
         <span class="grow num">{{ 'Демо' if is_demo else (phone_label or phone) }}</span>
@@ -80,17 +104,40 @@
           <button class="bt ghost" type="submit">Выйти</button>
         </form>
       </div>
-      <details {% if edit == 'address' or not address %}open{% endif %}>
+      <details id="address" {% if edit == 'address' or not address or map_open %}open{% endif %}>
         <summary class="row" style="list-style: none; cursor: pointer">
           {{ icon('pin') }}
           <span class="grow">{{ address or 'Укажите адрес доставки' }}</span>
           {{ icon('next', 'i s fnt') }}
         </summary>
-        <form method="post" action="{{ url_for('phone.settings') }}" class="field">
-          <input name="address" value="{{ address or '' }}" placeholder="Город, улица, дом"
-                 aria-label="Адрес доставки" autocomplete="street-address">
-          <button class="bt" type="submit">Сохранить</button>
+        <form method="post" action="{{ url_for('phone.settings') }}" class="field addr" id="addr-form">
+          <div class="addr-box">
+            <div class="addr-row">
+              <input id="addr-input" name="address" value="{{ address or '' }}"
+                     placeholder="Город, улица, дом" aria-label="Адрес доставки"
+                     autocomplete="off" autocapitalize="off" autocorrect="off"
+                     spellcheck="false" aria-autocomplete="list" aria-controls="addr-list">
+              <button class="bt ghost" type="button" id="addr-find">Найти</button>
+            </div>
+            <div class="sugg" id="addr-list" role="listbox" aria-label="Подсказки адреса" hidden></div>
+          </div>
+          <input type="hidden" name="point" id="addr-point" value="{{ point_text }}">
+          <div class="addr-row">
+            <a class="bt ghost" id="addr-map-show"
+               href="{{ url_for('phone.settings', map=1) }}#address">Показать на карте</a>
+            <button class="bt" type="submit">Сохранить</button>
+          </div>
         </form>
+        <div class="map" id="addr-map"
+             data-suggest-url="{{ url_for('phone.address_suggest') }}"
+             data-reverse-url="{{ url_for('phone.address_reverse') }}"
+             data-tile-base="{{ tile_base }}"
+             data-lat="{{ '%.6f'|format(center[0]) if center else '' }}"
+             data-lon="{{ '%.6f'|format(center[1]) if center else '' }}"
+             aria-label="Карта адреса"{% if not map_open %} hidden{% endif %}></div>
+        <div class="map-hint" id="addr-map-hint"{% if not map_open %} hidden{% endif %}>
+          Поставьте пин касанием или перетащите его — адрес подставится сам.
+        </div>
       </details>
     </div>
   </section>
@@ -108,4 +155,8 @@
       }
     });
   </script>
+{% endblock %}
+{% block scripts %}
+  <script src="{{ url_for('static', filename='leaflet/leaflet.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='phone-map.js') }}" defer></script>
 {% endblock %}

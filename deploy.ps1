@@ -1,12 +1,14 @@
 ﻿# Выкладка «Моей корзины» на сервер одной командой.
 # Использование:  .\deploy.ps1            — упаковать рабочее дерево, собрать образ на сервере, перезапустить
 #                 .\deploy.ps1 -Test      — сначала прогнать тесты, выкладывать только если зелёные
+#                 .\deploy.ps1 -Force     — выложить, даже если идёт обход каталога
 #                 .\deploy.ps1 -Seed      — после выкладки пересоздать демо-данные в базе на сервере
 # Сервер задаётся псевдонимом в ~/.ssh/config (Host korzina): адрес, пользователь и ключ там,
 # в репозитории их нет. Серверную часть делает tools/server-deploy.sh.
 param(
     [switch]$Test,
     [switch]$Seed,
+    [switch]$Force,
     [string]$Target = 'korzina'
 )
 
@@ -19,6 +21,19 @@ Set-Location -Path $PSScriptRoot
 $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
 $ssh = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh.exe'
 $scp = Join-Path $env:SystemRoot 'System32\OpenSSH\scp.exe'
+
+# ОБХОД КАТАЛОГА ДОРОЖЕ ВЫКЛАДКИ. Перезапуск контейнера korzina-jobs обрывает идущий
+# обход, и следующая попытка будет только по расписанию — сутки без свежих цен у тех
+# сетей, до которых очередь не дошла. Замер 19.10.2026: так оборвались два обхода
+# подряд, и Лента за сутки не обошлась ни разу. Поэтому спрашиваем сервер и, если
+# обход идёт, останавливаемся; выложить сейчас — ключ -Force.
+$live = & $ssh -o BatchMode=yes $Target 'docker exec korzina-jobs python -m app.catalog.worker --runs' 2>&1
+if ($LASTEXITCODE -eq 3 -and -not $Force) {
+    Write-Host 'Идёт обход каталога — выкладка отменена, чтобы его не оборвать:' -ForegroundColor Yellow
+    $live | Where-Object { $_ -match 'обход идёт с|обход идёт:' } | ForEach-Object { Write-Host "  $_" }
+    Write-Host 'Выложить всё равно — .\deploy.ps1 -Force' -ForegroundColor Yellow
+    exit 1
+}
 
 if ($Test) {
     $py = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'

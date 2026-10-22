@@ -18,8 +18,8 @@ import logging
 import re
 from typing import Iterator
 
-from app import config, homeexit, repo
-from app.catalog.crawlers import Pace
+from app import config, homeexit
+from app.catalog.crawlers import Pace, blocked_page, store_product_rows
 from app.catalog.model import ChainProduct, CrawlBlocked, Crawler, Progress
 from app.matcher.normalize import parse_weight, unit_from_name
 
@@ -44,8 +44,12 @@ DEFAULT_CATEGORIES = [
     "gotovaya-eda",
 ]
 
-# /product/<артикул> или /product/<slug>-<артикул>
-SKU_RE = re.compile(r"/product/(?:.*-)?([a-zA-Z0-9_-]+)/?(?:[?#]|$)")
+# /product/<слаг> — артикула в адресе нет. Замер 19.10.2026 в окне телефона: у всех
+# карточек витрины адрес вида /product/khurma-korolyok-500-g, «--цифры» нет ни у одной.
+# Ключом берём весь слаг (он уникален и открывает ту же карточку). Прежнее правило
+# искало артикул в хвосте и доставало «g», «l», «rulona» — по такому ключу в корзину
+# сети ничего не положить. Тем же правилом живёт app/catalog/fromurl.py для телефона.
+SKU_RE = re.compile(r"/product/([^/?#]+)/?(?:[?#]|$)")
 
 
 def sku_from_url(url: str | None) -> str | None:
@@ -126,7 +130,9 @@ class SamokatCrawler(Crawler):
     name = "Самокат"
 
     def __init__(self, stores: list[str] | None = None, categories: list[str] | None = None) -> None:
-        self.pace = Pace(chain=self.code)
+        # Темп: общий потолок, но не чаще домашнего выхода — через дом идёт адрес
+        # владельца (app/homeexit.pace_rps, то же правило у коннекторов).
+        self.pace = Pace(chain=self.code, rps=homeexit.pace_rps(self.code))
         if stores and isinstance(stores, list) and any(s in DEFAULT_CATEGORIES for s in stores):
             self.categories = stores
             self.stores = []
@@ -134,14 +140,22 @@ class SamokatCrawler(Crawler):
             self.stores = [str(s) for s in (stores or []) if s]
             self.categories = categories or list(DEFAULT_CATEGORIES)
         self.max_pages = int(config.get("catalog.samokat.max_pages") or 20)
+        # Почему витрина не далась в этот раз. Уходит в CrawlBlocked, когда и в базе
+        # пусто: без причины «закрыта ServicePipe» одинаково и при мёртвом туннеле, и
+        # при отказе сети, а разобраться потом нечем (ревью 18.10.2026, T5).
+        self.route_note = ""
 
     def crawl(self, progress: Progress | None = None) -> Iterator[ChainProduct]:
         say = progress or (lambda msg: None)
         say("самокат: запуск обхода каталога")
+        self.route_note = ""
+        self.incomplete = False
+        self.incomplete_note = ""
         seen: set[str] = set()
         crawled_count = 0
 
-        # Маршрут 1: браузерный обход витрины
+        # Маршрут 1: браузерный обход витрины через домашний выход владельца
+        blocked = False
         try:
             for product in self._crawl_browser(say):
                 if product.sku not in seen:
@@ -149,8 +163,10 @@ class SamokatCrawler(Crawler):
                     crawled_count += 1
                     yield product
         except CrawlBlocked as exc:
+            blocked = True
             log.warning("самокат: браузерная витрина заблокирована: %s", exc)
         except Exception as exc:
+            blocked = True
             log.warning("самокат: ошибка браузерного обхода: %s", exc, exc_info=True)
 
         # Маршрут 2: добор известных товаров из базы и чеков
@@ -163,10 +179,45 @@ class SamokatCrawler(Crawler):
 
         say(f"самокат: собрано товаров с витрины {crawled_count}, из базы/чеков {db_count}")
         if not seen:
-            raise CrawlBlocked("самокат: витрина закрыта защитой ServicePipe, а в базе нет сохранённых товаров")
+            raise CrawlBlocked(self._closed_reason())
+        # ВИТРИНА ЗАКРЫТА, А ТОВАРЫ ЕСТЬ — ОБХОД НЕПОЛНЫЙ. Строки из базы и чеков не
+        # значат, что сеть обойдена: витрина в этот раз не открылась. Записать такой
+        # обход полным (ok) — значит соврать и в статусе на экране, и плановому обходу,
+        # который сочтёт сеть свежей и пропустит её 12 часов (замер 18.10.2026: ночная
+        # запись samokat ok, 2 товара из базы, а витрина всё это время была закрыта
+        # защитой ServicePipe). Статус partial и названная причина — честно.
+        if blocked:
+            self.incomplete = True
+            why = f" ({self.route_note})" if self.route_note else ""
+            self.incomplete_note = (f"самокат: витрина закрыта{why}, товары взяты из базы "
+                                    f"и чеков ({db_count}) — обход неполный")
+            log.warning("%s", self.incomplete_note)
+
+    def _closed_reason(self) -> str:
+        """Почему в этот раз пусто. Причину маршрута видно и в статусе обхода."""
+        why = f" ({self.route_note})" if self.route_note else ""
+        return (f"самокат: витрина закрыта защитой ServicePipe{why}, "
+                "а в базе нет сохранённых товаров")
+
+    def _browser_route(self, say: Progress) -> str | None:
+        """Маршрут браузерного обхода: адрес домашнего выхода или None.
+
+        Витрина Самоката серверу отдаёт заглушку ServicePipe, поэтому идти напрямую
+        некуда — без выхода браузер не поднимаем вовсе. Лишний стук — это ещё одна
+        проверка на адресе владельца, а причина отказа остаётся в route_note и уходит
+        в CrawlBlocked, когда и в базе пусто.
+        """
+        proxy_url, note = homeexit.route(self.code)
+        self.route_note = note
+        if note:
+            say(f"самокат: {note}")
+        return proxy_url
 
     def _crawl_browser(self, say: Progress) -> Iterator[ChainProduct]:
-        """Обход каталога через Playwright Chromium."""
+        """Обход каталога через Playwright Chromium — через домашний выход владельца."""
+        proxy_url = self._browser_route(say)
+        if proxy_url is None and self.route_note:
+            return
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
@@ -174,7 +225,6 @@ class SamokatCrawler(Crawler):
 
         from app.shopbrowser import store as shopstore
 
-        proxy_url = homeexit.for_chain(self.code)
         launch_args = ["--no-sandbox", "--disable-dev-shm-usage"]
         proxy_opts = {"server": proxy_url} if proxy_url else None
 
@@ -193,16 +243,31 @@ class SamokatCrawler(Crawler):
                 for cat in self.categories:
                     cat_url = f"{SITE}/category/{cat}"
                     say(f"самокат: обход раздела {cat}")
+                    self.pace.wait()          # через дом — не чаще его темпа, не общего
                     try:
                         res = page.goto(cat_url, timeout=30000, wait_until="domcontentloaded")
                     except Exception as e:
                         log.info("самокат: раздел %s не открылся: %s", cat, e)
                         continue
 
-                    # Проверка капчи и блокировки
-                    body_text = page.inner_text("body")[:1000]
-                    if "пройдите проверку" in body_text.lower() or "servicepipe" in body_text.lower() or "разверните картинку" in body_text.lower():
-                        raise CrawlBlocked("самокат: витрина встретила проверкой капчи (пройдите её в кабинете приложения)")
+                    # Проверка капчи и блокировки. Через дом это проверка на адресе
+                    # владельца — значит пауза для всех, кто ходит через дом, а не
+                    # только для нас (app/homeexit.py, 27.09.2026).
+                    #
+                    # ЖДЁМ, ПОКА СТРАНИЦА НАРИСУЕТСЯ. Замер 18.10.2026 на бою: через
+                    # домашний выход Самокат отвечает 403 и страницей «Forbidden», а
+                    # сразу после перехода в body пусто. Прежние слова-признаки
+                    # («пройдите проверку», «servicepipe», «разверните картинку») этого
+                    # отказа не знали вовсе — обход молча листал все категории по 1,3 КБ
+                    # запрета и записывал «витрина закрыта» без причины.
+                    block = blocked_page(page)
+                    if block:
+                        if proxy_url:
+                            homeexit.note_refusal(self.code)
+                            self.route_note = (f"через дом витрина показала проверку "
+                                               f"«{block}» — пауза для всех, кто ходит через дом")
+                        raise CrawlBlocked("самокат: витрина встретила проверкой"
+                                           f" («{block}», пройдите её в кабинете приложения)")
 
                     # Извлечение карточек
                     cards_data = page.evaluate("""() => {
@@ -249,26 +314,13 @@ class SamokatCrawler(Crawler):
                 browser.close()
 
     def _from_store_products(self) -> Iterator[ChainProduct]:
-        """Товары Самоката из базы пользователя (чеки, прайс-пакеты)."""
-        store = repo.get_store(self.code)
-        if not store:
-            return
-        with repo.get_conn() as conn:
-            rows = conn.execute(
-                "SELECT sp.sku, sp.raw_name, sp.ean AS barcode, sp.url, p.price "
-                "FROM store_products sp "
-                # Последний снимок цены каждого товара. Колонки is_current в
-                # store_prices нет и не было, а штрихкод у store_products лежит в
-                # ean: запрос падал, и добор из чеков не работал вовсе (тест
-                # подменял базу целиком и этого не видел).
-                "LEFT JOIN (SELECT store_product_id, price, MAX(fetched_at) AS at "
-                "FROM store_prices GROUP BY store_product_id) p "
-                "ON p.store_product_id = sp.id "
-                "WHERE sp.store_id=?", (store.id,)
-            ).fetchall()
+        """Товары Самоката из баз всех людей и из общей (чеки, прайс, закладка)."""
         from app.catalog.model import placeholder_sku
 
-        for r in rows:
+        # Чтение — общим помощником на обе сети: обходчик работает с общей базой, а
+        # закладка «Забрать цены» и чеки человека лежат в базах рабочих мест
+        # (app/catalog/crawlers/__init__.store_product_rows).
+        for r in store_product_rows(self.code):
             if not r["sku"] or not r["raw_name"]:
                 continue
             # Строка чека (hist-), прайса (list-) или справочника («<сеть>-…») —
@@ -285,7 +337,9 @@ class SamokatCrawler(Crawler):
                 price=float(r["price"]) if r["price"] else None,
                 url=r["url"] or f"{SITE}/product/{r['sku']}/",
                 in_stock=True,
+                price_from_base=True,   # цена из нашей базы: метку свежести не ставим
             )
 
 
 __all__ = ["SamokatCrawler", "to_product", "sku_from_url", "parse_card_text"]
+
