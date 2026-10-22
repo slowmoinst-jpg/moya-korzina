@@ -1,0 +1,5 @@
+# Строк тега Korzina за второй прогон (18.10.2026, 20:24–20:26 МСК) НЕТ:
+# `adb logcat -d -s Korzina:*` за это окно пуст, как и в первом прогоне.
+# Ручная «Собрать» в 1.13 в logcat не пишет — Log.* есть только в фоновой сборке
+# (android/app/app/src/main/java/ru/moyakorzina/app/MainActivity.java:2205 и :2420).
+# Приём отчёта подтверждают report.json и server-phonecart.log.

@@ -22,7 +22,8 @@
   {%- endif -%}
 {%- endmacro %}
 
-{% set words = {'done': 'подтверждено', 'seen': 'кандидаты есть, не выбрано', 'new': 'не искали'} %}
+{% set words = {'done': 'подтверждено', 'seen': 'кандидаты есть, не выбрано',
+                'stub': 'цена из чека или прайса, артикула сети нет', 'new': 'не искали'} %}
 
 {% for kind, text in get_flashed_messages(with_categories=true) %}
   <div class="note {{ kind }}">{{ text }}</div>
@@ -82,10 +83,27 @@
 
     {% else %}
       {% if pair.stub %}
-        <p class="muted" style="margin:12px 0 4px">Цена сейчас — из ваших чеков или прайса
-          (артикул <code>{{ pair.stub.sku }}</code>{% if pair.price %}, {{ rub(pair.price.price) }}{% endif %}).
+        {# У цены-заглушки своя подпись: справочная цена файла приложения — не цена из
+           чека, а строка чека двухмесячной давности — не «цена сейчас». Убирается она
+           тоже своим действием, чтобы человек не отказался от сети целиком
+           (ревью 18.10.2026, находка №11). #}
+        <p class="muted" style="margin:12px 0 4px">{% if pair.stub_kind == 'receipt' -%}
+          {%- if pair.stub_foreign %}Цена из чека другого товара{% else %}Цена из вашего чека{% endif %}
+          {%- elif pair.stub_kind == 'list' %}Цена из вашего прайса
+          {%- else %}Справочная цена из файла приложения, не с полки магазина{% endif %}:
+          «{{ pair.stub.raw_name }}»{% if pair.price %}, {{ rub(pair.price.price) }}{% endif %}{% if pair.stub_date %}, от {{ pair.stub_date }}{% endif %}
+          (артикул <code>{{ pair.stub.sku }}</code>).
+          {% if pair.stub_counts %}Сравнение магазинов сейчас её учитывает.{% else %}В сравнение магазинов она сейчас не идёт.{% endif %}
           Артикула сети нет: в корзину магазина по такой цене ничего не положить —
           подтвердите товар сети ниже.</p>
+        <form method="post" action="{{ screen.path }}">
+          <input type="hidden" name="action" value="drop_stub">
+          <input type="hidden" name="product" value="{{ chosen.product.id }}">
+          <input type="hidden" name="store" value="{{ pair.store.code }}">
+          <input type="hidden" name="sku" value="{{ pair.stub.sku }}">
+          <input type="hidden" name="q" value="{{ query }}">
+          <button class="btn" type="submit">Это не та цена — убрать её (от сети не отказываюсь)</button>
+        </form>
       {% endif %}
       {% if pair.base %}
         <p class="muted" style="margin:12px 0 4px">Общий список товаров сетей предлагает

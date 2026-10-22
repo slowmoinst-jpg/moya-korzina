@@ -130,7 +130,17 @@ def test_handoff_takes_cookies_in_the_body(web):
 
 
 def test_cabinet_ignores_a_phone_in_the_address(web, tmp_path):
+    """Номер из адреса не заводит и не открывает чужую базу.
+
+    С 21.10.2026 у такого адреса есть и свой замок: секрет рабочего места (t,
+    app/users.py). Без него и с выдуманным не создаётся даже папка — иначе чужой
+    стук по адресу с любым номером заводил бы рабочие места.
+    """
     from app import users
 
+    web.post("/logout")            # проверяем адрес, а не куку вошедшего
     web.get("/cabinet?store=magnit&phone=79990000999&vhod=e30")
     assert not users.exists("79990000999"), "номер из адреса не заводит и не открывает чужую базу"
+
+    web.get("/cabinet?store=magnit&phone=79990000999&vhod=e30&t=poddelka")
+    assert not users.exists("79990000999"), "выдуманный секрет завёл чужое рабочее место"

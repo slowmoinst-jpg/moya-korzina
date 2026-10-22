@@ -93,14 +93,26 @@ def before_move(fetched_at: str | None, store_code: str | None) -> bool:
     return taken is None or taken < moved
 
 
-def price_for(product_id: int, store_id: int, now: datetime | None = None) -> dict | None:
+def price_for(product_id: int, store_id: int, point_key: str | None = None,
+              now: datetime | None = None) -> dict | None:
     """Действующая цена эталона в магазине или None, если свежей цены нет.
 
     Действующая — значит свежая, не справочная, снятая по нынешнему адресу и с
     личными акциями человека (app/personal.py): это та цена, которую он заплатит,
     а не та, что висит на витрине для всех.
+
+    point_key задан — сначала снимок этой точки, а если его нет — общий (point_key
+    IS NULL). Снимок ЧУЖОЙ точки не подставляется: это цена другого магазина, и
+    показать её как свою — та же ошибка, что цена чужого города. Без point_key
+    поведение прежнее: самый свежий снимок магазина.
     """
-    snap = repo.latest_price_for(product_id, store_id)
+    # Без точки вызываем прежнюю форму: в тестах и старых вызовах latest_price_for
+    # подменяют функцией из двух аргументов, и лишний point_key=None ломал их
+    # (поймано на tests/test_baskets.py 21.10.2026).
+    if point_key is None:
+        snap = repo.latest_price_for(product_id, store_id)
+    else:
+        snap = repo.latest_price_for(product_id, store_id, point_key=point_key)
     if not snap or not is_fresh(snap.get("fetched_at"), now):
         return None
     if snap.get("source") == REFERENCE:

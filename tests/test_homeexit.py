@@ -11,6 +11,7 @@ import asyncio
 import importlib.util
 import os
 import socket
+import ssl
 import sys
 import threading
 
@@ -32,8 +33,49 @@ def exit_settings(monkeypatch):
     return set_
 
 
-def _server(reply: bytes | None):
-    """Локальный слушатель: на рукопожатие отвечает reply, None — закрывает молча."""
+SOCKS_OK = b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00"     # туннель соединил
+
+
+def _tls_pair(tmp_path):
+    """Серверный TLS-контекст с самоподписанным сертификатом — для проверки провода."""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "example.com")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder()
+            .subject_name(name).issuer_name(name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=1))
+            .sign(key, hashes.SHA256()))
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption()))
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(str(cert_path), str(key_path))
+    return context
+
+
+def _server(reply: bytes | None, connect: bytes | None = SOCKS_OK,
+            tls: ssl.SSLContext | None = None):
+    """Локальный слушатель-туннель: приветствие → reply, CONNECT → connect, дальше TLS.
+
+    Три беды различимы, как в жизни:
+      reply=None        — мост принимает соединение и молчит (ноутбук спит);
+      connect=None      — приветствие прошло, на CONNECT молчание;
+      tls=None          — CONNECT подтверждён, а HTTPS через туннель не идёт —
+                          ровно так выглядел выход 19.10.2026 (порт 80 работал, 443 нет).
+    """
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
@@ -44,6 +86,16 @@ def _server(reply: bytes | None):
             conn.recv(3)
             if reply:
                 conn.sendall(reply)
+                if connect:
+                    conn.recv(64)          # CONNECT: адрес и порт
+                    conn.sendall(connect)
+                    if tls is not None:
+                        try:
+                            with tls.wrap_socket(conn, server_side=True) as secure:
+                                secure.recv(64)
+                                secure.sendall(b"HTTP/1.0 200 OK\r\n\r\n")
+                        except OSError:
+                            pass
         listener.close()
 
     threading.Thread(target=serve, daemon=True).start()
@@ -61,8 +113,33 @@ def test_no_proxy_means_no_home_exit(exit_settings):
     assert homeexit.configured("dixy") is None
 
 
-def test_a_socks_server_that_agrees_is_alive():
-    assert homeexit.alive(_server(b"\x05\x00")) is True
+def test_agreement_alone_is_not_enough():
+    """«Согласен без пароля» — ещё не живой выход: HTTPS через него не идёт."""
+    assert homeexit.alive(_server(b"\x05\x00"), timeout=2) is False
+
+
+def test_a_tunnel_that_carries_https_is_alive(tmp_path):
+    """Провод есть: приветствие, CONNECT и настоящее TLS-рукопожатие через туннель."""
+    assert homeexit.alive(_server(b"\x05\x00", tls=_tls_pair(tmp_path)), timeout=5) is True
+
+
+def test_a_tunnel_that_carries_http_but_not_https_is_not_alive():
+    """Синтетический случай: приветствие и CONNECT есть, а TLS через туннель не идёт.
+
+    Проверка обязана доводить дело до TLS: сети у нас все по HTTPS, и «порт открыт» с
+    «приветствие прошло» о проводе ничего не говорят. (На живом выходе 19.10.2026 HTTPS
+    как раз шёл — отказывали сами сети: 403 и с сервера, и через дом.)
+    """
+    assert homeexit.alive(_server(b"\x05\x00", tls=None), timeout=2) is False
+
+
+def test_a_tunnel_silent_on_connect_is_not_alive():
+    assert homeexit.alive(_server(b"\x05\x00", connect=None), timeout=2) is False
+
+
+def test_a_tunnel_that_refuses_the_connection_is_not_alive():
+    assert homeexit.alive(_server(b"\x05\x00", connect=b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00"),
+                          timeout=2) is False
 
 
 def test_an_open_port_without_a_tunnel_behind_is_not_alive():
@@ -82,7 +159,7 @@ def test_a_dead_exit_is_named_and_skipped(exit_settings, caplog):
     exit_settings(proxy=_server(None))
     with caplog.at_level("WARNING"):
         assert homeexit.for_chain("dixy") is None
-    assert "не отвечает" in caplog.text
+    assert "не проводит трафик" in caplog.text
 
 
 def test_the_relay_carries_bytes_both_ways():

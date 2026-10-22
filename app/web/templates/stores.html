@@ -20,7 +20,11 @@
 
     <p class="dim" style="margin:0">
       {% if r.catalog and r.catalog.products %}
-        Каталог: {{ r.catalog.products }} товаров, опознаны в других сетях {{ r.catalog.linked or 0 }}.
+        Каталог: {{ r.catalog.products }} товаров{% if r.catalog.priced %}, с ценой
+        {{ r.catalog.priced }}{% endif %}{% if r.catalog.stocked %}, с наличием
+        {{ r.catalog.stocked }}{% endif %}{% if r.catalog.branded %}, с маркой
+        {{ r.catalog.branded }}{% endif %}{% if r.catalog.barcoded %}, со штрихкодом
+        {{ r.catalog.barcoded }}{% endif %}, опознаны в других сетях {{ r.catalog.linked or 0 }}.
       {% else %}
         Каталог ещё не собран.
       {% endif %}

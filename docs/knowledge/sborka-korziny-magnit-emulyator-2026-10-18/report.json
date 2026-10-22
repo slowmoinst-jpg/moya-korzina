@@ -1,0 +1,104 @@
+{
+  "store": "magnit",
+  "at": "2026-10-18T16:40:06",
+  "app_version": "1.13",
+  "planned": 4,
+  "landed": 1,
+  "cart_count": 1,
+  "cart_page": "/ecom/cart",
+  "our_total": 0.0,
+  "items": [
+    {
+      "name": "Колбаса Вязанка Докторская вареная 400г",
+      "sku": "1000218414",
+      "ok": true,
+      "why": "",
+      "put": 1,
+      "times": 1,
+      "how": "tap",
+      "calls": [
+        "PUT /webgate/v1/carts/lite 200"
+      ]
+    },
+    {
+      "name": "Нектарины",
+      "sku": "1444282012",
+      "ok": false,
+      "why": "корзина сети показывает: нет в наличии",
+      "put": 1,
+      "times": 1,
+      "how": "request",
+      "calls": [
+        "PUT /webgate/v1/carts/lite 200"
+      ]
+    },
+    {
+      "name": "Огурцы короткоплодные тепличные 450г",
+      "sku": "1000227406",
+      "ok": false,
+      "why": "корзина сети показывает: нет в наличии",
+      "put": 1,
+      "times": 1,
+      "how": "request",
+      "calls": [
+        "PUT /webgate/v1/carts/lite 200"
+      ]
+    },
+    {
+      "name": "Форель Меридиан слабосоленая 200г",
+      "sku": "5555559952",
+      "ok": false,
+      "why": "корзина сети показывает: нет в наличии",
+      "put": 1,
+      "times": 1,
+      "how": "request",
+      "calls": [
+        "PUT /webgate/v1/carts/lite 200"
+      ]
+    }
+  ],
+  "page_totals": [
+    {
+      "kind": "goods",
+      "label": "",
+      "amount": 199.0
+    },
+    {
+      "kind": "delivery",
+      "label": "",
+      "amount": 59.0
+    },
+    {
+      "kind": "service",
+      "label": "",
+      "amount": 39.0
+    },
+    {
+      "kind": "total",
+      "label": "",
+      "amount": 297.0
+    }
+  ],
+  "api_totals": {
+    "/webgate/v1/carts/lite": {
+      "totalBasePrice": 0.0,
+      "totalFinalPrice": 0.0,
+      "totalGoodsCount": 4.0
+    },
+    "/webgate/v1/checkout/preview": {
+      "deliveryInfo.fee.fee": 101.0,
+      "galleryPromoCodesCount": 4.0,
+      "summary.addedItemsCount": 4.0,
+      "summary.giftsCount": 0.0,
+      "summary.itemsCount": 1.0,
+      "summary.itemsTotalSalePrice": 19900.0,
+      "summary.totalBasePrice": 19900.0,
+      "summary.totalFinalPrice": 29700.0
+    }
+  },
+  "background": false,
+  "basket": 1,
+  "stamp": "2d6dc4ec9b85",
+  "extra": [],
+  "seconds": 41
+}

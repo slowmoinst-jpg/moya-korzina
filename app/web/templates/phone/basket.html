@@ -1,36 +1,73 @@
 {# Корзина на телефоне — вариант Б (выбор владельца 17.10.2026): товары, а внизу рядом
-   «История заказов» и «Где дешевле», обе под большим пальцем. «−», «+» и «убрать»
-   отправляют одну форму на весь список: без скрипта, и количество сохраняется
-   каждым нажатием, а не одним общим «Сохранить». #}
+   «История заказов» и «Где дешевле», обе под большим пальцем. «−» и «+» отправляют
+   одну форму на весь список: без скрипта, и количество сохраняется каждым нажатием,
+   а не одним общим «Сохранить».
+
+   ВИД ПО МОТИВАМ МАГНИТА (22.10.2026): фото слева, счётчик серой таблеткой. Отдельного
+   ✕ нет: товар в один шаг убирает тот же «−», и на нём тогда корзинка (it.last). #}
 {% extends 'phone/base.html' %}
-{% from 'phone/_icons.html' import icon %}
+{% from 'phone/_icons.html' import icon, pic %}
 {% block title %}Корзина — Моя корзина{% endblock %}
 {% block body %}
-  <h1 class="title">Корзина</h1>
+  <div style="display: flex; align-items: center; gap: 8px">
+    <h1 class="title" style="flex: 1">Корзина</h1>
+    {% if baskets_n > 1 %}
+      {# «Повторить» заводит новую корзину, и прежняя пропадала с телефона: списка
+         корзин здесь не было. Ссылка — только когда есть из чего выбирать. #}
+      <a class="bt ghost" href="{{ url_for('phone.baskets') }}">Корзины · {{ baskets_n }}</a>
+    {% endif %}
+  </div>
   {% if basket and items %}
     <div class="mut small">{{ basket.name }} · {{ goods(items|length) }}</div>
     <form method="post" action="{{ url_for('phone.basket') }}">
       {% for it in items %}
         <div class="it" id="it-{{ it.pid }}">
+          {{ pic(it) }}
           <span class="name">{{ it.name }}</span>
-          <button class="q" type="submit" name="do" value="minus:{{ it.pid }}" aria-label="Меньше: {{ it.name }}">−</button>
-          <span class="qn num">{{ qty_label(it.qty, it.unit) }}</span>
-          <button class="q" type="submit" name="do" value="plus:{{ it.pid }}" aria-label="Больше: {{ it.name }}">+</button>
-          <button class="x" type="submit" name="do" value="remove:{{ it.pid }}" aria-label="Убрать: {{ it.name }}">{{ icon('x', 'i s') }}</button>
+          <span class="step">
+            {% if it.last %}
+              <button class="q" type="submit" name="do" value="minus:{{ it.pid }}" aria-label="Убрать: {{ it.name }}">{{ icon('trash', 'i s') }}</button>
+            {% else %}
+              <button class="q" type="submit" name="do" value="minus:{{ it.pid }}" aria-label="Меньше: {{ it.name }}">{{ icon('minus', 'i s') }}</button>
+            {% endif %}
+            <span class="qn num">{{ qty_label(it.qty, it.unit) }}</span>
+            <button class="q" type="submit" name="do" value="plus:{{ it.pid }}" aria-label="Больше: {{ it.name }}">{{ icon('plus', 'i s') }}</button>
+          </span>
         </div>
       {% endfor %}
     </form>
-    {% if runs %}
-      {# Пока открыта корзина, приложение само собирает её в сетях, где человек вошёл
-         (android/app, 1.13): отпечаток корзины и что сервер знает о входах — ему в
-         data-collect, ход и итоги — опросом строк, пока сборка идёт. #}
-      <section id="kz-runs" data-poll="{{ url_for('phone.basket_runs') }}"
-               data-collect="{{ runs.collect|tojson|forceescape }}" data-going="{{ 1 if runs.going else '' }}">
-        {% include 'phone/_runs.html' %}
-      </section>
-    {% endif %}
   {% else %}
     <div class="empty">Корзина пуста. Повторите заказ из истории — его товары лягут сюда.</div>
+  {% endif %}
+  {% if habits %}
+    {# «Из привычного»: что человек берёт часто и что по циклу пора докупить.
+       Стоит и при пустой корзине: именно тогда она набирается с нуля, и подсказка
+       нужнее всего. «В корзину» кладёт шаг (штуку или 100 г) и возвращает к строке
+       товара; при отсутствии корзины форма заводит её сама. Полка листается вбок,
+       как подборки Магнита: по высоте она — одна карточка. #}
+    <section id="habits" class="habits" aria-label="Из привычного">
+      <div class="grp">Из привычного</div>
+      <form class="hrow" method="post" action="{{ url_for('phone.basket') }}">
+        {% for h in habits %}
+          <div class="hcard">
+            {{ pic(h) }}
+            <span class="name">{{ h.name }}</span>
+            <span class="why">{{ h.why }}</span>
+            <button class="bt ghost" type="submit" name="do" value="add:{{ h.pid }}"
+                    aria-label="Добавить: {{ h.name }}">{{ icon('plus', 'i s') }}В корзину</button>
+          </div>
+        {% endfor %}
+      </form>
+    </section>
+  {% endif %}
+  {% if runs %}
+    {# Пока открыта корзина, приложение само собирает её в сетях, где человек вошёл
+       (android/app, 1.13): отпечаток корзины и что сервер знает о входах — ему в
+       data-collect, ход и итоги — опросом строк, пока сборка идёт. #}
+    <section id="kz-runs" data-poll="{{ url_for('phone.basket_runs') }}"
+             data-collect="{{ runs.collect|tojson|forceescape }}" data-going="{{ 1 if runs.going else '' }}">
+      {% include 'phone/_runs.html' %}
+    </section>
   {% endif %}
 {% endblock %}
 {% block actions %}
@@ -46,7 +83,9 @@
     /* Корзина в магазинах. Внутри приложения страница отдаёт ему корзину (KorzinaDevice.collect),
        и оно само решает, в каких сетях собрать: вошёл ли человек и менялась ли корзина
        с прошлой сборки. Пока сборка идёт, строки сетей обновляются опросом сервера —
-       туда приложение шлёт ход и итог каждой сети. Строка открывает сеть в приложении.
+       туда приложение шлёт ход и итог каждой сети. Строка открывает сеть в приложении
+       ОДНИМ делегированным обработчиком ниже: своего onclick у строки нет, иначе мост
+       KorzinaDevice.openStore звался бы дважды и сеть грузилась бы в двух окнах.
 
        ПОСЛЕ DOMContentLoaded: korzina-device.js подключён с defer и исполняется после
        разбора страницы, то есть ПОСЛЕ этого скрипта. Без ожидания KorzinaDevice ещё нет,
@@ -62,7 +101,7 @@
         // «Соберу» у сети, куда приложение не пойдёт, — пустое обещание: скажем почему.
         Object.keys(skip).forEach(function (code) {
           var row = box.querySelector('.run.wait[data-run="' + code + '"] [data-run-words]');
-          if (row) { row.textContent = '· ' + skip[code]; }
+          if (row) { row.textContent = skip[code]; }
         });
       }
       tell();

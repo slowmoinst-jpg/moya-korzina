@@ -304,6 +304,15 @@ def _priced(lines: list[BasketLine], store_code: str) -> list[BasketLine]:
         found = service.line_price(line.product_id, store, line.qty, line.unit,
                                    product.weight_g if product else None)
         if found is not None:
+            # Соседей в наряде нет — сверяем с историей этой же позиции в этой сети.
+            # Мусорная цена тут особенно вредна: по наряду телефон кладёт товар в
+            # корзину, а человек видит «итог» в нашем окне.
+            mapping = repo.confirmed_mapping(line.product_id, store.id) or {}
+            why = service.price_suspect(store_code, str(mapping.get("sku") or ""),
+                                        found["value"])
+            if why:
+                line.notes[store_code] = why
+                continue
             line.prices[store_code] = found["value"]
     return lines
 

@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from app import freshness, repo
+from app import freshness, location, repo
 from app import config
 from app.matcher.normalize import normalize_name, parse_weight, similarity
 from app.models import Location
@@ -55,6 +55,10 @@ class StoreOffer:
     score: float = 0.0
     note: str = ""                         # почему пусто, если пусто
     confirmed: bool = False                # это ТОТ товар, а не похожий по названию
+    # Обычная цена своего магазина за 30 дней и насколько нынешняя от неё отличается, %.
+    # Пусто — истории нет, и тогда о «дорого/дешево» не говорим вовсе.
+    usual: float | None = None
+    vs_usual: float | None = None
 
     @property
     def found(self) -> bool:
@@ -164,7 +168,56 @@ def _meaningful(text: str) -> set[str]:
 def _fill(offer: StoreOffer) -> StoreOffer:
     offer.per_unit, offer.per_unit_label = per_unit_price(
         offer.price, offer.unit, offer.weight_g, offer.name)
+    # «Похоже, но не то» — говорим словами: иначе человек видит в списке напиток рядом с
+    # сырами и не понимает, почему он дешевле всех. В выбор такое предложение не идёт
+    # (`_worth`), но и прятать его незачем: пусть видно, что нашлось.
+    if offer.found and not offer.note and not _worth(offer):
+        offer.note = "похоже, но это другой товар — в выбор не берём"
+    _note_usual(offer)
     return offer
+
+
+# Насколько цена должна отличаться от обычной, чтобы об этом стоило сказать словами.
+# Десяток процентов — уже повод подождать, мелочь в два процента человек не заметит.
+# «Хватает ли истории» решает store.usual_trusted: трёх изменений или недели наблюдений —
+# это правило живёт в одном месте, а не копией здесь.
+USUAL_NOTE_PCT = 10.0
+
+
+def _note_usual(offer: StoreOffer) -> None:
+    """Сказать словами, дорого ли брать сейчас: цена против обычной за 30 дней.
+
+    ЗАЧЕМ. История цены появилась 19.10.2026 (store.price_history): без неё база
+    помнила только последнюю цену. Теперь есть с чем сравнить, и в предложении видно
+    «дороже обычного на 15 %» — это и есть ответ на «а не переплачиваю ли я».
+
+    Обычная цена — медиана изменений своего магазина (store.usual_price). Нет истории
+    или изменений меньше трёх — молчим: придуманное «обычно дешевле» хуже молчания.
+    Чужая пометка (почему пусто) не перебивается: она важнее.
+    """
+    if not offer.found or not offer.price or offer.price <= 0:
+        return
+    try:
+        from app.catalog import store as catalog_store
+
+        # Хватает ли истории — решает store.usual_trusted: история пишется только при
+        # СМЕНЕ цены, поэтому у стабильного товара в ней одна строка, и «не меньше трёх»
+        # не сработало бы никогда (замер 20.10.2026). Неделя наблюдений — тоже довод.
+        if not catalog_store.usual_trusted(offer.store_code, offer.sku, days=30):
+            return
+        usual = catalog_store.usual_price(offer.store_code, offer.sku, days=30)
+    except Exception:  # noqa: BLE001 — история не должна ломать сравнение
+        return
+    if not usual or usual <= 0:
+        return
+    offer.usual = usual
+    offer.vs_usual = round((float(offer.price) - usual) / usual * 100, 1)
+    if offer.note:
+        return
+    if offer.vs_usual >= USUAL_NOTE_PCT:
+        offer.note = f"дороже обычного на {offer.vs_usual:.0f} %"
+    elif offer.vs_usual <= -USUAL_NOTE_PCT:
+        offer.note = f"дешевле обычного на {abs(offer.vs_usual):.0f} %"
 
 
 def _price_of(connector, candidate) -> tuple[float | None, bool]:
@@ -250,22 +303,25 @@ def compare_product(product_id: int) -> list[StoreOffer]:
     Отвечает на другой вопрос: не «что вообще есть», а «во что мне обойдётся
     именно этот товар там, где я его уже опознал».
 
-    ОГРАНИЧЕНИЕ: снимок цены не помнит, для какой точки он был снят. Пока
-    пользователь один, это незаметно. Как только их станет двое с разными
-    адресами, здесь понадобится место в самом снимке — иначе один получит цену
-    чужого города. Живой путь (compare_query) этим уже не страдает: там место
-    входит и в запрос, и в ключ кэша.
+    МЕСТО. Снимок цены помнит точку (store_prices.point_key), и цена берётся у
+    точки, которую человек поставил на карте (location.point_key), а не у чужого
+    города. Точки нет — читается общий снимок сети, как было раньше. Живой путь
+    (compare_query) устроен так же: место входит в запрос и в ключ кэша.
     """
     product = repo.get_product(product_id)
     if product is None:
         return []
+    # Цена — у точки человека на карте, если она есть: у Ленты, Магнита и METRO
+    # один и тот же товар в разных магазинах стоит по-разному. Точки нет — None,
+    # и freshness.price_for читает общий снимок, как раньше.
+    point_key = location.point_key()
     out: list[StoreOffer] = []
     for store in repo.list_stores():
         mapping = repo.confirmed_mapping(product_id, store.id)
         if not mapping:
             out.append(StoreOffer(store.code, store.name, note="товар не связан с магазином"))
             continue
-        snap = freshness.price_for(product_id, store.id)
+        snap = freshness.price_for(product_id, store.id, point_key=point_key)
         if not snap:
             out.append(StoreOffer(store.code, store.name, sku=mapping.get("sku") or "",
                                   name=mapping.get("raw_name") or "", note="свежей цены нет"))
@@ -287,9 +343,63 @@ def compare_product(product_id: int) -> list[StoreOffer]:
     return out
 
 
+# Во сколько раз цена может отличаться от соседей, чтобы ей верить при выборе магазина.
+# ЗАМЕР 19.10.2026. У Дикси в базе 469 строк с ценой 1.99 ₽ — старый разбор карточки
+# (крем NIVEA, лейка садовая, мыльный пистолет). Из-за них Дикси выглядел дешевле всех
+# в 50–500 раз, и «где дешевле» отправляло человека в магазин за кремом по 1.99.
+# Правило простое: если одна цена ниже медианы остальных в пять раз, это не выгода,
+# а мусор в данных, и решать по ней нельзя. Считаем по СЕРЕДИНЕ, а не по средней:
+# одна ошибка не должна двигать ориентир.
+OUTLIER_LOW = 0.2
+OUTLIER_HIGH = 5.0
+# Меньше трёх предложений — судить не о чем: оставляем как есть, пусть решает человек.
+OUTLIERS_MIN_OFFERS = 3
+# Насколько название должно быть похоже, чтобы предложение считалось ТЕМ ЖЕ товаром,
+# а не похожим. ЗАМЕР 20.10.2026 на живом прогоне: на «сыр страчателла» самым дешёвым
+# оказывался «Напиток кисломолочный Exponenta Bio-Skyr Страчателла» за 149.99 — то есть
+# напиток выигрывал у сыров и отправлял человека за «сыром», который пить надо. Оценка
+# у него была 0.35, а у настоящих совпадений — 0.55…0.9, так что порог их разделяет.
+CONFIDENT_SCORE = 0.5
+
+
+def _worth(offer: StoreOffer) -> bool:
+    """Можно ли считать это предложение тем же товаром, а не «похожим».
+
+    Неизвестная оценка (0) и подтверждённая связка человека не отбрасываются: мы не знаем
+    хуже человека, а наказывать за отсутствие оценки нельзя.
+    """
+    if offer.confirmed or offer.score <= 0:
+        return True
+    return offer.score >= CONFIDENT_SCORE
+
+
+def _sane(offers: list[StoreOffer]) -> list[StoreOffer]:
+    """Предложения, чьей приведённой цене можно верить: без одиноких выбросов.
+
+    Выброс — цена, отличающаяся от медианы остальных больше чем в пять раз в любую
+    сторону. Сравнивать по такой цене нельзя: она либо разобрана неверно, либо снята с
+    другой единицы товара. Предложения без цены и без наличия сюда не попадают вовсе.
+    """
+    real = [o for o in offers if o.found and o.in_stock and o.per_unit and _worth(o)]
+    if len(real) < OUTLIERS_MIN_OFFERS:
+        return real
+    values = sorted(o.per_unit for o in real)
+    middle = values[len(values) // 2]
+    if middle <= 0:
+        return real
+    low, high = middle * OUTLIER_LOW, middle * OUTLIER_HIGH
+    kept = [o for o in real if low <= o.per_unit <= high]
+    # Если правило выбросило всё (цены разошлись слишком сильно), честнее показать как
+    # есть: пусть человек видит разброс, а не пустоту вместо ответа.
+    return kept or real
+
+
 def cheapest(offers: list[StoreOffer]) -> StoreOffer | None:
-    """Самое выгодное предложение по ПРИВЕДЁННОЙ цене, среди того, что есть в наличии."""
-    real = [o for o in offers if o.found and o.in_stock and o.per_unit]
+    """Самое выгодное предложение по ПРИВЕДЁННОЙ цене, среди того, что есть в наличии.
+
+    Одинокие выбросы (цена в разы ниже соседей) в выбор не идут: см. `_sane`.
+    """
+    real = _sane(offers)
     return min(real, key=lambda o: o.per_unit) if real else None
 
 
@@ -299,7 +409,7 @@ def spread(offers: list[StoreOffer]) -> dict:
     Это и есть ответ на вопрос «стоит ли вообще смотреть по сторонам»: если
     разброс три процента, не стоит, а если сорок — очень стоит.
     """
-    values = [o.per_unit for o in offers if o.found and o.in_stock and o.per_unit]
+    values = [o.per_unit for o in _sane(offers)]
     if len(values) < 2:
         return {"min": None, "max": None, "diff": None, "pct": None}
     low, high = min(values), max(values)

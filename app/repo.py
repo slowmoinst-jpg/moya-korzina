@@ -298,16 +298,17 @@ def clear_rejects(product_id: int, store_id: int) -> None:
 
 
 def real_sku_sql(sp: str = "sp", s: str = "s") -> str:
-    """Условие SQL «артикул настоящий»: не hist-, не list- и не «<код сети>-…».
+    """Условие SQL «артикул настоящий»: не заглушка — ни чека, ни прайса, ни стенда.
 
-    То же правило, что app/catalog/model.placeholder_sku, — для запросов, где
-    store_products соединена со stores (алиасы sp и s).
+    Правило одно с app/catalog/model.placeholder_sku и живёт рядом с ним же
+    (model.placeholder_sql): у правила два выражения, Python и SQL, и они уже
+    расходились — SQL не знал формы «<сеть>-preview-N» в чужой сети и различал регистр
+    иначе, чем Python (adversarial-проверка 18.10.2026, T11). Алиасы sp и s — те, что в
+    запросе: store_products и stores.
     """
-    from app.catalog.model import PLACEHOLDER_PREFIXES
+    from app.catalog.model import placeholder_sql
 
-    parts = [f"{sp}.sku NOT LIKE '{p}%'" for p in PLACEHOLDER_PREFIXES]
-    parts.append(f"substr({sp}.sku, 1, length({s}.code) + 1) != {s}.code || '-'")
-    return " AND ".join(parts)
+    return f"NOT {placeholder_sql(f'{sp}.sku', f'{s}.code')}"
 
 
 def confirmed_mapping(product_id: int, store_id: int, real_only: bool = False) -> dict | None:
@@ -504,49 +505,117 @@ def mapping_matrix(real_only: bool = False) -> dict[tuple[int, int], bool]:
 
 def save_price(store_product_id: int, price: float, price_per_kg: float | None = None,
                in_stock: bool = True, fetched_at: str | None = None,
-               source: str | None = None) -> None:
+               source: str | None = None, *, point_key: str | None = None,
+               mode: str | None = None) -> None:
     """Снимок цены — только вставка, история не перезаписывается.
 
     source — откуда цена: None для живой, "fallback" для справочной из CSV.
+    point_key/mode — где и как снята цена (см. store_prices в app/db.py). Оба
+    именованные: прежние вызовы пишут снимок как раньше, без новых колонок, и
+    принимаются базой, которую после обновления ещё не открывали.
     """
+    columns = ["store_product_id", "price", "price_per_kg", "in_stock", "fetched_at"]
+    values: list = [store_product_id, price, price_per_kg, int(in_stock), fetched_at or NOW()]
+    if source is not None:
+        columns.append("source")
+        values.append(source)
+    if point_key is not None:
+        columns.append("point_key")
+        values.append(point_key)
+    if mode is not None:
+        columns.append("mode")
+        values.append(mode)
+    marks = ",".join("?" * len(columns))
     with get_conn() as c:
-        if source is None:
-            # Живая цена пишется без новой колонки: так её примет и база, которую
-            # после обновления ещё не открывали (приёмная дверь не зовёт init_db).
-            c.execute("INSERT INTO store_prices (store_product_id, price, price_per_kg, in_stock,"
-                      " fetched_at) VALUES (?,?,?,?,?)",
-                      (store_product_id, price, price_per_kg, int(in_stock), fetched_at or NOW()))
-        else:
-            c.execute("INSERT INTO store_prices (store_product_id, price, price_per_kg, in_stock,"
-                      " fetched_at, source) VALUES (?,?,?,?,?,?)",
-                      (store_product_id, price, price_per_kg, int(in_stock), fetched_at or NOW(),
-                       source))
+        c.execute(f"INSERT INTO store_prices ({', '.join(columns)}) VALUES ({marks})", values)
         c.commit()
 
 
-def latest_price(store_product_id: int) -> dict | None:
+def latest_price(store_product_id: int, point_key: str | None = None) -> dict | None:
+    """Последний снимок цены товара сети.
+
+    point_key задан — сначала снимок этой точки, а если его нет — общий (point_key
+    IS NULL). Снимок ЧУЖОЙ точки не подставляется никогда: это цена другого
+    магазина. Без point_key — прежнее поведение: самый свежий снимок любой точки.
+    """
     with get_conn() as c:
-        r = c.execute("SELECT * FROM store_prices WHERE store_product_id=? ORDER BY fetched_at DESC, id DESC LIMIT 1",
-                      (store_product_id,)).fetchone()
+        if point_key is None:
+            r = c.execute(
+                "SELECT * FROM store_prices WHERE store_product_id=?"
+                " ORDER BY fetched_at DESC, id DESC LIMIT 1", (store_product_id,)).fetchone()
+        else:
+            r = c.execute(
+                "SELECT * FROM store_prices WHERE store_product_id=? AND point_key=?"
+                " ORDER BY fetched_at DESC, id DESC LIMIT 1", (store_product_id, point_key)).fetchone()
+            if r is None:
+                r = c.execute(
+                    "SELECT * FROM store_prices WHERE store_product_id=? AND point_key IS NULL"
+                    " ORDER BY fetched_at DESC, id DESC LIMIT 1", (store_product_id,)).fetchone()
     return dict(r) if r else None
 
 
-def latest_price_for(product_id: int, store_id: int) -> dict | None:
+def latest_price_for(product_id: int, store_id: int,
+                     point_key: str | None = None) -> dict | None:
     """Актуальная цена эталона в магазине по подтверждённому сопоставлению.
 
     К снимку приложены единица, фасовка и название товара сети (sp_unit,
     sp_weight_g, sp_name): без них цену упаковки не отличить от цены килограмма.
+    point_key — см. latest_price: цена этой точки, иначе общий снимок.
     """
     sp = confirmed_mapping(product_id, store_id)
     if not sp:
         return None
-    snap = latest_price(sp["id"])
+    snap = latest_price(sp["id"], point_key=point_key)
     if snap is None:
         return None
     snap["sp_unit"] = sp.get("unit")
     snap["sp_weight_g"] = sp.get("weight_g")
     snap["sp_name"] = sp.get("raw_name")
     return snap
+
+
+def last_price_moment(store_id: int, product_ids: list[int] | None = None,
+                      point_key: str | None = None) -> str | None:
+    """Когда сеть последний раз отдавала ЖИВУЮ цену — «цена от 14:32» на экране.
+
+    Живая — это снятая с витрины, а не справочная из data/fallback_prices.csv
+    (source=freshness.REFERENCE): у справочной дата «сейчас» — дата попытки, а не
+    факт с полки, и подпись «цена от …» на ней была бы выдумкой.
+
+    product_ids — считать только снимки этих товаров (товары корзины); None —
+    любые. Пустой список — товаров нет, и момента тоже нет.
+
+    point_key — считать только снимки этой точки; None — только снимки БЕЗ точки.
+    Снимок чужой точки не подставляется так же, как в freshness.price_for: у
+    Ленты, Магнита и METRO цена своя в каждом магазине, и «витрина у адреса» по
+    цене другого адреса была бы чужой ценой.
+
+    Старая форма last_price_moment(store_id) работает: это общие снимки сети.
+    """
+    from app import freshness
+
+    if product_ids is not None and not product_ids:
+        return None
+
+    sql = ["SELECT MAX(p.fetched_at) AS moment FROM store_prices p",
+           " JOIN store_products sp ON sp.id = p.store_product_id",
+           " WHERE sp.store_id=?",
+           " AND (p.source IS NULL OR p.source != ?)"]
+    params: list = [store_id, freshness.REFERENCE]
+    if product_ids is not None:
+        marks = ",".join("?" * len(product_ids))
+        sql.append(" AND p.store_product_id IN (SELECT m.store_product_id"
+                   " FROM product_mapping m WHERE m.product_id IN (" + marks + "))")
+        params.extend(int(pid) for pid in product_ids)
+    if point_key is None:
+        sql.append(" AND p.point_key IS NULL")
+    else:
+        sql.append(" AND p.point_key = ?")
+        params.append(point_key)
+
+    with get_conn() as c:
+        row = c.execute("".join(sql), tuple(params)).fetchone()
+    return row["moment"] if row and row["moment"] else None
 
 
 def price_history(product_id: int, store_id: int) -> list[dict]:

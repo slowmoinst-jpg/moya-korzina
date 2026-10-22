@@ -28,6 +28,7 @@ from app import config
 from app.catalog.crawlers import Pace, http_get
 from app.catalog.model import ChainProduct, CrawlBlocked, Crawler, Progress
 from app.connectors.metro import PAGE, _page_info, _rows, _url
+from app.matcher.normalize import parse_weight, sold_by_weight
 
 log = logging.getLogger(__name__)
 
@@ -40,23 +41,42 @@ def _num(value: Any) -> float | None:
 
 
 def _weight_g(row: dict) -> float | None:
-    """Фасовка в граммах или миллилитрах, если сеть назвала её числом.
+    """Фасовка в граммах или миллилитрах.
 
-    Не назвала — возвращаем None, и сопоставление достанет фасовку из названия само
-    (app/catalog/match.py). Выдумывать её здесь нельзя: ошибка в фасовке склеит
-    литровое молоко с трёхлитровым.
+    НОВАЯ ФОРМА packing (живой замер 18.10.2026). Сеть отдаёт
+    `{"size": 1, "type": "шт"}` или `{"size": 0.25, "type": "кг"}`, а прежние ключи
+    (weight/volume/netto/value) не шлёт вовсе. Из-за этого фасовка пропадала у ВСЕХ
+    32 833 строк METRO: у товаров с ценой, штрихкодом и остатком не было ни веса, ни
+    единицы, и человеку в корзину нельзя было пересчитать упаковку.
+
+    Для штучного товара фасовка лежит в НАЗВАНИИ («…, 1кг», «… 500 мл») — оттуда и
+    берём. Для весового (type «кг») вес не выдумываем: `size` — подсказка порции
+    (0,25 кг лимонов), а не фасовка товара; ошибка здесь склеила бы килограмм с
+    четвертью. Прежние ключи оставлены: сеть вправе вернуть их обратно.
     """
     packing = row.get("packing")
-    if not isinstance(packing, dict):
-        return None
-    for key in ("weight", "volume", "netto", "value"):
-        value = _num(packing.get(key))
-        if value:
-            unit = str(packing.get("unit") or packing.get("measure") or "").lower()
-            if unit in ("kg", "кг", "l", "л"):
-                return value * 1000
-            return value
-    return None
+    if isinstance(packing, dict):
+        for key in ("weight", "volume", "netto", "value"):
+            value = _num(packing.get(key))
+            if value:
+                unit = str(packing.get("unit") or packing.get("measure") or "").lower()
+                return value * 1000 if unit in ("kg", "кг", "l", "л") else value
+    name = str(row.get("name") or "")
+    weight, _ = parse_weight(name)
+    return weight or None
+
+
+def _unit(row: dict) -> str:
+    """Единица строки: «kg» для весового товара, «pcs» для штучного (замер 18.10.2026).
+
+    Единица нужна и сопоставлению (весовое с штучным не склеивается), и наряду: по ней
+    считается, сколько упаковок класть в корзину сети.
+    """
+    packing = row.get("packing") if isinstance(row.get("packing"), dict) else {}
+    kind = str(packing.get("type") or "").strip().lower()
+    if kind in ("кг", "kg"):
+        return "kg"
+    return "kg" if sold_by_weight(str(row.get("name") or "")) else "pcs"
 
 
 class MetroCrawler(Crawler):
@@ -86,6 +106,7 @@ class MetroCrawler(Crawler):
             name=name,
             brand=str(manufacturer.get("name") or "") or None,
             weight_g=_weight_g(row),
+            unit=_unit(row),
             category=str(row.get("category_id") or "") or None,
             url=f"https://online.metro-cc.ru/products/{slug}" if slug else None,
             barcode=barcodes[0] if barcodes else None,

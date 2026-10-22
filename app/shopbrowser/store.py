@@ -62,6 +62,12 @@ def save(chain: str, state: dict, *, account: str | None = None,
     """Запомнить вход в сеть. Зовётся из потока запроса, а не из потока браузера."""
     if not isinstance(state, dict):
         raise ValueError("состояние входа должно быть объектом")
+    # Чистим ДО записи: иначе кривая кука будет валить восстановление входа при каждом
+    # открытии («Invalid cookie fields», замер 20.10.2026), и человек решит, что вход слетел.
+    # Если после чистки не осталось ни одной куки — сохраняем как есть: терять вход из-за
+    # строгости нельзя, а от кривых кук защищает чтение (`load` тоже чистит).
+    cleaned = clean_state(state, chain)
+    state = cleaned if cleaned.get("cookies") else state
     body = json.dumps(state, ensure_ascii=False)
     if len(body) > MAX_STATE_CHARS:
         raise ValueError("состояние входа неправдоподобно велико — не сохраняю")
@@ -78,11 +84,89 @@ def save(chain: str, state: dict, *, account: str | None = None,
     log.info("%s: вход сохранён в рабочем месте", chain)
 
 
+SAME_SITE = {"strict": "Strict", "lax": "Lax", "none": "None"}
+
+
+def clean_state(state: dict, chain: str | None = None) -> dict:
+    """Привести сохранённый вход к тому, что Chromium примет.
+
+    ЗАМЕР 20.10.2026 на живом приложении: вход в Магнит не восстанавливался, экран
+    «Кабинеты» показывал «Browser.new_context: Error setting storage state: Protocol
+    error (Storage.setCookies): Invalid cookie fields». Причина — куки с полями, которых
+    Chromium не понимает: пустой `sameSite`, `expires` не числом, нет `domain`.
+
+    Состояние приходит от разных инструментов, и ронять из-за одной кривой куки весь вход
+    нельзя: негодные выбрасываем, годные оставляем. Ничего не «починяем» на глаз —
+    неизвестное значение просто приводим к безопасному.
+
+    Кука без домена, но с именем и значением — НЕ мусор: это кука этой сети, и домен ей
+    подставляется по сети (наче говоря, мы знаем, чей это вход). Выбрасываем только то,
+    у чего нет ни имени, ни значения.
+    """
+    if not isinstance(state, dict):
+        return {}
+    default_domain = ""
+    if chain:
+        try:
+            from app import cartrecord
+
+            hosts = cartrecord.CHAIN_HOSTS.get(chain) or ()
+            if hosts:
+                default_domain = "." + str(hosts[0]).lstrip(".")
+        except Exception:  # noqa: BLE001 — нет справочника: домен не подставим
+            default_domain = ""
+    out: dict = {"cookies": [], "origins": []}
+    for cookie in state.get("cookies") or []:
+        if not isinstance(cookie, dict):
+            continue
+        name = str(cookie.get("name") or "").strip()
+        if not name:
+            continue
+        domain = str(cookie.get("domain") or "").strip() or default_domain
+        try:
+            expires = float(cookie.get("expires"))
+        except (TypeError, ValueError):
+            expires = -1.0
+        same = str(cookie.get("sameSite") or "").strip().lower()
+        out["cookies"].append({
+            "name": name,
+            "value": str(cookie.get("value") or ""),
+            "domain": domain,
+            "path": str(cookie.get("path") or "/") or "/",
+            "expires": expires if expires > 0 else -1.0,
+            "httpOnly": bool(cookie.get("httpOnly")),
+            "secure": bool(cookie.get("secure")),
+            "sameSite": SAME_SITE.get(same, "Lax"),
+        })
+    for origin in state.get("origins") or []:
+        if not isinstance(origin, dict):
+            continue
+        url = str(origin.get("origin") or "").strip()
+        if not url:
+            continue
+        items = [{"name": str(pair.get("name") or ""), "value": str(pair.get("value") or "")}
+                 for pair in (origin.get("localStorage") or [])
+                 if isinstance(pair, dict) and pair.get("name")]
+        out["origins"].append({"origin": url, "localStorage": items})
+    return out
+
+
 def load(chain: str) -> dict | None:
-    """Состояние входа для подстановки в браузер. Нет — None, а не пустой словарь."""
+    """Состояние входа для подстановки в браузер. Нет — None, а не пустой словарь.
+
+    Всегда отдаёт ЧИЩЕНЫЕ куки: кривые поля — это ошибка Chromium «Invalid cookie fields»
+    (замер 20.10.2026). Если годных кук не осталось, возвращается состояние без кук — оно
+    значит «вход сохранён, но куки непригодны»: наличие входа по нему проверить можно,
+    а браузеру нечего будет подставлять, и он не упадёт.
+    """
     got = _all().get(chain) or {}
     state = got.get("state")
-    return state if isinstance(state, dict) and state else None
+    if not isinstance(state, dict) or not state:
+        return None
+    cleaned = clean_state(state, chain)
+    if cleaned.get("cookies"):
+        return cleaned
+    return {"cookies": [], "origins": cleaned.get("origins") or []}
 
 
 def about(chain: str) -> dict | None:
@@ -156,3 +240,5 @@ def any_saved(chain: str) -> dict | None:
 
 
 __all__ = ["KEY", "save", "load", "about", "forget", "saved_stores"]
+
+

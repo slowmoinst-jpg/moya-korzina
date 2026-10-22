@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 import pytest
@@ -97,11 +98,16 @@ def test_the_screen_does_not_send_anyone_to_install_an_extension(web):
     Сторож грубый нарочно: отставшая инструкция «поставьте расширение» посылает
     человека делать то, что уже ничего не даст, — и он решит, что приложение
     сломано, когда ничего не произойдёт.
+
+    С 18.10.2026 рядом с этим стоит раздел с закладкой «Забрать цены», и в нём
+    секрет рабочего места показан НАРОЧНО (владелец искал его в переписке). Поэтому
+    здесь проверяются именно следы расширения, а не слово «секрет».
     """
     enter(web)
     page = web.get("/accounts").data.decode("utf-8")
     assert "Загрузить распакованное" not in page
-    assert "Секрет рабочего места" not in page
+    assert "chrome://extensions" not in page
+    assert "manifest.json" not in page
     assert "расширения ставить не нужно" in page
 
 
@@ -319,3 +325,275 @@ def test_only_two_chains_offer_a_price_refresh(web):
     assert 'value="prices:samokat"' in page
     for chain in ("magnit", "lenta", "vkusvill", "dixy"):
         assert f'value="prices:{chain}"' not in page, f"{chain}: лишняя кнопка сбора цен"
+
+
+# ---------- «Забрать цены»: закладка, адрес, секрет ----------
+BOOKMARKLET_FILE = os.path.join(ROOT, "docs", "grab-prices.min.txt")
+
+
+def _secret_of(page: str) -> str:
+    """Секрет из разметки страницы: <span class="sekret">…</span>.
+
+    Ищем именно разметку, а не «какую-то длинную строку»: так сторож заодно
+    проверяет, что секрет стоит в своём месте и что его вообще показали.
+    """
+    found = re.search(r'<span class="sekret">([^<]+)</span>', page)
+    return found.group(1).strip() if found else ""
+
+
+def test_the_screen_gives_the_ready_bookmarklet_with_the_address_and_secret(web):
+    """Раздел отдаёт ТУ САМУЮ закладку из репозитория, адрес и секрет рабочего места.
+
+    Закладку берём из docs, а не собираем на месте: собранная здесь разошлась бы с
+    docs/grab-prices.src.js при первой правке, и человек получил бы не то, что
+    проверено. Адрес и номер он вводит в закладку руками, секрет — тем более:
+    без них дверь /api/prices не пускает, и владелец искал их в переписке.
+    """
+    enter(web)
+    page = web.get("/accounts").data.decode("utf-8")
+
+    with open(BOOKMARKLET_FILE, encoding="utf-8") as fh:
+        ready = fh.read().strip()
+    assert ready and ready.startswith("javascript:"), "закладка в репозитории не собрана"
+    assert ready[:120] in page, "на экране не та закладка, что лежит в docs"
+
+    assert "Собрать витрину Пятёрочки и Самоката" in page
+    assert "http://localhost" in page, "адрес приложения не показан"
+    assert PHONE in page, "номер рабочего места не показан"
+    secret = _secret_of(page)
+    assert secret, "секрет рабочего места не показан"
+
+    users.open_workspace(PHONE)
+    from app import api
+
+    assert secret == api.workplace_secret(create=False), "показан не тот секрет"
+    users.deactivate()
+
+
+def test_the_bookmarklet_section_says_why_there_is_no_other_way(web):
+    """Честная строка про ServicePipe и порядок шагов: иначе раздел читается как совет."""
+    enter(web)
+    page = web.get("/accounts").data.decode("utf-8")
+    assert "ServicePipe" in page
+    assert "Пропускает только ваш браузер" in page
+    assert "Отправить в приложение" in page
+    assert "Секрет заменён" not in page, "оговорка о смене показана до самой смены"
+
+
+def test_the_secret_lives_only_on_this_screen(web):
+    """Секрет показывается на «Кабинетах» и не уезжает на другие экраны.
+
+    Он и есть ключ рабочего места: попав в шапку, в чужой шаблон или в общий
+    ответ, он перестал бы что-либо защищать.
+    """
+    enter(web)
+    secret = _secret_of(web.get("/accounts").data.decode("utf-8"))
+    assert secret
+
+    for path in ("/", "/prices", "/stores"):
+        answer = web.get(path)
+        body = answer.data.decode("utf-8", "replace")
+        assert secret not in body, f"{path}: секрет рабочего места уехал на другой экран"
+
+
+def test_renewing_the_secret_changes_it_and_shuts_the_old_one_out(web):
+    """«Сменить секрет» — одно нажатие, и старый перестаёт отпирать дверь сразу.
+
+    Проверяем не надпись, а саму дверь: старый секрет получает отказ, новый
+    принимает пакет и товары ложатся. Иначе смена была бы сменой надписи на экране.
+    """
+    enter(web)
+    old = _secret_of(web.get("/accounts").data.decode("utf-8"))
+    assert old
+
+    answer = web.post("/accounts", data={"do": "new-secret"})
+    assert answer.status_code == 302 and "secret=new" in answer.headers["Location"]
+
+    page = web.get("/accounts?secret=new").data.decode("utf-8")
+    fresh = _secret_of(page)
+    assert fresh and fresh != old, "секрет не сменился"
+    assert "Секрет заменён" in page, "человеку не сказали, что закладку надо ввести заново"
+
+    packet = {"store": "pyaterochka", "collected_at": "2026-10-18T22:00:00",
+              "items": [{"sku": "4306830", "name": "Азу из курицы 300г", "price": 176.99,
+                         "in_stock": True, "unit": "pcs", "weight_g": 300,
+                         "url": "https://5ka.ru/product/azu-iz-kuritsy--4306830/"}]}
+
+    stale = web.post("/api/prices", json={**packet, "workplace": PHONE, "secret": old})
+    assert stale.status_code == 401, "старый секрет всё ещё отпирает дверь"
+
+    good = web.post("/api/prices", json={**packet, "workplace": PHONE, "secret": fresh})
+    assert good.status_code == 200, good.get_data(as_text=True)[:300]
+    assert good.get_json()["prices_saved"] == 1
+
+
+def flat(page: str) -> str:
+    """Страница без лишних пробелов и переводов строк — для проверки подписей."""
+    return " ".join(page.split())
+
+
+def _personal_rows() -> None:
+    """Строки в ЛИЧНОМ рабочем месте — так их кладёт закладка: у Пятёрочки с ценой."""
+    users.open_workspace(PHONE)
+    five = repo.get_store("pyaterochka")
+    samokat = repo.get_store("samokat")
+    with_price = repo.upsert_store_product(five.id, "4306830", "Азу из курицы 300г",
+                                           url="https://5ka.ru/product/azu--4306830/")
+    repo.save_price(with_price, 176.99)
+    repo.upsert_store_product(samokat.id, "78001656", "Молоко 3,2% 900 мл")   # без цены
+    users.deactivate()
+
+
+def _phone_cards() -> None:
+    """Строки в ЕДИНОЙ базе — так их кладёт телефон кнопкой «Раздел»."""
+    from app import phonecart
+
+    assert phonecart.accept_cards({"store": "pyaterochka", "cards": [
+        {"url": "https://5ka.ru/product/moloko-prostokvashino--1111111/",
+         "name": "Молоко Простоквашино 2,5% 930 мл", "price": 99.9},
+        {"url": "https://5ka.ru/product/hleb-borodinski--2222222/",
+         "name": "Хлеб Бородинский 400 г", "price": 45.0},
+    ]})["ok"]
+    assert phonecart.accept_cards({"store": "samokat", "cards": [
+        {"url": "https://samokat.ru/product/333333", "name": "Сыр Тильзитер 200 г",
+         "price": 219.0},
+    ]})["ok"]
+
+
+def test_the_shelf_counts_the_unified_base_from_the_phone(web):
+    """Карточки, приехавшие с телефона, видны на «Кабинетах» — иначе экран врёт.
+
+    19.10.2026: Пятёрочка и Самокат приезжают в ЕДИНУЮ базу (catalog.db), а _shelf
+    считал только личное рабочее место и писал «товаров в базе нет» сразу после
+    успешного «Раздела» на телефоне, хотя «Магазины» эти товары показывали.
+    """
+    enter(web)
+    _phone_cards()
+
+    page = flat(web.get("/accounts").data.decode("utf-8"))
+
+    assert "в единой базе товаров этой сети — 2" in page, "Пятёрочка с телефона не сосчитана"
+    assert "в единой базе товаров этой сети — 1" in page, "Самокат с телефона не сосчитан"
+    assert "в единой базе товаров этой сети нет" not in page, "экран говорит «нет» там, где есть"
+
+
+def test_the_shelf_counts_both_bases_side_by_side(web):
+    """Личное рабочее место и единая база — две разные цифры, и обе на экране."""
+    enter(web)
+    _personal_rows()
+    _phone_cards()
+
+    page = flat(web.get("/accounts").data.decode("utf-8"))
+
+    assert page.count("в единой базе товаров этой сети — 2") == 1
+    assert page.count("в единой базе товаров этой сети — 1") == 1
+    assert page.count("в вашем рабочем месте строк — 1") == 2
+    # Цена есть только у Пятёрочки в личном рабочем месте — про неё и говорим.
+    assert page.count("в вашем рабочем месте строк — 1, последние цены приняты") == 1
+
+
+def test_an_empty_shelf_says_it_is_empty(web):
+    """Ни одного товара ни там, ни там — так и написано, у обеих сетей."""
+    enter(web)
+    page = flat(web.get("/accounts").data.decode("utf-8"))
+    assert page.count("в единой базе товаров этой сети нет · в вашем рабочем месте строк нет") == 2
+
+
+def test_a_broken_catalog_base_does_not_break_the_section(web):
+    """Битая единая база: раздел остаётся, её число не показывается, личный счёт — есть.
+
+    Ошибка счёта ОДНОЙ базы не повод ронять раздел: человек всё равно должен увидеть,
+    что приехало в рабочее место, и что единую базу сосчитать не вышло.
+    """
+    from app.catalog import store as catalog_store
+
+    os.makedirs(os.path.dirname(catalog_store.path()), exist_ok=True)
+    with open(catalog_store.path(), "wb") as fh:
+        fh.write(b"this is not a database")     # чужой файл на месте базы
+
+    enter(web)
+    answer = web.get("/accounts")
+    assert answer.status_code == 200, "битая единая база уронила раздел"
+    page = flat(answer.data.decode("utf-8"))
+    assert page.count("единая база не сосчиталась") == 2
+    assert page.count("в вашем рабочем месте строк нет") == 2
+
+
+APP_UA = "Mozilla/5.0 (Linux; Android 14; wv) KorzinaApp/1.6"
+
+
+def test_the_phone_gets_no_bookmarklet(web):
+    """На телефоне закладку не предлагают: там витрину забирает «Раздел» в приложении.
+
+    Перетаскивать на телефоне некуда, а сбор идёт кнопкой приложения — инструкция про
+    закладку и показ секрета были бы там советом сделать невозможное.
+    """
+    enter(web)
+    page = web.get("/accounts", headers={"User-Agent": APP_UA}).data.decode("utf-8")
+
+    with open(BOOKMARKLET_FILE, encoding="utf-8") as fh:
+        ready = fh.read().strip()
+    assert ready[:120] not in page, "телефону всё ещё предлагают закладку"
+    assert "Закладка нужна только на компьютере" in flat(page), "не сказано, что происходит"
+    assert "Раздел" in page, "не названа кнопка приложения, которой идёт сбор"
+    assert _secret_of(page) == "", "телефону показан секрет рабочего места для закладки"
+
+
+def test_the_desktop_still_gets_the_bookmarklet(web):
+    """На компьютере закладка остаётся: это его дорога, телефонная — «Раздел»."""
+    enter(web)
+    page = web.get("/accounts").data.decode("utf-8")
+
+    with open(BOOKMARKLET_FILE, encoding="utf-8") as fh:
+        ready = fh.read().strip()
+    assert ready[:120] in page, "на компьютере пропала закладка"
+    assert "Закладка нужна только на компьютере" not in flat(page), "компьютеру говорят про телефон"
+
+
+def test_without_the_bookmarklet_file_the_screen_says_so(web, monkeypatch):
+    """Закладки нет в сборке — экран не молчит и не рисует пустую ссылку."""
+    from app.web.screens import accounts
+
+    monkeypatch.setattr(accounts, "PRICES_BOOKMARKLET",
+                        os.path.join(ROOT, "docs", "нет-такого-файла.min.txt"))
+    enter(web)
+    page = web.get("/accounts").data.decode("utf-8")
+    assert "Закладка не собрана в этой сборке" in page
+
+
+def test_the_demo_shelf_is_warned_about(web):
+    """Демо — общая витрина: дверь её не пускает, и об этом сказано до нажатия."""
+    web.post("/demo")
+    page = web.get("/accounts").data.decode("utf-8")
+    assert "Это демо-витрина, и дверь" in page
+
+
+def test_the_secret_never_reaches_the_journal(web, caplog):
+    """Секрет не уезжает в журнал — даже когда дверь им отказывает.
+
+    Экран показывает секрет нарочно, и обещание у этого показа одно: он остаётся
+    на странице. Журнал обещание нарушает молча — он уезжает в файлы и виден
+    всякому, у кого есть доступ к серверу. Самое вероятное место утечки — отказ
+    замка: там пишется настоящая причина, и подставить в неё присланное значение
+    проще всего.
+    """
+    import logging
+
+    with caplog.at_level(logging.DEBUG):
+        enter(web)
+        secret = _secret_of(web.get("/accounts").data.decode("utf-8"))
+        assert secret, "секрет не показан — сторожу нечего проверять"
+
+        web.post("/api/prices", json={"store": "pyaterochka",
+                                      "collected_at": "2026-10-18T22:00:00",
+                                      "workplace": PHONE,
+                                      "secret": secret + "хвост",
+                                      "items": []})
+
+    journal = "\n".join(str(r.getMessage()) for r in caplog.records)
+    assert journal, "журнал пуст — сторож ничего не поймал"
+    assert secret not in journal, "секрет рабочего места уехал в журнал"
+    # Контроль сторожа: отказ двери в журнале ЕСТЬ. Иначе «секрета в журнале нет»
+    # значило бы всего лишь «в журнале вообще ничего нет», и сторож был бы слеп.
+    assert "отказ API /api/prices" in journal, "отказ замка в журнал не записан"
+

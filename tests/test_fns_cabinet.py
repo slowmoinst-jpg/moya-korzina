@@ -357,6 +357,9 @@ def test_app_address_is_put_into_the_bookmarklet_encoded(tmp_path, monkeypatch):
     assert out.startswith("javascript:")
     assert "__APP_URL__" not in out, "заглушка обязана быть заменена"
     assert "%3A%2F%2F" in out, "адрес обязан уехать закодированным, иначе ссылка порвётся"
+    # Закладка ходит кукой, а не адресом с номером: секрет ссылки (t, app/users.py)
+    # ей не нужен вовсе — его нет в адресе ни с человеком, ни без него.
+    assert "%3Ft%3D" not in out, "секрет ссылки снова подставлен в закладку"
 
 
 # ---------- чеки, состав которых ФНС уже не хранит ----------

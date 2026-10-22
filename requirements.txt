@@ -37,3 +37,19 @@ playwright>=1.44
 # Ключ живёт в переменной окружения OPENROUTER_API_KEY (DEPLOY.md, раздел «Ключ модели»),
 # в репозитории его нет и быть не должно.
 scrapegraphai>=2.2
+
+# Окно отладки Android WebView. tools/emucart.py говорит с ним напрямую по websocket
+# самой страницы: Playwright к WebView не подключается вовсе — его connect_over_cdp
+# первым же делом зовёт методы уровня БРАУЗЕРА (Browser.setDownloadBehavior), которых у
+# WebView нет, и падает с «Browser context management is not supported». Websocket
+# страницы, наоборот, принимает Runtime.evaluate, Network.enable и Page.navigate —
+# проверено живьём 18.10.2026, на этом стоит снимок корзины в прогоне.
+#
+# Библиотека приезжает и транзитом: её требуют langgraph-sdk (за ним langgraph, за ним
+# langchain) и langsmith (за ним langchain-community), а те едут за scrapegraphai. Но
+# чужое имя не держится: уберут scrapegraphai — уйдёт и она, а сломается не разбор
+# карточки, а снимок корзины, и выяснится это посреди прогона, где искать причину будут
+# в стенде. 16.1 — версия, на которой слой проверен вживую; нужен
+# websockets.asyncio.client.connect, и прокси ему отключён (proxy=None: до 127.0.0.1
+# через прокси не ходят).
+websockets>=16.1

@@ -33,7 +33,7 @@ import re
 from typing import Iterator
 
 from app import config
-from app.catalog.crawlers import Pace, sitemap_locs
+from app.catalog.crawlers import Pace, sitemap_locs, slug_size
 from app.catalog.model import ChainProduct, Crawler, Progress
 
 log = logging.getLogger(__name__)
@@ -53,7 +53,10 @@ def parse(url: str) -> ChainProduct | None:
     if not match:
         return None
     name = match.group(1).replace("-", " ").strip()
-    return ChainProduct(sku=match.group(2), name=name, url=url) if name else None
+    if not name:
+        return None
+    weight_g, unit = slug_size(name)
+    return ChainProduct(sku=match.group(2), name=name, url=url, weight_g=weight_g, unit=unit)
 
 
 class MonetkaCrawler(Crawler):

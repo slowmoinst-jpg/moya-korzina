@@ -3,7 +3,10 @@ package ru.moyakorzina.app;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -14,6 +17,9 @@ import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowInsetsController;
+import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
@@ -35,14 +41,22 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Моя корзина — Android-приложение: оболочка сайта и руки сервера на телефоне.
@@ -102,6 +116,11 @@ public class MainActivity extends Activity {
         {"Дикси",       "dixy",        "https://dixy.ru/",     "dixy.ru"},
         {"METRO",       "metro",       "https://online.metro-cc.ru/", "metro-cc.ru"},
         {"Перекрёсток", "perekrestok", "https://www.perekrestok.ru/", "perekrestok.ru"},
+        // Fix Price добавлен 20.10.2026: сеть есть в единой базе и обходится сервером
+        // (6 624 строки с ценой), но в приложении её не было — собрать её корзину в фоне
+        // человек не мог. Домен именно fix-price.com (как у сборщика, замер 20.10.2026),
+        // адрес товара — /catalog/<раздел>/p-<артикул>-<название>.
+        {"FixPrice",    "fixprice",    "https://fix-price.com/", "fix-price.com"},
     };
 
     /**
@@ -199,6 +218,19 @@ public class MainActivity extends Activity {
     private static final String SERVER = BuildConfig.KORZINA_SERVER.replaceAll("/+$", "");
 
     /**
+     * Окно кабинета ФНС (Z5b плана 21.10.2026).
+     *
+     * Вход в кабинет закрыт капчей для программ, поэтому его проходит человек — здесь
+     * же, в этом WebView. Приложение только забирает ключ его сессии: страница кабинета
+     * исполняет /static/fns-grab.js, тот берёт ключ из хранилища и возвращает окно на
+     * /phone/receipts?keys=…, где ключ принимает сервер (app/fns/sync.py).
+     */
+    private static final String FNS_URL = "https://lkdr.nalog.ru/";
+    private static final String FNS_GRAB = "/static/fns-grab.js";
+    private static final String FNS_LOG = "korzina:";
+    private static final String FNS_ERR = "korzina!";
+
+    /**
      * Сборщик карточек акций со страницы магазина. Разметка у сетей своя и меняется,
      * поэтому он не привязан к классам конкретного сайта: ищет небольшие блоки, где
      * есть скидка («-30%», «69,90 ₽»), и берёт из них название и срок («до 30.09»).
@@ -270,16 +302,24 @@ public class MainActivity extends Activity {
       + " sessionStorage.setItem('__kzNums',JSON.stringify(all));}catch(e){}}"
       // Ответ с корзиной ЦЕЛИКОМ (пути full из наряда, замер Магнита 18.10.2026): у каждой
       // позиции артикул и количество — window.__kzCart. Так телефон узнаёт, что лежит в
-      // корзине сети на самом деле. Только артикулы и числа, без имён и цен.
-      + "function whole(path,t){try{var o=JSON.parse(t),items={},n=0;"
+      // корзине сети на самом деле. Ни имён, ни лишних чисел: из чисел берём только
+      // количество и ЦЕНУ ЗА УПАКОВКУ — цель требует получать цены корзиной в фоне, а у
+      // Перекрёстка, Vprok и Монетки обход отдаёт только названия.
+      + "function whole(path,t){try{var o=JSON.parse(t),items={},prices={},n=0;"
       + " (function walk(x,d){if(!x||typeof x!=='object'||d>8)return;"
       + "  if(Array.isArray(x)){for(var i=0;i<x.length;i++)walk(x[i],d+1);return;}"
-      + "  var id=null,q=null;for(var k in x){if(!Object.prototype.hasOwnProperty.call(x,k))continue;var v=x[k];"
+      + "  var id=null,q=null,pr=null,total=null;for(var k in x){if(!Object.prototype.hasOwnProperty.call(x,k))continue;var v=x[k];"
       + "   if(id===null&&(typeof v==='string'||typeof v==='number')&&/^(goods?_?id|product_?id|sku|article|offer_?id|item_?id|plu)$/i.test(k))id=String(v);"
-      + "   else if(q===null&&typeof v==='number'&&/^(qnty|quantity|qty|count|amount)$/i.test(k))q=v;}"
-      + "  if(id!==null&&q!==null){items[id]=Math.max(items[id]||0,q);n++;}"
+      + "   else if(q===null&&typeof v==='number'&&/^(qnty|quantity|qty|count|amount)$/i.test(k))q=v;"
+      // Цена за упаковку. «price»/«pricePerUnit» — она и есть; «totalPrice»/«sum» — цена
+      // строки целиком, из неё цену упаковки получим делением на количество.
+      + "   else if(pr===null&&typeof v==='number'&&/^(price|price_?per_?unit|unit_?price|cost)$/i.test(k))pr=v;"
+      + "   else if(total===null&&typeof v==='number'&&/^(total_?price|sum|amount_?price|total_?cost)$/i.test(k))total=v;}"
+      + "  if(id!==null&&q!==null){items[id]=Math.max(items[id]||0,q);"
+      + "   var one=null;if(pr!==null&&pr>0)one=pr;else if(total!==null&&total>0&&q>0)one=total/q;"
+      + "   if(one!==null&&one>0&&one<1000000)prices[id]=Math.round(one*100)/100;n++;}"
       + "  for(var kk in x){if(Object.prototype.hasOwnProperty.call(x,kk)&&x[kk]&&typeof x[kk]==='object')walk(x[kk],d+1);}"
-      + " })(o,0);if(n>0)window.__kzCart={at:Date.now(),path:path,items:items,n:n};}catch(e){}}"
+      + " })(o,0);if(n>0)window.__kzCart={at:Date.now(),path:path,items:items,prices:prices,n:n};}catch(e){}}"
       + "function note(m,u,code,t){try{if(!own(u))return;var path=tpl(new URL(u,location.href).pathname);"
       + " if(!CARTISH.test(path))return;if(window.__kzCalls.length<40)window.__kzCalls.push(m+' '+path+' '+code);"
       + " if(t){keep(path,t);if(code>=200&&code<300&&(window.__kzFull||[]).indexOf(path)>=0)whole(path,t);}}catch(e){}}"
@@ -411,7 +451,7 @@ public class MainActivity extends Activity {
       + "if(top!==null)[].slice.call(document.querySelectorAll('h2,h3,h4,[role=heading]')).forEach(function(h){"
       + " var t=(h.innerText||'').replace(/\\s+/g,' ').trim();if(!t||t.length>40||!FENCE.test(t))return;"
       + " var y=h.getBoundingClientRect().top+window.scrollY;if(y>top&&y<limit)limit=y;});"
-      + "function label(e){return((e.getAttribute('aria-label')||'')+' '+(e.innerText||'')).replace(/\\s+/g,' ').trim();}"
+      + "function label(e){return((e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')+' '+(e.innerText||'')).replace(/\\s+/g,' ').trim();}"
       // Закреплённая полоса покупки (position fixed/sticky) — своя кнопка товара: у
       // Магнита на телефоне «94,99 ₽ [В корзину]» стоит внизу экрана поверх страницы
       // (замер владельца 18.10.2026). Каруселей закреплёнными не бывает, поэтому
@@ -443,14 +483,14 @@ public class MainActivity extends Activity {
       + "if(bySel)p.selectors.forEach(function(s){try{nodes=nodes.concat([].slice.call(document.querySelectorAll(s)));}catch(e){}});"
       + "var buttons=[].slice.call(document.querySelectorAll('button,[role=button]'));"
       + "if(!nodes.length){bySel=false;nodes=buttons;}"
-      + "var pat=new RegExp(p.again?p.plus:p.add,'i'),best=null,bestY=Infinity;"
+      + "var pat=new RegExp(p.again?p.plus:p.add,'i'),best=null,bestY=Infinity,wide=false;"
       + "function take(e){var y=e.getBoundingClientRect().top+window.scrollY;if(y<bestY){best=e;bestY=y;}}"
       + "nodes.forEach(function(e){if(e.disabled||!inside(e,!p.again))return;"
-      + " if(!bySel){var a=(e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim(),t=(e.innerText||'').replace(/\\s+/g,' ').trim();"
-      + "  if(!(pat.test(a)||pat.test(t)||pat.test((a+' '+t).trim())))return;}"
+      + " if(!bySel){var a=(e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim(),t=(e.innerText||'').replace(/\\s+/g,' ').trim(),ti=(e.getAttribute('title')||'').replace(/\\s+/g,' ').trim();"
+      + "  if(!(pat.test(a)||pat.test(t)||pat.test(ti)||pat.test((a+' '+ti+' '+t).trim())))return;}"
       + " take(e);});"
       + "if(!best&&!p.again)buttons.forEach(function(e){if(e.disabled||!inside(e,true))return;var l=label(e);"
-      + " if(l.length>60||!/в корзину|добавить|купить/i.test(l)||/перейти|в корзине|оформ|избранн|сравн/i.test(l))return;take(e);});"
+      + " if(l.length>60||!/в корзину|добавить|купить/i.test(l)||/перейти|в корзине|оформ|избранн|сравн/i.test(l))return;wide=true;take(e);});"
       // Лежащий в корзине товар сайт рисует счётчиком «−  2 шт  +» вместо «В корзину». У
       // Магнита (замер 18.10.2026) его кнопки — одни значки, без подписи и aria-label, в
       // закреплённой полосе снизу (.pl-stepper). Счётчик узнаём по классу stepper в блоке
@@ -461,6 +501,23 @@ public class MainActivity extends Activity {
       + " if(bs.length<2)return;var m=(s.innerText||'').replace(/\\s+/g,' ').match(/(\\d+(?:[.,]\\d+)?)/);"
       + " got={plus:bs[bs.length-1],count:m?parseFloat(m[1].replace(',','.')):1};});return got;}"
       + "if(!best&&p.again){var st=stepper();if(st)best=st.plus;}"
+      // ТЕКСТ КАРТОЧКИ ДЛЯ ЦЕНЫ И НАЛИЧИЯ. Цену сеть печатает рядом с заголовком, а не в
+      // нём одном (у Пятёрочки она бывает и в самом h1, у Самоката — отдельной строкой).
+      // Сначала берём общий блок заголовка и найденной кнопки — это и есть карточка, без
+      // «Похожих» и каруселей. Такого блока нет (кнопку не нашли) или он непомерно велик —
+      // поднимаемся от заголовка на несколько предков, но не дальше 900 знаков: 600 из них
+      // уходят в отчёт строки. Это чтение уже открытой карточки, запроса к сети нет. Текст
+      // нужен и в отказе: «Больше нет» бывает на карточке без кнопки, и наличие — false.
+      // Считаем ДО ветки отказа: им пользуются обе ветки, а var внутри if на успехе
+      // остался бы undefined.
+      + "var ct='';if(h1){var root=null;"
+      + "if(best){var y=best;for(var i=0;i<10&&y&&y!==document.body;i++){"
+      + "if(y.contains(h1)){root=y;break;}y=y.parentElement;}}"
+      + "var t=((root||h1).innerText||'').replace(/\\s+/g,' ').trim(),x=h1;"
+      + "if(!root||!t||t.length>900){"
+      + "for(var i=0;i<4&&x&&x.parentElement;i++){x=x.parentElement;"
+      + "var s=(x.innerText||'').replace(/\\s+/g,' ').trim();"
+      + "if(s.length>t.length&&s.length<=900)t=s;}}ct=t.slice(0,600);}"
       // Не нашлось «В корзину», а в блоке покупки есть «+» или счётчик — товар уже лежит в
       // корзине сети (inCart, сколько — count). Класть его ещё раз «В корзину» нельзя.
       + "if(!best){var near=[],plus=new RegExp(p.plus,'i'),inCart=false,st0=!p.again?stepper():null;buttons.forEach(function(e){if(!inside(e,true))return;var l=label(e);"
@@ -473,11 +530,16 @@ public class MainActivity extends Activity {
       // хотя память телефона думала иначе: человек убрал его или оформил заказ.
       + " var addable=false;if(p.again){var ap=new RegExp(p.add,'i');buttons.forEach(function(e){if(addable||e.disabled||!inside(e,true))return;var l=label(e);"
       + "  if(l.length<=60&&(ap.test(l)||ap.test((e.innerText||'').trim()))&&!/перейти|в корзине|оформ/i.test(l))addable=true;});}"
-      + " return JSON.stringify({found:false,h1:!!h1,near:near,inCart:inCart,count:st0?st0.count:null,addable:addable});}"
+      // ПУСТАЯ ОТДАЧА. Самокат, прогон 21.10.2026: прямой адрес карточки открылся, но
+      // заголовок пуст, а текста на странице почти нет — это не «просит войти», а
+      // страница не отдалась (пусто или бот-защита). Признак уезжает в отказ отдельно.
+      + "var xx=(document.body?document.body.innerText:'').replace(/\\s+/g,' ').trim(),ti=(document.title||'').replace(/\\s+/g,' ').trim();"
+      + " return JSON.stringify({found:false,h1:!!h1,title:(h1?(h1.innerText||''):'').replace(/\\s+/g,' ').trim().slice(0,200),text:ct,near:near,inCart:inCart,count:st0?st0.count:null,addable:addable,empty:(xx.length<40||ti==='')});}"
       // Закреплённую полосу не прокручиваем: она и так на экране, а прокрутка у Магнита
       // перерисовывает её, и помеченная кнопка исчезала из-под пальца (18.10.2026).
+      + "var vis=[];buttons.forEach(function(e){if(vis.length>=3||e.disabled||!inside(e,true))return;var l=label(e);if(l)vis.push(l.slice(0,30));});"
       + "best.setAttribute(MARK,'1');if(!pinned(best))best.scrollIntoView({block:'center',inline:'center'});"
-      + "return JSON.stringify({found:true});"
+      + "return JSON.stringify({found:true,wide:wide,title:(h1?(h1.innerText||''):'').replace(/\\s+/g,' ').trim().slice(0,200),near:vis,text:ct});"
       + "}catch(e){return JSON.stringify({found:false,error:String(e).slice(0,120)});}})(%s)";
 
     /**
@@ -643,6 +705,8 @@ public class MainActivity extends Activity {
 
     /** Сколько дать странице сети улечься после загрузки, мс: витрины дорисовываются скриптом. */
     private static final int SETTLE_MS = 1500;
+    /** Сколько ждать после нажатия «Соглашаюсь»: витрина перерисовывает карточку. */
+    private static final int CONSENT_WAIT_MS = 1500;
     private static final int CART_SETTLE_MS = 3000;
     private static final int READY_POLL_MS = 600;
     private static final int READY_LIMIT_MS = 30000;
@@ -668,6 +732,8 @@ public class MainActivity extends Activity {
     private static final int IDLE_MS = 10 * 60 * 1000;
     /** Приложение свёрнуто дольше — фоновые сборки на паузу; вернулся — продолжат. */
     private static final int AWAY_MS = 60 * 1000;
+    /** Заказ на очистку истории не ждёт дольше: наш адрес может так и не открыться. */
+    private static final int CLEAR_HISTORY_MS = 3000;
     private static final String TAG = "Korzina";
 
     private WebView web;
@@ -687,12 +753,46 @@ public class MainActivity extends Activity {
     private Button saveLoginBtn;
     private Button saveOffersBtn;
     private Button recordBtn;
+    private Button readBtn;
     private Button cartBtn;
+    /** Окно кабинета ФНС: панель, её строка состояния и кнопка «Забрать чеки». */
+    private View fnsPanel;
+    private TextView fnsStatus;
+    private Button fnsGrabBtn;
+    /** Открыт кабинет ФНС через мост: панель и «назад» следуют за этим режимом. */
+    private boolean fnsMode = false;
+    private boolean fnsGrabbing = false;
     private boolean recording = false;
     // volatile: читает его и мост, а он живёт на своём потоке (JavaBridge).
     private volatile int currentChain = -1;
+    // Адрес окна человека для моста. WebView.getUrl() с API 18 проверяет поток и из
+    // потока моста (JavaBridge) бросает RuntimeException, поэтому адрес запоминается
+    // на главном потоке в колбэках WebViewClient, а мост читает только эти поля.
+    private volatile String pageUrl = "";
+    private volatile boolean pageOurs = false;
+    // Один раз почистить историю, когда уходим с чужого окна (кабинет ФНС, страница
+    // сети) на наш экран. Ставит её orderHistoryClear — только там, где дальше
+    // гарантированно грузится наш адрес. Снимается она на первом нашем событии
+    // страницы (onPageCommitVisible/onPageFinished), а если наш адрес так и не
+    // пришёл — таймером: иначе заказ съест история следующего нашего экрана.
+    // На каждой странице чистить нельзя: «назад» должен возвращать между экранами
+    // приложения, а не в кабинет и App Store.
+    private boolean clearHistoryOnce = false;
+    /** Самостраховка заказа: наш адрес не открылся — флаг снимается сам. */
+    private final Runnable clearHistoryReset = () -> clearHistoryOnce = false;
     private CartRun cartRun;
     private final Handler handler = new Handler(Looper.getMainLooper());
+
+    /**
+     * «Забрать чеки» нажали, а страница так и не вернулась: молчать нельзя —
+     * говорим словами, что ключ не нашёлся, и разрешаем попробовать снова.
+     */
+    private final Runnable fnsStuck = () -> {
+        if (!fnsMode || pageOurs) return;
+        fnsGrabbing = false;
+        setFnsButtons(true);
+        sayFns("Не получилось забрать ключ — войдите в кабинет заново и нажмите «Забрать чеки».");
+    };
 
     /**
      * Мост window.Korzina: им сайт зовёт телефон (шаг 1 единой архитектуры).
@@ -705,12 +805,14 @@ public class MainActivity extends Activity {
      *
      * МОСТ ТОЛЬКО ДЛЯ НАШЕГО САЙТА. WebView один, и на странице сети window.Korzina
      * тоже виден — её скриптам и чужим счётчикам на ней. Поэтому, пока открыта сеть,
-     * мост молчит: ни адреса сервера, ни открытия страниц по чужой просьбе.
+     * мост молчит: ни адреса сервера, ни открытия страниц по чужой просьбе. С 21.10.2026
+     * это решается ещё и адресом окна (bridgeAllowed ниже), а не только режимом.
      */
     private final class KorzinaBridge {
         /** Кто на связи: сайт сверяет версию, прежде чем просить о новом. */
         @JavascriptInterface
         public String info() {
+            if (!bridgeAllowed()) return "{}";
             if (currentChain >= 0) return "{}";
             try {
                 return new JSONObject()
@@ -725,6 +827,7 @@ public class MainActivity extends Activity {
         /** Открыть сайт сети в этом же WebView. Незнакомый код — ложь, и сайт решает сам. */
         @JavascriptInterface
         public boolean openStore(String code) {
+            if (!bridgeAllowed()) return false;
             if (currentChain >= 0) return false;
             for (int i = 0; i < CHAINS.length; i++) {
                 if (CHAINS[i][1].equals(code)) {
@@ -739,10 +842,24 @@ public class MainActivity extends Activity {
         /** Вернуться на наш сайт. Путь только свой: мост чужих адресов не открывает. */
         @JavascriptInterface
         public void openApp(String path) {
+            if (!bridgeAllowed()) return;
             if (currentChain >= 0) return;
             final String target = (path != null && path.startsWith("/") && !path.contains("://"))
                 ? path : "/";
             handler.post(() -> openOurApp(target));
+        }
+
+        /**
+         * Открыть кабинет ФНС внутри приложения (окно Z5b).
+         *
+         * Только наш сайт: чужой странице окно налоговой не нужно, а мост на ней и так
+         * молчит (bridgeAllowed). Режим сети и кабинет ФНС одновременно не живут.
+         */
+        @JavascriptInterface
+        public void openFns() {
+            if (!bridgeAllowed()) return;
+            if (currentChain >= 0) return;
+            handler.post(() -> openFnsWindow());
         }
 
         /**
@@ -757,6 +874,7 @@ public class MainActivity extends Activity {
          */
         @JavascriptInterface
         public String collect(String json) {
+            if (!bridgeAllowed()) return "{}";
             final JSONObject payload;
             try {
                 payload = new JSONObject(json == null ? "{}" : json);
@@ -767,7 +885,7 @@ public class MainActivity extends Activity {
             final CountDownLatch ready = new CountDownLatch(1);
             handler.post(() -> {
                 try {
-                    if (isOurs(web.getUrl())) answer.set(decide(payload).toString());
+                    if (pageOurs) answer.set(decide(payload).toString());
                 } catch (Exception e) {
                     Log.w(TAG, "сборка в фоне не решилась", e);
                 } finally {
@@ -783,19 +901,47 @@ public class MainActivity extends Activity {
         /** Что собирается в фоне сейчас и что ждёт запуска: {going: [коды], soon: [коды]}. */
         @JavascriptInterface
         public String busy() {
+            if (!bridgeAllowed()) return "{}";
             if (currentChain >= 0) return "{}";
             return busyNow;
         }
     }
 
-    /** Адрес — нашего сервера, а не сети и не чужой. */
+    /**
+     * Адрес — нашего сервера, а не сети и не чужой.
+     *
+     * Обычная проверка строки: ни WebView, ни его потоков не трогает, поэтому её
+     * можно звать откуда угодно, в том числе с потока моста (JavaBridge).
+     */
     private static boolean isOurs(String url) {
         return url != null && (url.equals(SERVER) || url.startsWith(SERVER + "/"));
+    }
+
+    /**
+     * Пускать ли мост: только когда в окне НАШ адрес (21.10.2026, план Z0).
+     *
+     * Зачем отдельно от currentChain. Режим сети — это наше намерение, а не адрес:
+     * он снимается в onPageFinished, то есть по факту загрузки, и по дороге
+     * расходится с тем, что человек видит в окне. Адрес окна запоминается там, где
+     * его безопасно спросить, — на главном потоке (pageUrl/pageOurs). WebView.getUrl()
+     * здесь, на потоке моста, бросил бы RuntimeException «A WebView method was called
+     * on thread 'JavaBridge'»: тогда молчал бы весь мост, а не только чужая страница.
+     * В журнал идёт только хост: в query чужих адресов бывают токены.
+     */
+    private boolean bridgeAllowed() {
+        // Два volatile-поля пишутся по очереди, поэтому одного pageOurs мало:
+        // pageUrl уже новый, а флаг ещё старый — сверяем и адрес, но только строкой.
+        if (pageOurs && isOurs(pageUrl)) return true;
+        Log.w(TAG, "мост: чужая страница " + hostOf(pageUrl));
+        return false;
     }
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+
+        // Белая заливка окна — чтобы при запуске не мигала тема платформы.
+        getWindow().setBackgroundDrawable(new ColorDrawable(Color.WHITE));
 
         if (SERVER.isEmpty()) {
             TextView lost = new TextView(this);
@@ -803,6 +949,7 @@ public class MainActivity extends Activity {
             lost.setTextSize(16f);
             lost.setText("Адрес сервера не задан при сборке (-PkorzinaServer).");
             setContentView(lost);
+            paintSystemBars();
             return;
         }
 
@@ -836,10 +983,47 @@ public class MainActivity extends Activity {
         chainPanel.setVisibility(View.GONE);
         root.addView(chainPanel, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        // Панель кабинета ФНС — такая же, но своя: режимы разные и одновременно не живут.
+        fnsPanel = buildFnsPanel();
+        fnsPanel.setVisibility(View.GONE);
+        root.addView(fnsPanel, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         setContentView(root);
+        // ПОСЛЕ setContentView: WindowInsetsController живёт в оформлении окна, которое
+        // создаётся вместе с содержимым. До него PhoneWindow.getInsetsController()
+        // падал с NullPointerException (замер на эмуляторе 19.10.2026).
+        paintSystemBars();
         setUpWeb();
         openOurApp("/");
+    }
+
+    /**
+     * Строки состояния и навигации — под цвет белой страницы: тёмные значки на белом.
+     * API 30+ — через WindowInsetsController (setSystemUiVisibility там устарел),
+     * ниже — старыми флагами. Светлые значки полосы навигации есть только с API 26:
+     * на 24–25 полоса остаётся тёмной, иначе белые кнопки пропали бы на белом.
+     */
+    private void paintSystemBars() {
+        Window window = getWindow();
+        window.setStatusBarColor(Color.WHITE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            window.setNavigationBarColor(Color.WHITE);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            WindowInsetsController bars = window.getInsetsController();
+            if (bars != null) {
+                int light = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                          | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                bars.setSystemBarsAppearance(light, light);
+            }
+        } else {
+            int flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            }
+            window.getDecorView().setSystemUiVisibility(flags);
+        }
     }
 
     /** Панель на странице сети: действия, которые серверу с этой страницы не сделать. */
@@ -885,11 +1069,59 @@ public class MainActivity extends Activity {
         recordBtn.setOnClickListener(v -> toggleRecord());
         row.addView(recordBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
+        // «Раздел» — прочитать карточки открытой страницы сети в единую базу. Нужна там,
+        // где сервер витрину не видит (Пятёрочка, Самокат), а телефон видит.
+        readBtn = new Button(this);
+        readBtn.setText("Раздел");
+        readBtn.setTextSize(12f);
+        readBtn.setOnClickListener(v -> readSection());
+        row.addView(readBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
         cartBtn = new Button(this);
         cartBtn.setText("Собрать");
         cartBtn.setTextSize(12f);
         cartBtn.setOnClickListener(v -> toggleCart());
         row.addView(cartBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.1f));
+
+        panel.addView(row);
+        return panel;
+    }
+
+    /**
+     * Панель кабинета ФНС: под чужой страницей, как панель сети под магазином.
+     *
+     * Здесь только то, чего страница налоговой сама не сделает: вернуться на наш экран
+     * и забрать вход. Всё остальное — дело сайта кабинета и человека.
+     */
+    private View buildFnsPanel() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(8), dp(6), dp(8), dp(8));
+        panel.setBackgroundColor(0xF2F5F5F5);
+
+        fnsStatus = new TextView(this);
+        fnsStatus.setTextSize(13f);
+        fnsStatus.setTextColor(Color.DKGRAY);
+        fnsStatus.setSingleLine(true);
+        fnsStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        panel.addView(fnsStatus);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER);
+        row.setPadding(0, dp(6), 0, 0);
+
+        Button backBtn = new Button(this);
+        backBtn.setText("←");
+        backBtn.setTextSize(12f);
+        backBtn.setOnClickListener(v -> leaveFns());
+        row.addView(backBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.6f));
+
+        fnsGrabBtn = new Button(this);
+        fnsGrabBtn.setText("Забрать чеки");
+        fnsGrabBtn.setTextSize(12f);
+        fnsGrabBtn.setOnClickListener(v -> grabFns());
+        row.addView(fnsGrabBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.4f));
 
         panel.addView(row);
         return panel;
@@ -911,20 +1143,51 @@ public class MainActivity extends Activity {
         s.setUserAgentString(s.getUserAgentString() + " KorzinaApp/" + BuildConfig.VERSION_NAME);
         web.addJavascriptInterface(new KorzinaBridge(), "Korzina");
 
+        // ПОЛОС ПРОКРУТКИ НЕ ВИДНО (1.15). WebView рисует у правого края полосу — по ней
+        // сразу видно, что перед человеком сайт, а не приложение. Листается страница
+        // пальцем и без неё.
+        web.setVerticalScrollBarEnabled(false);
+        web.setHorizontalScrollBarEnabled(false);
+
         CookieManager jar = CookieManager.getInstance();
         jar.setAcceptCookie(true);
         jar.setAcceptThirdPartyCookies(web, true);
 
         web.setWebViewClient(new WebViewClient() {
             @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                super.onPageStarted(view, url, favicon);
+                // Адрес берём из колбэка, а не из view.getUrl(): документация
+                // предупреждает, что в onPageStarted getUrl() может отдавать ещё
+                // старую страницу, а страница корзины зовёт collect уже по
+                // DOMContentLoaded. Поток здесь главный — WebView не трогаем.
+                pageUrl = url == null ? "" : url;
+                pageOurs = isOurs(pageUrl);
+                followFnsPage();
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
+                pageUrl = url == null ? "" : url;
+                pageOurs = isOurs(pageUrl);
                 // Режим следует за адресом, а не за тем, кто его открыл: человек
                 // мог вернуться «назад» на наш сайт сам — и панель должна уйти
                 // вместе со страницей сети, а не висеть поверх корзины.
                 if (currentChain >= 0 && !isHostOf(currentChain, url)) {
                     exitChainMode();
                 }
+                // Кабинет ФНС: вернулись на наш адрес — режим снят, панель ушла.
+                if (fnsMode) {
+                    followFnsPage();
+                }
+                // Ушли с чужого окна на наш экран — историю чужого окна за собой не
+                // тащим. Заказ ставят leaveFns/leaveChain и снятие режимов (и это
+                // может случиться выше, в followFnsPage/exitChainMode), а исполняется
+                // он уже здесь, на нашем адресе. На каждой странице clearHistory не
+                // зовём — иначе «назад» перестанет возвращать между экранами.
+                clearHistoryIfOurs(view);
+                if (fnsMode) return;
                 if (currentChain < 0) return;
                 chainPanel.setVisibility(View.VISIBLE);
                 if (recording) {
@@ -936,6 +1199,26 @@ public class MainActivity extends Activity {
                     // Во время сборки строку состояния ведёт она: «кладу 3 из 9».
                     say(CHAINS[currentChain][0] + " — " + shortenUrl(url), false);
                 }
+            }
+
+            @Override
+            public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+                super.doUpdateVisitedHistory(view, url, isReload);
+                pageUrl = url == null ? "" : url;
+                pageOurs = isOurs(pageUrl);
+                followFnsPage();
+            }
+
+            @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                super.onPageCommitVisible(view, url);
+                pageUrl = url == null ? "" : url;
+                pageOurs = isOurs(pageUrl);
+                followFnsPage();
+                // Страница уже наша и зафиксирована в истории: исполняем заказ здесь
+                // же, не дожидаясь onPageFinished — из back-forward cache он может
+                // не прийти, а флаг обязан сняться на первом нашем событии страницы.
+                clearHistoryIfOurs(view);
             }
 
             @Override
@@ -964,12 +1247,37 @@ public class MainActivity extends Activity {
                 progress.setVisibility(p < 100 ? View.VISIBLE : View.GONE);
                 progress.setProgress(p);
             }
+
+            @Override
+            public boolean onConsoleMessage(ConsoleMessage message) {
+                // Сборщик кабинета ФНС говорит с человеком только через журнал страницы:
+                // моста на чужом адресе нет. Показываем его строки на панели — иначе
+                // «забираю чеки…» висело бы молча, что бы ни случилось.
+                if (fnsMode && message != null) {
+                    String text = message.message() == null ? "" : message.message();
+                    if (text.startsWith(FNS_ERR)) {
+                        // «Ключ не нашёлся» и прочие концы: работу можно начинать заново.
+                        sayFns(text.substring(FNS_ERR.length()).trim());
+                        handler.removeCallbacks(fnsStuck);
+                        fnsGrabbing = false;
+                        setFnsButtons(true);
+                    } else if (text.startsWith(FNS_LOG)) {
+                        sayFns(text.substring(FNS_LOG.length()).trim());
+                    }
+                }
+                return super.onConsoleMessage(message);
+            }
         });
     }
 
     // ── Режимы: наш сайт и страница сети ──
     private void openOurApp(String path) {
         exitChainMode();
+        exitFnsMode();
+        // Стартовый адрес запоминаем до loadUrl: getUrl() сразу после загрузки ещё
+        // старый, а мост может спросить в ту же секунду. Дальше адрес ведут колбэки.
+        pageUrl = SERVER + path;
+        pageOurs = isOurs(pageUrl);
         web.loadUrl(SERVER + path);
     }
 
@@ -982,18 +1290,50 @@ public class MainActivity extends Activity {
         web.loadUrl(CHAINS[idx][2]);
     }
 
+    /**
+     * Заказать разовую очистку истории. Ставится только там, где следом
+     * гарантированно грузится наш адрес. Заказ снимается на первом нашем событии
+     * страницы, а если его не будет — таймером: флаг не должен пережить переход.
+     */
+    private void orderHistoryClear() {
+        clearHistoryOnce = true;
+        handler.removeCallbacks(clearHistoryReset);
+        handler.postDelayed(clearHistoryReset, CLEAR_HISTORY_MS);
+    }
+
+    /**
+     * Наш адрес открылся — исполнить заказ. Единственный clearHistory() в файле:
+     * на каждой нашей странице историю не чистим, иначе «назад» перестанет
+     * возвращать между экранами приложения.
+     */
+    private void clearHistoryIfOurs(WebView view) {
+        if (!clearHistoryOnce || !pageOurs) return;
+        view.clearHistory();
+        clearHistoryOnce = false;
+        handler.removeCallbacks(clearHistoryReset);
+    }
+
     /** Уйти со страницы сети обратно к сайту — по истории, если она ещё помнит нас. */
     private void leaveChain() {
         if (web.canGoBack()) {
-            // Режим снимется сам в onPageFinished, когда адрес перестанет быть
-            // адресом сети: два переключателя одного режима разъезжаются.
+            // История уже помнит наш предыдущий экран — идём по ней и ничего не
+            // чистим. Флаг здесь не взводим: goBack() может вернуть на страницу
+            // сети (или на страницу из back-forward cache, откуда onPageFinished
+            // не придёт), и тогда заказ исполнился бы на следующем нашем экране —
+            // «назад» закрыл бы приложение.
             web.goBack();
         } else {
+            // Истории нет — грузим наш адрес сами, заказ снимется уже на нём.
+            orderHistoryClear();
             openOurApp("/");
         }
     }
 
     private void exitChainMode() {
+        // Снятие режима сети — это и есть уход на наш экран. Заказ ставится, только
+        // когда режим правда был: openOurApp зовёт этот метод и на обычных переходах
+        // между нашими экранами, а там историю чистить нельзя.
+        if (currentChain >= 0) orderHistoryClear();
         if (cartRun != null) stopRun("Сборка остановлена: вы ушли со страницы сети.");
         currentChain = -1;
         stopRecording();
@@ -1004,7 +1344,101 @@ public class MainActivity extends Activity {
         saveLoginBtn.setEnabled(on);
         saveOffersBtn.setEnabled(on);
         recordBtn.setEnabled(on);
+        readBtn.setEnabled(on);
         cartBtn.setEnabled(on);
+    }
+
+    // ── Кабинет ФНС: вход у человека, ключ — у приложения ──
+
+    /** Открыть кабинет ФНС на весь экран. Вход и капчу человек проходит сам. */
+    private void openFnsWindow() {
+        exitChainMode();
+        fnsMode = true;
+        fnsGrabbing = false;
+        pageUrl = FNS_URL;
+        pageOurs = isOurs(pageUrl);
+        showFnsPanel();
+        setFnsButtons(true);
+        sayFns("Войдите в кабинет ФНС сами — приложение капчу не проходит. Потом нажмите «Забрать чеки».");
+        web.loadUrl(FNS_URL);
+    }
+
+    /** Уйти из кабинета на телефонный экран чеков: и по «←», и по кнопке «назад». */
+    private void leaveFns() {
+        // Кабинет и всё, куда с него уехали (вплоть до App Store), остаются позади:
+        // «назад» с экрана чеков должен вести по нашему приложению, а не туда.
+        // Заказ ставится до openOurApp: наш адрес загрузится гарантированно.
+        orderHistoryClear();
+        openOurApp("/phone/receipts");
+    }
+
+    /** Снять режим кабинета ФНС: панель уходит, таймер ожидания гаснет. */
+    private void exitFnsMode() {
+        // Режим снимается, когда окно вернулось на наш адрес (или мы уходим с кабинета):
+        // его история нашему экрану не нужна. Без режима (openOurApp на обычном
+        // переходе) заказа нет — иначе очистка сломала бы «назад» между нашими экранами.
+        if (fnsMode) orderHistoryClear();
+        fnsMode = false;
+        fnsGrabbing = false;
+        handler.removeCallbacks(fnsStuck);
+        if (fnsPanel != null) fnsPanel.setVisibility(View.GONE);
+    }
+
+    /**
+     * Панель видна ровно в одном случае: кабинет открыт через мост, а в окне — чужой
+     * адрес. На нашем сайте её нет: там командует сайт.
+     */
+    private void showFnsPanel() {
+        if (fnsPanel == null) return;
+        fnsPanel.setVisibility(fnsMode && !pageOurs ? View.VISIBLE : View.GONE);
+    }
+
+    /** Режим ФНС следует за адресом окна, а не за намерением: вернулись — панель ушла. */
+    private void followFnsPage() {
+        if (!fnsMode) return;
+        if (pageOurs) exitFnsMode();
+        else showFnsPanel();
+    }
+
+    private void setFnsButtons(boolean on) {
+        if (fnsGrabBtn != null) fnsGrabBtn.setEnabled(on);
+    }
+
+    private void sayFns(String text) {
+        if (fnsStatus == null) return;
+        fnsStatus.setText(text);
+        Log.i(TAG, "кабинет ФНС: " + text);
+    }
+
+    /**
+     * «Забрать чеки»: отдать странице адрес приложения и исполнить сборщик.
+     *
+     * Страница уходит в приложение САМА (location.replace внутри fns-grab.js), когда
+     * найдёт ключ. Поэтому сразу после инъекции ничего не утверждаем: ждём возврата
+     * адреса, а если его нет — через fnsStuck говорим словами. Ошибки сборщика
+     * приходят строками журнала (onConsoleMessage) и тоже видны на панели.
+     */
+    private void grabFns() {
+        if (!fnsMode || pageOurs || fnsGrabbing) return;
+        fnsGrabbing = true;
+        setFnsButtons(false);
+        sayFns("Забираю чеки. Вход и капчу вы уже прошли — приложение вернётся на «Мои чеки».");
+        // Адрес приложения — до сборщика: он берёт его из window.KORZINA_APP_URL.
+        web.evaluateJavascript("window.KORZINA_APP_URL='" + SERVER + "/phone/receipts';", null);
+        handler.removeCallbacks(fnsStuck);
+        handler.postDelayed(fnsStuck, 25 * 1000);
+        // GET, а не POST: статика сервера POST не принимает. call с null телом — GET.
+        call(FNS_GRAB, null, (status, text) -> {
+            if (!fnsMode) return;
+            if (status != 200 || text == null || text.trim().isEmpty()) {
+                fnsGrabbing = false;
+                setFnsButtons(true);
+                handler.removeCallbacks(fnsStuck);
+                sayFns("Сборщик не отдался (код " + status + "). Попробуйте ещё раз.");
+                return;
+            }
+            web.evaluateJavascript(text, null);
+        });
     }
 
     // ── Запись корзины ──
@@ -1084,6 +1518,7 @@ public class MainActivity extends Activity {
         int clicks = 1;    // сколько касаний у неё: упаковок, которых не хватает
         int put = 0;       // сколько уже сделано
         int tries = 0;     // сколько раз ещё раз искали кнопку на этой карточке
+        boolean cardAgain = false; // карточку уже перезагружали, когда кнопка не нашлась
         int have = 0;      // сколько упаковок этой позиции уже лежало в корзине сети
         int target = 1;    // сколько должно лежать
         int readTries = 0;            // сколько раз перечитывали страницу корзины без итога
@@ -1093,6 +1528,11 @@ public class MainActivity extends Activity {
         // Что лежит в корзине сети: артикул → упаковок. Начинается с памяти телефона (что
         // он сам клал сюда прежде) и поправляется ответами сети с корзиной целиком.
         JSONObject cart = new JSONObject();
+        // Артикул → цена за упаковку, как её назвал ответ сети с корзиной. Цель требует
+        // получать цены корзиной в фоне: у Перекрёстка, Vprok и Монетки обход отдаёт
+        // только названия, и живая корзина — единственное место, где цена видна.
+        // Ответа с ценами не было — карта пуста, и в отчёт цена не попадёт.
+        JSONObject prices = new JSONObject();
         JSONObject names = new JSONObject();   // артикул → название: чтобы назвать лишнее
         // Артикулы, которые страница корзины сети уже показывала под именем наряда.
         final JSONObject shown = new JSONObject();
@@ -1106,10 +1546,22 @@ public class MainActivity extends Activity {
         String how = "tap";          // чем легла текущая позиция: касанием или запросом
         final long startedAt = SystemClock.uptimeMillis();
         String cartHint = "";        // дорога к корзине не нашлась: что похожее было на странице
+        String consent = "";         // на этой позиции закрыли баннер согласия — это видно в отчёте
+        boolean consentRetry = false; // после баннера карточку уже проверили повторно — один раз
+        double cardPrice = 0;         // цена за упаковку из текста карточки этой позиции
+        boolean cardGone = false;     // карточка/её текст сказали «нет в наличии»
+        boolean searchPause = false; // предыдущая строка упала на поиске/стене: нужна пауза
+        int badged = 0;             // счётчик корзины до касания: после — сверяем, вырос ли
+        boolean badgeChecked = false; // признак корзины после касания уже проверяли — один раз
         String now = "";             // что делается сейчас — строкой на панели или нашем экране
         int blank = 0;               // сколько карточек подряд открылись без заголовка
         long beatAt = 0;             // когда последний раз сказали серверу, как идёт
         boolean again = false;       // корзина сети оказалась пустой: один повтор целиком
+        // Последний шаг наряда Ленты (Z9): серверная ссылка на готовую корзину.
+        // Спрашиваем один раз за проход; завершение наряда от неё не зависит.
+        boolean linkAsked = false;
+        boolean linkDone = false;
+        String linkNote = "";        // что телефон сказал про ссылку — для отчёта строки
 
         CartRun(int chain, WebView view, Slot slot) {
             this.chain = chain;
@@ -1258,6 +1710,24 @@ public class MainActivity extends Activity {
                 r.rules = rules != null ? rules : new JSONObject();
                 r.rules.put("_note", plan.optString("note", ""));
                 r.lines = lines != null ? lines : new JSONArray();
+                // Позиции, которых сеть не знает: сервер просит найти их поиском самой сети.
+                // Там, где сервер к витрине не пробивается (Пятёрочка, Самокат — замер
+                // 18.10.2026), это единственная дорога к настоящему артикулу. Строка ложится
+                // в тот же список, но с пометкой search: первый шаг у неё — страница поиска.
+                // Рядом — второй, короткий адрес поиска (search_alt), если сервер его дал:
+                // когда первый запрос принесёт не тот товар, телефон попробует этот.
+                JSONArray search = plan.optJSONArray("search");
+                for (int i = 0; search != null && i < search.length(); i++) {
+                    JSONObject s = search.optJSONObject(i);
+                    String sUrl = s == null ? "" : s.optString("url", "");
+                    String sName = s == null ? "" : s.optString("name", "");
+                    if (sUrl.isEmpty() || sName.isEmpty()) continue;
+                    r.lines.put(new JSONObject()
+                        .put("name", sName).put("url", "").put("search", sUrl)
+                        .put("search_alt", s.optString("search_alt", ""))
+                        .put("clicks", 1).put("sku", "")
+                        .put("product_id", s.optInt("product_id", 0)));
+                }
                 r.ourTotal = plan.optDouble("total", 0);
                 if (plan.has("basket") && !plan.isNull("basket")) r.basket = plan.optInt("basket", r.basket);
                 if (!plan.optString("stamp", "").isEmpty()) r.stamp = plan.optString("stamp", "");
@@ -1303,7 +1773,9 @@ public class MainActivity extends Activity {
     private void nextLine(final CartRun r) {
         if (!alive(r)) return;
         if (r.at >= r.lines.length()) {
-            openCart(r);
+            // Строки наряда пройдены. У Ленты последний шаг — ссылка на готовую корзину,
+            // собранную сервером (Z9): дальше завершение идёт как раньше, через openCart.
+            lentaCartLink(r);
             return;
         }
         JSONObject line = r.lines.optJSONObject(r.at);
@@ -1314,7 +1786,15 @@ public class MainActivity extends Activity {
         r.have = r.slot != null && !sku.isEmpty() ? Math.max(0, r.cart.optInt(sku, 0)) : 0;
         r.put = 0;
         r.tries = 0;
+        r.cardAgain = false;
         r.how = "tap";
+        r.consent = "";
+        r.consentRetry = false;
+        r.cardPrice = 0;
+        r.cardGone = false;
+        r.searchPause = false;
+        r.badged = 0;
+        r.badgeChecked = false;
         if (r.target - r.have <= 0) {
             keptLine(r, line);
             return;
@@ -1327,6 +1807,122 @@ public class MainActivity extends Activity {
             return;
         }
         cardLine(r, line);
+    }
+
+    /**
+     * ПОСЛЕДНИЙ ШАГ НАРЯДА ЛЕНТЫ — ССЫЛКА НА ГОТОВУЮ КОРЗИНУ (Z9, 21.10.2026).
+     *
+     * ЗАЧЕМ. Витрина Ленты отвечает телефону 403 (замеры 20–21.10.2026), и строка наряда
+     * в корзину не ложится. Сервер умеет собрать эту корзину своим MCP
+     * (app/storefind.cart_link) и отдать ссылку: на ней те же позиции с количеством,
+     * человеку остаётся нажать одну кнопку. Телефон открывает её последним шагом —
+     * когда все строки уже пройдены, — и говорит в отчёте, что увидел: товары или стену.
+     *
+     * НЕОБЯЗАТЕЛЬНЫЙ ШАГ. Наряд не ждёт сервер: не ответил за CARTLINK_WAIT_MS — идём
+     * читать корзину сети, как раньше. Любой отказ — пометка в отчёте, и только.
+     */
+    private void lentaCartLink(final CartRun r) {
+        if (!alive(r)) return;
+        if (!"lenta".equals(r.code) || r.linkAsked) {
+            endOfRun(r);
+            return;
+        }
+        r.linkAsked = true;
+        // Позиции наряда как есть: имя, артикул, количество и фасовка. Сервер сам ищет
+        // артикул Ленты по имени и берёт только точное совпадение (app/storefind.py).
+        JSONObject body = new JSONObject();
+        try {
+            JSONArray items = new JSONArray();
+            for (int i = 0; i < r.lines.length(); i++) {
+                JSONObject line = r.lines.optJSONObject(i);
+                if (line == null) continue;
+                String name = line.optString("name", "");
+                if (name.isEmpty()) continue;
+                JSONObject one = new JSONObject().put("name", name);
+                int productId = line.optInt("product_id", 0);
+                if (productId > 0) one.put("product_id", productId);
+                double qty = line.optDouble("qty", 0);
+                if (qty > 0) one.put("qty", qty);
+                double pack = line.optDouble("pack_g", 0);
+                if (pack > 0) one.put("pack_g", pack);
+                items.put(one);
+            }
+            body.put("store", r.code).put("items", items);
+        } catch (Exception ignored) { }
+        status(r, r.name + ": прошу сервер собрать ссылку на корзину", false);
+        // Срок на всю ссылку: завершение наряда важнее последнего шага.
+        final Runnable fallback = () -> endOfRun(r);
+        handler.postDelayed(fallback, CARTLINK_WAIT_MS);
+        call("/api/device/cartlink", body, (code, text) -> {
+            handler.removeCallbacks(fallback);
+            if (!alive(r) || r.linkDone) return;
+            JSONObject answer = new JSONObject();
+            try { answer = new JSONObject(text); } catch (Exception ignored) { }
+            String url = answer.optString("url", "");
+            if (code != 200 || !answer.optBoolean("ok") || url.isEmpty()) {
+                String why = code == 200 ? answer.optString("why", "") : serverError(code, text);
+                if (why.isEmpty()) why = answer.optString("note", "");
+                if (why.isEmpty()) why = "сервер не дал ссылку";
+                linkNote(r, "Лента: сервер не собрал ссылку — " + why);
+                endOfRun(r);
+                return;
+            }
+            openCartLink(r, url);
+        });
+    }
+
+    /** Ссылку собрали: открыть её и посмотреть, пустил ли сайт с этого подключения. */
+    private void openCartLink(final CartRun r, final String url) {
+        if (!alive(r)) return;
+        if (!isHostOf(r.chain, url)) {
+            linkNote(r, "Лента: сервер не собрал ссылку — адрес не Ленты");
+            endOfRun(r);
+            return;
+        }
+        go(r, url);
+        whenReady(r, url, null, SETTLE_MS, () -> {
+            if (!alive(r)) return;
+            // СТЕНА ПЕРВОЙ: 403 и «Доступ запрещён» — это не пустая корзина, и слова
+            // страницы у них свои. Совсем без слов, но и без товаров — тот же итог.
+            r.view.evaluateJavascript(WALL_JS, wallAnswer -> {
+                if (!alive(r)) return;
+                String wall = wallAnswer == null ? "" : wallAnswer.replace("\"", "").trim();
+                if (!wall.isEmpty()) {
+                    linkNote(r, CARTLINK_BLOCKED);
+                    endOfRun(r);
+                    return;
+                }
+                r.view.evaluateJavascript(CART_LINK_JS, shown -> {
+                    if (!alive(r)) return;
+                    boolean goods = shown != null && "1".equals(shown.replace("\"", "").trim());
+                    linkNote(r, goods ? CARTLINK_VISIBLE : CARTLINK_BLOCKED);
+                    endOfRun(r);
+                });
+            });
+        });
+    }
+
+    /** Последний шаг наряда отработал: дальше — прежнее завершение, чтение корзины сети. */
+    private void endOfRun(final CartRun r) {
+        if (r == null || r.linkDone) return;
+        r.linkDone = true;
+        if (!alive(r)) return;
+        openCart(r);
+    }
+
+    /**
+     * Пометка последнего шага — в note последней строки отчёта: её видит сервер.
+     * Строк ещё нет (наряд не дал ни одной) — пометка остаётся в r.linkNote.
+     */
+    private static void linkNote(CartRun r, String note) {
+        if (r == null || note == null || note.isEmpty()) return;
+        r.linkNote = note;
+        JSONObject last = r.items.length() == 0 ? null : r.items.optJSONObject(r.items.length() - 1);
+        if (last == null) return;
+        String old = last.optString("note", "");
+        try {
+            last.put("note", old.isEmpty() ? note : old + "; " + note);
+        } catch (Exception ignored) { }
     }
 
     /** Позиция уже лежит в корзине сети, сколько нужно: её не трогаем, и это не отказ. */
@@ -1346,6 +1942,11 @@ public class MainActivity extends Activity {
     /** Позиция касаниями: открыть её карточку и нажать «В корзину» (у лежащей — «+»). */
     private void cardLine(final CartRun r, JSONObject line) {
         if (!alive(r)) return;
+        String search = line == null ? "" : line.optString("search", "");
+        if (!search.isEmpty()) {
+            searchLine(r, line, search);
+            return;
+        }
         String url = line == null ? "" : line.optString("url", "");
         r.how = "tap";
         if (url.isEmpty() || !isHostOf(r.chain, url)) {
@@ -1366,6 +1967,821 @@ public class MainActivity extends Activity {
         }
         go(r, url);
         whenReady(r, url, null, SETTLE_MS, () -> onCard(r));
+    }
+
+    /**
+     * Найти позицию поиском самой сети. Там, где сервер к витрине не пробивается
+     * (Пятёрочка и Самокат отвечают отказом и с сервера, и с домашнего адреса — замер
+     * 18.10.2026), ищет телефон человека: он в этой сети обычный покупатель.
+     *
+     * Порядок: спросить сервер (у Магнита, Ленты и Дикси он ходит рабочими дорогами,
+     * app/storefind.py) → открыть страницу поиска наряда → взять первую карточку →
+     * сверить её название с названием позиции → дальше обычный путь карточки (касание
+     * «В корзину», проверка, отчёт). Адрес найденной карточки уходит в отчёте, и сервер
+     * заводит товар в единой базе — со следующего наряда эта сеть его знает.
+     */
+    private void searchLine(final CartRun r, final JSONObject line, final String searchUrl) {
+        if (!alive(r)) return;
+        if (!isHostOf(r.chain, searchUrl)) {
+            lineDone(r, false, "адрес поиска принадлежит не этой сети", new JSONArray());
+            return;
+        }
+        // СНАЧАЛА СЕРВЕР, ПОТОМ ВИТРИНА. Телефон упирается в стены сети: Лента и Дикси
+        // отвечают 403, Магнит отдаёт пустую SPA (замеры 20–21.10.2026). Те же сети
+        // сервер обходит рабочими дорогами (app/storefind.py), поэтому строку без
+        // подтверждённого артикула сначала спрашиваем у него. Ответ точный — сразу
+        // открываем найденную карточку; отказ — решаем по сети: Ленте страница поиска
+        // всё равно не откроется, а Магнит и Дикси идут прежним резервом.
+        if (serverFind(r.code)) {
+            JSONObject body = new JSONObject();
+            try {
+                body.put("store", r.code);
+                body.put("name", line.optString("name", ""));
+                double pack = line.optDouble("pack_g", 0);
+                if (pack > 0) body.put("pack_g", pack);
+            } catch (Exception ignored) { }
+            status(r, "спрашиваю сервер: " + line.optString("name", ""), false);
+            call("/api/device/find", body, (code, text) -> {
+                if (!alive(r)) return;
+                JSONObject answer = new JSONObject();
+                try { answer = new JSONObject(text); } catch (Exception ignored) { }
+                JSONArray found = answer.optJSONArray("found");
+                JSONObject first = found == null || found.length() == 0 ? null : found.optJSONObject(0);
+                String url = first == null ? "" : first.optString("url", "");
+                // АРТИКУЛ СЕТИ ИЗ ОТВЕТА СЕРВЕРА (21.10.2026). Строка наряда-поиска приходит
+                // с пустым `sku`: сервер достаёт артикул из адреса карточки уже после отчёта
+                // (app/catalog/fromurl.py). У Дикси старый формат `dixy.ru/product/<слаг>`
+                // числа не несёт, и строка не заводится в каталоге — а `found[0].sku` ответа
+                // этот артикул знает (app/storefind.py `_candidate`). Кладём его в строку,
+                // `lineDone` уносит его в отчёт. Пустой не пишем: строку не портим.
+                String foundSku = first == null ? "" : first.optString("sku", "");
+                if (code == 200 && answer.optBoolean("ok") && !url.isEmpty()) {
+                    try {
+                        line.put("url", url).put("search", "");
+                        if (!foundSku.isEmpty()) line.put("sku", foundSku);
+                        // ИМЯ С КАРТОЧКИ СЕТИ (21.10.2026). `name` строки — НАЗВАНИЕ НАШЕЙ
+                        // позиции из наряда, и в каталог сети оно попадать не должно: Дикси
+                        // зовёт товар «Туалетная бумага Papia Балийский цветок», а у нас он
+                        // «Papia Bali Flower» — база решила бы, что сеть называет его так же.
+                        // Кладём имя найденной карточки отдельным полем; `name` не трогаем —
+                        // он нужен отчёту и сверке карточки. Пустое не пишем.
+                        String foundName = first.optString("name", "");
+                        if (!foundName.isEmpty()) line.put("found_name", foundName);
+                    } catch (Exception ignored) { }
+                    noteLine(line, "нашёл через сервер (уверенность "
+                        + String.format(new Locale("ru"), "%.2f", first.optDouble("confidence", 0)) + ")");
+                    status(r, "нашёл на сервере: " + line.optString("name", ""), false);
+                    // Дальше — обычная логика карточки: адрес, заголовок, кнопка, отчёт.
+                    cardLine(r, line);
+                    return;
+                }
+                String why = code == 200 ? serverWhy(answer)
+                    : "сервер: " + serverError(code, text);
+                if (code == 200 && answer.optBoolean("ok") && url.isEmpty()) {
+                    why = "сервер: нашёл товар, но не дал адреса карточки";
+                }
+                if (code == 200 && "lenta".equals(r.code)) {
+                    // У Ленты сервер — единственная рабочая дорога: страница поиска
+                    // ответит 403, и открывать её значит показать человеку стену.
+                    lineDone(r, false, why, new JSONArray());
+                    return;
+                }
+                if (!why.contains("ищется телефоном") && !why.contains("серверного поиска нет")) {
+                    noteLine(line, why);
+                    try {
+                        line.put("server_why", why);
+                    } catch (Exception ignored) { }
+                }
+                status(r, "ищу в сети: " + line.optString("name", ""), false);
+                go(r, searchUrl);
+                whenReady(r, searchUrl, null, SETTLE_MS, () -> firstCard(r, line));
+            });
+            return;
+        }
+        status(r, "ищу в сети: " + line.optString("name", ""), false);
+        go(r, searchUrl);
+        whenReady(r, searchUrl, null, SETTLE_MS, () -> firstCard(r, line));
+    }
+
+    /**
+     * Сети, у которых поиск умеет делать сервер (app/storefind.py): Магнит — webgate,
+     * Лента — свой MCP, Дикси — движок подсказок. У Пятёрочки и Самоката серверного
+     * поиска нет: их ищет только телефон, и звать find для них незачем.
+     */
+    private static final String[] SERVER_FIND = {"magnit", "lenta", "dixy"};
+
+    private static boolean serverFind(String code) {
+        for (String c : SERVER_FIND) {
+            if (c.equals(code)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Причина отказа сервера словами: готовая `hint` ответа, а без неё — `why` и
+     * `difference` лучшего кандидата. Помечаем «сервер: …»: в отчёте видно, что это
+     * сказала наша дверь, а не сеть.
+     */
+    private static String serverWhy(JSONObject answer) {
+        // ГОТОВАЯ ФРАЗА СЕРВЕРА — ПЕРВОЙ. В `hint` сервер уже собрал из фактов то,
+        // что человеку читать: «марка совпала, фасовка неизвестна; … — проверьте на
+        // экране „Связи“» (app/storefind.py, _hint). Приклеивать к ней `why` и
+        // `difference` — сказать одно и то же дважды. При точном совпадении сервер
+        // отдаёт hint пустым, и работает прежняя склейка.
+        String hint = answer == null ? "" : answer.optString("hint", "").trim();
+        if (!hint.isEmpty()) return "сервер: " + hint;
+        String why = answer == null ? "" : answer.optString("why", "").trim();
+        String difference = "";
+        JSONArray found = answer == null ? null : answer.optJSONArray("found");
+        JSONObject best = found == null || found.length() == 0 ? null : found.optJSONObject(0);
+        if (best != null) difference = best.optString("difference", "").trim();
+        if (!difference.isEmpty() && !why.contains(difference)) {
+            why = why.isEmpty() ? difference : why + " (отличие: " + difference + ")";
+        }
+        if (why.isEmpty()) why = "сервер не нашёл точного совпадения";
+        return "сервер: " + why;
+    }
+
+    /** Первая карточка на странице поиска: адрес и текст. */
+    private static final String FIRST_CARD_JS =
+        "(function(){var a=document.querySelector('a[href*=\"/product\"]');"
+        + "return a?JSON.stringify({u:a.getAttribute('href')||'',t:(a.innerText||'').slice(0,240)}):'';})()";
+
+    /**
+     * Сколько ждать карточки поиска: витрина рисует их скриптами, а не разметкой.
+     * 20 с — один проход; не дождались — askCard делает ещё один такой же проход по
+     * той же странице и только потом говорит «ничего не нашёл».
+     */
+    private static final int SEARCH_LIMIT_MS = 20000;
+
+    /**
+     * ПАУЗА МЕЖДУ ПОИСКАМИ. Живой прогон 21.10.2026 (APK 83 401): Магнит после
+     * серии поисков (пять позиций по два запроса) показал стену «Выключите VPN.
+     * И всё заработает» — похоже, сеть ограничивает частоту запросов. После
+     * неудачи поиска (пустая выдача, стена, чужой товар) следующую позицию
+     * начинаем не сразу, а через SEARCH_PAUSE_MS. Ждём через handler.postDelayed,
+     * а не Thread.sleep: поток интерфейса не должен замирать.
+     */
+    private static final int SEARCH_PAUSE_MS = 1800;
+
+    /**
+     * Сколько наряд ждёт серверную ссылку на корзину Ленты (Z9). Последний шаг
+     * необязательный: не ответил — наряд всё равно кончается чтением корзины сети.
+     * 8 с — заметно меньше 15 с connect-таймаута телефона, и человек не ждёт зря.
+     */
+    private static final int CARTLINK_WAIT_MS = 8000;
+
+    /** Что телефон говорит в отчёте о серверной ссылке Ленты — словами владельца. */
+    private static final String CARTLINK_VISIBLE = "корзина собрана сервером, товары видны";
+    private static final String CARTLINK_BLOCKED =
+        "корзина собрана сервером, сайт не пустил с этого подключения";
+
+    /**
+     * ТОВАРЫ НА СЕРВЕРНОЙ ССЫЛКЕ (Z9). Лента собирает корзину ссылкой, и человеку
+     * остаётся нажать на странице одну кнопку. С телефона эта страница иногда
+     * открывается, иногда отвечает 403 (замеры 20–21.10.2026). Поэтому телефон не
+     * верит, что «ссылка есть», а смотрит, что на ней: слова корзины, товара или
+     * цену в рублях. Пусто — сайт страницу не отдал; стену ловит WALL_JS раньше.
+     */
+    private static final String CART_LINK_JS = "(function(){try{" +
+        "var t=((document.body?document.body.innerText:'')+' '+(document.title||''));" +
+        "return /корзин|товар|₽/i.test(t)?'1':'';}catch(e){return '';}})()";
+
+    /**
+     * Первая карточка поиска. Имя сверяем с названием позиции: у чужого товара кнопку не
+     * жмём — иначе в корзину человека лёг бы не тот товар, а отчёт назвал бы его нашим.
+     *
+     * ЖДЁМ КАРТОЧКУ, А НЕ ЧИТАЕМ ОДИН РАЗ. Живой прогон 19.10.2026 (нажатие «Собрать»
+     * на Магните): поиск открылся, а карточек в разметке не было ни одной — отчёт сказал
+     * «поиск сети ничего не нашёл» по всем четырём позициям. При этом тот же адрес поиска
+     * отвечает страницей в 40 КБ, где ссылок `/product/` нет вовсе даже на слово «молоко»:
+     * витрина рисует выдачу своими скриптами. Одна проверка сразу после перехода их не
+     * застаёт, поэтому спрашиваем раз в полсекунды, пока карточка не покажется.
+     */
+    private void firstCard(final CartRun r, JSONObject line) {
+        askCard(r, line, SystemClock.uptimeMillis() + SEARCH_LIMIT_MS, false);
+    }
+
+    /**
+     * СТЕНА ПО АДРЕСУ, А НЕ «НЕТ КНОПКИ». Замер 20.10.2026: с эмулятора Магнит показал
+     * «Выключите VPN. И всё заработает», а отчёт писал «поиск сети ничего не нашёл» или
+     * «на карточке не нашлось кнопки „в корзину"». По такому тексту человек не понимает,
+     * что дело не в товаре и не в кнопке, а в том, что сеть не пускает этот адрес.
+     */
+    private static final String WALL_JS = "(function(){" +
+        "var t=((document.body?document.body.innerText:'')+' '+(document.title||'')).toLowerCase();" +
+        // 403 И «ДОСТУП ЗАПРЕЩЁН» — ЭТО НЕ ПУСТАЯ ВЫДАЧА. Живой прогон 21.10.2026:
+        // Лента ответила «403 Error Forbidden Доступ к сайту lenta.com запрещен»,
+        // Дикси — «Forbidden … Apache Server at dixy.ru Port 443», а на карточке —
+        // «Не удалось загрузить сайт. Возможно, у вас включён ВПН». По этим словам
+        // причина должна говорить про блокировку, а не про «ничего не нашёл».
+        "if(/403\\s*error|error\\s*403|http 403|forbidden/.test(t))" +
+        "  return 'blocked';" +
+        "if(/доступ к сайту[\\s\\S]{0,80}запрещ/.test(t))" +
+        "  return 'blocked';" +
+        "if(/не удалось загрузить сайт|возможно, у вас включён впн|возможно, у вас включен впн/.test(t))" +
+        "  return 'blocked';" +
+        "if(/выключите vpn|включите vpn|отключите vpn|включён vpn|включен vpn/.test(t))" +
+        "  return 'vpn';" +
+        "if(/не робот|captcha|проверка безопасности|подтвердите, что вы/.test(t))" +
+        "  return 'captcha';" +
+        "if(/выберите адрес|введите адрес|адрес доставки|куда доставить/.test(t))" +
+        "  return 'address';" +
+        "if(/войдите|авторизуйтесь|вход в личный кабинет|личный кабинет/.test(t))" +
+        "  return 'login';" +
+        "return '';})()";
+
+    /**
+     * «ИСКАТЬ В КАТАЛОГЕ» ВМЕСТО ВЫДАЧИ. Живой прогон 21.10.2026 (APK 80 453): Магнит
+     * открыл страницу поиска, а карточек на ней не было — витрина предложила «искать в
+     * каталоге». Для человека это не пустой экран и не стена: сеть не нашла по запросу
+     * и предлагает каталог. После попытки короткого search_alt причина должна называть
+     * именно это, иначе человеку снова непонятно, почему товара нет.
+     */
+    private static final String CATALOG_JS = "(function(){" +
+        "var t=(document.body?document.body.innerText:'').toLowerCase();" +
+        "return /искать в каталоге|ничего не найдено|ничего не нашлось|нет подходящих товаров/.test(t)?'1':'';})()";
+
+    /**
+     * БАННЕР СОГЛАСИЯ ПОВЕРХ КАРТОЧКИ. Живой прогон 20.10.2026: у Самоката карточку
+     * накрыл баннер, и сборка сказала «страница не похожа на карточку товара: нет
+     * заголовка (рядом: «Соглашаюсь»)», хотя карточка была открыта. Перед проверками
+     * карточки жмём первую видимую кнопку ровно из списка согласия. Слова сравниваем
+     * по отдельности — innerText, aria-label, title, — регистр не важен, пробелы
+     * нормализованы. «Оплатить», «Войти», «Подписаться», «Оформить» не трогаем: это
+     * не согласие, а действие человека.
+     */
+    private static final String CONSENT_JS =
+        "(function(){try{"
+      + "var OK=['соглашаюсь','согласен','принять','принимаю','принять все','хорошо','понятно','разрешить','accept','i agree','allow all'];"
+      + "var NO=/оплат|войти|вход|подпис|оформ/;"
+      + "function norm(s){return String(s||'').replace(/\\s+/g,' ').trim().toLowerCase();}"
+      + "function pick(e){var v=[norm(e.innerText),norm(e.getAttribute('aria-label')),norm(e.getAttribute('title'))];"
+      + " for(var i=0;i<v.length;i++){if(!v[i]||v[i].length>40||NO.test(v[i]))continue;"
+      + "  for(var k=0;k<OK.length;k++)if(v[i]===OK[k])return v[i];}return '';}"
+      + "var els=[].slice.call(document.querySelectorAll('button,[role=button],a'));"
+      + "for(var j=0;j<els.length;j++){var e=els[j];if(e.disabled)continue;"
+      + " var r=e.getBoundingClientRect();if(r.width<=0||r.height<=0||r.bottom<=0||r.top>=(window.innerHeight||100000))continue;"
+      + " var t=pick(e);if(!t)continue;e.click();return t;}"
+      + "return '';}catch(e){return '';}})()";
+
+    /**
+     * ПРЕДЕЛ ПРИЧИНЫ ОТКАЗА. why уезжает на сервер, а он режет её до 200 знаков
+     * (app/phonecart.py). Режем здесь же, чтобы дамп страницы не терялся на полпути
+     * и чтобы в отчёте была ровно одна, уже короткая причина.
+     */
+    private static final int WHY_LIMIT = 200;
+
+    /**
+     * ЧТО ВИДИТ ТЕЛЕФОН НА СТРАНИЦЕ. Живой прогон 21.10.2026 (APK 78 693): причины уже
+     * называют запрос («искали «Баранка самокат 300 г»») и закрывают баннер согласия,
+     * но по ним не понять, что на странице Магнита, Ленты, Самоката и Дикси — пустая
+     * выдача, стена, чужой экран или карточка, которую витрина ещё не дорисовала.
+     *
+     * Только заголовок (60), путь (60) и первые слова текста (120); пробелы и переносы
+     * схлопнуты. Ни формы, ни куки, ни значения полей не читаются, никуда не шлётся:
+     * это строка причины, а не сбор данных.
+     */
+    private static final String PAGE_JS =
+        "(function(){try{"
+      + "function sp(s){return String(s||'').replace(/\\s+/g,' ').trim();}"
+      + "var t=sp(document.title),p=sp(location.pathname);"
+      + "var x=sp(document.body?document.body.innerText:'');"
+      + "return JSON.stringify({t:t.slice(0,60),p:p.slice(0,60),x:x.slice(0,120)});"
+      + "}catch(e){return JSON.stringify({t:'',p:'',x:''});}})()";
+
+    /**
+     * Сказать словами, что сеть не пускает этот адрес.
+     *
+     * КОНТЕКСТ ВАЖЕН. «Выключите VPN» после серии поисков — это не про мобильный
+     * интернет, а про то, что сеть ограничивает частоту запросов (живой прогон
+     * 21.10.2026, Магнит: пять позиций по два запроса — и стена). В поиске и на
+     * карточке так и говорим: «ограничивает частоту запросов — попробуйте позже».
+     * Прежний текст про мобильный интернет остаётся предпроверке сети (blankWall):
+     * там стена означает, что окно не пускают вовсе.
+     *
+     * `frequent` — проверка вызвана поиском или карточкой, а не предпроверкой сети.
+     */
+    private String wallText(String name, String wall, boolean frequent) {
+        if (wall.contains("blocked")) {
+            return name + ": сеть не пускает этот адрес (403) — попробуйте позже "
+                + "или с другого подключения.";
+        }
+        if (wall.contains("address")) {
+            return name + ": сеть просит выбрать адрес — выберите его в окне сети и нажмите «Собрать» снова.";
+        }
+        if (wall.contains("login")) {
+            return name + ": сеть просит войти — войдите в окно сети и нажмите «Собрать» снова.";
+        }
+        if (wall.contains("vpn")) {
+            return frequent
+                ? name + ": сеть ограничивает частоту запросов — попробуйте позже."
+                : name + ": сеть не пускает этот адрес — показывает «Выключите VPN». "
+                    + "Включите мобильный интернет и попробуйте снова.";
+        }
+        return name + ": сеть просит пройти проверку — пройдите её в окне и попробуйте снова.";
+    }
+
+    /** Стена в предпроверке сети: прежний текст про мобильный интернет. */
+    private String wallText(String name, String wall) {
+        return wallText(name, wall, false);
+    }
+
+    /**
+     * Дамп страницы в объект {t, p, x}. Зовётся ТОЛЬКО из причины отказа: успех страницу
+     * не читает. Ничего не отправляет — это строка для отчёта.
+     */
+    private void pageDump(final CartRun r, final Consumer<JSONObject> cb) {
+        if (!alive(r) || cb == null) return;
+        r.view.evaluateJavascript(PAGE_JS, value -> {
+            if (!alive(r)) return;
+            cb.accept(asObject(value));
+        });
+    }
+
+    /** Дамп словами: «заголовок» путь «первые слова». Пустая страница — пустая строка. */
+    private static String pageWords(JSONObject dump) {
+        if (dump == null) return "";
+        String t = oneSpace(dump.optString("t", ""), 60);
+        String p = oneSpace(dump.optString("p", ""), 60);
+        String x = oneSpace(dump.optString("x", ""), 120);
+        if (t.isEmpty() && p.isEmpty() && x.isEmpty()) return "";
+        StringBuilder w = new StringBuilder();
+        if (!t.isEmpty()) w.append('«').append(t).append('»');
+        if (!p.isEmpty()) {
+            if (w.length() > 0) w.append(' ');
+            w.append(p);
+        }
+        if (!x.isEmpty()) {
+            if (w.length() > 0) w.append(' ');
+            w.append('«').append(x).append('»');
+        }
+        return w.toString();
+    }
+
+    /** Пробелы и переносы — в один пробел, и не длиннее max: строку читает человек. */
+    private static String oneSpace(String text, int max) {
+        String s = text == null ? "" : text.replaceAll("\\s+", " ").trim();
+        if (s.length() > max) s = s.substring(0, max);
+        return s;
+    }
+
+    /** Отказ поиска с дампом: «…: искали «…», на странице «t» p «x»». */
+    private static String searchWhy(String why, JSONObject dump) {
+        String page = pageWords(dump);
+        String base = why == null ? "" : why;
+        return fitWhy(page.isEmpty() ? base : base + ", на странице " + page);
+    }
+
+    /** Отказ карточки с дампом и кнопками рядом: «… (на странице …, рядом: «…»)». */
+    private static String cardWhy(String why, JSONObject dump, JSONArray near) {
+        StringBuilder out = new StringBuilder(why == null ? "" : why);
+        String page = pageWords(dump);
+        String round = quoted(near);
+        if (!page.isEmpty()) {
+            out.append(" (на странице ").append(page);
+            if (!round.isEmpty()) out.append(", рядом: ").append(round);
+            out.append(')');
+        } else if (!round.isEmpty()) {
+            out.append(" (рядом: ").append(round).append(')');
+        }
+        return fitWhy(out.toString());
+    }
+
+    /** Слова в кавычках через запятую — как их видно в отчёте. */
+    private static String quoted(JSONArray words) {
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; words != null && i < words.length(); i++) {
+            out.append(i > 0 ? ", " : "").append('«').append(words.optString(i)).append('»');
+        }
+        return out.toString();
+    }
+
+    /** Не длиннее WHY_LIMIT: сервер режет why до 200, и обрезанное видно многоточием. */
+    private static String fitWhy(String why) {
+        String w = why == null ? "" : why;
+        if (w.length() <= WHY_LIMIT) return w;
+        return w.substring(0, WHY_LIMIT - 1) + "…";
+    }
+
+    /** Проверить страницу на стену и назвать причину по-человечески, иначе — обычную. */
+    private void checkLineOrWall(final CartRun r, String why) {
+        if (!alive(r)) return;
+        r.view.evaluateJavascript(WALL_JS, value -> {
+            if (!alive(r)) return;
+            String wall = value == null ? "" : value.replace("\"", "").trim();
+            checkLine(r, wall.isEmpty() ? why : wallText(r.name, wall, true));
+        });
+    }
+
+    /**
+     * Предварительная проверка легла: подряд карточки без заголовка. Что на странице —
+     * вход, проверка, стена или просто чужой экран: по дампу это видно, а отказ называет
+     * шаг человека. Живой прогон 21.10.2026: Самокат отказал общим «показывает не карточки
+     * товара — возможно, просит войти или проверку» и не показал ни строчки о странице.
+     */
+    private void blankWall(final CartRun r, final String plain, final JSONObject dump,
+                           final boolean empty) {
+        if (!alive(r)) return;
+        r.view.evaluateJavascript(WALL_JS, value -> {
+            if (!alive(r)) return;
+            String wall = value == null ? "" : value.replace("\"", "").trim();
+            String why;
+            if (empty) {
+                // Самокат, прогон 21.10.2026: прямой адрес карточки открылся, заголовок
+                // пуст, текста меньше сорока знаков — страница не отдалась вовсе (пусто
+                // или бот-защита). Это не «просит войти»: вход тут ничего не изменит.
+                why = r.name + ": страница карточки не отдалась (пусто/бот-защита) — "
+                    + "откройте её сами и проверьте.";
+            } else if ("login".equals(wall) || "captcha".equals(wall)) {
+                why = r.name + " просит войти или проверку — войдите в окне сети "
+                    + "и нажмите «Собрать» снова.";
+            } else if (!wall.isEmpty()) {
+                why = wallText(r.name, wall);
+            } else {
+                why = plain;
+            }
+            String page = pageWords(dump);
+            if (!page.isEmpty()) why = why + " (на странице " + page + ")";
+            endBackground(r, "failed", fitWhy(why));
+        });
+    }
+
+    private void askCard(final CartRun r, JSONObject line, final long until, final boolean retried) {
+        if (!alive(r)) return;
+        r.view.evaluateJavascript(FIRST_CARD_JS, value -> {
+            if (!alive(r)) return;
+            JSONObject card = asObject(value);
+            String href = card.optString("u", "");
+            if (href.isEmpty()) {
+                if (SystemClock.uptimeMillis() < until) {
+                    handler.postDelayed(() -> askCard(r, line, until, retried), READY_POLL_MS);
+                    return;
+                }
+                // Один повторный проход по той же странице: витрина могла дорисовать выдачу
+                // позже срока. Второй раз не повторяем, иначе ожидание станет бесконечным.
+                if (!retried) {
+                    status(r, "ищу ещё раз: " + line.optString("name", ""), false);
+                    askCard(r, line, SystemClock.uptimeMillis() + SEARCH_LIMIT_MS, true);
+                    return;
+                }
+                // Поиск идёт по странице сети: если страница — стена («Выключите VPN»,
+                // 403), то «ничего не нашёл» неверно. Спрашиваем страницу, что она такое.
+                r.view.evaluateJavascript(WALL_JS, wallAnswer -> {
+                    if (!alive(r)) return;
+                    String wall = wallAnswer == null ? "" : wallAnswer.replace("\"", "").trim();
+                    if (!wall.isEmpty()) {
+                        lineDone(r, false, wallText(r.name, wall, true), new JSONArray());
+                        return;
+                    }
+                    // ПУСТАЯ ВЫДАЧА — ПРОБУЕМ КОРОТКИЙ ЗАПРОС. Живой прогон 21.10.2026:
+                    // Магнит на полный запрос не нашёл ничего («— искать в каталоге»).
+                    // Второй адрес (search_alt) пробуем ровно один раз: флаг живёт в
+                    // строке наряда, а неудачу второго запроса назовёт notFoundWhy.
+                    String alt = line.optString("search_alt", "");
+                    if (!alt.isEmpty() && !line.optBoolean("search_alt_tried", false)
+                            && isHostOf(r.chain, alt)) {
+                        try {
+                            line.put("search_alt_tried", true);
+                        } catch (Exception ignored) { }
+                        status(r, "ищу по короткому запросу: " + line.optString("name", ""), false);
+                        go(r, alt);
+                        whenReady(r, alt, null, SETTLE_MS, () -> firstCard(r, line));
+                        return;
+                    }
+                    // «— ИСКАТЬ В КАТАЛОГЕ» — сеть не нашла по запросу и предлагает каталог.
+                    // Это не пустая страница: причина должна называть именно это. Дамп
+                    // покажет и остальное, что телефон видел на странице.
+                    r.view.evaluateJavascript(CATALOG_JS, catAnswer -> {
+                        if (!alive(r)) return;
+                        String mark = catAnswer == null ? "" : catAnswer.replace("\"", "").trim();
+                        final String base = mark.equals("1")
+                            ? "сеть не нашла по запросу и предлагает каталог"
+                            : "поиск сети ничего не нашёл за " + (SEARCH_LIMIT_MS / 1000) + " с";
+                        pageDump(r, dump -> lineDone(r, false,
+                            searchWhy(notFoundWhy(line, base), dump), new JSONArray()));
+                    });
+                });
+                return;
+            }
+            String full = href.startsWith("http") ? href
+                : (href.startsWith("/") ? CHAINS[r.chain][2].replaceAll("/+$", "") + href : "");
+            if (full.isEmpty() || !isHostOf(r.chain, full)) {
+                lineDone(r, false, "поиск сети вернул чужой адрес", new JSONArray());
+                return;
+            }
+            if (!resembles(line.optString("name", ""), card.optString("t", ""))) {
+                // Первый запрос принёс не тот товар: у строки наряда есть второй, короткий
+                // адрес поиска. Пробуем его один раз — по нему сеть чаще понимает имя.
+                String alt = line.optString("search_alt", "");
+                if (!alt.isEmpty() && !line.optBoolean("search_alt_tried", false)
+                        && isHostOf(r.chain, alt)) {
+                    try {
+                        line.put("search_alt_tried", true);
+                    } catch (Exception ignored) { }
+                    status(r, "ищу по короткому запросу: " + line.optString("name", ""), false);
+                    go(r, alt);
+                    whenReady(r, alt, null, SETTLE_MS, () -> firstCard(r, line));
+                    return;
+                }
+                lineDone(r, false, "поиск сети нашёл не тот товар", new JSONArray());
+                return;
+            }
+            try {
+                line.put("url", full).put("search", "");
+                if (line.optBoolean("search_alt_tried", false)) {
+                    line.put("note", "нашёл по короткому запросу");
+                }
+            } catch (Exception ignored) { }
+            cardLine(r, line);
+        });
+    }
+
+    /** Похоже ли название позиции на текст карточки: общее слово от четырёх букв. */
+    private static boolean resembles(String name, String text) {
+        if (name.isEmpty() || text.isEmpty()) return false;
+        String lower = text.toLowerCase();
+        for (String word : name.toLowerCase().split("[^\\p{L}\\p{N}]+")) {
+            if (word.length() >= 4 && lower.contains(word)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * СТРОГАЯ СВЕРКА НАЗВАНИЯ — ДОПОЛНЕНИЕ К resembles(), А НЕ ЗАМЕНА.
+     *
+     * Живой прогон 21.10.2026 (APK 83 401, Пятёрочка): «Сушка самокат со сгущенным
+     * молоком 300 г» привела на ЧУЖОЙ товар «Сушки Невская сушка Простые 300г».
+     * Вес совпал (300 г), поэтому проверка фасовки промолчала, а resembles()
+     * пропустил по общему слову «сушка» — чужой товар лёг бы в корзину владельца.
+     *
+     * Значимое слово — от пяти букв, кроме общих продуктовых: «молоко», «сушка»,
+     * «хлеб» и подобных. Сравниваем корни: «молоком» тоже общее слово, «сушка»
+     * покрывает «сушки». В заголовке карточки должно найтись хотя бы одно значимое
+     * слово, а если их два и больше — хотя бы два. Ни одного — карточка чужая.
+     * Заглушка «товар с открытой страницы» — не товар наряда, её не сверяем.
+     */
+    private static final String[] COMMON_WORDS = {
+        "молок", "сушк", "хлеб", "сыр", "бумаг", "вод", "чай", "кофе", "масл",
+        "соль", "сахар", "мука", "мяс", "куриц", "рыб", "яйц", "кефир", "йогурт",
+        "творог", "сметан", "сливк"
+    };
+
+    /** Слово — общее продуктовое: сравниваем по корню, а не целиком («молоком»). */
+    private static boolean commonWord(String word) {
+        for (String root : COMMON_WORDS) {
+            if (word.startsWith(root)) return true;
+        }
+        return false;
+    }
+
+    /** Значимые слова названия: от пяти букв и не общие продуктовые, без повторов. */
+    private static List<String> significantWords(String name) {
+        List<String> out = new ArrayList<>();
+        String lower = name == null ? "" : name.toLowerCase(Locale.ROOT).replace('ё', 'е');
+        for (String word : lower.split("[^\\p{L}\\p{N}]+")) {
+            if (word.length() < 5 || commonWord(word)) continue;
+            if (!out.contains(word)) out.add(word);
+        }
+        return out;
+    }
+
+    /** Есть ли значимое слово в заголовке: целиком или по первым пяти буквам («сгущённое»). */
+    private static boolean significantIn(String word, String card) {
+        if (card.contains(word)) return true;
+        return word.length() > 5 && card.contains(word.substring(0, 5));
+    }
+
+    /**
+     * Причина отказа по названию или пустая строка, если карточка та же.
+     * Возвращает «на карточке другой товар: в наряде «…», на карточке «…»».
+     */
+    private static String nameWhy(JSONObject line, String title) {
+        if (line == null) return "";
+        String name = line.optString("name", "");
+        if (name.isEmpty() || "товар с открытой страницы".equals(name)) return "";
+        String card = title == null ? "" : title.toLowerCase(Locale.ROOT).replace('ё', 'е');
+        if (card.isEmpty()) return "";
+        List<String> sig = significantWords(name);
+        if (sig.isEmpty()) return "";
+        // Одного значимого слова мало, если их два и больше: «самокат» без
+        // «сгущенным» — уже другой товар.
+        int need = sig.size() >= 2 ? 2 : 1;
+        int have = 0;
+        for (String word : sig) {
+            if (significantIn(word, card)) have++;
+        }
+        if (have >= need) return "";
+        return "на карточке другой товар: в наряде «" + name + "», на карточке «"
+            + title + "»";
+    }
+
+    /**
+     * ФАСОВКА В ЗАГОЛОВКЕ КАРТОЧКИ. Живой разбор 21.10.2026: у Магнита на нашей
+     * полке стоит другая линейка того же бренда (Parmalat Natura Premium Comfort),
+     * у Ленты — Parmalat Edge. Короткий запрос «Молоко Parmalat» приводит на любую
+     * из них, а resembles() видит только общие слова — в корзину владельца лёг бы
+     * другой товар, за который он заплатит. Поэтому перед касанием «В корзину»
+     * сверяем вес упаковки из наряда (pack_g) с числом и единицей в заголовке.
+     *
+     * Порядок альтернатив важен: «кг» и «гр» стоят раньше «г», иначе «1 кг»
+     * разобралось бы как 1 грамм. «1,8% 1 л» даёт литр, а не процент: число с «%»
+     * единицей не сопровождается и в фасовку не идёт. «8 рулонов» фасовки не даёт
+     * вовсе — рулоны не граммы.
+     */
+    private static final String PACK_RE =
+        "(\\d+(?:[.,]\\d+)?)\\s*(кг|kg|гр|мл|ml|г|g|л|l)(?![а-яёa-z])";
+
+    private static final Pattern PACK = Pattern.compile(
+        PACK_RE, Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+
+    /**
+     * ДОПУСК ФАСОВКИ. Десятая часть — общее правило, но не шире 40 г: соседние
+     * пачки молока отличаются на 50 г (950 и 1000), и 10 % от килограмма пропустили
+     * бы чужую линейку. 30 г в заголовке — это округление или нетто, а не другая
+     * упаковка (1000 и 1030 — одна).
+     */
+    private static final double PACK_PART = 0.10;
+    private static final double PACK_NOISE_G = 40;
+
+    /**
+     * ЦЕНА В ТЕКСТЕ КАРТОЧКИ. У Пятёрочки, Самоката и Дикси телефон жмёт «В корзину»
+     * прямо на карточке, ответа сети с корзиной нет — `r.prices` пуст, и раньше цена
+     * не уходила в отчёт вовсе (живой прогон 21.10.2026: строка завелась с
+     * price = NULL, in_stock = NULL). Подпись та же, что у серверной `_CARD_PRICE`
+     * (app/phonecart.py): «205 00 ₽», «1 748,98 ₽», «299.99 руб». Название товара
+     * кончается там, где она начинается.
+     */
+    private static final String CARD_PRICE_RE =
+        "(\\d[\\d\\s]{0,8}(?:[.,]\\d{1,2})?)\\s*(?:₽|руб)";
+
+    private static final Pattern CARD_PRICE = Pattern.compile(
+        CARD_PRICE_RE, Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+
+    /** Чем карточка говорит «товара нет». Слова витрин, а не догадка. */
+    private static final String[] NO_STOCK_WORDS = {"нет в наличии", "больше нет", "отсутств"};
+
+    /**
+     * Цена за упаковку из текста карточки; 0 — цены не видно.
+     *
+     * «1 748,98 ₽» — 1748.98: пробел разделяет тысячи, запятая — копейки.
+     * «205 00 ₽» — 205.00: точки нет, поэтому последняя группа ровно из двух цифр
+     * читается как копейки, а не как тысячи (в «1 748» группа из трёх — тысячи).
+     * «8 рулонов» цены не даёт: денежной подписи в тексте нет. Не умножаем ни на что:
+     * цена — за упаковку, количество сервер знает из наряда.
+     *
+     * БЕРЁМ ПОСЛЕДНЮЮ ЦЕНУ. У товара со скидкой в карточке лежат две
+     * («629 00 ₽ 299 99 ₽»), и платит человек вторую — то же правило, что у
+     * CARDS_JS и tools/browser_cards.parse_text_card. Первая была бы ценой до скидки.
+     */
+    private static double cardPrice(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        Matcher m = CARD_PRICE.matcher(text.replace('\u00a0', ' '));
+        double price = 0;
+        while (m.find()) {
+            String raw = m.group(1).trim();
+            if (raw.indexOf(',') >= 0 || raw.indexOf('.') >= 0) {
+                raw = raw.replace(" ", "").replace(',', '.');
+            } else {
+                String[] parts = raw.split("\\s+");
+                if (parts.length > 1 && parts[parts.length - 1].length() == 2) {
+                    StringBuilder whole = new StringBuilder();
+                    for (int i = 0; i < parts.length - 1; i++) whole.append(parts[i]);
+                    raw = whole.append('.').append(parts[parts.length - 1]).toString();
+                } else {
+                    raw = raw.replace(" ", "");
+                }
+            }
+            try {
+                double value = Double.parseDouble(raw);
+                if (value > 0) price = Math.round(value * 100) / 100.0;
+            } catch (Exception ignored) { }
+        }
+        return price;
+    }
+
+    /** Сказала ли карточка, что товара нет: «Нет в наличии», «Больше нет», «отсутствует». */
+    private static boolean cardGone(String text) {
+        if (text == null || text.isEmpty()) return false;
+        String low = text.toLowerCase(Locale.ROOT).replace('ё', 'е');
+        for (String word : NO_STOCK_WORDS) {
+            if (low.contains(word)) return true;
+        }
+        return false;
+    }
+
+    /** Граммы одной упаковки из строки: «950 г» → 950, «1 кг» → 1000, нет — 0. */
+    private static double packGrams(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        Matcher m = PACK.matcher(text.replace('\u00a0', ' '));
+        String value = "";
+        String unit = "";
+        // Последнее число с единицей: в «Молоко 1,8% 1 л» процент идёт раньше объёма.
+        while (m.find()) {
+            value = m.group(1);
+            unit = m.group(2);
+        }
+        if (value.isEmpty()) return 0;
+        try {
+            double number = Double.parseDouble(value.replace(',', '.'));
+            String lower = unit.toLowerCase(Locale.ROOT);
+            return ("кг".equals(lower) || "kg".equals(lower)
+                || "л".equals(lower) || "l".equals(lower)) ? number * 1000 : number;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Сверять ли фасовку у этой строки. Заглушка «товар с открытой страницы» —
+     * не товар наряда, веса у неё нет. Весовой товар (unit = kg) продаётся на
+     * развес: фасовка на 100 г у него не пачка, и сравнение только мешало бы.
+     */
+    private static boolean packChecked(JSONObject line) {
+        if (line == null) return false;
+        if ("товар с открытой страницы".equals(line.optString("name", ""))) return false;
+        if ("kg".equalsIgnoreCase(line.optString("unit", ""))) return false;
+        return line.optDouble("pack_g", 0) > 0;
+    }
+
+    /** Допуск расхождения фасовки в граммах: десятая часть веса, но не шире 40 г. */
+    private static double packTolerance(double want) {
+        return Math.min(want * PACK_PART, PACK_NOISE_G);
+    }
+
+    /** Причина отказа по фасовке или пустая строка, если сошлась или не разобрана. */
+    private static String packWhy(JSONObject line, String title) {
+        if (line == null) return "";
+        double want = line.optDouble("pack_g", 0);
+        if (want <= 0) return "";
+        double card = packGrams(title);
+        if (card <= 0) return "";
+        if (Math.abs(card - want) <= packTolerance(want)) return "";
+        return "карточка другого веса/объёма: в наряде " + grams(want)
+            + " г, на карточке " + grams(card) + " г";
+    }
+
+    /** Целые граммы для отчёта: 950.0 → 950, 1000.0 → 1000. */
+    private static long grams(double value) {
+        return Math.round(value);
+    }
+
+    /** Пометка к успешной строке: не повторять её, если карточка проверяется снова. */
+    private static void noteLine(JSONObject line, String note) {
+        if (line == null || note == null || note.isEmpty()) return;
+        String old = line.optString("note", "");
+        if (old.contains(note)) return;
+        try {
+            line.put("note", old.isEmpty() ? note : old + "; " + note);
+        } catch (Exception ignored) { }
+    }
+
+    /**
+     * «Поиск ничего не нашёл» с фактическим запросом. Живой прогон 20.10.2026: Магнит и
+     * Лента дали этот отказ по всем позициям, и по отчёту нельзя было понять, что ушло
+     * в сеть и пробовали ли второй адрес (search_alt). Теперь в причине видно и имя
+     * позиции, и запрос из адреса поиска.
+     */
+    private static String notFoundWhy(JSONObject line, String base) {
+        String name = line == null ? "" : line.optString("name", "");
+        String asked = searchQuery(line == null ? "" : line.optString("search", ""));
+        if (asked.isEmpty()) asked = name;
+        StringBuilder why = new StringBuilder(base);
+        if (!asked.isEmpty()) why.append(": искали «").append(asked).append('»');
+        if (!asked.isEmpty() && !name.isEmpty() && !asked.equals(name)) {
+            why.append(" (позиция «").append(name).append("»)");
+        }
+        if (line != null && line.optBoolean("search_alt_tried", false)) {
+            // ФАКТИЧЕСКИЙ ВТОРОЙ ЗАПРОС. Живой прогон 21.10.2026: в отчёте «второй
+            // запрос «…»» повторял ПЕРВЫЙ — при пустом разборе адреса alt подменялся
+            // именем позиции, а имя и есть первый запрос. Теперь запрос берётся из
+            // адреса search_alt; не разобрался — так и говорим, без подмены.
+            String alt = searchQuery(line.optString("search_alt", ""));
+            if (alt.isEmpty()) {
+                why.append(", второй запрос тоже пуст");
+            } else {
+                why.append(", второй запрос «").append(alt).append("» тоже пуст");
+            }
+        }
+        return why.toString();
+    }
+
+    /** Запрос, которым искали: параметр text/q/search/query/term/value из адреса поиска сети. */
+    private static String searchQuery(String url) {
+        if (url == null || url.isEmpty()) return "";
+        try {
+            String query = new URL(url).getQuery();
+            if (query == null || query.isEmpty()) return "";
+            for (String pair : query.split("&")) {
+                int eq = pair.indexOf('=');
+                String key = eq < 0 ? pair : pair.substring(0, eq);
+                if (!"text".equals(key) && !"q".equals(key) && !"search".equals(key)
+                        && !"query".equals(key) && !"term".equals(key)
+                        && !"value".equals(key)) continue;
+                return URLDecoder.decode(eq < 0 ? "" : pair.substring(eq + 1), "UTF-8");
+            }
+        } catch (Exception ignored) { }
+        return "";
     }
 
     /**
@@ -1442,8 +2858,41 @@ public class MainActivity extends Activity {
 
     private void onCard(final CartRun r) {
         if (!alive(r)) return;
-        r.view.evaluateJavascript(watchScript(r), null);
-        tapAdd(r, r.have > 0);
+        // Сначала согласие, потом карточка: у Самоката баннер накрывал её, и проверка
+        // «нет заголовка» срабатывала на живой карточке (живой прогон 20.10.2026).
+        dismissConsent(r, () -> {
+            if (!alive(r)) return;
+            if (!r.consent.isEmpty() && !r.consentRetry) {
+                // Самокат, прогон 21.10.2026: баннер закрылся, а карточка ещё перерисовывалась,
+                // и проверка сразу после согласия падала. Один повторный заход через
+                // CONSENT_WAIT_MS; только его неудача становится отказом (с дампом страницы).
+                r.consentRetry = true;
+                handler.postDelayed(() -> onCard(r), CONSENT_WAIT_MS);
+                return;
+            }
+            r.view.evaluateJavascript(watchScript(r), null);
+            tapAdd(r, r.have > 0);
+        });
+    }
+
+    /**
+     * Закрыть баннер согласия, если он есть, и только потом проверять карточку. Нажатие
+     * настоящее, глазами страницы (click), но выбор узкий: только слова согласия из
+     * CONSENT_JS. Ждём CONSENT_WAIT_MS: после согласия витрина перерисовывает карточку.
+     */
+    private void dismissConsent(final CartRun r, final Runnable then) {
+        if (!alive(r)) return;
+        r.view.evaluateJavascript(CONSENT_JS, value -> {
+            if (!alive(r)) return;
+            String hit = value == null ? "" : value.replace("\"", "").trim();
+            if (hit.isEmpty()) {
+                then.run();
+                return;
+            }
+            r.consent = "закрыл баннер согласия";
+            status(r, r.consent, false);
+            handler.postDelayed(then, CONSENT_WAIT_MS);
+        });
     }
 
     private void tapAdd(final CartRun r, final boolean again) {
@@ -1451,12 +2900,25 @@ public class MainActivity extends Activity {
         r.view.evaluateJavascript(pickScript(r, again), value -> {
             if (!alive(r)) return;
             JSONObject got = asObject(value);
+            // ЦЕНА И НАЛИЧИЕ — С КАРТОЧКИ, А НЕ ИЗ ОТВЕТА КОРЗИНЫ. У Пятёрочки, Самоката и
+            // Дикси ответа с корзиной нет, и `r.prices` пуст; цена видна только здесь.
+            // Наличие «нет» тоже говорит карточка. Оба поля — на одну позицию и сбрасываются
+            // в nextLine, чтобы не переехать на следующую.
+            r.cardPrice = cardPrice(got.optString("text", ""));
+            if (r.cardPrice <= 0) r.cardPrice = cardPrice(got.optString("title", ""));
+            r.cardGone = got.optBoolean("gone")
+                || cardGone(got.optString("text", "")) || cardGone(got.optString("title", ""));
             if (got.optBoolean("h1") || got.optBoolean("found")) r.blank = 0;
             if (got.optBoolean("gone")) {
                 lineDone(r, false, "карточка говорит, что товара нет в наличии", new JSONArray());
                 return;
             }
             if (!got.optBoolean("found")) {
+                // СТРАНИЦА НЕ ОТДАЛАСЬ — НЕ «ПРОСИТ ВОЙТИ». Самокат, прогон 21.10.2026:
+                // прямой адрес карточки открылся, но заголовка нет, текста меньше
+                // сорока знаков — пустая отдача или бот-защита. Отличаем это от входа
+                // по признаку empty из PICK_JS (текст короче 40 знаков или пустой title).
+                final boolean emptyPage = r.put == 0 && got.optBoolean("empty");
                 // Кнопка ещё не нарисована: через VPN компьютера у Магнита полоса покупки
                 // с «В корзину» появлялась позже заголовка, и обе карточки ушли в «не
                 // нашлось кнопки», хотя через 10 с она была на месте (эмулятор, 18.10.2026).
@@ -1508,26 +2970,121 @@ public class MainActivity extends Activity {
                 if (!got.optBoolean("h1") && r.put == 0 && r.slot != null && ++r.blank >= BLANK_LIMIT) {
                     // Две карточки подряд без заголовка — сеть показывает не товары: просит
                     // войти, проверку «я не робот» или «Выключите VPN». Это шаг человека.
-                    endBackground(r, "failed", r.name + " показывает не карточки товара — "
-                        + "возможно, просит войти или пройти проверку. Откройте его сами.");
+                    // Живой прогон 21.10.2026: Самокат отказал общим «показывает не карточки
+                    // товара» и не показал страницу — теперь причина берёт дамп и, если
+                    // страница просит вход или проверку, говорит, что именно сделать.
+                    final String plain = r.name + " показывает не карточки товара — "
+                        + "возможно, просит войти или пройти проверку. Откройте его сами.";
+                    pageDump(r, dump -> blankWall(r, plain, dump, emptyPage));
                     return;
+                }
+                // Карточка открылась, а кнопки за все попытки не нашлось: один раз
+                // перезагружаем карточку и ищем снова. Витрины дорисовывают полосу покупки
+                // позже заголовка; второй раз не перезагружаем — иначе отказ не наступит.
+                if (!r.cardAgain && !again && r.put == 0 && got.optBoolean("h1")) {
+                    JSONObject line = r.lines.optJSONObject(r.at);
+                    String here = line == null ? "" : line.optString("url", "");
+                    if (!here.isEmpty() && isHostOf(r.chain, here)) {
+                        r.cardAgain = true;
+                        r.tries = 0;
+                        status(r, "кнопки нет — перечитываю карточку", false);
+                        go(r, here);
+                        whenReady(r, here, null, SETTLE_MS, () -> onCard(r));
+                        return;
+                    }
                 }
                 String why = r.put == 0
                     ? (got.optBoolean("h1") ? (again ? "на карточке не нашлось кнопки «+»"
                                                      : "на карточке не нашлось кнопки «в корзину»")
                                             : "страница не похожа на карточку товара: нет заголовка")
                     : "положено " + r.put + " из " + r.clicks + ": кнопки «ещё одну» не нашлось";
+                // Пустая отдача карточки называется своим текстом, а не общим «нет
+                // заголовка»: вход и проверку это не лечит. Дамп страницы — рядом.
+                if (emptyPage) why = "страница карточки не отдалась (пусто/бот-защита)";
                 // Какие кнопки были в блоке покупки — по ним видно, как сеть зовёт свою.
                 JSONArray near = got.optJSONArray("near");
-                if (near != null && near.length() > 0) {
-                    StringBuilder seen = new StringBuilder();
-                    for (int i = 0; i < near.length(); i++) {
-                        seen.append(i > 0 ? ", " : "").append('«').append(near.optString(i)).append('»');
-                    }
-                    why += " (рядом: " + seen + ")";
+                if (r.put == 0) {
+                    // Что именно видит телефон на карточке: без дампа «нет заголовка» и
+                    // «нет кнопки» одинаковы у стены, пустой страницы и недорисованной карточки.
+                    final String base = why;
+                    final boolean blankPage = emptyPage;
+                    pageDump(r, dump -> {
+                        String text = cardWhy(base, dump, near);
+                        if (blankPage) lineDone(r, false, text, new JSONArray());
+                        else checkLineOrWall(r, text);
+                    });
+                    return;
                 }
-                checkLine(r, why);
+                if (near != null && near.length() > 0) why += " (рядом: " + quoted(near) + ")";
+                checkLineOrWall(r, why);
                 return;
+            }
+            // СЧЁТЧИК КОРЗИНЫ ДО ПЕРВОГО КАСАНИЯ. Если товар уже лежал, PICK_JS назвал
+            // число («−  2 шт  +») — после нажатия оно должно вырасти; иначе 0. На
+            // повторных касаниях той же позиции прежний счётчик не перезаписываем.
+            if (r.put == 0) {
+                r.badged = got.optBoolean("inCart") ? got.optInt("count", 0) : 0;
+            }
+            // СТРОГАЯ СВЕРКА НАЗВАНИЯ. Даже похожее название и совпавший вес не
+            // гарантируют тот же товар: «Сушка самокат со сгущенным молоком» и «Сушки
+            // Невская сушка Простые» — оба 300 г, общее слово «сушка». В заголовке
+            // карточки должны найтись значимые слова наряда (одно, а если их два и
+            // больше — два). Не нашлись — кнопку не жмём, причина с дампом страницы.
+            if (r.put == 0) {
+                JSONObject nameLine = r.lines.optJSONObject(r.at);
+                String other = nameWhy(nameLine, got.optString("title", ""));
+                if (!other.isEmpty()) {
+                    final String nameBase = other;
+                    pageDump(r, dump -> lineDone(r, false,
+                        cardWhy(nameBase, dump, got.optJSONArray("near")), new JSONArray()));
+                    return;
+                }
+            }
+            // ФАСОВКА. Даже похожее название не гарантирует ту же линейку: у Магнита
+            // Parmalat Natura Premium Comfort вместо Edge, у Ленты — Edge. Сверяем вес
+            // упаковки с заголовком ДО касания: не сошлось — кнопку не жмём, строка
+            // уходит в отчёт с дампом страницы. Нет веса на карточке — не блокируем,
+            // но помечаем успешную строку. Проверяем только перед первым касанием:
+            // вторая упаковка той же позиции идёт на ту же карточку.
+            if (r.put == 0) {
+                JSONObject packLine = r.lines.optJSONObject(r.at);
+                if (packChecked(packLine)) {
+                    String packTitle = got.optString("title", "");
+                    String different = packWhy(packLine, packTitle);
+                    if (!different.isEmpty()) {
+                        final String packBase = different;
+                        pageDump(r, dump -> lineDone(r, false,
+                            cardWhy(packBase, dump, got.optJSONArray("near")), new JSONArray()));
+                        return;
+                    }
+                    if (packGrams(packTitle) <= 0) {
+                        noteLine(packLine, "вес на карточке не указан");
+                    }
+                }
+            }
+            if (got.optBoolean("wide")) {
+                // Широкий поиск нашёл кнопку по общему слову («Купить», «Добавить»).
+                // Такую жмём, только если заголовок карточки похож на название позиции:
+                // иначе это чужой товар — плитка или рекомендация, — и в корзину лёг бы он.
+                JSONObject line = r.lines.optJSONObject(r.at);
+                String name = line == null ? "" : line.optString("name", "");
+                String card = got.optString("title", "");
+                if (!name.isEmpty() && !"товар с открытой страницы".equals(name)
+                        && !resembles(name, card)) {
+                    StringBuilder why = new StringBuilder("кнопка «в корзину» есть, но карточка не похожа на «")
+                        .append(name).append("»");
+                    // Что на карточке на самом деле: первые видимые кнопки для отчёта.
+                    JSONArray vis = got.optJSONArray("near");
+                    if (vis != null && vis.length() > 0) {
+                        why.append(" (на карточке: ");
+                        for (int i = 0; i < vis.length() && i < 3; i++) {
+                            why.append(i > 0 ? ", " : "").append('«').append(vis.optString(i)).append('»');
+                        }
+                        why.append(')');
+                    }
+                    lineDone(r, false, why.toString(), new JSONArray());
+                    return;
+                }
             }
             // Прокрутке к кнопке нужно встать, прежде чем спрашивать, где кнопка.
             handler.postDelayed(() -> tapMarked(r), 450);
@@ -1554,6 +3111,43 @@ public class MainActivity extends Activity {
             int pause = r.rules.optInt("click_pause_ms", 700);
             if (r.put < r.clicks) handler.postDelayed(() -> tapAdd(r, true), pause + 500);
             else handler.postDelayed(() -> checkLine(r, ""), pause + 1200);
+        });
+    }
+
+    /**
+     * ПРИЗНАК КОРЗИНЫ НА СТРАНИЦЕ. Живой прогон 21.10.2026 (Магнит, молоко neo):
+     * «кнопка нажалась, а сеть не обратилась к своей корзине — не легло». Сеть может
+     * принять запрос, но товар в корзину не положить. После «положено» один раз
+     * смотрим бейдж/счётчик корзины в шапке и слова «в корзине»/«товар в корзине».
+     * Счётчик до касания запомнен (r.badged): не вырос и слов нет — не легло.
+     */
+    private static final String CART_SIGN_JS =
+        "(function(){try{"
+      + "var t=(document.body?document.body.innerText:'').toLowerCase().replace(/ё/g,'е');"
+      + "var on=/товар в корзине|уже в корзине|в корзине/.test(t);"
+      + "var n=0,known=false;"
+      + "var els=[].slice.call(document.querySelectorAll('[class*=badge],[class*=Badge],[class*=count],[class*=Count],[class*=cart],[class*=Cart],[aria-label*=\"корзин\" i],[data-testid*=cart]'));"
+      + "for(var i=0;i<els.length;i++){var s=(els[i].innerText||'').replace(/\\s+/g,' ').trim();"
+      + " if(!s||s.length>16)continue;var m=s.match(/(\\d{1,4})/);if(!m)continue;"
+      + " var v=parseInt(m[1],10);if(v>n)n=v;known=true;}"
+      + "return JSON.stringify({known:known,n:n,on:on});"
+      + "}catch(e){return JSON.stringify({known:false,n:0,on:false});}})()";
+
+    /** Один раз после касания: вырос ли признак корзины. Не вырос — отказ с дампом. */
+    private void checkCartSign(final CartRun r, final JSONArray calls) {
+        if (!alive(r)) return;
+        r.view.evaluateJavascript(CART_SIGN_JS, value -> {
+            if (!alive(r)) return;
+            JSONObject sign = asObject(value);
+            boolean known = sign.optBoolean("known");
+            int n = sign.optInt("n", 0);
+            boolean on = sign.optBoolean("on");
+            if (known && !on && n <= r.badged) {
+                final String base = "карточка открылась, кнопка нажата, но сеть не показала товар в корзине";
+                pageDump(r, dump -> lineDone(r, false, cardWhy(base, dump, null), calls));
+                return;
+            }
+            verifyLine(r, calls);
         });
     }
 
@@ -1606,6 +3200,13 @@ public class MainActivity extends Activity {
                 lineDone(r, false, why, calls);
                 return;
             }
+            // Признак корзины — один раз на позицию, после «положено». Сеть могла
+            // принять запрос, но не показать товар в корзине (Магнит neo, 21.10.2026).
+            if (r.put > 0 && !r.badgeChecked) {
+                r.badgeChecked = true;
+                checkCartSign(r, calls);
+                return;
+            }
             verifyLine(r, calls);
         });
     }
@@ -1653,13 +3254,60 @@ public class MainActivity extends Activity {
         JSONObject line = r.lines.optJSONObject(r.at);
         final String sku = line == null ? "" : line.optString("sku", "");
         final String how = r.how;
+        // Баннер согласия, закрытый на карточке этой позиции, виден в отчёте: у успеха —
+        // в note, у отказа — в why. Иначе человек не поймёт, почему карточка стала видна.
+        String say = why == null ? "" : why;
+        if (!ok && !r.consent.isEmpty()) say = r.consent + ": " + say;
+        // ПРИЧИНА СЕРВЕРНОГО ПОИСКА В ОТКАЗЕ. Магнит и Дикси после отказа сервера идут
+        // прежним резервом — страницей поиска, и её причина иначе скрыла бы, что сервер
+        // уже смотрел и не нашёл. Ставим её первой: в отчёте она важнее слов страницы.
+        String server = !ok && line != null ? line.optString("server_why", "") : "";
+        if (!server.isEmpty() && !say.contains(server)) {
+            say = say.isEmpty() ? server : server + "; " + say;
+        }
+        // Итоговая причина отказа — не длиннее WHY_LIMIT (сервер режет до 200): в предел
+        // входит и отметка о баннере, иначе дамп страницы терялся бы уже на сервере.
+        if (!ok) say = fitWhy(say);
+        // ПАУЗА ПОСЛЕ НЕУДАЧИ ПОИСКА. Магнит, прогон 21.10.2026: после серии поисков
+        // («пять позиций по два запроса») — стена «Выключите VPN», похоже на ограничение
+        // частоты. Следующую строку начинаем через SEARCH_PAUSE_MS. Признак — search
+        // ещё не пуст: удачный поиск очищает его перед карточкой, и отказ карточки
+        // паузой не наказывается.
+        r.searchPause = !ok && line != null && !line.optString("search", "").isEmpty();
+        String note = ok && line != null ? line.optString("note", "") : "";
+        if (ok && !r.consent.isEmpty()) note = note.isEmpty() ? r.consent : r.consent + "; " + note;
         try {
-            r.items.put(new JSONObject()
+            JSONObject item = new JSONObject()
                 .put("name", line == null ? "" : line.optString("name", ""))
                 .put("sku", sku)
-                .put("ok", ok).put("why", why == null ? "" : why)
+                // Адрес карточки: из него сервер достаёт настоящий артикул сети и заводит
+                // товар в единой базе. Для Пятёрочки и Самоката это единственная дорога —
+                // сервер к ним не пробивается, а телефон человека бывает на витрине.
+                .put("url", line == null ? "" : line.optString("url", ""))
+                .put("ok", ok).put("why", say)
+                // Пометка строки: «нашёл по короткому запросу» — если карточка нашлась
+                // вторым, коротким адресом поиска (search_alt). У неудачи причина в why.
+                // Сюда же ложится «закрыл баннер согласия», если он был на карточке.
+                .put("note", note)
                 .put("put", r.put).put("times", r.clicks).put("how", how)
-                .put("calls", calls == null ? new JSONArray() : calls));
+                .put("calls", calls == null ? new JSONArray() : calls);
+            r.items.put(item);
+            // ИМЯ С КАРТОЧКИ СЕТИ В ОТЧЁТ (21.10.2026). Отдельно от `name`: `name` — наше
+            // название позиции из наряда, а сервер учит каталог сети по её собственному
+            // имени (`found_name`). Нет имени — ключа нет, старые отчёты не меняются.
+            String foundName = line == null ? "" : line.optString("found_name", "");
+            if (!foundName.isEmpty()) item.put("found_name", foundName);
+            // ЦЕНА ЗА УПАКОВКУ. Ответ сети с корзиной главнее: он называет цену именно
+            // той позиции, что легла. Ответа не было (Пятёрочка, Самокат, Дикси) — цена
+            // с карточки. Обе нулевые — поля нет: ноль не цена. На количество не умножаем,
+            // сервер берёт цену за единицу.
+            double one = r.prices.optDouble(sku, 0);
+            if (one <= 0) one = r.cardPrice;
+            if (one > 0) item.put("price", one);
+            // НАЛИЧИЕ. Карточка сказала «нет» — false. Позиция легла — true. Иначе поля
+            // нет: «не видно» — не «нет», и выдумывать наличие нельзя.
+            if (r.cardGone) item.put("in_stock", false);
+            else if (ok && r.put > 0) item.put("in_stock", true);
         } catch (Exception ignored) { }
         if (taken && !sku.isEmpty() && r.put > 0) {
             // Память телефона: сколько этой позиции теперь лежит в корзине сети. По ней
@@ -1687,13 +3335,19 @@ public class MainActivity extends Activity {
             learn(r, sku, sets);
             return;
         }
-        syncCart(r, taken && r.put > 0 ? sku : "", () -> handler.postDelayed(() -> nextLine(r), pauseAfter(r)));
+        syncCart(r, taken && r.put > 0 ? sku : "", () -> handler.postDelayed(() -> nextLine(r), pauseNext(r)));
     }
 
     /** Пауза до следующей позиции: запросом — темп запросов сервера, касаниями — темп покупателя. */
     private static int pauseAfter(CartRun r) {
         return r.learned ? Math.max(300, r.rules.optInt("request_pause_ms", 1000))
                          : Math.max(1300, r.rules.optInt("pause_ms", 1300));
+    }
+
+    /** Пауза до следующей строки; после неудачи поиска/стены — не меньше SEARCH_PAUSE_MS. */
+    private static int pauseNext(CartRun r) {
+        int pause = pauseAfter(r);
+        return r.searchPause ? Math.max(pause, SEARCH_PAUSE_MS) : pause;
     }
 
     /**
@@ -1806,6 +3460,18 @@ public class MainActivity extends Activity {
                         if (found.has(sku)) next.put(sku, packs(found.optDouble(sku, 0)));
                     }
                     r.cart = next;
+                    // Цены из того же ответа: отчёт понесёт их на сервер, а тот положит в
+                    // единую базу (app/catalog/refresh.note_device_prices). Нет цен в
+                    // ответе — карта остаётся прежней, цена в отчёт не выдумывается.
+                    JSONObject costs = got.optJSONObject("prices");
+                    if (costs != null) {
+                        Iterator<String> keys = costs.keys();
+                        while (keys.hasNext()) {
+                            String sku = keys.next();
+                            double one = costs.optDouble(sku, 0);
+                            if (one > 0) r.prices.put(sku, Math.round(one * 100) / 100.0);
+                        }
+                    }
                 } catch (Exception ignored) { }
                 saveLedger(r);
             }
@@ -1920,6 +3586,10 @@ public class MainActivity extends Activity {
                             r.at = 0;
                             r.readTries = 0;
                             r.cartPageTried = false;
+                            // Проход начинается заново — последний шаг (ссылка Ленты)
+                            // тоже должен повториться, иначе наряд завершится сразу.
+                            r.linkAsked = false;
+                            r.linkDone = false;
                             status(r, r.name + ": корзина сети пуста — кладу заново", false);
                             nextLine(r);
                             return;
@@ -2670,6 +4340,11 @@ public class MainActivity extends Activity {
         return new JSONObject();
     }
 
+    /** Длина окна в пикселях, как её видит страница: по ней решаем, докручена ли она. */
+    private int pageHeight() {
+        return web == null ? 0 : web.getHeight();
+    }
+
     private static String money(double value) {
         return String.format(new Locale("ru"), "%,.2f ₽", value);
     }
@@ -2678,23 +4353,33 @@ public class MainActivity extends Activity {
         void got(int status, String text);
     }
 
-    /** POST на наш сервер с сессией «Моей корзины»; ответ — на главном потоке. */
+    /**
+     * Запрос на наш сервер с сессией «Моей корзины»; ответ — на главном потоке.
+     *
+     * body == null — GET: так забирается своя статика (сборщик кабинета ФНС,
+     * /static/fns-grab.js), которую сервер отдаёт только на GET.
+     */
     private void call(String path, JSONObject body, Reply reply) {
+        final boolean post = body != null;
         final String session = CookieManager.getInstance().getCookie(SERVER);
         new Thread(() -> {
             int code = 0;
             String text = "";
             try {
                 HttpURLConnection conn = (HttpURLConnection) new URL(SERVER + path).openConnection();
-                conn.setRequestMethod("POST");
+                conn.setRequestMethod(post ? "POST" : "GET");
                 conn.setConnectTimeout(15000);
                 conn.setReadTimeout(60000);
-                conn.setDoOutput(true);
                 conn.setInstanceFollowRedirects(false);
-                conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                if (post) {
+                    conn.setDoOutput(true);
+                    conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                }
                 if (session != null) conn.setRequestProperty("Cookie", session);
-                try (OutputStream os = conn.getOutputStream()) {
-                    os.write(body.toString().getBytes(StandardCharsets.UTF_8));
+                if (post) {
+                    try (OutputStream os = conn.getOutputStream()) {
+                        os.write(body.toString().getBytes(StandardCharsets.UTF_8));
+                    }
                 }
                 code = conn.getResponseCode();
                 InputStream is = code < 400 ? conn.getInputStream() : conn.getErrorStream();
@@ -2774,6 +4459,218 @@ public class MainActivity extends Activity {
                 say("Не получилось разобрать страницу: " + e.getMessage(), true);
             }
         });
+    }
+
+    // ── Раздел сети: карточки со страницы — в единую базу ──
+
+    /**
+     * Сколько карточек берём со страницы за одно нажатие. Столько же принимает сервер
+     * (app/phonecart.py, CARDS_LIMIT): больше он всё равно отбросит.
+     */
+    private static final int SECTION_LIMIT = 150;
+
+    /**
+     * Потолок одного нажатия «Раздел» и сколько раз прокручиваем страницу. Раздел сети
+     * — это сотни товаров, и весь его за одно нажатие не вычитать: 300 карточек и
+     * четырнадцать прокруток — это уже несколько экранов, дальше человек жмёт ещё раз.
+     */
+    private static final int SECTION_TOTAL = 300;
+    private static final int SECTION_ROUNDS = 14;
+    /**
+     * Пауза между прокрутками, мс: витрина не должна получать запросы чаще человека.
+     * Полторы секунды, а не меньше: замер на Пятёрочке 19.10.2026 — выдача поиска
+     * прибавляла товары только на третьей прокрутке, через 1,6 с каждая (14 → 25).
+     * С короткой паузой приложение решало, что товары кончились, и уходило с половиной.
+     */
+    private static final int SECTION_PAUSE_MS = 1500;
+    /** Столько пустых прокруток подряд считаем концом раздела (одной мало, см. выше). */
+    private static final int SECTION_QUIET = 2;
+
+    /**
+     * Карточки раздела: адрес, название, цена. Разметка у сетей разная, но карточка
+     * всегда ссылается на товар, а её текст несёт название и цену.
+     *
+     * ЧТО ЗДЕСЬ ВАЖНО (замер 19.10.2026 на Пятёрочке, окно приложения):
+     *  - цена берётся ПОСЛЕДНЯЯ в карточке: у товара со скидкой в тексте лежат две
+     *    цены («629 00 ₽ 299 99 ₽»), и платит человек вторую. Первая — до скидки.
+     *  - «629 00» — это 629 рублей 00 копеек, а не 62 900: пробел перед двумя
+     *    последними цифрами и есть десятичный разделитель. Без этого правила цена
+     *    уезжала в базу стократной.
+     *  - из начала названия снимаются наклейки витрины: «-52%», «5% на 2 кг», «Нет
+     *    оценок», «Комбо 4,84», оценка «4,95», «от 2 шт», «Хит»/«Новинка»/«Выгодно».
+     *    Название уходит в единую базу как имя товара, и наклейка в нём — мусор, по
+     *    которому потом не сопоставить. Процент ВНУТРИ названия («Маскарпоне 80%») —
+     *    часть товара, и его не трогаем: снимаем только начало строки.
+     *  - у карточки-картинки имени в ссылке нет — берём alt картинки; нет и его —
+     *    карточку пропускаем. Выдуманное имя хуже пропуска.
+     */
+    private static final String CARDS_JS =
+        "(function(){"
+        + "function clean(raw){var t=(raw||'').replace(/\\s+/g,' ').trim();"
+        + "var re=/(\\d[\\d\\s]{0,8}(?:[.,]\\d{1,2})?)\\s*(?:₽|руб)/gi,all=[],mm;"
+        + "while((mm=re.exec(t))!==null){all.push(mm);}"
+        + "var m=all.length?all[all.length-1]:null;"
+        + "var name=all.length?t.slice(0,all[0].index):t;"
+        + "for(var k=0;k<6;k++){var before=name;"
+        + "name=name.replace(/^[-\\u2212]?\\d+([.,]\\d+)?\\s*%/,'')"
+        + ".replace(/^%/,'')"
+        + ".replace(/^на\\s+\\d+\\s*[а-яa-z]+/i,'')"
+        + ".replace(/^от\\s+\\d+\\s*шт\\.?/i,'')"
+        + ".replace(/^Нет оценок/i,'')"
+        + ".replace(/^Комбо\\s+\\d[.,]\\d{1,2}/i,'')"
+        + ".replace(/^\\d+[.,]\\d{1,2}/,'')"
+        + ".replace(/^(Хит|Новинка|Выгодно)\\s*/i,'').trim();"
+        + "if(name===before)break;}"
+        + "var price=null;if(m){price=parseFloat(m[1].trim()"
+        + ".replace(/\\s+(\\d{2})$/,'.$1').replace(/\\s/g,'').replace(',','.'));}"
+        + "return {name:name.slice(0,120),price:price};}"
+        + "var seen={},out=[],as=[].slice.call(document.querySelectorAll('a[href*=\"/product\"]'));"
+        + "for(var i=0;i<as.length&&out.length<" + SECTION_LIMIT + ";i++){"
+        + "var a=as[i],h=a.href||'';if(!h||seen[h])continue;seen[h]=1;"
+        + "var got=clean(a.innerText);"
+        + "if(!got.name){var im=a.querySelector('img[alt]');got=clean(im?(im.getAttribute('alt')||''):'');}"
+        + "if(!got.name)continue;"
+        + "out.push({url:h,name:got.name,price:got.price});}"
+        + "return JSON.stringify({cards:out,y:Math.round(window.scrollY||0),"
+        + "h:Math.round(document.body.scrollHeight||0)});})()";
+
+    /**
+     * Прочитать раздел сети, который человек открыл, и отдать карточки серверу.
+     *
+     * ЗАЧЕМ. Девять сетей сервер обходит сам, а Пятёрочку и Самокат витрина не пускает
+     * ни с серверного адреса, ни с домашнего (замеры 18–19.10.2026): их каталога в
+     * единой базе нет, и сопоставлять их товары не с чем. Окно человека эти витрины
+     * видит — замер 19.10.2026: страница 5ka.ru отдала 28 карточек с ценами. Человек
+     * открывает раздел и жмёт «Раздел»; сервер достаёт артикул из адреса карточки
+     * (app/catalog/fromurl.py) и заводит товар (app/phonecart.accept_cards).
+     *
+     * ПОЧЕМУ ПРОКРУТКА. Витрина рисует товары по мере прокрутки: за один экран их
+     * десятка три, а в разделе — сотни. Поэтому читаем не один экран, а идём вниз:
+     * собрали → прокрутили → собрали снова, пока не перестанут появляться новые
+     * карточки (две пустые пробы подряд) или пока не упрёмся в SECTION_TOTAL. Пауза
+     * между прокрутками (SECTION_PAUSE_MS) — тот же темп, что у прочих наших шагов:
+     * витрина не должна получать запросы чаще, чем человек за экраном.
+     *
+     * Почему кнопкой, а не само: обход разделов — это сотни страниц и переходы, и
+     * делать это без ведома человека нельзя. Кнопка честно говорит, что ушло в базу.
+     */
+    private void readSection() {
+        if (currentChain < 0) return;
+        final String chain = CHAINS[currentChain][1];
+        final String name = CHAINS[currentChain][0];
+        if (cartRun != null) {
+            say(name + ": идёт сборка — раздел прочитаю после неё", true);
+            return;
+        }
+        say(name + ": читаю карточки раздела…", false);
+        readRound(chain, name, new JSONArray(), new HashSet<>(), 0, 0);
+    }
+
+    /** Один заход чтения: собрать карточки, прокрутить страницу, собрать ещё. */
+    private void readRound(String chain, String name, JSONArray all, Set<String> seen,
+                           int round, int quiet) {
+        web.evaluateJavascript(CARDS_JS, result -> {
+            JSONObject state = asObject(result);
+            JSONArray cards = state.optJSONArray("cards");
+            if (cards == null) cards = new JSONArray();
+            int added = 0;
+            for (int i = 0; i < cards.length(); i++) {
+                JSONObject card = cards.optJSONObject(i);
+                if (card == null) continue;
+                String url = card.optString("url", "");
+                if (url.isEmpty() || seen.contains(url)) continue;
+                seen.add(url);
+                all.put(card);
+                added++;
+            }
+            // Витрина дорисовывает товары не сразу: одна пустая проба ничего не значит.
+            // Смотрим, докручена ли страница: пока внизу есть место, идём дальше даже
+            // без новых карточек — замер 19.10.2026 на Пятёрочке: выдача выросла с 13
+            // до 25 и ушла на вторую страницу уже после того, как приложение решило,
+            // что раздел кончился.
+            int y = state.optInt("y");
+            int height = state.optInt("h");
+            boolean more = height > 0 && y + pageHeight() < height - 80;
+            boolean enough = all.length() >= SECTION_TOTAL || round >= SECTION_ROUNDS;
+            if (enough || (!more && added == 0 && quiet + 1 >= SECTION_QUIET)) {
+                if (all.length() == 0) {
+                    explainNoCards(name);
+                    return;
+                }
+                sendCards(chain, name, all);
+                return;
+            }
+            web.evaluateJavascript(
+                "window.scrollBy(0,Math.round(window.innerHeight*0.9));1", null);
+            final int nextQuiet = added == 0 ? quiet + 1 : 0;
+            handler.postDelayed(() -> readRound(chain, name, all, seen, round + 1, nextQuiet),
+                                SECTION_PAUSE_MS);
+        });
+    }
+
+    /**
+     * ЧТО СТРАНИЦА ПРОСИТ, КОГДА КАРТОЧЕК НЕТ. Замер 20.10.2026 на живом приложении:
+     * нажатие «Раздел» на Самокате ничего не дало — сайт вместо каталога показал
+     * «Ввести адрес» с картой Москвы, и человек видел только «карточек нет». Он не знал,
+     * что дело не в пустом разделе, а в том, что сеть просит выбрать адрес.
+     */
+    private static final String BLOCKER_JS = "(function(){" +
+        "var t=(document.body?document.body.innerText:'').toLowerCase();" +
+        "if(/ввести адрес|ваш город|укажите адрес|выберите адрес|куда доставить/.test(t))" +
+        "  return 'address';" +
+        "if(/не робот|captcha|проверка безопасности|подтвердите, что вы/.test(t))" +
+        "  return 'captcha';" +
+        "if(/войти|вход по|код из смс|авториз/.test(t)) return 'login';" +
+        "return '';})()";
+
+    /** Сказать словами, почему карточек нет: адрес, вход или проверка. */
+    private void explainNoCards(String name) {
+        web.evaluateJavascript(BLOCKER_JS, result -> {
+            String why = result == null ? "" : result.replace("\"", "").trim();
+            if (why.contains("address")) {
+                say(name + ": сеть просит выбрать адрес — выберите его и нажмите «Раздел» снова", true);
+            } else if (why.contains("login")) {
+                say(name + ": сеть просит войти — нажмите «ВХОД», потом «Раздел» снова", true);
+            } else if (why.contains("captcha")) {
+                say(name + ": сеть показывает проверку — пройдите её в окне и нажмите «Раздел» снова", true);
+            } else {
+                say(name + ": карточек на странице нет — откройте раздел сети", true);
+            }
+        });
+    }
+
+    /** Отдать собранное серверу: пачками по SECTION_LIMIT, с общим итогом в строке. */
+    private void sendCards(String chain, String name, JSONArray all) {        if (all.length() == 0) {
+            say(name + ": карточек на странице нет — откройте раздел сети", true);
+            return;
+        }
+        sendBatch(chain, name, all, 0, 0, 0, 0);
+    }
+
+    private void sendBatch(String chain, String name, JSONArray all, int from,
+                           int withSku, int got, int learned) {
+        JSONArray batch = new JSONArray();
+        int i = from;
+        for (; i < all.length() && batch.length() < SECTION_LIMIT; i++) batch.put(all.opt(i));
+        final int next = i;
+        try {
+            JSONObject body = new JSONObject()
+                .put("store", chain)
+                .put("cards", batch)
+                .put("page", web.getUrl() == null ? "" : web.getUrl());
+            call("/api/device/cards", body, (status, text) -> {
+                if (status != 200) {
+                    say(name + ": раздел не ушёл — " + serverError(status, text), true);
+                    return;
+                }
+                JSONObject a = asObject(text);
+                int w = withSku + a.optInt("with_sku");
+                int g = got + a.optInt("got");
+                int l = learned + a.optInt("learned");
+                if (next < all.length()) sendBatch(chain, name, all, next, w, g, l);
+                else say(name + ": карточек " + w + " из " + g + ", новых в базе " + l, false);
+            });
+        } catch (Exception ignored) { }
     }
 
     /** POST на наш сервер с сессией «Моей корзины» из WebView. В фоне. */
@@ -2882,9 +4779,37 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        // В кабинете ФНС «назад» — не история налоговой, а наш экран чеков: человек
+        // уходил за ключом, а не листать кабинет.
+        if (fnsMode) {
+            leaveFns();
+            return;
+        }
+        // Идти назад некуда, а человек всё ещё в приложении (экран чеков после окна
+        // ФНС, task-21): «назад» ведёт в корзину, а не закрывает приложение. Путь
+        // берём из pageUrl — WebView.getUrl() здесь не нужен, адрес уже записан
+        // колбэками на этом же главном потоке. С корзины и с её корня — обычный
+        // выход: иначе «назад» возвращал бы в корзину вечно.
+        if (web != null && !web.canGoBack() && pageOurs) {
+            String path = pathOfPage();
+            if (!"/phone/basket".equals(path) && !"/phone/".equals(path)) {
+                openOurApp("/phone/basket");
+                return;
+            }
+        }
         // Режим снимет onPageFinished по адресу: вернулись на наш сайт — панель ушла.
         if (web != null && web.canGoBack()) web.goBack();
         else super.onBackPressed();
+    }
+
+    /** Путь страницы в окне без параметров и якоря — по адресу с главного потока. */
+    private String pathOfPage() {
+        try {
+            String path = new URL(pageUrl).getPath();
+            return path == null ? "" : path;
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     // ── Жизнь приложения: фоновая сборка идёт, только пока оно открыто ──
@@ -2957,3 +4882,4 @@ public class MainActivity extends Activity {
         openOurApp("/");
     }
 }
+

@@ -378,3 +378,19 @@ def test_magnit_survives_cache_written_by_previous_version():
     assert _unpack(("<html>", 200)) == ("<html>", 200)
     assert _unpack([None, 404]) == (None, 404)
     assert _unpack(None) == (None, 0)
+
+
+def test_long_query_is_clamped_before_the_gateway():
+    """Шлюз Магнита отвечает 400 на `term` длиннее ~66 символов (замер 21.10.2026).
+
+    Канон «Молоко Neo High Protein, 0,5%, безлактозное, ультрапастеризованное 950 г» (81)
+    не проходил вовсе, и сервер честно писал «сеть ничего не нашла». Режем по границе слова.
+    """
+    from app.connectors import magnit
+
+    assert magnit._clamp_term("Молоко Neo") == "Молоко Neo"
+    long_query = "Молоко Neo High Protein, 0,5%, безлактозное, ультрапастеризованное 950 г"
+    clamped = magnit._clamp_term(long_query)
+    assert len(clamped) <= magnit.TERM_LIMIT, clamped
+    assert long_query.startswith(clamped), "обрезаем хвост, а не переставляем слова"
+    assert not clamped.endswith(" "), "висячий пробел в запросе не нужен"

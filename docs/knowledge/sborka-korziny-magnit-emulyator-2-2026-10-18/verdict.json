@@ -1,0 +1,257 @@
+{
+  "store": "magnit",
+  "at": "2026-10-18T20:26:53",
+  "report_at": "2026-10-18T20:25:04",
+  "ok": false,
+  "verdict": "частично",
+  "share": "1 из 4",
+  "planned": 4,
+  "landed": 1,
+  "bound": true,
+  "binding_note": "",
+  "binding": {
+    "bound": true,
+    "missing": [],
+    "problems": [],
+    "unproven": [],
+    "checked": {
+      "order": true,
+      "stamp": true,
+      "background": true
+    },
+    "why": "время, адрес, id ответа и код на месте, порядок и отпечаток сошлись"
+  },
+  "before": {
+    "taken": true,
+    "items_count": 0,
+    "captured_at": "2026-10-18T20:23:48",
+    "status": 200
+  },
+  "after": {
+    "taken": true,
+    "items_count": 1,
+    "captured_at": "2026-10-18T20:26:40",
+    "status": 200
+  },
+  "totals": {
+    "match": true,
+    "preview": 217.0,
+    "report": 217.0,
+    "items_count": 1,
+    "report_items_count": 1,
+    "counts_match": true,
+    "field": "totalFinalPrice",
+    "scale": 0.01,
+    "why": "снимок 217.0, отчёт 217.0"
+  },
+  "counters": {
+    "checks": [
+      {
+        "name": "itemsCount = позиций или штук в снимке",
+        "done": true,
+        "detail": "снимок: itemsCount=1, позиций найдено 1, сумма количеств 1"
+      },
+      {
+        "name": "addedItemsCount = нажатия легших",
+        "done": false,
+        "detail": "сайт: addedItemsCount=2, отчёт: нажатий по легшим=1"
+      },
+      {
+        "name": "позиций в отчёте и в снимке",
+        "done": true,
+        "detail": "отчёт: позиций 1, снимок: itemsCount=1"
+      }
+    ],
+    "ok": false,
+    "problems": [
+      "сайт: addedItemsCount=2, отчёт: нажатий по легшим=1"
+    ],
+    "why": "сайт: addedItemsCount=2, отчёт: нажатий по легшим=1"
+  },
+  "articles": {
+    "1000218414": {
+      "sku": "1000218414",
+      "name": "Колбаса Вязанка Докторская вареная 400г",
+      "add": 0,
+      "kept": 0,
+      "rows": 1,
+      "before": null,
+      "after": null,
+      "found": false,
+      "expected": null,
+      "match": true,
+      "why": "в корзине 0, до наряда 0 — прибавки нет, как и сказал отчёт"
+    },
+    "1444282012": {
+      "sku": "1444282012",
+      "name": "Нектарины",
+      "add": 0,
+      "kept": 0,
+      "rows": 1,
+      "before": null,
+      "after": null,
+      "found": false,
+      "expected": null,
+      "match": true,
+      "why": "в корзине 0, до наряда 0 — прибавки нет, как и сказал отчёт"
+    },
+    "1000227406": {
+      "sku": "1000227406",
+      "name": "Огурцы короткоплодные тепличные 450г",
+      "add": 1,
+      "kept": 0,
+      "rows": 1,
+      "before": null,
+      "after": 1.0,
+      "found": true,
+      "expected": 1,
+      "match": true,
+      "why": "в корзине 1.0, ждали 1 (было 0, нажатий 1)"
+    },
+    "5555559952": {
+      "sku": "5555559952",
+      "name": "Форель Меридиан слабосоленая 200г",
+      "add": 0,
+      "kept": 0,
+      "rows": 1,
+      "before": null,
+      "after": null,
+      "found": false,
+      "expected": null,
+      "match": true,
+      "why": "в корзине 0, до наряда 0 — прибавки нет, как и сказал отчёт"
+    }
+  },
+  "positions": [
+    {
+      "sku": "1000218414",
+      "name": "Колбаса Вязанка Докторская вареная 400г",
+      "ok": false,
+      "how": "tap",
+      "times": 1,
+      "before": null,
+      "after": null,
+      "found": false,
+      "expected": null,
+      "match": true,
+      "why": "в корзине 0, до наряда 0 — прибавки нет, как и сказал отчёт",
+      "rows_on_article": 1
+    },
+    {
+      "sku": "1444282012",
+      "name": "Нектарины",
+      "ok": false,
+      "how": "tap",
+      "times": 1,
+      "before": null,
+      "after": null,
+      "found": false,
+      "expected": null,
+      "match": true,
+      "why": "в корзине 0, до наряда 0 — прибавки нет, как и сказал отчёт",
+      "rows_on_article": 1
+    },
+    {
+      "sku": "1000227406",
+      "name": "Огурцы короткоплодные тепличные 450г",
+      "ok": true,
+      "how": "tap",
+      "times": 1,
+      "before": null,
+      "after": 1.0,
+      "found": true,
+      "expected": 1,
+      "match": true,
+      "why": "в корзине 1.0, ждали 1 (было 0, нажатий 1)",
+      "rows_on_article": 1
+    },
+    {
+      "sku": "5555559952",
+      "name": "Форель Меридиан слабосоленая 200г",
+      "ok": false,
+      "how": "request",
+      "times": 1,
+      "before": null,
+      "after": null,
+      "found": false,
+      "expected": null,
+      "match": true,
+      "why": "в корзине 0, до наряда 0 — прибавки нет, как и сказал отчёт",
+      "rows_on_article": 1
+    }
+  ],
+  "not_landed": [
+    {
+      "sku": "1000218414",
+      "name": "Колбаса Вязанка Докторская вареная 400г",
+      "why": "карточка говорит, что товара нет в наличии",
+      "available": null
+    },
+    {
+      "sku": "1444282012",
+      "name": "Нектарины",
+      "why": "карточка говорит, что товара нет в наличии",
+      "available": null
+    },
+    {
+      "sku": "5555559952",
+      "name": "Форель Меридиан слабосоленая 200г",
+      "why": "корзина сети показывает: нет в наличии",
+      "available": null
+    }
+  ],
+  "proof": [
+    {
+      "id": "before",
+      "name": "снимок «до» снят",
+      "required": true,
+      "done": true,
+      "detail": "itemsCount=0"
+    },
+    {
+      "id": "after",
+      "name": "снимок «после» снят",
+      "required": true,
+      "done": true,
+      "detail": "itemsCount=1"
+    },
+    {
+      "id": "positions",
+      "name": "позиции отчёта нашлись в корзине",
+      "required": true,
+      "done": true,
+      "detail": "все позиции отчёта нашлись с нужным числом"
+    },
+    {
+      "id": "total",
+      "name": "итог Магнита сошёлся с отчётом",
+      "required": true,
+      "done": true,
+      "detail": "снимок 217.0, отчёт 217.0"
+    },
+    {
+      "id": "binding",
+      "name": "снимки привязаны к этому прогону",
+      "required": false,
+      "done": true,
+      "detail": "время, адрес, id ответа и код на месте, порядок и отпечаток сошлись"
+    },
+    {
+      "id": "counters",
+      "name": "счётчики сайта сошлись",
+      "required": false,
+      "done": false,
+      "detail": "сайт: addedItemsCount=2, отчёт: нажатий по легшим=1"
+    }
+  ],
+  "defects": [],
+  "unproven": [
+    "сайт: addedItemsCount=2, отчёт: нажатий по легшим=1"
+  ],
+  "notes": [
+    "наполнилась доля корзины: 1 из 4; не принято 3: Колбаса Вязанка Докторская вареная 400г — карточка говорит, что товара нет в наличии; Нектарины — карточка говорит, что товара нет в наличии; Форель Меридиан слабосоленая 200г — корзина сети показывает: нет в наличии"
+  ],
+  "manual": [
+    "снимок экрана /ecom/cart в WebView: те же позиции и «Итого» — сверяет человек, машина этого не видит"
+  ]
+}

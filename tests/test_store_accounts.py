@@ -93,6 +93,58 @@ def test_connections_follow_the_store_order(db):
     assert codes[0] == "magnit", "порядок берётся из справочника магазинов"
 
 
+def test_fixprice_is_on_the_connections_screen(db):
+    """FixPrice виден в списке подключений, и обещать ему нечего — так и сказано.
+
+    Сеть была и в приложении, и в единой базе (6 624 строки с ценой), но не в
+    серверных списках — и на телефоне её не было вовсе (task-19, 21.10.2026).
+    Умений входа у неё НЕ ЗАМЕРЕНО: цену сервер берёт обходом витрины без входа,
+    корзину кладёт телефон в своём окне. Пустой `gives` — это и есть честный
+    ответ, а не забытая строчка; появится замер — появится и умение.
+    """
+    codes = [c.store_code for c in store_accounts.connections()]
+    assert "fixprice" in codes, "на телефоне сети не видно — её нет в списке подключений"
+
+    ability = store_accounts.ABILITIES["fixprice"]
+    assert not ability.gives, "обещано умение, которого никто не замерял"
+    assert ability.entry.startswith("https://")
+    assert ability.note.strip(), "у сети нет ни одного слова объяснения"
+    assert "корзин" in ability.note.lower(), "не сказано, кто и как кладёт корзину"
+
+    promise = store_accounts.describe("fixprice")
+    assert promise.strip() and "Вход даёт: ." not in promise, \
+        "пустой список умений читается на экране как оборванная фраза"
+
+
+def test_a_live_base_gets_the_missing_chain_and_keeps_its_own_thresholds(db):
+    """Досыпка сетей в живую базу: недостающая появляется, настроенное остаётся.
+
+    На боевом сервере база живёт давно: сети заведены, а пороги доставки и
+    минимального заказа человек настроил под себя. Поэтому init_db не перезаписывает
+    строку, а досыпает только недостающую (INSERT ... ON CONFLICT(code) DO NOTHING,
+    app/db.py). Проверены оба конца: убранная строка FixPrice возвращается, а
+    изменённые пороги Магнита остаются теми, что поставили, — не сидовскими.
+    """
+    from app import db as database
+
+    database.execute("UPDATE stores SET delivery_fee=1.0, min_order=777.0"
+                     " WHERE code='magnit'")
+    database.execute("DELETE FROM stores WHERE code='fixprice'")
+    assert repo.get_store("fixprice") is None
+
+    init_db()
+
+    fixprice = repo.get_store("fixprice")
+    assert fixprice is not None, "живая база не получила новую сеть"
+    assert (fixprice.delivery_fee, fixprice.free_delivery_from, fixprice.min_order) == \
+        (199.0, 2500.0, 500.0), "новая сеть заведена не теми порогами, что в сиде"
+
+    magnit = repo.get_store("magnit")
+    assert (magnit.delivery_fee, magnit.min_order) == (1.0, 777.0), \
+        "досыпка перезаписала настройку человека — на живой базе это откат"
+
+
+
 # ---------- наряд на корзину ----------
 def _product_with_mapping(store_code: str, sku: str, name: str) -> int:
     from app.models import Product

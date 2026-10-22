@@ -111,6 +111,8 @@ ssh korzina docker exec korzina python tools/seed.py demo
 
 Старую общую базу владельца переносит `tools/adopt_legacy_db.py <номер>` (копирует, не
 удаляет). Ключи кабинета ФНС (app/fns) лежат в той же базе человека, в таблице settings.
+Замок входа (`app/users.py`) хранит соль и хэш PIN в `data/pin.json` того же тома.
+Забыли PIN — удалите `data/pin.json` в томе данных (контейнер: `/app/data/pin.json`) и перезапустите приложение.
 
 ### Планировщик каталога
 

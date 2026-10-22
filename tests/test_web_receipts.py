@@ -144,13 +144,20 @@ def test_a_cabinet_that_is_not_connected_explains_the_captcha(web):
 
 
 def test_the_bookmarklet_carries_the_address_of_this_screen(web):
-    """Закладка должна вести ключ на ЭТОТ экран, иначе он приедет в никуда."""
+    """Закладка должна вести ключ на ЭТОТ экран, иначе он приедет в никуда.
+
+    Адрес в закладке — чистый /receipts, без t: закладка срабатывает в браузере,
+    где человек уже вошёл, несёт куку и не шлёт phone= вовсе. Секрет рабочего места
+    ей не нужен, а в истории браузера ему не место. Адрес в закладке закодирован
+    целиком, поэтому и проверяется он закодированным.
+    """
     enter(web)
     page = page_of(web)
 
     assert "javascript:" in page, "закладка не собрана — python tools/build_bookmarklet.py"
     assert "__APP_URL__" not in page, "заглушка адреса осталась незаполненной"
-    assert "%2Freceipts" in page
+    assert "%2Freceipts" in page, "закладка не ведёт на экран чеков"
+    assert "%3Ft%3D" not in page, "в адресе закладки снова секрет"
 
 
 # ---------- ключ проверки: скрытое поле, а не кука и не адрес ----------

@@ -105,6 +105,31 @@ def test_build_from_empty_history_makes_nothing():
     assert repo.list_baskets() == []
 
 
+# ---------- услуги из чека — не товар ----------
+def test_services_leave_orders_and_baskets(history):
+    """Поездка и «Сборка» — строки чека, но не товар: ни в заказы, ни в корзину (21.10.2026)."""
+    from app.web.screens import orders as web_orders
+
+    store = repo.get_store("pyaterochka")
+    ride = repo.upsert_product(Product(None, "Перевозка пассажиров багажа", unit="pcs"))
+    fee = repo.upsert_product(Product(None, "Сборка", unit="pcs"))
+    water = repo.upsert_product(Product(None, "Вода питьевая", unit="pcs"))
+    # заказ из одной поездки и заказ, где к товарам прилипла «Сборка»
+    repo.add_history_row("2026-09-16", store.id, ride, "Перевозка пассажиров багажа", 1, 397.0, 397.0, "k-ride")
+    repo.add_history_row("2026-09-20", store.id, history["milk"], "Молоко", 1, 80.0, 80.0, "k-milk")
+    repo.add_history_row("2026-09-20", store.id, fee, "Сборка", 1, 39.0, 39.0, "k-milk")
+    # слово услуги, но с объёмом — это товар, он остаётся
+    repo.add_history_row("2026-09-20", store.id, water, "Доставка воды 19 л", 1, 300.0, 300.0, "k-milk")
+
+    found = {o["key"]: o for o in web_orders.orders()}
+    assert "k-ride" not in found
+    assert {line["product_id"] for line in found["k-milk"]["lines"]} == {history["milk"], water}
+    assert found["k-milk"]["total"] == 380.0
+
+    _, items = baskets.last_purchase_items()
+    assert {i["product_id"] for i in items} == {history["milk"], water}
+
+
 # ---------- регулярные покупки ----------
 def test_regular_purchases_need_two_different_dates(history):
     regular = {r["product_id"] for r in baskets.regular_purchases(min_times=2)}
@@ -199,7 +224,9 @@ def test_missing_item_does_not_inflate_a_store_total():
 
     import app.web.screens.basket as screen
     old_lookup = screen.repo.latest_price_for
-    screen.repo.latest_price_for = lambda pid, sid: snapshots.get((pid, sid))
+    # point_key принимается и игнорируется: снимки в тесте общие, а точка у человека
+    # может быть сохранена в его базе (app/service.line_price передаёт её всегда).
+    screen.repo.latest_price_for = lambda pid, sid, point_key=None: snapshots.get((pid, sid))
     try:
         _, totals = _price_matrix(items, stores)
     finally:

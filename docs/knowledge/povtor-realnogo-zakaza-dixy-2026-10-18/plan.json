@@ -1,0 +1,147 @@
+{
+  "ok": true,
+  "store": "dixy",
+  "lines": [
+    {
+      "sku": "DI00080024",
+      "qty": 2.16,
+      "name": "Бедро цыплят-бройлеров в ассортименте фасованное",
+      "unit": "pcs",
+      "price": null,
+      "url": "https://dixy.ru/catalog/myaso-ptitsa/myaso-ptitsy/DI00080024/",
+      "per": "kg",
+      "pack_g": null,
+      "product_id": 155,
+      "clicks": 3,
+      "rounding": "2,16 кг нажатием не положить — взяли 3 упаковки"
+    },
+    {
+      "sku": "2000284987",
+      "qty": 3.0,
+      "name": "Маслины ITLV без косточки 280г",
+      "unit": "pcs",
+      "price": null,
+      "url": "https://dixy.ru/catalog/konservy/ovoshchnye-konservy/2000284987/",
+      "per": "pcs",
+      "pack_g": 280.0,
+      "product_id": 153,
+      "clicks": 3,
+      "rounding": ""
+    },
+    {
+      "sku": "ЦТ0044209",
+      "qty": 1.0,
+      "name": "Редис красный, в упаковке, 500 г",
+      "unit": "pcs",
+      "price": null,
+      "url": "https://dixy.ru/catalog/ovoshchi-frukty/ovoshchi/ЦТ0044209/",
+      "per": "pcs",
+      "pack_g": 500.0,
+      "product_id": 154,
+      "clicks": 1,
+      "rounding": ""
+    },
+    {
+      "sku": "2000180347",
+      "qty": 3.0,
+      "name": "Рис Зернышко к зернышку длиннозерный 900г",
+      "unit": "pcs",
+      "price": null,
+      "url": "https://dixy.ru/product/ris-zernyshko-k-zernyshku-dlinnozernyy-900g-2000180347/",
+      "per": "pcs",
+      "pack_g": 900.0,
+      "product_id": 150,
+      "clicks": 3,
+      "rounding": ""
+    },
+    {
+      "sku": "2000214171",
+      "qty": 1.0,
+      "name": "Сахар-песок белый фасованный в ассортименте 1кг",
+      "unit": "pcs",
+      "price": null,
+      "url": "https://dixy.ru/product/sakhar-pesok-belyy-fasovannyy-v-assortimente-1kg-2000214171/",
+      "per": "pcs",
+      "pack_g": 1000.0,
+      "product_id": 147,
+      "clicks": 1,
+      "rounding": ""
+    },
+    {
+      "sku": "ЦТ0001667",
+      "qty": 2.0,
+      "name": "Соль поваренная пищевая Экстра/Мелкая в ассортименте 1кг",
+      "unit": "pcs",
+      "price": null,
+      "url": "https://dixy.ru/product/sol-povarennaya-pishchevaya-ekstramelkaya-v-assortimente-1kg-tst0001667/",
+      "per": "pcs",
+      "pack_g": 1000.0,
+      "product_id": 146,
+      "clicks": 2,
+      "rounding": ""
+    },
+    {
+      "sku": "2000630353",
+      "qty": 2.0,
+      "name": "Творог Хуторок 5% 700г",
+      "unit": "pcs",
+      "price": null,
+      "url": "https://dixy.ru/product/tvorog-khutorok-5-700g-2000630353/",
+      "per": "pcs",
+      "pack_g": 700.0,
+      "product_id": 157,
+      "clicks": 2,
+      "rounding": ""
+    },
+    {
+      "sku": "T000024798",
+      "qty": 1.0,
+      "name": "Укроп свежий в упаковке, 150 г",
+      "unit": "pcs",
+      "price": null,
+      "url": "https://dixy.ru/catalog/ovoshchi-frukty/zelen-i-salaty/T000024798/",
+      "per": "pcs",
+      "pack_g": 150.0,
+      "product_id": 149,
+      "clicks": 1,
+      "rounding": ""
+    }
+  ],
+  "unknown": [
+    "Голень цыплят бройлеров кожей пф северная 750 г",
+    "Доставка",
+    "Картофель молодой",
+    "Колбаса омпк пресижн сырокопченая 250 г",
+    "Перец грунтовой",
+    "Услуга сборки упаковки"
+  ],
+  "total": 0.0,
+  "note": "6 позиц. этой сети незнакомы — они останутся вне корзины, соберите их обычным поиском. Незнакомых спрашивали: в каталоге нашлось 3, живым поиском сети — 1 из 4 спрошенных.",
+  "linked": 4,
+  "rules": {
+    "add_name": "^(?:в корзину|добавить в корзину|купить)$",
+    "plus_name": "увелич|добавить ещё|плюс|^\\+$",
+    "gone": "нет в наличии|закончил|распродан|раскупил|временно отсутствует",
+    "selectors": [
+      "[data-testid='testid-add-to-basket']",
+      "button.card-line__cartBnt"
+    ],
+    "below": 700,
+    "pause_ms": 1300,
+    "click_pause_ms": 700,
+    "request_pause_ms": 1000,
+    "cart_pages": [
+      "https://dixy.ru/cart/"
+    ],
+    "hosts": [
+      "dixy.ru"
+    ],
+    "sends_cart": false,
+    "auth_cookies": [],
+    "full_cart": [],
+    "qty_sets": false,
+    "empty_cart": "корзина пуста|в корзине пока|в корзине пусто|в корзине нет товаров|в корзине ничего нет|пустая корзина"
+  },
+  "basket": 11,
+  "stamp": "c3c80969ef01"
+}
