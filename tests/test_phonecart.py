@@ -390,6 +390,54 @@ def test_magnit_cart_page_gives_the_network_total_with_discount(web):
         == (1600.4, 1748.98, 187.58, 0.0, 11)
 
 
+def test_a_goods_only_page_is_not_a_network_total(web):
+    """Строки итога нет, есть «Товары»: это сумма товаров без скидок и сборки, а не «к оплате».
+
+    Итогом сети она не подаётся: по ней app/netprice.py назначал бы цену места, и место
+    выглядело бы дороже или дешевле настоящего итога на скидку и сборку.
+    """
+    from app import cartrun
+
+    report = dict(REPORT, api_totals={}, cart_count=4, page_totals=[
+        {"kind": "goods", "label": "4 товара", "amount": 862.35},
+        {"kind": "discount", "label": "Скидка", "amount": 85},
+        {"kind": "service", "label": "Сборка и упаковка", "amount": 49},
+    ])
+    logged_in(web).post("/api/device/cartreport", json=report)
+
+    users.open_workspace(PHONE)
+    total = cartrun.get("magnit").total
+    assert total.sum == 862.35 and total.source == cartrun.OURS
+
+
+@pytest.mark.parametrize("flipped", [False, True])
+def test_the_order_button_is_not_the_delivery_line(web, flipped):
+    """Перекрёсток, замер на эмуляторе 23.10.2026: итог стоит на кнопке «Оформить заказ».
+
+    Её строка «826,35 ₽ Доставка сегодня Оформить заказ» страница читает ещё и как
+    доставку с суммой итога. Доставка не бывает не меньше итога, а порядок строк у каждой
+    сети свой, поэтому берётся та строка доставки, что меньше итога, в любом порядке.
+    """
+    from app import cartrun
+
+    rows = [
+        {"kind": "goods", "label": "4 товара", "amount": 862.35},
+        {"kind": "discount", "label": "Скидка", "amount": 85},
+        {"kind": "delivery", "label": "Доставка", "amount": 0},
+        {"kind": "service", "label": "Сборка и упаковка", "amount": 49},
+        {"kind": "delivery", "label": "Доставка сегодня", "amount": 826.35},
+        {"kind": "total", "label": "Оформить заказ", "amount": 826.35},
+    ]
+    report = dict(REPORT, api_totals={}, cart_count=4,
+                  page_totals=rows[::-1] if flipped else rows)
+    answer = logged_in(web).post("/api/device/cartreport", json=report).get_json()
+
+    assert answer["total"] == 826.35
+    users.open_workspace(PHONE)
+    total = cartrun.get("magnit").total
+    assert (total.sum, total.delivery, total.source) == (826.35, 0.0, cartrun.NETWORK)
+
+
 def test_a_new_report_replaces_the_old_one(web):
     client = logged_in(web)
     client.post("/api/device/cartreport", json=REPORT)

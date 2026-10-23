@@ -4,8 +4,8 @@ import logging
 
 from flask import redirect, request, url_for
 
-from app import cartrun, faster, freshness, location, repo
-from app.carttotal import NETWORK
+from app import cartrun, faster, freshness, location, netprice, repo
+from app.optimizer import rank_key
 from app.web import device
 from app.web.auth import needs_phone
 
@@ -32,20 +32,27 @@ def cheaper():
     if not variants:
         return _render("cheaper.html", tab=None, basket=current, variants=[])
 
-    best, _switch = result._chosen(variants, None)
-    every = _places(basket_id, bundle)
-    picked = request.args.get("pick", type=int)
-    chosen = every[picked] if picked is not None and 0 <= picked < len(every) else best
-
     # Итоги кабинетов читаются один раз на страницу: они лежат одной настройкой
     # (app/cartrun), и спрашивать их на каждое место значило бы разбирать её заново.
-    cabinets = _cabinets(basket_id)
+    placed, best_n = _ranked(basket_id, bundle)
+    every = [p.variant for p in placed]
+    best = every[best_n]
+    picked = request.args.get("pick", type=int)
+    on_n = picked if picked is not None and 0 <= picked < len(every) else best_n
+    chosen = every[on_n]
+
     # Товары корзины и точка человека — для подписи «витрина у адреса»: цена должна
     # быть снята по ЭТИМ товарам и у ЭТОЙ точки, а не вообще когда-то в сети.
     product_ids = [int(item["product_id"]) for item in repo.basket_items(basket_id)]
     point_key = location.point_key()
+    order = list(range(len(placed)))
+    if any(p.net for p in placed):
+        # Итоги сетей сдвинули цены: порядок на экране — по новым, а номер места (pick)
+        # остаётся индексом в _places: по нему понимает «Заказать» (_order).
+        order.sort(key=lambda n: (len(every[n].missing_products), float(every[n].total)))
     places = []
-    for n, variant in enumerate(every):
+    for n in order:
+        variant = every[n]
         size = len(getattr(variant, "stores", None) or [])
         diff = round(float(variant.total) - float(best.total), 2)
         missing = len(getattr(variant, "missing_products", None) or [])
@@ -57,17 +64,24 @@ def cheaper():
             sub = deliveries(size)
         places.append({"n": n, "title": _title(variant), "total": variant.total, "sub": sub,
                        "codes": [s.store_code for s in variant.stores],
-                       "source": _source(variant, cabinets, product_ids, point_key),
-                       "best": variant is best, "on": variant is chosen})
+                       "source": _source(placed[n], product_ids, point_key),
+                       "best": n == best_n, "on": n == on_n})
 
     figures = result._figures(chosen, bundle["baseline"])
     parts = []
     for store in (getattr(chosen, "stores", None) or []):
         parts.append(_part(store))
+    shown = placed[on_n]
     return _render(
         "cheaper.html", tab=None, basket=current, variants=variants, places=places,
         fast=_fast(every, bundle.get("positions") or 0),
-        chosen={"title": _title(chosen), "total": chosen.total, "best": chosen is best,
+        nets=any(p.net for p in placed),
+        chosen={"title": _title(chosen), "total": chosen.total, "best": on_n == best_n,
+                # Итог сети, по которому назначена цена выбранного места: экран
+                # называет его, а не наши «товары, скидка, доставка» (netprice.apply).
+                "net": ({"sum": shown.net.sum, "discount": shown.net.discount,
+                         "delivery": shown.net.delivery, "cashback": shown.cashback}
+                        if shown.net else None),
                 "codes": [s.store_code for s in chosen.stores],
                 # Вся корзина в одну сеть — телефон может положить её сам («Собрать»
                 # в окне сети кладёт корзину целиком). Долю разбивки он так не положит.
@@ -171,37 +185,63 @@ def _cabinets(basket_id: int) -> dict:
         return {}
 
 
-def _source(variant, cabinets: dict, product_ids: list[int] | None = None,
+def _ranked(basket_id: int, bundle: dict) -> tuple[list[netprice.Place], int]:
+    """Места экрана с ценой сети там, где она годится, и номер того, что советуем.
+
+    Номер места — его индекс в `_places`: по нему экран и «Заказать» понимают друг друга
+    (pick), и он не должен прыгать оттого, что итог сети переставил места на экране.
+    Рекомендуем тем же правилом, что и без итогов сетей (result._chosen), но среди
+    мест с пересчитанными ценами: итог сети мог сделать дешёвым то место, что в тройку
+    расчёта не попало.
+    """
+    from app.web.screens import result
+
+    every = _places(basket_id, bundle)
+    placed = netprice.apply(every, _cabinets(basket_id), int(bundle.get("positions") or 0),
+                            float(bundle.get("baseline") or 0.0))
+    if any(p.net for p in placed):
+        pool = sorted((p.variant for p in placed), key=rank_key)
+    else:
+        pool = bundle["variants"]               # итогов сетей нет — совет, как был
+    best, _switch = result._chosen(pool, None)
+    return placed, next((n for n, p in enumerate(placed) if p.variant is best), 0)
+
+
+def _source(place: netprice.Place, product_ids: list[int] | None = None,
             point_key: str | None = None) -> str:
-    """Откуда цены этого места и когда они сняты — одной подписью под ценой.
+    """Откуда цена этого места и когда она снята — одной подписью под ценой.
 
     Честность по убыванию, как в плане Z3+4: сумма из кабинета сети (её писала сама
     сеть) важнее витрины у адреса, витрина важнее кэша. Чего нет — о том и говорим:
     «свежесть неизвестна» или «проверяется телефоном», а не пустое место.
 
+    «Корзина кабинета» — только когда цена места ВЗЯТА из итога сети (netprice.apply).
+    Итог, который в цену не пошёл (легло не всё, в корзине лишнее, устарел), цену не
+    подписывает: под нашей ценой стоит «витрина» или «кэш», а рядом — почему итог сети
+    не взят.
+
     product_ids/point_key — про какую корзину и какую точку спрашивать момент цены:
     витрина у адреса это снимки товаров корзины у пина человека (repo.last_price_moment).
     """
+    if place.net is not None:
+        when = _moment_text(place.net.at)
+        return f"корзина кабинета, {when}" if when else "корзина кабинета, свежесть неизвестна"
     parts: list[str] = []
-    for store in (getattr(variant, "stores", None) or []):
+    for store in (getattr(place.variant, "stores", None) or []):
         code = str(getattr(store, "store_code", "") or "")
         if not code:
             continue
-        line = _one_source(code, cabinets.get(code), product_ids, point_key)
+        line = _one_source(code, product_ids, point_key)
         if line and line not in parts:      # две сети с одной подписью — не дважды
             parts.append(line)
+    if place.why:
+        parts.append(f"итог сети не взят: {place.why}")
     return " · ".join(parts)
 
 
-def _one_source(code: str, row, product_ids: list[int] | None = None,
+def _one_source(code: str, product_ids: list[int] | None = None,
                 point_key: str | None = None) -> str:
-    """Одна сеть: чей это итог и когда снят. Момент не выдумываем — его нет, так и скажем."""
-    total = getattr(row, "total", None) if row is not None else None
-    if total is not None and getattr(total, "source", "") == NETWORK:
-        # Время итога — его собственное (total.at): так подписан и экран «Сборка
-        # корзин». finished_at сборки — запасное: старые строки его не имели.
-        when = _moment_text(getattr(total, "at", None) or getattr(row, "finished_at", None))
-        return f"корзина кабинета, {when}" if when else "корзина кабинета, свежесть неизвестна"
+    """Одна сеть: чья это цена и когда снята. Момент не выдумываем — его нет, так и скажем."""
     stamp = _price_moment(code, product_ids, point_key)
     if not stamp:
         return "проверяется телефоном" if _by_phone(code) else "свежесть неизвестна"
@@ -312,9 +352,10 @@ def _order(basket_id: int):
     variants = bundle["variants"]
     if not variants or not code:
         return redirect(back, 303)
-    best, _switch = result._chosen(variants, None)
-    every = _places(basket_id, bundle)
-    chosen = every[pick] if pick is not None and 0 <= pick < len(every) else best
+    # То же место, что на экране: без pick «Заказать» относится к рекомендуемому, а оно
+    # зависит от итогов сетей (_ranked), не только от нашего расчёта.
+    placed, best_n = _ranked(basket_id, bundle)
+    chosen = placed[pick if pick is not None and 0 <= pick < len(placed) else best_n].variant
     lines = next((s.lines for s in chosen.stores if s.store_code == code), None)
     if not lines:
         return redirect(back, 303)

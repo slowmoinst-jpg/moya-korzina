@@ -410,10 +410,16 @@ def optimize(lines: list[BasketLine], stores: list[Store], offers: dict[int, lis
             if current is None or variant.effort_total < current.effort_total:
                 best_by_key[key] = variant
 
-    variants = sorted(
-        best_by_key.values(),
-        key=lambda v: (len(v.missing_products),
-                       sum(1 for b in v.stores if b.below_min_order),
-                       v.effort_total),
-    )
+    variants = sorted(best_by_key.values(), key=rank_key)
     return variants[:max(0, int(top_n))]
+
+
+def rank_key(variant: Variant) -> tuple:
+    """Порядок вариантов в выдаче: полные, потом не ниже минимального заказа, потом по итогу.
+
+    Один ключ у расчёта и у экрана «Где дешевле» (app/netprice.py сдвигает цены мест
+    итогами сетей и переставляет места тем же правилом, а не своим).
+    """
+    return (len(variant.missing_products),
+            sum(1 for b in variant.stores if b.below_min_order),
+            variant.effort_total)
