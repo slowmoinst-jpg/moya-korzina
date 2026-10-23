@@ -386,6 +386,28 @@ def test_removing_a_receipt_price_is_not_a_refusal(user_db):
     assert [c["sku"] for c in repo.base_candidates(pid, dixy)] == ["555"]
 
 
+def test_removed_receipt_price_is_remembered_but_not_as_a_refusal(user_db, monkeypatch):
+    from app.matcher import matcher
+
+    pid = product("Зюзя тестовая сливовая 77г")
+    dixy = ids()["dixy"]
+    stub = repo.upsert_store_product(dixy, f"hist-{pid}", "Зюзя тестовая сливовая 77г")
+    repo.confirm_mapping(pid, stub)
+    repo.drop_mapping(pid, dixy)
+
+    assert repo.dropped_stubs(pid, dixy) == {f"hist-{pid}"}
+    assert not repo.chain_rejected(pid, dixy) and repo.rejected_skus(pid, dixy) == set()
+
+    # поиск по сети снова приносит строку чека (hist-) лучшим кандидатом
+    again = Candidate(store_code="dixy", sku=f"hist-{pid}", name="Зюзя тестовая сливовая 77г",
+                      weight_g=77, score=0.99)
+    monkeypatch.setattr(matcher, "find_candidates", lambda *a, **k: [again])
+
+    matcher.auto_match([pid], ["dixy"])             # «Подобрать всё»
+
+    assert repo.confirmed_mapping(pid, dixy) is None
+
+
 # ---------- спящий номер просыпается ----------
 def test_relisted_product_moves_the_link_off_the_sleeping_number(catalog, user_db):
     store.upsert_products("lenta", [P("230", "Сыр ЛАМБЕР 50% 230г")])

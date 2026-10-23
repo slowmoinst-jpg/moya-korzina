@@ -196,6 +196,10 @@ def auto_match(product_ids: list[int], store_codes: list[str], threshold: float 
                 continue
             held = repo.confirmed_mapping(product_id, store.id)      # заглушка или ничего
             candidates = find_candidates(product_id, store_code, limit=3)
+            # Заглушку, которую человек убрал («Это не та цена»), автоподбор не возвращает.
+            dropped = repo.dropped_stubs(product_id, store.id)
+            if dropped:
+                candidates = [c for c in candidates if str(c.sku) not in dropped]
             if not candidates:
                 need_review.append({"product_id": product_id, "product_name": product.name,
                                     "store_code": store_code, "reason": "нет кандидатов",
