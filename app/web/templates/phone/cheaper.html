@@ -46,8 +46,15 @@
       </div>
       <div style="font-size: 13px; line-height: 1.4; color: var(--amber-ink)">
         {% if chosen.figures.base %}{{ chosen.base.label }} {{ rub(chosen.figures.base) }}. {% endif %}
-        Товары {{ rub(chosen.subtotal) }}{% if chosen.discount %}, скидка и кэшбэк −{{ rub(chosen.discount) }}{% endif %},
-        доставка {% if chosen.delivery %}{{ rub(chosen.delivery) }}{% else %}бесплатно{% endif %},
+        {% if chosen.net %}
+          {# Цена места — итог, который написала сама сеть (app/netprice.py): её скидки,
+             доставка и сборка уже внутри (замер 23.10.2026). Доставку называем, только
+             если сеть её показала. #}
+          Итог посчитала сама сеть: {{ rub(chosen.net.sum) }}{% if chosen.net.discount %} (скидка сети −{{ rub(chosen.net.discount) }}){% endif %}{% if chosen.net.delivery is not none %}, доставка {% if chosen.net.delivery %}{{ rub(chosen.net.delivery) }}{% else %}бесплатно{% endif %}{% endif %}{% if chosen.net.cashback %}, кэшбэк карты −{{ rub(chosen.net.cashback) }}{% endif %},
+        {% else %}
+          Товары {{ rub(chosen.subtotal) }}{% if chosen.discount %}, скидка и кэшбэк −{{ rub(chosen.discount) }}{% endif %},
+          доставка {% if chosen.delivery %}{{ rub(chosen.delivery) }}{% else %}бесплатно{% endif %},
+        {% endif %}
         в наличии {{ chosen.complete.have }} из {{ chosen.complete.of }}.
       </div>
     </div>
@@ -97,7 +104,7 @@
           </a>
         {% endfor %}
       </div>
-      <div class="fnt" style="font-size: 12px; padding: 7px 2px 0">С учётом скидок магазинов, ваших личных скидок, доставки и кэшбэка карт.</div>
+      <div class="fnt" style="font-size: 12px; padding: 7px 2px 0">С учётом скидок магазинов, ваших личных скидок, доставки и кэшбэка карт.{% if nets %} «Корзина кабинета» — цену написала сама сеть по вашей корзине: со скидками, доставкой и сборкой, для способа получения, выбранного в её корзине.{% endif %}</div>
     </section>
   {% endif %}
 {% endblock %}

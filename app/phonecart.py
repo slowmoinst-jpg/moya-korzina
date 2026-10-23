@@ -1037,6 +1037,20 @@ def _page(report: dict, kind: str) -> float | None:
     return None
 
 
+def _delivery(report: dict, total: float) -> float | None:
+    """Доставка со страницы корзины: строка «Доставка», которая меньше итога.
+
+    Замер на эмуляторе 23.10.2026, Перекрёсток: кнопка оформления («826,35 ₽ Доставка
+    сегодня Оформить заказ») читается страницей как строка доставки с суммой итога.
+    Доставка не бывает не меньше итога заказа, и такая строка — это сам итог.
+    """
+    for row in report.get("page_totals") or []:
+        amount = row.get("amount")
+        if row.get("kind") == "delivery" and amount is not None and amount < total:
+            return amount
+    return None
+
+
 def _learn(report: dict) -> None:
     """Донести до единой базы товар, который человек сам нашёл в телефоне.
 
@@ -1208,8 +1222,14 @@ def _to_row(report: dict) -> None:
                 goods = goods_row.get("base") or goods_row.get("amount")
                 if discount is None and goods_row.get("base") is not None:
                     discount = round(goods_row["base"] - goods_row["amount"], 2)
-            total = {"sum": amount, "source": cartrun.NETWORK, "goods": goods,
-                     "discount": discount, "delivery": _page(report, "delivery"),
+            # «Посчитала сеть» — только то, что сеть назвала к оплате: сверенный ответ или
+            # строка итога. Нет её, и total_of взяла «Товары»: это сумма товаров без скидок
+            # и сборки, и итогом сети она не подаётся (замер на эмуляторе 23.10.2026:
+            # итог сети — товары − скидки + доставка + сборка, app/netprice.py).
+            paid = network is not None or any(
+                r.get("kind") == "total" for r in report.get("page_totals") or [])
+            total = {"sum": amount, "source": cartrun.NETWORK if paid else cartrun.OURS,
+                     "goods": goods, "discount": discount, "delivery": _delivery(report, amount),
                      "count": network["count"] if network else report.get("cart_count")}
         items = report.get("items") or []
         kept = sum(1 for item in items if item.get("ok") and item.get("how") == "kept")

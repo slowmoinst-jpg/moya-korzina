@@ -339,32 +339,45 @@ def test_each_place_says_where_its_price_comes_from(web):
 
 
 def test_the_cabinet_sum_is_signed_by_the_store_and_its_time(web, monkeypatch):
-    """Сумму посчитала сама сеть — так и подписана, со временем её итога."""
+    """Цену места написала сама сеть — так и подписано, со временем её итога."""
+    from datetime import datetime, timedelta
+
     from app import cartrun
-    from app.carttotal import NETWORK, Total
 
     enter(web)
     workspace()
     basket_id = _a_basket()
-    cartrun.save(cartrun.Row(
-        code="magnit", name="Магнит", road=cartrun.BROWSER, state=cartrun.DONE,
-        basket_id=basket_id, stamp=cartrun.stamp_of(basket_id),
-        total=Total(sum=110.0, source=NETWORK, at="2026-10-21T02:14:00"),
-        finished_at="2026-10-21T02:15:00"))
+    at = (datetime.now() - timedelta(minutes=30)).replace(microsecond=0)
+    cartrun.save(_cabinet_row(cartrun, basket_id, cartrun.stamp_of(basket_id), at=at))
     _substituted(monkeypatch, _one_place("magnit", "Магнит", 110.0))
 
     page = text(web.get("/phone/cheaper"))
-    assert "корзина кабинета, 21.10 02:14" in page
+    assert f"корзина кабинета, {at:%d.%m %H:%M}" in page
 
 
-def _cabinet_row(cartrun, basket_id: int | None, stamp: str, amount: float = 110.0):
+def _cabinet_row(cartrun, basket_id: int | None, stamp: str, amount: float = 110.0,
+                 at=None, code: str = "magnit", landed: int = 2, delivery=None, discount=None,
+                 **fields):
+    """Строка сборки: итог написала сеть, легло `landed` позиций (в корзине их две)."""
+    from datetime import datetime
+
     from app.carttotal import NETWORK, Total
 
+    moment = (at or datetime.now()).replace(microsecond=0).isoformat()
     return cartrun.Row(
-        code="magnit", name="Магнит", road=cartrun.BROWSER, state=cartrun.DONE,
-        basket_id=basket_id, stamp=stamp,
-        total=Total(sum=amount, source=NETWORK, at="2026-10-21T02:14:00"),
-        finished_at="2026-10-21T02:15:00")
+        code=code, name=code.title(), road=cartrun.BROWSER, state=cartrun.DONE,
+        basket_id=basket_id, stamp=stamp, landed=[f"Товар {n}" for n in range(landed)],
+        total=Total(sum=amount, source=NETWORK, at=moment, delivery=delivery, discount=discount),
+        finished_at=moment, **fields)
+
+
+def _network_dearer(cartrun, monkeypatch, **fields) -> None:
+    """Пятёрочка у нас дешевле Магнита (100 против 110), а сеть насчитала ей 130."""
+    basket_id = _a_basket()
+    cartrun.save(_cabinet_row(cartrun, basket_id, cartrun.stamp_of(basket_id), amount=130.0,
+                              code="pyaterochka", **fields))
+    _substituted(monkeypatch, _one_place("pyaterochka", "Пятёрочка", 100.0),
+                 _one_place("magnit", "Магнит", 110.0))
 
 
 def test_another_baskets_cabinet_sum_is_not_shown(web, monkeypatch):
@@ -397,6 +410,93 @@ def test_a_cabinet_sum_of_another_basket_composition_is_not_shown(web, monkeypat
 
     page = text(web.get("/phone/cheaper"))
     assert "корзина кабинета" not in page
+
+
+def test_the_network_total_replaces_our_price_and_changes_the_advice(web, monkeypatch):
+    """Сеть насчитала дороже нашего расчёта — место дорожает, и советуют другое (Магнит)."""
+    from app import cartrun
+
+    enter(web)
+    workspace()
+    _network_dearer(cartrun, monkeypatch)
+
+    page = text(web.get("/phone/cheaper"))
+    assert page.index("Всё в Магните") < page.index("Всё в Пятёрочке")   # крупно — Магнит
+    assert "130,00" in page and "корзина кабинета" in page
+    assert "«Корзина кабинета» — цену написала сама сеть" in page
+
+
+def test_the_chosen_place_names_the_network_total(web, monkeypatch):
+    """Выбрано место с итогом сети — под ценой итог сети, а не наши «товары и доставка»."""
+    from app import cartrun
+
+    enter(web)
+    workspace()
+    _network_dearer(cartrun, monkeypatch)
+
+    page = text(web.get("/phone/cheaper?pick=0"))        # место 0 — Пятёрочка
+    assert "Итог посчитала сама сеть: 130,00" in page
+    assert "Товары " not in page
+    # Сеть доставку не показала — о ней молчим, а не гадаем «не указана» или «бесплатно».
+    assert "доставка бесплатно" not in page and "не указана" not in page
+
+
+@pytest.mark.parametrize("delivery, said", [(0.0, ", доставка бесплатно"), (59.0, ", доставка 59,00")])
+def test_the_chosen_place_shows_the_network_delivery_and_discount(web, monkeypatch, delivery, said):
+    """Доставку и скидку называем такими, какими их написала сеть: нулевая доставка — «бесплатно»."""
+    from app import cartrun
+
+    enter(web)
+    workspace()
+    _network_dearer(cartrun, monkeypatch, delivery=delivery, discount=20.0)
+
+    page = text(web.get("/phone/cheaper?pick=0"))
+    assert "(скидка сети −20,00" in page and said in page
+
+
+def test_an_incomplete_cabinet_cart_does_not_set_the_price(web, monkeypatch):
+    """Легло одно из двух — итог сети не про всю корзину: цена наша, и сказано, почему."""
+    from app import cartrun
+
+    enter(web)
+    workspace()
+    _network_dearer(cartrun, monkeypatch, landed=1)
+
+    page = text(web.get("/phone/cheaper"))
+    assert page.index("Всё в Пятёрочке") < page.index("Всё в Магните")   # совет прежний
+    assert "130,00" not in page and "корзина кабинета" not in page
+    assert "итог сети не взят: легло 1 из 2" in page
+
+
+def test_a_stale_cabinet_total_does_not_set_the_price(web, monkeypatch):
+    from datetime import datetime, timedelta
+
+    from app import cartrun
+
+    enter(web)
+    workspace()
+    _network_dearer(cartrun, monkeypatch, at=datetime.now() - timedelta(days=3))
+
+    page = text(web.get("/phone/cheaper"))
+    assert "130,00" not in page
+    assert "итог сети не взят: устарел" in page
+
+
+def test_ordering_without_pick_follows_the_place_the_screen_recommends(web, monkeypatch):
+    """Итог сети сменил совет: «Заказать» без pick — в том месте, что рекомендует экран.
+
+    Иначе человек нажимал бы «Заказать в Магните» под советом «Магнит», а сервер искал бы
+    Магнит среди мест прежнего совета (Пятёрочка) и молча возвращал на тот же экран.
+    """
+    from app import cartrun
+
+    enter(web)
+    workspace()
+    _network_dearer(cartrun, monkeypatch)
+
+    answer = web.post("/phone/cheaper", data={"store": "magnit"})
+    assert answer.status_code == 303
+    assert "/phone/settings?connect=magnit" in answer.headers["Location"]
 
 
 def test_a_catalog_snapshot_does_not_make_a_showcase_at_the_address(web, monkeypatch):
