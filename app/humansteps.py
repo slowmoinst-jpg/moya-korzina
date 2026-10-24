@@ -126,12 +126,61 @@ def render(state: dict) -> str:
     return "\n".join(lines)
 
 
+def board() -> list[dict]:
+    """Состояние автосборки по ВСЕМ сетям: вход, дорога, что легло, взят ли итог сети.
+
+    Ничего не меняет и не ходит в сети: читает подключения и последние строки «Сборки
+    корзин». По строке видно, на каком шаге сеть стоит и что делать дальше.
+    """
+    from app import cartrun, carttotal
+
+    out: list[dict] = []
+    for conn in store_accounts.connections():
+        row = cartrun.get(conn.store_code)
+        planned = row.planned if row else 0
+        landed = len(row.landed) if row else 0
+        network = bool(row and row.total and row.total.source == carttotal.NETWORK)
+        state = row.state if row else cartrun.IDLE
+        if not conn.connected:
+            step = "подключить сеть (войти в кабинет)"
+        elif state == cartrun.LOGIN:
+            step = "войти заново: сессия сети истекла"
+        elif state in (cartrun.FAILED, cartrun.REFUSED, cartrun.CANT):
+            step = (row.note if row and row.note else "сеть не приняла корзину")
+        elif state == cartrun.IDLE:
+            step = "собрать корзину: в эту сеть ещё не собирали"
+        elif planned and landed < planned:
+            step = f"легло {landed} из {planned}: добрать остальное"
+        elif not network:
+            step = "корзина легла, но итог сети не прочитан"
+        else:
+            step = ""
+        out.append({"code": conn.store_code, "connected": conn.connected,
+                    "road": cartrun.road(conn.store_code), "state": state,
+                    "planned": planned, "landed": landed, "network_total": network,
+                    "ready": conn.connected and not step, "next": step})
+    return out
+
+
+def render_board(rows: list[dict]) -> str:
+    lines = ["автосборка по сетям:"]
+    for r in rows:
+        mark = "готово" if r["ready"] else "нужно"
+        lines.append(f"  {r['code']:<12} {mark:<7} дорога: {r['road']:<8} "
+                     f"легло {r['landed']}/{r['planned']} | итог сети: "
+                     f"{'да' if r['network_total'] else 'нет'}")
+        if r["next"]:
+            lines.append(f"    → {r['next']}")
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Что из трёх человеческих шагов уже сделано")
     parser.add_argument("--phone", default=None, help="телефон владельца (иначе первый в базе)")
     parser.add_argument("--network", action="store_true",
                         help="спросить сети (медленно, через кэш) и открыть Магнит браузером")
     parser.add_argument("--json", action="store_true", help="ответ в JSON")
+    parser.add_argument("--board", action="store_true", help="состояние автосборки по всем сетям")
     args = parser.parse_args(argv)
 
     phone = args.phone
@@ -144,11 +193,12 @@ def main(argv: list[str] | None = None) -> int:
     if phone:
         users.open_workspace(phone)
     try:
-        state = check(use_network=args.network)
+        state = board() if args.board else check(use_network=args.network)
     finally:
         if phone:
             users.deactivate()
-    print(json.dumps(state, ensure_ascii=False, indent=1) if args.json else render(state))
+    shown = render_board(state) if args.board else (None if args.json else render(state))
+    print(json.dumps(state, ensure_ascii=False, indent=1) if args.json else shown)
     return 0
 
 
