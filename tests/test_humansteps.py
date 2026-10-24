@@ -79,3 +79,33 @@ def test_store_choice_is_unknown_without_network(monkeypatch):
     assert state["magnit"]["store_choice"] == "unknown"
     text = humansteps.render(state)
     assert "магазин выбран: неизвестно" in text, text
+
+
+def test_board_covers_every_chain_and_names_the_next_step(monkeypatch):
+    from app import cartrun, carttotal
+
+    rows = {
+        "pyaterochka": cartrun.Row(code="pyaterochka", state=cartrun.DONE, planned=4,
+                                   landed=["a", "b"]),
+        "dixy": cartrun.Row(code="dixy", state=cartrun.LOGIN),
+        "metro": cartrun.Row(code="metro", state=cartrun.DONE, planned=2, landed=["a", "b"],
+                             total=carttotal.Total(sum=340.0, source=carttotal.NETWORK)),
+    }
+    monkeypatch.setattr(cartrun, "get", lambda code: rows.get(code))
+
+    class _Conn:
+        def __init__(self, code, connected):
+            self.store_code, self.connected = code, connected
+
+    monkeypatch.setattr(humansteps.store_accounts, "connections", lambda: [
+        _Conn("pyaterochka", True), _Conn("dixy", True), _Conn("metro", True),
+        _Conn("lenta", False)])
+
+    board = {r["code"]: r for r in humansteps.board()}
+
+    assert set(board) == {"pyaterochka", "dixy", "metro", "lenta"}
+    assert "легло 2 из 4" in board["pyaterochka"]["next"] and not board["pyaterochka"]["ready"]
+    assert "войти заново" in board["dixy"]["next"]
+    assert board["metro"]["ready"] and board["metro"]["network_total"]
+    assert "подключить" in board["lenta"]["next"]
+    assert "готово" in humansteps.render_board(list(board.values()))

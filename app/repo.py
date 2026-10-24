@@ -231,6 +231,7 @@ def confirm_mapping(product_id: int, store_product_id: int, confirmed: bool = Tr
 
 
 CHAIN_REJECT = "*"      # отметка отказа от сети целиком в link_rejects
+STUB_MARK = "stub:"     # отметка убранной заглушки: отказ от цены, не от сети
 
 
 def drop_mapping(product_id: int, store_id: int) -> None:
@@ -256,6 +257,15 @@ def drop_mapping(product_id: int, store_id: int) -> None:
             # сети нет, кандидаты единой базы остаются на «Связях» (ревью 18.10.2026).
             c.executemany("DELETE FROM product_mapping WHERE product_id=? AND store_product_id=?",
                           [(product_id, sp_id) for sp_id in stubs])
+            # Убранную заглушку помним отдельной отметкой «stub:<артикул>»: автоподбор не
+            # вернёт её, но сеть целиком это не закрывает (chain_rejected её не видит).
+            try:
+                c.executemany("INSERT OR REPLACE INTO link_rejects (product_id, store_id, sku, at)"
+                              " VALUES (?,?,?,?)",
+                              [(product_id, store_id, STUB_MARK + r["sku"], NOW())
+                               for r in held if r["id"] in stubs])
+            except Exception:  # noqa: BLE001 — база прежней версии: таблицы ещё нет
+                pass
             c.commit()
             return
         skus = [r["sku"] for r in held]
@@ -271,7 +281,20 @@ def drop_mapping(product_id: int, store_id: int) -> None:
 
 
 def rejected_skus(product_id: int, store_id: int) -> set[str]:
-    """Артикулы этой сети, которые человек у товара убрал (и отметка «*» — вся сеть)."""
+    """Артикулы этой сети, которые человек у товара убрал (и отметка «*» — вся сеть).
+
+    Убранные заглушки (отметка «stub:…») сюда не входят: это отказ от цены, не от сети.
+    """
+    return {s for s in _reject_marks(product_id, store_id) if not s.startswith(STUB_MARK)}
+
+
+def dropped_stubs(product_id: int, store_id: int) -> set[str]:
+    """Артикулы-заглушки (hist-, list-, …), которые человек убрал у товара в этой сети."""
+    return {s[len(STUB_MARK):] for s in _reject_marks(product_id, store_id)
+            if s.startswith(STUB_MARK)}
+
+
+def _reject_marks(product_id: int, store_id: int) -> set[str]:
     with get_conn() as c:
         try:
             return {r["sku"] for r in c.execute(
