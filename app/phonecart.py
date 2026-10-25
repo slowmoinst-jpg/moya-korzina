@@ -189,6 +189,13 @@ def rules(store: str) -> dict:
         "full_cart": list(FULL_CART.get(store, ())),
         "qty_sets": store in QTY_SETS,
         "empty_cart": EMPTY_CART,
+        # Сигнал бот-проверки (Пятёрочка, Этап 1): паттерн на странице означает «сеть
+        # встретила проверкой». При обнаружении приложение делает паузу check_pause_ms
+        # и пробует ту же карточку ещё раз. Если вторая попытка тоже упирается в
+        # проверку — позиция переносится в missing («check»), и добор следующим прогоном
+        # не трогает уже положенное.
+        "check_signal": signals.CHECK,
+        "check_pause_ms": _check_pause_ms(),
     }
 
 
@@ -203,6 +210,46 @@ def _request_pause_ms() -> int:
     return max(300, int(round(1000.0 / rps))) if rps > 0 else 1000
 
 
+def _check_pause_ms() -> int:
+    """Пауза после обнаружения бот-проверки, мс: из config.yaml phone_check_pause_ms.
+
+    По умолчанию 5 с — достаточно, чтобы Пятёрочка сняла краткосрочную блокировку,
+    но не так много, чтобы сборка корзины длилась целую минуту. Если первая попытка
+    после паузы снова упирается в CHECK — позиция помечается «check» и добирается
+    следующим прогоном (top_up).
+    """
+    from app import config
+
+    try:
+        ms = int(config.get("phone_check_pause_ms", 5000) or 5000)
+    except (TypeError, ValueError):
+        ms = 5000
+    return max(1000, ms)
+
+
+def _landed_skus(store: str) -> frozenset[str]:
+    """SKU позиций, которые уже лежат в корзине сети по последнему отчёту телефона.
+
+    ЗАЧЕМ (Этап 1, 25.10.2026). Пятёрочка и Самокат пропускают 2–3 позиции за прогон
+    из-за бот-защиты и таймаутов. «Добор» — следующий наряд с `top_up=true` содержит
+    ТОЛЬКО пропущенные: те, чьего SKU нет среди уже положенных. Это позволяет добрать
+    корзину без нажатия кнопки и не удвоить уже лежащее.
+
+    Берём только реально положенные (ok=true), исключая «kept» (они тоже ok, но их
+    клал предыдущий прогон, и следующий обязан класть снова только то, чего не хватает).
+    Пустое множество — отчёта нет или все позиции не легли; тогда top_up вернёт полный
+    наряд, как обычно.
+    """
+    report = last(store)
+    if not report:
+        return frozenset()
+    return frozenset(
+        str(item["sku"])
+        for item in (report.get("items") or [])
+        if item.get("ok") and item.get("sku") and item.get("how") != "kept"
+    )
+
+
 def plan(body: dict) -> dict:
     """Наряд для телефона: вся последняя корзина, переложенная на артикулы этой сети.
 
@@ -210,11 +257,16 @@ def plan(body: dict) -> dict:
     сеть посчитала одну и ту же корзину и итоги можно было сравнить. Вход здесь
     не проверяется (force): вход живёт на телефоне, и сервер о нём может не знать.
     Цены перед нарядом не перезапрашиваются: итог всё равно скажет сеть.
+
+    TOP_UP (Этап 1). При `top_up=true` возвращает только позиции, которых ещё нет в
+    корзине сети по последнему отчёту: SKU, не попавших в landed. Это добор — следующий
+    прогон без нажатия, который добирает пропущенные позиции после частичной сборки.
     """
     from app import api, cartplan
     from app.shopbrowser import cart
 
     store = _store(body)
+    top_up = bool(body.get("top_up"))
     picked = {k: v for k, v in body.items() if k in ("basket", "lines")}
     found = {"linked": 0} if picked.get("lines") is not None else _link(picked, store)
     lines, empty_note = api._plan_lines(picked, store)
@@ -224,26 +276,37 @@ def plan(body: dict) -> dict:
     lines, service_skipped = _without_service_lines(lines)
     basket_id = _basket_id(picked)
     built = cartplan.build(store, lines, force=True)
+    # TOP_UP: убираем из наряда позиции, чей SKU уже лежит в корзине сети. Сеть кладёт
+    # поверх лежащего, и повторная кладка удвоила бы их. При этом позиции без SKU (ещё
+    # не привязанные) остаются: их телефон найдёт поиском, а не нажатием на карточку.
+    already: frozenset[str] = _landed_skus(store) if top_up else frozenset()
     rows = []
     by_sku: dict[str, dict] = {}
     for line in built.lines[:cart.LINE_LIMIT]:
         clicks, rounded = cart.pieces_of(line)
         row = line.as_dict()
         row.update(clicks=int(clicks), rounding=rounded)
+        sku_key = str(row.get("sku") or "")
         # Два товара корзины на одном артикуле сети (дубль из чека и каталога) — одна
         # позиция с суммой упаковок. Иначе сеть, что ставит количество (QTY_SETS), взяла
         # бы число второй строки вместо суммы: замер на эмуляторе 18.10.2026, Алёнка 3 + 2.
-        same = by_sku.get(str(row.get("sku") or "")) if row.get("sku") else None
+        same = by_sku.get(sku_key) if sku_key else None
         if same is not None:
             same["clicks"] += row["clicks"]
             same["qty"] = round(float(same.get("qty") or 0) + float(row.get("qty") or 0), 3)
             if row.get("price") is not None:
                 same["price"] = round(float(same.get("price") or 0) + float(row["price"]), 2)
             continue
-        if row.get("sku"):
-            by_sku[str(row["sku"])] = row
+        # Top-up: пропускаем позиции, которые уже легли (SKU есть в landed прошлого отчёта).
+        if top_up and sku_key and sku_key in already:
+            continue
+        if sku_key:
+            by_sku[sku_key] = row
         rows.append(row)
     note = built.note
+    if top_up and already:
+        note = (f"{(note or '').strip()} Добор: {len(already)} поз. уже лежит "
+                f"в корзине сети с прошлой сборки — их не трогаем.").strip()
     if not rows:
         # Пустой наряд должен сказать, ЧТО искали: в окне телефона это единственная
         # подсказка, почему класть нечего (замер владельца 17.10.2026 без неё не читался).
@@ -271,7 +334,10 @@ def plan(body: dict) -> dict:
             # Какую корзину описывает наряд и её отпечаток: по нему телефон узнаёт, менялась
             # ли корзина с прошлой сборки в этой сети, и без перемен её не повторяет.
             "basket": basket_id,
-            "stamp": _stamp(basket_id)}
+            "stamp": _stamp(basket_id),
+            # Флаг добора: сколько позиций уже лежит и пропущено в этом наряде.
+            "top_up": top_up,
+            "already_landed": len(already)}
 
 
 def _search_lines(unresolved: list[dict], store: str) -> list[dict]:
