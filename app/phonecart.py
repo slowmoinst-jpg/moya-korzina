@@ -1320,6 +1320,22 @@ def _to_row(report: dict) -> None:
         if whys:
             note += (f" — {whys[0]}" if len(whys) == 1
                      else f" — причины разные: «{whys[0]}», «{whys[1]}»")
+        # ЭТАП 2: РАСПОЗНАВАНИЕ «ВЫБЕРИТЕ МАГАЗИН» И «НУЖЕН ВХОД» ПО ПРИЧИНАМ ПОЗИЦИЙ.
+        # Магнит возвращает «выберите магазин» при отсутствии выбранной точки, Дикси —
+        # «войдите заново» при протухшей сессии. Если хотя бы одна пропущенная
+        # позиция несёт такую причину — строка сети переходит в LOGIN с понятным действием
+        # (store: «Выбрать магазин», again: «Войти заново»), а не в FAILED:
+        # экран покажет конкретную кнопку действия вместо тихого «легло 0».
+        store_detected = any(
+            cartrun.STORE_WHY.search(str(item.get("why") or ""))
+            for item in items
+            if not item.get("ok")
+        )
+        login_detected = any(
+            cartrun.LOGIN_WHY.search(str(item.get("why") or ""))
+            for item in items
+            if not item.get("ok")
+        )
         reply = {
             "store": report["store"],
             "landed": [item["name"] for item in items if item.get("ok")],
@@ -1329,6 +1345,12 @@ def _to_row(report: dict) -> None:
             "note": note,
             "extra": report.get("extra") or [],
         }
+        if store_detected:
+            reply["state"] = cartrun.LOGIN
+            reply["login"] = "store"
+        elif login_detected:
+            reply["state"] = cartrun.LOGIN
+            reply["login"] = "again"
         if report.get("basket"):
             reply["basket"] = report["basket"]
         if report.get("stamp"):

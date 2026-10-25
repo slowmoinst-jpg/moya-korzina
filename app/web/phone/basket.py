@@ -294,7 +294,14 @@ def _run_view(row, basket_id: int | None, stamp: str) -> dict | None:
                                + ", ".join(extra)) if extra else ""}
     if row.state == cartrun.EMPTY:
         return {"state": "empty", "words": "класть нечего", "note": row.note, "total": None}
-    if row.state in (cartrun.FAILED, cartrun.REFUSED, cartrun.LOGIN):
+    if row.state == cartrun.LOGIN:
+        sname = row.name or row.code
+        if row.login == "store":
+            words = f"выберите магазин в «{sname}»" if row.code == "magnit" else "выберите магазин"
+        else:
+            words = f"войдите в «{sname}» заново" if row.code == "dixy" else "войдите заново"
+        return {"state": "login", "words": words, "note": row.note, "total": None, "login": row.login}
+    if row.state in (cartrun.FAILED, cartrun.REFUSED):
         return {"state": "failed", "words": "не вышло", "note": row.note, "total": None}
     return None
 

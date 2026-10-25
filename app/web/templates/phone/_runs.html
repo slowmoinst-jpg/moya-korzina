@@ -26,7 +26,9 @@
           {% if r.state == 'done' and r.gone %}<span class="fnt small sub">нет в наличии: {{ r.gone }}</span>{% endif %}
           {% if r.state == 'done' and r.extra_note %}<span class="fnt small sub">{{ r.extra_note }}</span>{% endif %}
         </span>
-        {% if r.total %}
+        {% if r.state == 'login' %}
+          <span class="bt small" style="white-space: nowrap">{{ 'Выбрать магазин' if r.login == 'store' else 'Войти' }}</span>
+        {% elif r.total %}
           <span class="num {{ 'fnt' if r.state == 'old' }}" style="font-weight: 800">{{ rub(r.total.sum) }}</span>
           {% if r.total.network %}<span class="badge white" title="Итог посчитала сама сеть: с её скидками и акциями">сеть</span>{% endif %}
         {% elif r.state == 'going' %}

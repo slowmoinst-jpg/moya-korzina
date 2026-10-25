@@ -109,6 +109,24 @@ NO_WINDOW = ("empty", "nologin", "point")
 # причине». Слова — наши же: их пишут cart._put_one, cart._metro и cartplan.verify.
 GONE_WHY = re.compile(r"нет в наличии|товара нет|нет в выбранном торговом центре", re.I)
 
+# Причина у позиции, которая означает «выберите магазин/адрес» (Магнит).
+STORE_WHY = re.compile(
+    r"выберите магазин|выбери магазин|выберите адрес|выбери адрес"
+    r"|укажите адрес|выбрать магазин|выбрать адрес|не выбран магазин"
+    r"|магазин не выбран|адрес не выбран",
+    re.I,
+)
+
+# Причина у позиции, которая означает «нужен вход заново» — сеть вернула страницу
+# авторизации или явно написала «войдите». Паттерны читаются из why позиций отчёта
+# телефона (Магнит, Дикси, Пятёрочка).
+LOGIN_WHY = re.compile(
+    r"войдите|войти заново|войдите снова|требуется вход|необходим вход"
+    r"|сессия истекла|авторизуйтесь|авторизация|вы не авторизованы"
+    r"|sign in|please log in|нет входа|нет авторизации",
+    re.I,
+)
+
 NAME_LIMIT = 200
 LIST_LIMIT = 120       # позиций в одном списке строки: наряд короче (cart.LINE_LIMIT)
 
@@ -864,7 +882,9 @@ def accept(report: dict, *, by: str = DEVICE) -> Row:
               basket_id=basket_id, basket_name=basket_name,
               stamp=_stamp_text(report.get("stamp")) or (current.stamp if current else ""),
               started_at=current.started_at if current else None, finished_at=_now(),
-              login="again" if state == LOGIN else "", extra=extra,
+              login=(report.get("login") if report.get("login") in ("connect", "again", "store")
+                     else ("store" if any(STORE_WHY.search(item["why"]) for item in missing) else "again"))
+                     if state == LOGIN else "", extra=extra,
               at=len(landed) + len(missing))
     log.info("%s: отчёт о сборке принят (%s): легло %d, не легло %d", code, row.by,
              len(landed), len(missing))
@@ -873,5 +893,6 @@ def accept(report: dict, *, by: str = DEVICE) -> Row:
 
 __all__ = ["Row", "Total", "NETWORK", "OURS", "KEY", "LINK", "BROWSER", "API", "PHONE",
            "IDLE", "READY", "GOING", "DONE", "FAILED", "REFUSED", "LOGIN", "SENT", "CANT",
-           "EMPTY", "SERVER", "DEVICE", "PHONE_STALE", "networks", "road", "alive", "live",
+           "EMPTY", "SERVER", "DEVICE", "PHONE_STALE", "GONE_WHY", "LOGIN_WHY", "STORE_WHY",
+           "networks", "road", "alive", "live",
            "prepare", "preview", "rows", "start", "accept", "progress", "stamp_of", "get", "save"]

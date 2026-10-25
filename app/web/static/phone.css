@@ -271,6 +271,7 @@ div.empty { padding: 28px 12px; text-align: center; color: var(--ink2); }
 .run .rn { font-weight: 600; }
 .run .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run.failed [data-run-words] { color: var(--red); }
+.run.login [data-run-words] { color: var(--amber-ink, #d35400); font-weight: 600; }
 .run.interrupted [data-run-words] { color: var(--amber-ink); }
 .run.old .badge { background: var(--soft); color: var(--ink3); }
 .spin { width: 14px; height: 14px; flex: none; border-radius: 50%;

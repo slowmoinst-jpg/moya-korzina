@@ -168,7 +168,7 @@
           {# Вход человек проходит сам, в окне сети на «Кабинетах»: капчу и код из СМС
              за него не пройти, а сохранённый вход дальше подхватит сборка. #}
           <a class="btn main" href="{{ r.accounts }}">
-            {{ 'Подключить' if r.login == 'connect' else 'Войти заново' }}</a>
+            {{ 'Подключить' if r.login == 'connect' else ('Выбрать магазин' if r.login == 'store' else 'Войти заново') }}</a>
         {% endif %}
         {% if r.button %}
           <form method="post" style="display:inline" data-once>

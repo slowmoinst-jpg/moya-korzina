@@ -116,7 +116,7 @@ def _view(row) -> dict:
         "code": row.code, "name": row.name or row.code, "road": row.road,
         "of": OF.get(row.code, row.name or row.code),
         "road_words": ROAD_WORDS.get(row.road, ""),
-        "state": row.state, "state_words": STATE_WORDS.get(row.state, row.state),
+        "state": row.state, "state_words": ("нужно выбрать магазин" if row.login == "store" else STATE_WORDS.get(row.state, row.state)),
         "tone": STATE_TONE.get(row.state, ""),
         "note": row.note, "planned": row.planned,
         "landed": list(row.landed or []), "missing": missing,

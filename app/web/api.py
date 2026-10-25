@@ -455,5 +455,22 @@ def device_cartlink():
     return _device_call("cartlink", _cart_link_for_phone)
 
 
+def _board_for_device(_payload: dict) -> dict:
+    from app import humansteps
+    return {"ok": True, "board": humansteps.board()}
+
+
+@bp.route("/device/board", methods=["POST"])
+def device_board():
+    """Состояние автосборки по всем подключённым сетям — для экрана «Настройки» на телефоне.
+
+    Ответ — список по каждой сети: подключена ли, дорога, сколько легло в последнем
+    прогоне, взят ли итог сети, что мешает. Не ходит в сети и ничего не меняет.
+
+    Форма запроса: {workplace, secret}.
+    """
+    return _device_call("board", _board_for_device)
+
+
 def install(flask_app):
     flask_app.register_blueprint(bp)

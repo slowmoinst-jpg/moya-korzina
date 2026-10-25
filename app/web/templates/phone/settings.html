@@ -79,6 +79,38 @@
     </section>
   {% endif %}
 
+  {% if board %}
+    <section>
+      <div class="grp">Сборка по сетям (все 11 сетей)</div>
+      <div class="card">
+        {% for b in board %}
+          <div class="row" style="align-items: flex-start; padding: 10px 14px">
+            {{ mark(b.code, b.name) }}
+            <span class="grow" style="display: flex; flex-direction: column; gap: 2px">
+              <span style="font-weight: 600">{{ b.name }} <span class="mut small">({{ b.road }})</span></span>
+              <span class="small fnt">
+                {% if b.ready %}
+                  <span class="gd">Собрано</span> · итог сети: {{ 'да' if b.network_total else 'нет' }}
+                {% elif b.next %}
+                  <span class="warn">{{ b.next }}</span>
+                {% else %}
+                  <span class="mut">легло {{ b.landed }}/{{ b.planned }}</span>
+                {% endif %}
+              </span>
+            </span>
+            {% if b.next and ('войти' in b.next or 'подключить' in b.next or 'выбрать' in b.next) %}
+              <a class="bt ghost small" href="/cabinet?store={{ b.code }}" data-open-store="{{ b.code }}">
+                {{ 'Выбрать' if 'выбрать' in b.next else ('Войти' if 'войти' in b.next else 'Подключить') }}
+              </a>
+            {% elif b.ready %}
+              <span class="badge white">готово</span>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+
   <section>
     <div class="grp">Чеки</div>
     <div class="card">

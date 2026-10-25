@@ -82,6 +82,7 @@ def settings():
     # должно ждать чужую службу. Нет точки — карта откроется по умолчанию,
     # который задан в phone-map.js (Москва).
     center = point
+    board = _board()
     saved = request.args.get("saved")
     return _render("settings.html", tab="settings", stores=stores,
                    connected=connected, waiting=waiting,
@@ -97,7 +98,17 @@ def settings():
                    point_text=_point_text(point), center=center,
                    map_open=request.args.get("map") == "1",
                    nearby_text=_nearby_line(address) if saved == "address" else None,
+                   board=board,
                    tile_base=url_for("phone.map_tile", z=10, x=0, y=0).rsplit("/", 3)[0])
+
+
+def _board() -> list[dict]:
+    try:
+        from app import humansteps
+        return humansteps.board()
+    except Exception:  # noqa: BLE001
+        log.warning("humansteps.board не прочитался", exc_info=True)
+        return []
 
 
 def _when_text(value: str | None) -> str | None:
