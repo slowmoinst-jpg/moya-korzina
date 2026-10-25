@@ -121,6 +121,8 @@ public class MainActivity extends Activity {
         // человек не мог. Домен именно fix-price.com (как у сборщика, замер 20.10.2026),
         // адрес товара — /catalog/<раздел>/p-<артикул>-<название>.
         {"FixPrice",    "fixprice",    "https://fix-price.com/", "fix-price.com"},
+        {"Vprok",       "vprok",       "https://www.vprok.ru/",  "vprok.ru"},
+        {"Монетка",     "monetka",     "https://monetka.ru/",    "monetka.ru"},
     };
 
     /**
