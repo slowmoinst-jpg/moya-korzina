@@ -319,3 +319,20 @@ def test_cache_version_bump_invalidates_old_shape(catalog, monkeypatch):
 
     assert answer["cached"] is False, "запись другой версии — промах, а не попадание"
     assert "hint" in answer, "свежий ответ обязан нести hint"
+
+
+def test_difference_handles_packaging_descriptors_and_synonyms():
+    """Слова фасовки (рулонов/шт, без змж) и синонимы (high protein / протеиновое) не дают ложной разницы."""
+    diff_papia = storefind._difference(
+        "Papia Bali Flower 3 слоя 8 рулонов",
+        "PAPIA Bali Flower 3-слоя, 8шт",
+        None, None,
+    )
+    assert diff_papia == "", f"Ожидалась пустая разница для Papia, получено: {diff_papia!r}"
+
+    diff_neo = storefind._difference(
+        "Neo high protein 0,5% 950г",
+        "NEO протеиновое 0,5% 950г",
+        950, 950,
+    )
+    assert diff_neo == "", f"Ожидалась пустая разница для Neo, получено: {diff_neo!r}"

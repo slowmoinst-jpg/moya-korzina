@@ -90,7 +90,7 @@ _LATIN = re.compile(r"[a-z][a-z0-9]{2,}", re.I)
 NOT_A_BRAND: frozenset[str] = frozenset({
     "kg", "ml", "pcs", "new", "fresh", "light", "classic", "original", "premium",
     "mini", "maxi", "extra", "gold", "plus", "pro", "max", "eco", "bio", "zero",
-    "cream", "cheese", "milk", "juice", "water", "www", "com",
+    "cream", "cheese", "milk", "juice", "water", "www", "com", "high", "protein",
 })
 
 

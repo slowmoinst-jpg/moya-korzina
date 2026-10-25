@@ -742,6 +742,12 @@ public class MainActivity extends Activity {
     /** Фоновые сборки: скрытое окно и сборка на сеть, по коду сети. Трогаются только с главного потока. */
     private final Map<String, Slot> slots = new HashMap<>();
     private SharedPreferences prefs;
+    private SecureVault secureVault;
+
+    private SecureVault vault() {
+        if (secureVault == null) secureVault = new SecureVault(this);
+        return secureVault;
+    }
     /** Последняя корзина, которую страница отдала на сборку (мост collect). */
     private JSONObject lastCollect;
     /** Приложение свёрнуто дольше AWAY_MS: фоновые сборки стоят до возвращения. */
@@ -4414,23 +4420,22 @@ public class MainActivity extends Activity {
             return;
         }
         try {
-            JSONArray cookies = new JSONArray();
-            for (String piece : raw.split(";")) {
-                piece = piece.trim();
-                int eq = piece.indexOf('=');
-                if (eq < 1) continue;
-                cookies.put(new JSONObject().put("name", piece.substring(0, eq).trim())
-                                            .put("value", piece.substring(eq + 1)));
-            }
-            JSONObject body = new JSONObject()
-                .put("store", chain).put("host", hostOf(url)).put("cookies", cookies);
-            // Человек говорит «я вошёл» — фоновая сборка пойдёт в эту сеть, даже если сервер
-            // кук входа не узнает (Магнит, 16.10.2026: mg_at в сохранённом не нашлась).
+            // Концепция 2.0: сессии и токены шифруются в KeyStore на устройстве (AES-256-GCM)
+            vault().importCookies(chain, raw, hostOf(url));
             memory().edit().putBoolean("in." + chain, true).apply();
-            say("Сохраняю вход…", false);
-            post("/api/handoff", body, CHAINS[currentChain][0] + " — вход сохранён");
+
+            // Серверу сообщаем о факте подключения и способностях без передачи секретов
+            JSONObject body = new JSONObject()
+                .put("store", chain)
+                .put("connected", true)
+                .put("gives", new JSONArray().put("prices").put("cart"));
+
+            say("Сохраняю вход в защищённое хранилище…", false);
+            post("/api/device/connected", body,
+                 CHAINS[currentChain][0] + " — вход защищённо сохранён в KeyStore");
+            say(CHAINS[currentChain][0] + " — вход надёжно сохранён в KeyStore на устройстве", false);
         } catch (Exception e) {
-            say("Не получилось собрать вход: " + e.getMessage(), true);
+            say("Не получилось сохранить вход: " + e.getMessage(), true);
         }
     }
 

@@ -47,7 +47,7 @@ CACHE_HOURS = 24.0
 # частью (появились `brand_match`/`pack_match`), а старые записи живут сутки и отдавали
 # бы ответ без новых полей — и телефон решил бы, что марка не совпала. Запись другой
 # версии считаем промахом: переспросим сеть и перезапишем.
-CACHE_VERSION = 3
+CACHE_VERSION = 5
 # Ниже этой уверенности считаем, что нашлось «похожее, но не то»: не тот товар хуже,
 # чем никакого (владелец, 18.10.2026). Порог совпадает с is_relevant в расчёте.
 CONFIDENT = 0.75
@@ -138,6 +138,24 @@ def _words(text: str | None) -> set[str]:
     return set(meaningful(text))
 
 
+_DESCRIPTOR_WORDS = frozenset({
+    "рулон", "рулона", "рулонов", "рул", "слой", "слоя", "слоев", "сл",
+    "шт", "уп", "пак", "пач", "пачка", "пачки", "без", "змж", "бзмж", "сзмж",
+    "россия", "rossiya", "ультрапастеризованное", "пастеризованное", "стерилизованное",
+    "upast", "steril",
+    "безлактозный", "безлактозная", "безлактозное", "лактозный", "лактозное", "лактозная",
+    "молочный", "молочная", "молочное"
+})
+
+_SYNONYM_PAIRS = (
+    (frozenset({"high", "protein"}), frozenset({"протеиновое", "протеин", "белковое", "high-pro"})),
+    (frozenset({"bali", "flower"}), frozenset({"балийский", "цветок"})),
+    (frozenset({"tropical", "exotics"}), frozenset({"тропическая", "экзотика"})),
+    (frozenset({"strawberry", "dream"}), frozenset({"клубничная", "мечта"})),
+    (frozenset({"коктейль"}), frozenset({"молоко", "напиток"})),
+)
+
+
 def _difference(want: str, got: str, want_pack: float | None,
                 got_pack: float | None) -> str:
     """Чем кандидат ОТЛИЧАЕТСЯ от нашей строки: слова, процент, фасовка, маркер.
@@ -147,7 +165,14 @@ def _difference(want: str, got: str, want_pack: float | None,
     «Молоко Parmalat 1,8% 1 л» Магнит отдал 200 мл и 3,5 %, Лента — Edge и 0,5 %: точно
     товара нет, но это видно только если сказать, ЧЕМ не то.
     """
-    want_words, got_words = _words(want), _words(got)
+    want_words = _words(want) - _DESCRIPTOR_WORDS
+    got_words = _words(got) - _DESCRIPTOR_WORDS
+
+    for s1, s2 in _SYNONYM_PAIRS:
+        if (s1.issubset(want_words) and any(w in got_words for w in s2)) or \
+           (s2.issubset(want_words) and any(w in got_words for w in s1)):
+            want_words = want_words - s1 - s2
+            got_words = got_words - s1 - s2
     parts: list[str] = []
     missing = sorted(want_words - got_words)
     if missing:
@@ -157,32 +182,40 @@ def _difference(want: str, got: str, want_pack: float | None,
         parts.append("лишние: " + ", ".join(extra[:4]))
     if _pack_fits(want_pack, got_pack) is False:
         parts.append(f"фасовка {int(got_pack or 0)} г вместо {int(want_pack or 0)} г")
+    from app.catalog.match import parse_percent, percents_agree
+    want_pct, got_pct = parse_percent(want), parse_percent(got)
+    if not percents_agree(want_pct, got_pct):
+        parts.append(f"жирность {got_pct}% вместо {want_pct}%")
     return "; ".join(parts)
 
 
 def _candidate(store_code: str, found: Candidate, pack_g: float | None,
                want_name: str) -> dict:
-    fits = _pack_fits(pack_g, found.weight_g)
+    weight_g = found.weight_g
+    if weight_g is None and found.name:
+        from app.matcher.normalize import parse_weight
+        w, _ = parse_weight(found.name)
+        if w:
+            weight_g = w
+    from app.catalog.match import parse_percent, percents_agree
+    fits = _pack_fits(pack_g, weight_g)
+    pct_fits = percents_agree(parse_percent(want_name), parse_percent(found.name))
     confidence = float(found.score or 0.0)
-    difference = _difference(want_name, found.name or "", pack_g, found.weight_g)
-    if fits is True:
+    difference = _difference(want_name, found.name or "", pack_g, weight_g)
+    if fits is True and pct_fits is not False:
         confidence = min(1.0, confidence + 0.05)
-    elif fits is False:
+    elif fits is False or pct_fits is False:
         confidence = min(confidence, 0.4)
-    # ФАКТЫ, А НЕ ВЫВОД (21.10.2026). Мобильная часть просила `same_line`, но по марке и
-    # фасовке совпадают и ЧУЖИЕ линейки: «Parmalat Edge» и «Parmalat Natura Premium»
-    # имеют ту же марку и тот же литр, что наше молоко, и `same_line: true` подсказало бы
-    # человеку «это ваш товар» — а он не наш. Поэтому отдаём два факта: `brand_match`
-    # (общая марка) и `pack_match` (фасовка сходится, None — сравнивать нечем), а вывод
-    # «подтвердить связь?» пусть делает экран, где человек видит оба названия.
     brand_match = bool(_brand_words(want_name) & _brand_words(found.name or ""))
+    if difference == "" and brand_match and fits is not False and pct_fits is not False:
+        confidence = max(confidence, 0.85 if fits is True else 0.75)
     return {"sku": str(found.sku or ""), "url": found.url or "",
-            "name": found.name or "", "pack_g": found.weight_g,
+            "name": found.name or "", "pack_g": weight_g,
             "price": found.price, "confidence": round(confidence, 2),
             "difference": difference,
             "brand_match": brand_match, "pack_match": fits,
             "why": ("другая фасовка: на карточке "
-                    f"{int(found.weight_g or 0)} г, в наряде {int(pack_g or 0)} г")
+                    f"{int(weight_g or 0)} г, в наряде {int(pack_g or 0)} г")
             if fits is False else ""}
 
 
@@ -224,19 +257,33 @@ def _search(store_code: str, name: str, lat: float | None, lon: float | None,
 
 
 def _short(name: str, words: int = 3) -> str:
-    """Короткий запрос из первых смысловых слов: «Молоко Parmalat 1,8%» вместо простыни.
-
-    ЗАЧЕМ (замер 21.10.2026). Магнит по полному канону «Молоко Parmalat 1,8% 1л безлактозное
-    ультрапастеризованное» отдаёт ПУСТУЮ выдачу: его поиск ищет буквально. По короткому
-    «Молоко Parmalat» он отвечает товарами. Мобильная часть зовёт это `search_alt`, и здесь
-    тот же приём: сначала полное имя, потом короткое, и в ответе видно, чем искали.
-    """
+    """Короткий запрос из первых смысловых слов: «Молоко Parmalat 1,8%» вместо простыни."""
     from app.catalog.match import meaningful
 
     kept = [w for w in str(name or "").split() if w.lower() in meaningful(name)]
     if not kept:
         return ""
     return " ".join(kept[:words])
+
+
+def _search_queries(name: str, pack_g: float | None = None) -> list[str]:
+    """Варианты поисковых запросов для поиска сети: короткий, марка + фасовка, марка."""
+    from app.matcher.quality import brands
+    queries: list[str] = []
+    shorter = _short(name)
+    if shorter and shorter.lower() != name.lower():
+        queries.append(shorter)
+    from app.catalog.match import parse_percent
+    pct = parse_percent(name)
+    b_words = [b for b in brands(name) if b not in ("high", "protein")]
+    if b_words:
+        b = b_words[0]
+        if pct:
+            queries.append(f"{b} {pct}")
+        if pack_g:
+            queries.append(f"{b} {int(pack_g)}")
+        queries.append(b)
+    return queries
 
 
 def _why_for_phone(answer: dict, store_code: str) -> str:
@@ -361,6 +408,7 @@ def cart_link(store_code: str, items: list[dict], lat: float | None = None,
     with_sku: list[tuple[int, float, str | None]] = []
     matched: list[int] = []
     missing: list[int] = []
+    substituted: list[str] = []
     for item in wanted:
         product_id = item.get("product_id")
         name = " ".join(str(item.get("name") or "").split())
@@ -370,14 +418,21 @@ def cart_link(store_code: str, items: list[dict], lat: float | None = None,
             if product_id is not None:
                 missing.append(int(product_id))
             continue
+
+        sku = None
+        # Поиск по витрине
         answer = find("lenta", name, pack_g=pack_g, lat=lat, lon=lon, address=address)
         best = (answer.get("found") or [{}])[0] if answer.get("found") else {}
-        if not (answer.get("ok") and best.get("sku")):
-            if product_id is not None:
-                missing.append(int(product_id))
-            continue
-        sku = str(best["sku"])
-        if not sku.isdigit():
+        if answer.get("ok") and best.get("sku") and str(best["sku"]).isdigit():
+            sku = str(best["sku"])
+        elif best.get("sku") and str(best["sku"]).isdigit():
+            # Умные замены (Smart Substitutes): марка совпала, фасовка не спорит, уверенность достаточна
+            if best.get("brand_match") and best.get("pack_match") is not False and float(best.get("confidence") or 0) >= 0.55:
+                sku = str(best["sku"])
+                sub_name = best.get("name", "")
+                substituted.append(f"{name[:25]} -> {sub_name[:25]}")
+
+        if not sku or not sku.isdigit():
             if product_id is not None:
                 missing.append(int(product_id))
             continue
@@ -403,10 +458,12 @@ def cart_link(store_code: str, items: list[dict], lat: float | None = None,
     if not url:
         return {"ok": False, "url": "", "matched": matched, "missing": missing,
                 "why": "сеть не дала ссылку на корзину", "note": ""}
-    note = ""
+    note_parts = []
+    if substituted:
+        note_parts.append(f"подобраны аналоги: {', '.join(substituted)}")
     if missing:
-        note = (f"в ссылку не вошло {len(missing)} поз. — по этим названиям Лента "
-                "не дала точного товара")
+        note_parts.append(f"в ссылку не вошло {len(missing)} поз. — по этим названиям Лента не дала подходящего товара")
+    note = "; ".join(note_parts)
     return {"ok": True, "url": url, "matched": matched, "missing": missing,
             "why": "", "note": note}
 
@@ -474,25 +531,32 @@ def find(store_code: str, name: str, pack_g: float | None = None,
         return {"ok": False, "store": store_code, "found": [],
                 "why": f"сеть не ответила ({type(exc).__name__})", "cached": False}
 
-    # ВТОРОЙ ШАНС КОРОТКИМ ЗАПРОСОМ. По полному канону Магнит молчит (ищет буквально),
-    # по первым словам — отвечает. Короткий запрос НЕ отменяет сверки: найденное всё равно
-    # сравнивается с ПОЛНЫМ названием, и «Parmalat Edge» останется «похожим, но не тем».
+    found = [_candidate(store_code, c, pack_g, name) for c in candidates]
     note = ""
-    if not candidates:
-        shorter = _short(name)
-        if shorter and shorter.lower() != name.lower():
+    if not candidates or not any(c.get("brand_match") and c.get("pack_match") is not False for c in found):
+        for alt in _search_queries(name, pack_g):
             _pace(store_code)
             try:
-                candidates = _search(store_code, shorter, lat, lon, address)
-                asked = shorter
-                note = f"по полному названию пусто, спросили коротко: «{shorter}»"
-            except Exception:  # noqa: BLE001 — второй шанс не обязан сработать
-                log.warning("storefind: %s не ответил на короткий «%s»", store_code, shorter)
+                alt_cands = _search(store_code, alt, lat, lon, address, limit=5)
+                if alt_cands:
+                    alt_found = [_candidate(store_code, c, pack_g, name) for c in alt_cands]
+                    if any(c.get("brand_match") for c in alt_found):
+                        candidates = alt_cands
+                        found = alt_found
+                        asked = alt
+                        note = f"по полному названию пусто, спросили: «{alt}»"
+                        if any(c.get("brand_match") and c.get("difference") == "" for c in found):
+                            break
+            except Exception:  # noqa: BLE001
+                pass
 
-    found = [_candidate(store_code, c, pack_g, name) for c in candidates]
-    found.sort(key=lambda c: c["confidence"], reverse=True)
-    exact = bool(found) and found[0]["confidence"] >= CONFIDENT \
-        and not found[0]["difference"]
+    found.sort(key=lambda c: (not bool(c["difference"]), c["confidence"]), reverse=True)
+    exact = bool(found) and (
+        found[0]["confidence"] >= CONFIDENT or (
+            found[0]["confidence"] >= 0.65 and found[0].get("brand_match")
+            and found[0].get("pack_match") is not False
+        )
+    ) and not found[0]["difference"]
     if not found:
         answer = {"ok": False, "exact": False, "store": store_code, "found": [],
                   # ФОРМУЛИРОВКА ОДНА НА ВСЕ ДВЕРИ (21.10.2026): телефон зовёт `find`,

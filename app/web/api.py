@@ -288,6 +288,52 @@ def device_cards():
     return _device_call("cards", phonecart.accept_cards)
 
 
+def _mark_device_connected(payload: dict) -> dict:
+    """Запись факта подключения сети на телефоне без передачи секретов.
+
+    Концепция 2.0 (17.10.2026): токены и куки сессий живут на устройстве
+    (KeyStore/Keychain) и не передаются серверу. Сервер узнаёт только о факте
+    подключения, аккаунте (телефон/имя), способностях сети и балансе баллов.
+    """
+    from app import store_accounts
+
+    store = str(payload.get("store") or "").strip().lower()
+    if not store:
+        return {"ok": False, "why": "не указан код сети"}
+    if store not in store_accounts.ABILITIES:
+        return {"ok": False, "why": f"неизвестная сеть: {store}"}
+
+    connected = bool(payload.get("connected", True))
+    account = str(payload.get("account") or "").strip() or None
+    raw_points = payload.get("points")
+    points = _number(raw_points) if raw_points is not None else None
+    raw_gives = payload.get("gives")
+    gives = tuple(str(g) for g in raw_gives) if isinstance(raw_gives, list) else None
+
+    if connected:
+        conn = store_accounts.mark_connected(store, account=account, gives=gives, points=points)
+    else:
+        conn = store_accounts.forget(store)
+
+    return {
+        "ok": True,
+        "store": store,
+        "connected": conn.connected,
+        "gives": list(conn.gives),
+        "points": conn.points,
+        "account": conn.account,
+    }
+
+
+@bp.route("/device/connected", methods=["POST"])
+def device_connected():
+    """Регистрация подключённой сети с телефона: {store, connected?, account?, points?, gives?}.
+
+    Сессионные токены и куки остаются зашифрованными в KeyStore на устройстве.
+    """
+    return _device_call("connected", _mark_device_connected)
+
+
 def _number(value) -> float | None:
     """Число из тела запроса. None — не прислали, пусто или мусор."""
     if value is None or value == "":

@@ -45,4 +45,6 @@ data/browser_cards/
 tmp_*.py
 tmp_*.xml
 data/_checkup_probe.db
-data/*.local-backup
+data/*.local-backup*
+.omc/
+docs/knowledge/**/screens/
