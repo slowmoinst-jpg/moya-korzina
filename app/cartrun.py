@@ -249,7 +249,11 @@ def road(code: str) -> str:
     if handover.KIND_BY_STORE.get(code) == handover.LINK:
         return LINK
     if code == "metro":
-        return API
+        from app.connectors import metro_cart
+
+        if metro_cart.writable():
+            return API
+        return PHONE
     ability = store_accounts.ABILITIES.get(code)
     if ability and store_accounts.CART in ability.gives:
         return BROWSER
