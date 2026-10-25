@@ -88,29 +88,74 @@ def apply(variants, cabinets: dict, positions: int, baseline: float,
     """Места экрана с ценой сети там, где она годится. Число и порядок мест прежние.
 
     `cabinets` — строки сборки ЭТОЙ корзины по коду сети (cheaper._cabinets). Цена сети
-    назначается только месту из одной сети: копия с итогом сети, без недостающих
-    позиций (сеть положила все) и с полной базой экономии. Строки, цены полки и штрафы
-    копии прежние; subtotal/delivery/discount в ней остаются нашими, верить нужно
-    total и итогу сети в Place.net. Исходные варианты не меняются: они лежат в кэше
-    расчёта и переживают смену итога сети.
+    назначается только тогда, когда корзина или доля сплита проверена самой сетью:
+    копия с итогом сети, без недостающих позиций и с полной базой экономии.
     """
     out: list[Place] = []
     for variant in variants:
         stores = list(getattr(variant, "stores", None) or [])
-        row = cabinets.get(stores[0].store_code) if len(stores) == 1 else None
-        total, why = check(row, positions, now) if row is not None else (None, "")
-        if total is None:
-            out.append(Place(variant, why=why))
-            continue
-        store = stores[0]
-        cashback = float(store.discount or 0.0)
-        price = round(max(0.0, total.sum - cashback), 2)
-        out.append(Place(
-            replace(variant, stores=[replace(store, total=price)], total=price,
-                    missing_products=[],
-                    baseline=(baseline or variant.baseline) if variant.missing_products
-                    else variant.baseline),
-            net=total, cashback=cashback))
+        if len(stores) == 1:
+            row = cabinets.get(stores[0].store_code)
+            total, why = check(row, positions, now) if row is not None else (None, "")
+            if total is None:
+                out.append(Place(variant, why=why))
+                continue
+            store = stores[0]
+            cashback = float(store.discount or 0.0)
+            price = round(max(0.0, total.sum - cashback), 2)
+            out.append(Place(
+                replace(variant, stores=[replace(store, total=price)], total=price,
+                        missing_products=[],
+                        baseline=(baseline or variant.baseline) if variant.missing_products
+                        else variant.baseline),
+                net=total, cashback=cashback))
+        elif len(stores) > 1:
+            # Этап 7. Разбивка на два магазина: цена сплита берётся из итогов сетей,
+            # только если по КАЖДОЙ сети сплита собран проверенный итог её доли корзины.
+            updated_stores = []
+            net_totals = []
+            total_price = 0.0
+            total_cashback = 0.0
+            all_ok = True
+            why_first = ""
+            for s in stores:
+                s_lines_count = len(getattr(s, "lines", None) or [])
+                row = cabinets.get(s.store_code)
+                # Для доли сплита:
+                # 1) у строки сборки именно столько запланированных позиций (row.planned == s_lines_count > 0);
+                # 2) корзина доли легла полностью (check с s_lines_count).
+                # Если строка сборки была на всю корзину (row.planned == positions > s_lines_count),
+                # то в ней цена всей корзины, а не доли — её в долю брать нельзя.
+                if (row is not None and getattr(row, "planned", 0) == s_lines_count
+                        and s_lines_count > 0):
+                    t, why = check(row, s_lines_count, now)
+                    if t is not None:
+                        cb = float(s.discount or 0.0)
+                        sp = round(max(0.0, t.sum - cb), 2)
+                        updated_stores.append(replace(s, total=sp))
+                        net_totals.append(t)
+                        total_price += sp
+                        total_cashback += cb
+                        continue
+                    elif why and not why_first:
+                        why_first = why
+                all_ok = False
+                break
+            if all_ok and len(net_totals) == len(stores):
+                comb_net = Total(sum=round(sum(t.sum for t in net_totals), 2),
+                                 discount=round(sum(t.discount or 0.0 for t in net_totals), 2),
+                                 delivery=round(sum(t.delivery or 0.0 for t in net_totals), 2),
+                                 source=NETWORK)
+                out.append(Place(
+                    replace(variant, stores=updated_stores, total=round(total_price, 2),
+                            missing_products=[],
+                            baseline=(baseline or variant.baseline) if variant.missing_products
+                            else variant.baseline),
+                    net=comb_net, cashback=total_cashback))
+            else:
+                out.append(Place(variant, why=why_first))
+        else:
+            out.append(Place(variant))
     return out
 
 

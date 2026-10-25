@@ -726,6 +726,8 @@ public class MainActivity extends Activity {
     private static final int DEBOUNCE_MS = 2500;
     /** Не вышла сборка этой корзины — следующая попытка не раньше: сеть могла отказать. */
     private static final long RETRY_MS = 20L * 60 * 1000;
+    /** Сколько времени считать завершённую сборку свежей: 6 часов. После этого корзина пересобирается. */
+    private static final long FRESH_MS = 6L * 3600 * 1000;
     /** Пульс серверу не чаще: строку держит живой и сообщение раз в полторы секунды. */
     private static final int BEAT_MS = 1500;
     /** Столько карточек подряд без заголовка — и сеть, значит, показывает не товары. */
@@ -773,6 +775,7 @@ public class MainActivity extends Activity {
     private boolean recording = false;
     // volatile: читает его и мост, а он живёт на своём потоке (JavaBridge).
     private volatile int currentChain = -1;
+    private String chainLinesOverride = null;
     // Адрес окна человека для моста. WebView.getUrl() с API 18 проверяет поток и из
     // потока моста (JavaBridge) бросает RuntimeException, поэтому адрес запоминается
     // на главном потоке в колбэках WebViewClient, а мост читает только эти поля.
@@ -835,12 +838,18 @@ public class MainActivity extends Activity {
         /** Открыть сайт сети в этом же WebView. Незнакомый код — ложь, и сайт решает сам. */
         @JavascriptInterface
         public boolean openStore(String code) {
+            return openStore(code, null);
+        }
+
+        @JavascriptInterface
+        public boolean openStore(String code, String linesJson) {
             if (!bridgeAllowed()) return false;
             if (currentChain >= 0) return false;
             for (int i = 0; i < CHAINS.length; i++) {
                 if (CHAINS[i][1].equals(code)) {
                     final int idx = i;
-                    handler.post(() -> openChain(idx));
+                    final String lines = linesJson;
+                    handler.post(() -> openChain(idx, lines));
                     return true;
                 }
             }
@@ -1290,7 +1299,12 @@ public class MainActivity extends Activity {
     }
 
     private void openChain(int idx) {
+        openChain(idx, null);
+    }
+
+    private void openChain(int idx, String linesJson) {
         currentChain = idx;
+        chainLinesOverride = linesJson;
         stopRecording();
         chainPanel.setVisibility(View.VISIBLE);
         setChainButtons(true);
@@ -1344,6 +1358,7 @@ public class MainActivity extends Activity {
         if (currentChain >= 0) orderHistoryClear();
         if (cartRun != null) stopRun("Сборка остановлена: вы ушли со страницы сети.");
         currentChain = -1;
+        chainLinesOverride = null;
         stopRecording();
         if (chainPanel != null) chainPanel.setVisibility(View.GONE);
     }
@@ -1517,6 +1532,7 @@ public class MainActivity extends Activity {
         final String name;
         final WebView view;      // где кладём: окно человека или скрытое окно сети
         final Slot slot;         // фоновая сборка — её скрытое окно; null — «Собрать» человека
+        JSONArray linesOverride = null; // Позиции для сборки доли сплита
         JSONObject rules = new JSONObject();
         JSONArray lines = new JSONArray();
         double ourTotal = 0;
@@ -1679,6 +1695,11 @@ public class MainActivity extends Activity {
         Slot busy = slots.get(CHAINS[currentChain][1]);
         if (busy != null && busy.run != null) stopBackground(busy, true);
         final CartRun r = new CartRun(currentChain, web, null);
+        if (chainLinesOverride != null && !chainLinesOverride.isEmpty()) {
+            try {
+                r.linesOverride = new JSONArray(chainLinesOverride);
+            } catch (Exception ignored) { }
+        }
         cartRun = r;
         setChainButtons(false);
         cartBtn.setEnabled(true);
@@ -1704,6 +1725,9 @@ public class MainActivity extends Activity {
         try {
             body.put("store", r.code);
             if (r.basket >= 0) body.put("basket", r.basket);
+            if (r.linesOverride != null && r.linesOverride.length() > 0) {
+                body.put("lines", r.linesOverride);
+            }
         } catch (Exception ignored) { }
         call("/api/device/cartplan", body, (status, text) -> {
             if (!alive(r)) return;
@@ -3990,10 +4014,12 @@ public class MainActivity extends Activity {
                     continue;
                 }
                 JSONObject done = doneOf(code);
+                long doneAt = done != null ? done.optLong("at", 0) : 0;
+                boolean fresh = done != null && (System.currentTimeMillis() - doneAt < FRESH_MS);
                 if (done != null && stamp.equals(done.optString("stamp")) && basket == done.optInt("basket", -2)
-                        && (done.optBoolean("ok")
-                            || System.currentTimeMillis() - done.optLong("at", 0) < RETRY_MS)) {
-                    skip.put(code, done.optBoolean("ok") ? "уже собрано для этой корзины"
+                        && ((done.optBoolean("ok") && fresh)
+                            || (!done.optBoolean("ok") && System.currentTimeMillis() - doneAt < RETRY_MS))) {
+                    skip.put(code, done.optBoolean("ok") ? "уже собрано для этой корзины (свежее)"
                                                          : "не вышло, попробую позже");
                     continue;
                 }
@@ -4035,6 +4061,15 @@ public class MainActivity extends Activity {
         touchBusy();
         if (s.run != null || away || lastCollect == null || s.pending.isEmpty()) return;
         if (cartRun != null && cartRun.chain == s.chain) return;     // человек собирает сам
+        // Темп «одна сеть за раз»: если другой скрытый слот сейчас собирает, откладываем на 5 с
+        for (Slot other : slots.values()) {
+            if (other != s && other.run != null) {
+                s.soon = () -> startBackground(s);
+                handler.postDelayed(s.soon, 5000);
+                touchBusy();
+                return;
+            }
+        }
         if (s.sleep != null) {
             handler.removeCallbacks(s.sleep);
             s.sleep = null;

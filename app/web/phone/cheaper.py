@@ -309,16 +309,24 @@ def _title(variant) -> str:
 
 def _part(store) -> dict:
     """Одна сеть выбранного варианта: сколько и как туда отдать корзину."""
+    import json
     from app import handover as ho
 
     code = store.store_code
     kind = ho.KIND_BY_STORE.get(code, ho.LIST)
     by_link = kind == ho.LINK
     login = "" if by_link else _login(code)
+    lines = getattr(store, "lines", None) or []
+    lines_list = [{"product_id": getattr(ln, "product_id", 0),
+                   "name": getattr(ln, "product_name", ""),
+                   "qty": getattr(ln, "qty", 1.0),
+                   "unit": getattr(ln, "unit", "pcs")}
+                  for ln in lines]
     return {"code": code, "name": store.store_name, "where": where(code, store.store_name),
             "whom": WHOM.get(code) or store.store_name,
-            "total": store.total, "count": len(getattr(store, "lines", None) or []),
+            "total": store.total, "count": len(lines),
             "by_link": by_link,
+            "lines_json": json.dumps(lines_list, ensure_ascii=False) if lines_list else "",
             # Ссылкой сеть отдаёт корзину и без входа; остальным нужен вход человека.
             "needs_login": bool(login), "again": login == "again"}
 

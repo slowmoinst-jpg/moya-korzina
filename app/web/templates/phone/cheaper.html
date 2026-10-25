@@ -116,7 +116,8 @@
           <a class="cta" href="/cabinet?store={{ part.code }}" data-open-store="{{ part.code }}">Подключить {{ part.whom }}{% if part.again %} заново{% endif %}</a>
         {% else %}
           <form method="post" action="{{ url_for('phone.cheaper') }}" style="width: 100%"
-                data-store="{{ part.code }}" data-phone-fills="{{ 1 if (not part.by_link and chosen.whole) else 0 }}">
+                data-store="{{ part.code }}" data-phone-fills="{{ 1 if not part.by_link else 0 }}"
+                data-lines="{{ part.lines_json|e }}">
             <input type="hidden" name="store" value="{{ part.code }}">
             {% if pick is not none %}<input type="hidden" name="pick" value="{{ pick }}">{% endif %}
             <button class="cta" type="submit">Заказать {{ part.where }}<span class="sub num">· {{ rub(part.total) }}</span></button>
@@ -140,9 +141,14 @@
     });
     document.addEventListener('submit', function (e) {
       var form = e.target;
-      if (form.getAttribute('data-phone-fills') === '1' && window.KorzinaDevice
-          && KorzinaDevice.openStore(form.getAttribute('data-store'))) {
-        e.preventDefault();
+      if (form.getAttribute('data-phone-fills') === '1' && window.KorzinaDevice) {
+        var store = form.getAttribute('data-store');
+        var lines = form.getAttribute('data-lines');
+        if (lines && KorzinaDevice.openStore(store, lines)) {
+          e.preventDefault();
+        } else if (KorzinaDevice.openStore(store)) {
+          e.preventDefault();
+        }
       }
     });
   </script>

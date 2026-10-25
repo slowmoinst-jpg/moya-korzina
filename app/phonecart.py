@@ -337,7 +337,7 @@ def plan(body: dict) -> dict:
             # Какую корзину описывает наряд и её отпечаток: по нему телефон узнаёт, менялась
             # ли корзина с прошлой сборки в этой сети, и без перемен её не повторяет.
             "basket": basket_id,
-            "stamp": _stamp(basket_id),
+            "stamp": _stamp(basket_id, custom_lines=picked.get("lines")),
             # Флаг добора: сколько позиций уже лежит и пропущено в этом наряде.
             "top_up": top_up,
             "already_landed": len(already)}
@@ -649,9 +649,19 @@ def _basket_id(picked: dict) -> int | None:
     return int(baskets[0]["id"]) if baskets else None
 
 
-def _stamp(basket_id: int | None) -> str:
+def _stamp(basket_id: int | None, custom_lines: list | None = None) -> str:
+    import hashlib
     from app import cartrun
 
+    if custom_lines is not None:
+        pairs = []
+        for ln in custom_lines:
+            pid = getattr(ln, "product_id", None) or (ln.get("product_id") if isinstance(ln, dict) else 0)
+            qty = getattr(ln, "qty", None) or (ln.get("qty") if isinstance(ln, dict) else 1.0)
+            name = getattr(ln, "name", None) or (ln.get("name") if isinstance(ln, dict) else "")
+            pairs.append((int(pid or 0), str(name), round(float(qty or 0), 3)))
+        pairs.sort()
+        return hashlib.sha1(repr(pairs).encode("utf-8")).hexdigest()[:12]
     return cartrun.stamp_of(basket_id) if basket_id is not None else ""
 
 

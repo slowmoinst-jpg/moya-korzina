@@ -383,7 +383,7 @@ def _home_pause(code: str) -> str:
             "новый стук продлил бы метку на вашем адресе.")
 
 
-def _fresh(stamp: str | None, hours: float) -> bool:
+def _fresh(stamp: str | None, hours: float = 6.0) -> bool:
     try:
         when = datetime.fromisoformat(str(stamp))
     except (TypeError, ValueError):
