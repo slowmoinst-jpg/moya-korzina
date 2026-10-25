@@ -121,19 +121,21 @@ def test_one_press_fills_every_network_it_can_each_in_its_own_thread(home, roads
 
     assert [c[0] for c in roads["deliver"]] == ["magnit"], "в кабинет кладём только туда, где умеем"
     assert roads["deliver"][0][2] == "cartrun-magnit", "у Магнита свой поток"
-    assert {code for code, _ in roads["link"]} == {"lenta", "vkusvill"}
-    assert {thread for _, thread in roads["link"]} == {"cartrun-lenta", "cartrun-vkusvill"}
+    assert {code for code, _ in roads["link"]} == {"vkusvill"}
+    assert {thread for _, thread in roads["link"]} == {"cartrun-vkusvill"}
     assert sorted(roads["deliver"][0][1]) == ["100001", "100002"], "вся корзина, не доля варианта"
 
     magnit = rows["magnit"]
     assert magnit.state == cartrun.DONE and magnit.planned == 2 and len(magnit.landed) == 2
     assert magnit.by == cartrun.SERVER
-    assert rows["lenta"].state == cartrun.DONE
-    assert rows["lenta"].link == "https://lenta.example/cart/share-1"
+    assert rows["vkusvill"].state == cartrun.DONE
+    assert rows["vkusvill"].link == "https://vkusvill.example/cart/share-1"
+    assert rows["lenta"].road == cartrun.PHONE
+    assert rows["lenta"].state == cartrun.CANT
 
 
 def test_networks_really_go_in_parallel(home, roads, monkeypatch):
-    """Магнит и Лента встречаются у барьера: по очереди они бы не встретились никогда."""
+    """Магнит и ВкусВилл встречаются у барьера: по очереди они бы не встретились никогда."""
     save_login()
     meet = threading.Barrier(2, timeout=10)
     real_deliver, real_link = cart.deliver, handover.for_store
@@ -143,7 +145,7 @@ def test_networks_really_go_in_parallel(home, roads, monkeypatch):
         return real_deliver(chain, phone, plan)
 
     def for_store(code, lines):
-        if code == "lenta":
+        if code == "vkusvill":
             meet.wait()
         return real_link(code, lines)
 
@@ -154,7 +156,7 @@ def test_networks_really_go_in_parallel(home, roads, monkeypatch):
 
     rows = by_code(cartrun.rows())
     assert rows["magnit"].state == cartrun.DONE, rows["magnit"].note
-    assert rows["lenta"].state == cartrun.DONE, rows["lenta"].note
+    assert rows["vkusvill"].state == cartrun.DONE, rows["vkusvill"].note
 
 
 def test_every_network_gets_a_row_with_its_reason(home, roads):
@@ -230,7 +232,7 @@ def test_a_second_press_does_not_fill_the_same_cart_twice(home, roads):
     cartrun.start(PHONE, home, wait=True)
 
     assert len(roads["deliver"]) == 1, "сеть кладёт поверх лежащего — второй заход удвоил бы её"
-    assert len(roads["link"]) == 2, "ссылка на ту же корзину не просится заново"
+    assert len(roads["link"]) == 1, "ссылка на ту же корзину не просится заново"
     kept = cartrun.get("magnit")
     assert kept.state == cartrun.DONE and kept.landed == first.landed, \
         "повторное нажатие не стирает ответ, полученный в первый раз"
@@ -277,7 +279,7 @@ def test_a_changed_basket_gets_a_new_link(home, roads):
 
     cartrun.start(PHONE, home, wait=True)
 
-    assert [code for code, _ in roads["link"]].count("lenta") == 2
+    assert [code for code, _ in roads["link"]].count("vkusvill") == 2
 
 
 # ---------- отказ сети и темп ----------
@@ -364,11 +366,11 @@ def test_a_network_error_code_says_whether_the_door_was_closed():
 def test_the_link_total_is_ours_and_says_when_the_networks_will_show(home, roads):
     cartrun.start(PHONE, home, wait=True)
 
-    lenta = cartrun.get("lenta")
-    assert lenta.total.source == carttotal.OURS
-    assert lenta.total.sum == pytest.approx(2 * 92.0 + 48.0)
-    assert "итог сети появится, когда откроете ссылку под своим входом" in lenta.note.lower()
-    assert lenta.total.discount is None and lenta.total.delivery is None, \
+    vkusvill = cartrun.get("vkusvill")
+    assert vkusvill.total.source == carttotal.OURS
+    assert vkusvill.total.sum == pytest.approx(2 * 99.0 + 52.0)
+    assert "итог сети появится, когда откроете ссылку под своим входом" in vkusvill.note.lower()
+    assert vkusvill.total.discount is None and vkusvill.total.delivery is None, \
         "скидку и доставку сети мы не знаем — и не пишем"
 
 
@@ -674,7 +676,7 @@ def test_the_button_fills_the_carts_and_the_rows_tell_the_outcome(web, home, roa
     page = web.get(f"/carts?basket={home}").data.decode("utf-8")
     assert "Легло <b>2 из 2</b>" in page
     assert "наш расчёт" in page and "Итог сети не прочитан" in page
-    assert "https://lenta.example/cart/share-1" in page
+    assert "https://vkusvill.example/cart/share-1" in page
     assert "Корзину в сети очистил — положить ещё раз" in page
 
 

@@ -74,6 +74,9 @@ CART_PAGES: dict[str, tuple[str, ...]] = {
     # Замер владельца 17.10.2026 в 1.6: кнопка «Корзина» нижнего меню ведёт на
     # magnit.ru/ecom/cart. Сначала приложение всё равно касается кнопки.
     "magnit": ("https://magnit.ru/ecom/cart",),
+    "fixprice": ("https://fix-price.com/cart",),
+    "vprok": ("https://www.vprok.ru/cart",),
+    "monetka": ("https://monetka.ru/cart",),
 }
 
 # Строки итога, которые телефон ищет на странице корзины. Порядок не важен:

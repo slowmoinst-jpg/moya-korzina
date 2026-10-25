@@ -413,11 +413,37 @@ ADD_TO_CART = {
     "magnit": [],
     "pyaterochka": [],
     "samokat": [],
-    "lenta": [],
-    "vkusvill": [],
-    # У METRO пусто НЕ от незнания вёрстки, а потому, что нажимать не нужно:
-    # позиции уходят её собственным методом наполнения корзины (metro_cart.fill).
-    "metro": [],
+    "lenta": [
+        "button[aria-label*='корзин' i]",
+        "button[data-testid*='add-to-cart']",
+        "button.sku-buy-button",
+        ".sku-card-buy-button",
+    ],
+    "vkusvill": [
+        "button[aria-label*='корзин' i]",
+        "button.js-datalayer-cart-add",
+        "button[data-testid*='add-to-cart']",
+    ],
+    "metro": [
+        "button[data-testid*='cart']",
+        "button[aria-label*='корзин' i]",
+        "button.cart-btn",
+    ],
+    "fixprice": [
+        "button[aria-label*='корзин' i]",
+        "button.buy-button",
+    ],
+    "perekrestok": [
+        "button[data-testid*='cart']",
+        "button[aria-label*='корзин' i]",
+    ],
+    "vprok": [
+        "button[data-testid*='cart']",
+        "button[aria-label*='корзин' i]",
+    ],
+    "monetka": [
+        "button[aria-label*='корзин' i]",
+    ],
 }
 
 # СЕТЬ ЖДЁТ ВЫБРАННОГО МАГАЗИНА — И ЭТО НЕ ПРОВЕРКА, А ТРЕТЬЯ ПРИЧИНА ПУСТОЙ КОРЗИНЫ.

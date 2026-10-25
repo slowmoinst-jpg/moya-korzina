@@ -244,6 +244,8 @@ def road(code: str) -> str:
     """Какой дорогой корзина уходит в эту сеть сегодня."""
     from app import handover, store_accounts
 
+    if code == "lenta":
+        return PHONE
     if handover.KIND_BY_STORE.get(code) == handover.LINK:
         return LINK
     if code == "metro":
