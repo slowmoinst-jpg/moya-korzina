@@ -2,10 +2,13 @@ package ru.moyakorzina.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -22,6 +25,7 @@ import android.view.WindowInsetsController;
 import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -32,6 +36,7 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -738,9 +743,13 @@ public class MainActivity extends Activity {
     private static final int AWAY_MS = 60 * 1000;
     /** Заказ на очистку истории не ждёт дольше: наш адрес может так и не открыться. */
     private static final int CLEAR_HISTORY_MS = 3000;
+    /** Код ответа системного выбора файла (onShowFileChooser → onActivityResult). */
+    private static final int REQ_FILE = 1001;
     private static final String TAG = "Korzina";
 
     private WebView web;
+    /** Поле выбора файла на странице ждёт ответа; null — никто не ждёт. */
+    private ValueCallback<Uri[]> fileUploadCallback;
     /** Окна стопкой: скрытые окна сетей снизу, окно человека сверху и во весь размер. */
     private FrameLayout stage;
     /** Фоновые сборки: скрытое окно и сборка на сеть, по коду сети. Трогаются только с главного потока. */
@@ -1284,6 +1293,47 @@ public class MainActivity extends Activity {
                     }
                 }
                 return super.onConsoleMessage(message);
+            }
+
+            // Без этого поле выбора файла на «Мои чеки» (полная версия) в приложении молчит.
+            @Override
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> filePathCallback,
+                                             FileChooserParams fileChooserParams) {
+                if (fileUploadCallback != null) {
+                    fileUploadCallback.onReceiveValue(null);
+                }
+                fileUploadCallback = filePathCallback;
+                try {
+                    // В accept у «Моих чеков» расширения (".pdf"), а createIntent берёт первое
+                    // как MIME-тип, и список файлов выходил пустым.
+                    Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("*/*");
+                    startActivityForResult(intent, REQ_FILE);
+                    return true;
+                } catch (ActivityNotFoundException e) {
+                    if (fileUploadCallback != null) {
+                        fileUploadCallback.onReceiveValue(null);
+                        fileUploadCallback = null;
+                    }
+                    // Колбэк уже получил null, а false заставил бы WebView ответить второй раз
+                    // (IllegalStateException).
+                    return true;
+                }
+            }
+        });
+
+        // Без этого «Скачать» внутри приложения ничего не делает: WebView сам файлы не
+        // качает. Скачивание отдаётся браузеру телефона, он же предложит поставить APK.
+        web.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> {
+            // Скачивания чужих страниц (сайты сетей и кабинет ФНС открываются в том же окне)
+            // не открываем, как и до 1.18; большой data:-адрес ронял бы приложение.
+            if (!isOurs(url)) return;
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+            } catch (ActivityNotFoundException e) {
+                Toast.makeText(MainActivity.this, "Не удалось открыть скачивание",
+                        Toast.LENGTH_SHORT).show();
             }
         });
     }
@@ -4875,6 +4925,20 @@ public class MainActivity extends Activity {
         // Человек отлучился (код из СМС, звонок) — минуту сборка ещё идёт, дальше стоит.
         handler.removeCallbacks(goAway);
         if (!slots.isEmpty()) handler.postDelayed(goAway, AWAY_MS);
+    }
+
+    // Ответ системного выбора файла (onShowFileChooser): отмена — null, и поле снова живое.
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == REQ_FILE) {
+            if (fileUploadCallback != null) {
+                fileUploadCallback.onReceiveValue(
+                        WebChromeClient.FileChooserParams.parseResult(resultCode, data));
+                fileUploadCallback = null;
+            }
+            return;
+        }
+        super.onActivityResult(requestCode, resultCode, data);
     }
 
     @Override

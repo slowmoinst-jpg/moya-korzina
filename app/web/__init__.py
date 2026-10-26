@@ -42,14 +42,53 @@ requirements.txt.
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
+from urllib.parse import urlsplit
 
-from flask import Flask
+from flask import Flask, has_request_context, redirect, request
+from flask.sessions import SecureCookieSessionInterface
 
 from app import config
 
 log = logging.getLogger(__name__)
+
+
+class _Session(SecureCookieSessionInterface):
+    """Кука сессии с Secure на HTTPS-запросе и без него на http по IP-адресу.
+
+    Secure всегда сломал бы вход по http://<IP> и в приложении 1.17. Без Secure вовсе
+    заход на http://<имя> (порт 80 — тот же контейнер, что за Caddy) отдал бы куку
+    HTTPS-сессии открытым текстом.
+
+    sslip.io нет в списке публичных суффиксов, для браузера все имена *.sslip.io — один
+    сайт, и чужая страница на таком имени подложила бы свою куку session с
+    Domain=sslip.io; куку с приставкой __Host- чужой хост поставить не может.
+    """
+
+    def get_cookie_name(self, app: Flask) -> str:
+        if has_request_context() and request.is_secure:
+            return "__Host-" + super().get_cookie_name(app)
+        return super().get_cookie_name(app)
+
+    def get_cookie_secure(self, app: Flask) -> bool:
+        return request.is_secure if has_request_context() else super().get_cookie_secure(app)
+
+
+def _is_name_host(host: str) -> bool:
+    """Хост запроса — имя, а не IP-адрес и не localhost. Порт и скобки IPv6 отбрасываются."""
+    try:
+        name = urlsplit("//" + host).hostname or ""
+    except ValueError:                      # кривые скобки IPv6
+        return False
+    if not name or name == "localhost":
+        return False
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return True
+    return False
 
 # Ключ подписи куки-сессии. Не в репозитории и не в config.yaml: он секрет, а
 # config.yaml лежит в git. Живёт файлом в томе данных рядом с базами — там же,
@@ -94,6 +133,7 @@ def create_app() -> Flask:
     """
     flask_app = Flask(__name__, static_folder="static", template_folder="templates")
     flask_app.secret_key = secret_key()
+    flask_app.session_interface = _Session()
     flask_app.config.update(
         SESSION_COOKIE_HTTPONLY=True,       # куку не должен читать сторонний скрипт
         SESSION_COOKIE_SAMESITE="Lax",      # чужая страница не сделает запрос от имени человека
@@ -112,7 +152,29 @@ def create_app() -> Flask:
     web_api.install(flask_app)
     _install_page_headers(flask_app)
     _install_static_version(flask_app)
+    _install_https_for_names(flask_app)
+    _install_same_origin_posts(flask_app)
     return flask_app
+
+
+def _install_https_for_names(flask_app: Flask) -> None:
+    """Заход по http на имя — перевод на https. Только когда перед приложением стоит Caddy.
+
+    Признак Caddy — переменная TRUSTED_PROXY (tools/server-deploy.sh); в тестах и при
+    разработке её нет. IP-адрес и localhost не переводятся никогда: приложение 1.17 ходит
+    на http://<IP>, проверка выкладки — на http://127.0.0.1.
+    """
+    if not os.getenv("TRUSTED_PROXY"):
+        return
+
+    @flask_app.before_request
+    def _to_https():
+        if request.is_secure or not _is_name_host(request.host):
+            return None
+        # 307 временный и сохраняет метод и тело. Если доверие к прокси не сработало,
+        # HTTPS-запрос покажется приложению http, и перевод пойдёт по кругу: это и есть
+        # проверка после выкладки (DEPLOY.md).
+        return redirect(urlsplit(request.url)._replace(scheme="https").geturl(), code=307)
 
 
 def _install_static_version(flask_app: Flask) -> None:
@@ -155,6 +217,27 @@ def _install_page_headers(flask_app: Flask) -> None:
             answer.headers["Pragma"] = "no-cache"
             answer.headers["Expires"] = "0"
         return answer
+
+
+def _install_same_origin_posts(flask_app: Flask) -> None:
+    """Защита POST-запросов от чужих сайтов.
+
+    SameSite=Lax не спасает от соседей по *.sslip.io; /api/* не трогаем — туда
+    шлют закладка и расширение со страниц сетей со своим секретом; приложение
+    Android шлёт свои запросы без этих заголовков.
+    """
+
+    @flask_app.before_request
+    def _check_same_origin():
+        if request.method in ("GET", "HEAD", "OPTIONS") or request.path.startswith("/api/"):
+            return None
+        sec_fetch_site = request.headers.get("Sec-Fetch-Site")
+        if sec_fetch_site in ("same-site", "cross-site"):
+            return ("Запрос с чужого сайта отклонён", 403)
+        origin = request.headers.get("Origin")
+        if origin is not None and urlsplit(origin).netloc != request.host:
+            return ("Запрос с чужого сайта отклонён", 403)
+        return None
 
 
 __all__ = ["create_app", "secret_key"]

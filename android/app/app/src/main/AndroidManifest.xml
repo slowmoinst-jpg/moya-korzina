@@ -3,9 +3,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Разрешение на http (не https) нужно, пока у нашего сервера нет сертификата.
-         Как только сервер получит HTTPS — флаг убрать: по этой дороге ездят сессии
-         магазинов. -->
+    <!-- Открытый трафик (http) к серверу запрещён с 1.18, когда у сервера появился HTTPS:
+         по этой дороге ездят сессии магазинов. Исключения для разработки — в
+         res/xml/network_security_config.xml. -->
     <!-- ТЕМА БЕЗ ПОЛОСЫ ДЕЙСТВИЙ (1.15). Пока темы не было, приложению доставалась
          тема платформы, и над сайтом висела её тёмная полоса с названием приложения:
          сайт оказывался «в рамке чужого заголовка», а это ровно то, чего шаг 1 единой
@@ -17,7 +17,7 @@
         android:allowBackup="false"
         android:supportsRtl="false"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
-        android:usesCleartextTraffic="true">
+        android:networkSecurityConfig="@xml/network_security_config">
         <activity
             android:name=".MainActivity"
             android:exported="true"

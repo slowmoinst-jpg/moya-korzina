@@ -232,8 +232,10 @@ def test_a_new_version_rebuilds_and_leaves_nothing_old(showcase, monkeypatch):
     assert [b["name"].startswith("Неделя (чек из Ленты") for b in repo.list_baskets()] == [True]
     assert lines() == first, "витрина собрана заново, а не дополнена"
     assert repo.get_setting("остаток") is None
-    for table in ("variants", "variant_lines", "link_rejects", "receipts"):
+    for table in ("variants", "variant_lines", "link_rejects"):
         assert count(table) == 0, table
+    assert count("receipts") == 1
+    assert query("SELECT 1 FROM receipts WHERE key = 'k1'") == []
     assert repo.get_setting(demo.VERSION_KEY) == "следующая"
     assert location.address() == demo.ADDRESS, "адрес лежит в настройках: стирание его уносит, наливка возвращает"
     assert [(s.id, s.code) for s in repo.list_stores()] == stores_before, "справочник сетей общий и цел"
@@ -535,3 +537,21 @@ def test_the_shipped_list_is_well_formed():
     # Образ копирует app/ целиком, а из data/ — только перечисленные файлы: список в data/
     # на сервер не доехал бы, и демо молча вернулось бы к вымышленному чеку.
     assert os.path.dirname(os.path.abspath(demo.LIST_FILE)) == os.path.dirname(os.path.abspath(demo.__file__))
+
+
+def test_demo_receipt_is_recorded(showcase):
+    from app import receipts
+    from app.web import create_app
+
+    demo.ensure()
+    loaded = receipts.summary()["loaded"]
+    assert loaded["receipts"] == 1
+    assert loaded["rows_without_receipt"] == 0
+
+    app = create_app()
+    app.config.update(TESTING=True)
+    with app.test_client() as client:
+        client.post("/demo")
+        resp = client.get("/phone/receipts")
+        assert resp.status_code == 200
+        assert "до того, как появился учёт чеков" not in resp.text

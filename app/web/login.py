@@ -64,6 +64,7 @@ PIN (app/users.py), и страница входа спрашивает его �
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import threading
 import time
@@ -137,8 +138,22 @@ def _address() -> str:
     Номера в ключе нет нарочно (см. выше). Пустой remote_addr — тоже ключ: за
     обратным прокси без заголовка адреса все такие запросы делят один счёт, и это
     лучше, чем не считать их вовсе.
+
+    У человека с IPv6 целая сеть /64, и сменой адреса в ней он снимал бы предел
+    5 попыток PIN на адрес.
     """
-    return (request.remote_addr or "").strip()
+    raw = (request.remote_addr or "").strip()
+    if not raw:
+        return ""
+    try:
+        ip = ipaddress.ip_address(raw)
+    except ValueError:
+        return raw
+    if ip.version == 6:
+        if ip.ipv4_mapped:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return raw
 
 
 def _recent(times: list[float], now: float) -> list[float]:

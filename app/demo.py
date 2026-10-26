@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 
 # Поднимается при любой правке списка, адреса или правил: витрина с другой версией
 # собирается заново. Дата — чтобы по номеру было видно, когда витрину правили в последний раз.
-DEMO_VERSION = "2026-10-25"
+DEMO_VERSION = "2026-10-26"
 VERSION_KEY = "demo:version"
 
 # Публичный ориентир, а не чей-то дом: демо видят все, и репозиторий публичный.
@@ -152,7 +152,10 @@ def _fill_from_catalog(goods: list[dict], today: date) -> int:
     store.init()
     lenta = repo.get_store(RECEIPT_CHAIN)
     basket_id = repo.create_basket(f"Неделя (чек из Ленты, {today:%d.%m.%Y})", source="history")
-    placed = 0
+    # Строки «чека» привязаны к записи чека, как у настоящего импорта: без неё «Мои чеки»
+    # сочли бы их позициями, загруженными до того, как появился учёт чеков.
+    receipt_key = f"demo:{today.isoformat()}:{RECEIPT_CHAIN}"
+    placed, lines, paid = 0, 0, 0.0
     for row in goods:
         try:
             item_id = _find(row["name"])
@@ -164,11 +167,16 @@ def _fill_from_catalog(goods: list[dict], today: date) -> int:
             repo.set_basket_item(basket_id, product_id, qty)
             price = _paid(item["chains"])
             if price:
+                total = round(qty * price, 2)
                 repo.add_history_row(today.isoformat(), lenta.id, product_id, item["name"],
-                                     qty, price, round(qty * price, 2))
+                                     qty, price, total, receipt_key=receipt_key)
+                lines, paid = lines + 1, paid + total
             placed += 1
         except Exception:  # noqa: BLE001 — одна строка списка не должна ронять витрину
             log.warning("демо: «%s» не легло", row.get("name"), exc_info=True)
+    if lines:
+        repo.mark_receipt_imported(receipt_key, today.isoformat(), lenta.name, round(paid, 2),
+                                   lines, source="file")
     return placed
 
 

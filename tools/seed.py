@@ -76,16 +76,23 @@ def seed_cards_and_offers() -> None:
 
 def seed_receipt(product_ids: dict[str, int]) -> float:
     """Чек из раздела 8 спецификации в purchase_history. Возвращает итог."""
-    store_id = repo.get_store(RECEIPT_STORE).id
+    st = repo.get_store(RECEIPT_STORE)
+    store_id = st.id
     already = repo.list_history(date_from=RECEIPT_DATE, date_to=RECEIPT_DATE, store_id=store_id)
     total = 0.0
-    for r in _rows("seed_receipt.csv"):
+    rows = list(_rows("seed_receipt.csv"))
+    receipt_key = f"demo:{RECEIPT_DATE}:{RECEIPT_STORE}"
+    for r in rows:
         qty, unit_price = float(r["qty"]), float(r["unit_price"])
         line_total = round(qty * unit_price, 2)
         total += line_total
         if not already:
             repo.add_history_row(RECEIPT_DATE, store_id, product_ids.get(r["name"]),
-                                 r["name"], qty, unit_price, line_total)
+                                 r["name"], qty, unit_price, line_total,
+                                 receipt_key=receipt_key)
+    if not already and rows:
+        repo.mark_receipt_imported(receipt_key, RECEIPT_DATE, st.name,
+                                   round(total, 2), len(rows), source="file")
     return round(total, 2)
 
 

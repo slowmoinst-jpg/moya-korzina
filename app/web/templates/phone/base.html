@@ -33,6 +33,16 @@
         </form>
       </div>
     {% endif %}
+    {% if apk_update %}
+      <div class="note act warn" role="status">
+        <span>Вышла версия {{ apk_update.version }} приложения — установите её поверх этой.</span>
+        {% if apk_update.can_download %}
+          <a class="bt" href="{{ url_for('apk.download') }}">Скачать</a>
+        {% else %}
+          <span>Откройте в браузере телефона: {{ request.url_root }}static/moya-korzina.apk</span>
+        {% endif %}
+      </div>
+    {% endif %}
     {% block body %}{% endblock %}
   </main>
   <div class="ph-foot">

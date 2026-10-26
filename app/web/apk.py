@@ -24,9 +24,16 @@ import os
 from flask import Blueprint, current_app, send_file, send_from_directory
 
 from app import config
+from app.web import device
 
 APK_NAME = "moya-korzina.apk"
 APK_TYPE = "application/vnd.android.package-archive"
+# Версия раздаваемой сборки. Кладёт tools/build_apk.ps1 рядом с APK и ПОСЛЕ него: плашка
+# «вышла новая версия» не должна звать к сборке, которой ещё нет.
+VERSION_FILE = "version.txt"
+# Первая версия, которая умеет скачивать файлы (DownloadListener в MainActivity). Старшим
+# плашка даёт кнопку, младшим — адрес сборки для браузера телефона.
+DOWNLOADS_FROM = (1, 18)
 
 bp = Blueprint("apk", __name__)
 
@@ -35,6 +42,42 @@ def fresh_path() -> str | None:
     """Свежая сборка из тома данных. Нет её — None, и отдаётся файл из git."""
     path = os.path.join(config.ROOT, "data", "apk", APK_NAME)
     return path if os.path.isfile(path) else None
+
+
+def latest_version() -> str | None:
+    """Версия раздаваемой сборки из data/apk/version.txt; нет файла или он пуст — None."""
+    path = os.path.join(config.ROOT, "data", "apk", VERSION_FILE)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except (OSError, ValueError):
+        # Файл не в UTF-8 (PowerShell 5.1 пишет UTF-16) иначе ронял бы ошибкой 500 каждую
+        # страницу приложения.
+        return None
+
+
+def version_key(text: str | None) -> tuple[int, ...] | None:
+    """«1.12.1» → (1, 12, 1); None, если это не числа через точку.
+
+    Версия приезжает в User-Agent, то есть от кого угодно: «1.²» (isdigit без isascii
+    пропустил бы) или тысячи цифр (int их не возьмёт) уронили бы каждую страницу.
+    """
+    parts = (text or "").strip().split(".")
+    if not all(p.isascii() and p.isdigit() and len(p) <= 6 for p in parts):
+        return None
+    return tuple(int(p) for p in parts)
+
+
+def update_for(app_version: str | None) -> dict | None:
+    """Плашке: {"version", "can_download"}, если приложение старше раздаваемой сборки."""
+    mine = version_key(app_version)
+    if mine is None:                        # обычный браузер: файл и не читаем
+        return None
+    latest = latest_version()
+    newest = version_key(latest)
+    if newest is None or mine >= newest:
+        return None
+    return {"version": latest, "can_download": mine >= DOWNLOADS_FROM}
 
 
 @bp.route("/static/" + APK_NAME)
@@ -50,3 +93,7 @@ def download():
 
 def install(flask_app) -> None:
     flask_app.register_blueprint(bp)
+
+    @flask_app.context_processor
+    def _apk_update():
+        return {"apk_update": update_for(device.app_version())}
