@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+import time
 
-from flask import redirect, request, url_for
+from flask import g, redirect, request, url_for
 
-from app import cartrun, faster, freshness, location, netprice, repo
+from app import cartrun, faster, freshness, location, netprice, pricewatch, repo, store_accounts, users
 from app.optimizer import rank_key
 from app.web import device
 from app.web.auth import needs_phone
@@ -13,24 +14,34 @@ from .common import WHOM, _basket, _login, _render, bp, deliveries, goods, where
 
 log = logging.getLogger(__name__)
 
+# Сколько после конца обновления цен корзины его не запускают снова, пока набор товаров в
+# ней тот же. Товара может просто не быть в продаже, и тогда каждое открытие экрана гоняло
+# бы сети впустую; нагрузка на сети — единственное настоящее ограничение проекта.
+PRICES_AGAIN_SEC = 600
+# Сколько работа может идти, пока экран перезагружает себя сам. Сети отвечают за минуты;
+# дольше — работа, скорее всего, зависла, и вечная перезагрузка раз в 5 секунд только мешает.
+PRICES_SLOW_SEC = 600
+
 
 # ---------- Где дешевле ----------
 @bp.route("/cheaper", methods=("GET", "POST"))
 @needs_phone
 def cheaper():
     from app.web.screens import result
+    from .basket import _no_address
 
     current = _basket()
     if current is None:
-        return _render("cheaper.html", tab=None, basket=None)
+        return _render("cheaper.html", tab=None, basket=None, no_address=_no_address())
     basket_id = int(current["id"])
     if request.method == "POST":
         return _order(basket_id)
 
-    bundle = result._bundle(basket_id)
+    bundle, prices = _prices(basket_id, result._bundle(basket_id))
     variants = bundle["variants"]
     if not variants:
-        return _render("cheaper.html", tab=None, basket=current, variants=[])
+        return _render("cheaper.html", tab=None, basket=current, variants=[], prices=prices,
+                       no_address=_no_address())
 
     # Итоги кабинетов читаются один раз на страницу: они лежат одной настройкой
     # (app/cartrun), и спрашивать их на каждое место значило бы разбирать её заново.
@@ -74,7 +85,7 @@ def cheaper():
     shown = placed[on_n]
     return _render(
         "cheaper.html", tab=None, basket=current, variants=variants, places=places,
-        fast=_fast(every, bundle.get("positions") or 0),
+        prices=prices, fast=_fast(every, bundle.get("positions") or 0),
         nets=any(p.net for p in placed),
         chosen={"title": _title(chosen), "total": chosen.total, "best": on_n == best_n,
                 # Итог сети, по которому назначена цена выбранного места: экран
@@ -98,7 +109,86 @@ def cheaper():
         sent=request.args.get("sent"), why=request.args.get("why"),
         why_store=request.args.get("store"), pick=picked,
         # Сколько позиций осталось вне корзины сети — вместе с честным «собрано».
-        left=request.args.get("left"))
+        left=request.args.get("left"),
+        no_address=_no_address())
+
+
+def start_prices(basket_id: int, items: list[dict]) -> None:
+    """Запустить фоном обновление цен корзины — то же, что «Обновить цены» в вебе.
+
+    ЗАЧЕМ. Новый человек входит, указывает адрес и набирает корзину, а цены у его адреса
+    раньше приносил только дозор (app/pricewatch, раз в 15 минут): на «Где дешевле» он
+    видел пустой или неполный экран и уходил. Теперь обновление заводит сам телефон.
+
+    КОГДА НЕ ЗАПУСКАЕТ — в одном месте, чтобы правило не разошлось у двух зовущих
+    («Где дешевле» и добавление товара на «Корзине»):
+      - адрес доставки ещё не сохранён (_no_address): без него цены считаются по точкам
+        владельца установки из config.yaml (чужой город);
+      - корзина пуста;
+      - это демо: общая витрина (app/web/auth.py), цены в неё приносит дозор
+        (prices.watch.demo), а работа по общей базе ушла бы в сети от имени всех, кто её открыл;
+      - по корзине уже что-то идёт;
+      - прежняя работа кончилась меньше PRICES_AGAIN_SEC назад, а набор товаров с тех пор
+        тот же (поле pids работы, screens/basket.py, _start_job): товара может просто не
+        быть в продаже, и гонять сети каждым открытием экрана нельзя.
+    Сбой запуска не повод ронять экран и терять только что добавленный товар.
+    """
+    from app.web.screens import basket as web_basket
+    from .basket import _no_address
+
+    if not items or getattr(g, "phone", None) == users.DEMO or _no_address():
+        return
+    job = web_basket.job_of(basket_id) or {}
+    if job.get("status") == "running":
+        return
+    same_goods = sorted(job.get("pids") or ()) == sorted(int(i["product_id"]) for i in items)
+    if same_goods and time.time() - (job.get("finished") or 0.0) < PRICES_AGAIN_SEC:
+        return
+    try:
+        web_basket._start_job(basket_id, "fresh", items)
+    except Exception:  # noqa: BLE001 — цены в фоне не повод ронять экран
+        log.warning("обновление цен корзины %s не запустилось", basket_id, exc_info=True)
+
+
+def _prices(basket_id: int, bundle: dict) -> tuple[dict, dict | None]:
+    """Цены корзины для экрана: (расчёт, ход обновления цен или None). Запускает его, когда нужно.
+
+    ЦЕНЫ НУЖНЫ, когда вариантов расчёта нет вовсе или у лучшего из них (первый: расчёт
+    упорядочивает их правилом rank_key) остались непокрытые позиции. Тогда экран зовёт
+    start_prices, а тот решает, можно ли заводить работу (идёт ли она, не рано ли).
+
+    РАСЧЁТ ПЕРЕСЧИТЫВАЕТСЯ, ЕСЛИ РАБОТА КОНЧИЛАСЬ ПОЗЖЕ НЕГО. «Результат» держит расчёт
+    десять минут (result.CALC_TTL); без пересчёта человек, дождавшийся цен, видел бы то же
+    «не хватает цен» ещё до десяти минут. Расчёт без отметки времени (подмена в тестах)
+    не трогаем.
+
+    ХОД — то, что рисует экран: {"running": True, "line": строка} пока работа идёт,
+    {"line": строка} без перезагрузки, если она идёт дольше PRICES_SLOW_SEC, и
+    {"failed": True}, если она кончилась ошибкой. Кончилась без ошибки — рисовать нечего,
+    цены уже в расчёте.
+    """
+    from app.web.screens import basket as web_basket
+    from app.web.screens import result
+
+    job = web_basket.job_of(basket_id) or {}
+    finished = job.get("finished") or 0.0           # 0 — работы нет или она ещё идёт
+    if bundle.get("at") is not None and finished > bundle["at"]:
+        bundle = result._bundle(basket_id, again=True)
+
+    variants = bundle["variants"]
+    if not variants or getattr(variants[0], "missing_products", None):
+        start_prices(basket_id, repo.basket_items(basket_id))
+        job = web_basket.job_of(basket_id) or {}
+
+    if job.get("status") == "failed":
+        return bundle, {"failed": True}
+    if job.get("status") == "running":
+        what = job.get("what") or ""
+        step = (f": {what}" if what else "") + f" ({job.get('done', 0)} из {job.get('total', 0)})."
+        if time.time() - (job.get("started") or time.time()) > PRICES_SLOW_SEC:
+            return bundle, {"line": "Цены собираются дольше обычного" + step + " Загляните позже."}
+        return bundle, {"running": True, "line": "Узнаём цены у вашего адреса" + step + " Экран обновится сам."}
+    return bundle, None
 
 
 def _places(basket_id: int, bundle: dict) -> list:
@@ -273,27 +363,27 @@ def _price_moment(code: str, product_ids: list[int] | None = None,
 
 def _moment_text(stamp) -> str | None:
     """«21.10 02:14» из отметки времени. Нет отметки — None, а не «сейчас»."""
-    moment = freshness.moment(stamp) if stamp else None
+    moment = freshness.shown(stamp)
     return moment.strftime("%d.%m %H:%M") if moment else None
 
 
 def _day_text(stamp) -> str | None:
     """«21.10» — для кэша: у него важна дата, а не минута."""
-    moment = freshness.moment(stamp) if stamp else None
+    moment = freshness.shown(stamp)
     return moment.strftime("%d.%m") if moment else None
 
 
 def _by_phone(code: str) -> bool:
-    """Сеть, до витрины которой сервер не доходит: цену приносит только телефон.
+    """Сеть, у которой сервер не читает цену с витрины: её приносит только телефон.
 
-    Списка сетей здесь нет нарочно: правило одно с передачей корзины (app/cartrun,
-    road -> PHONE) — это Пятёрочка, Самокат, Дикси и Перекрёсток из
-    store_accounts.ABILITIES, где наполнение корзины с сервера недоступно.
+    Списка сетей здесь нет нарочно: правило одно с дозором цен (app/pricewatch,
+    prices.watch.chains в config.yaml) — там перечислены сети с ЖИВОЙ ценой: Магнит,
+    ВкусВилл, Лента, METRO, Дикси. Остальные — Пятёрочка, Самокат, Перекрёсток, Впрок,
+    Монетка — серверу цены не отдают, и подпись «проверяется телефоном» честна именно
+    для них. Дорога КОРЗИНЫ (cartrun.road) тут не годится: с этапов 3–5 корзину в
+    Ленту и METRO тоже кладёт телефон, хотя их витрину сервер читает сам.
     """
-    try:
-        return cartrun.road(code) == cartrun.PHONE
-    except Exception:  # noqa: BLE001 — незнакомая сеть не повод ронять экран
-        return False
+    return code in store_accounts.ABILITIES and code not in pricewatch.chains()
 
 
 def _title(variant) -> str:

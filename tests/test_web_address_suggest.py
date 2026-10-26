@@ -32,7 +32,9 @@ def web(tmp_path, monkeypatch):
 
 
 def enter(client):
-    return client.post("/login", data={"phone": PHONE, "next": "/"})
+    from conftest import sign_in
+
+    return sign_in(client, PHONE)
 
 
 def test_the_address_field_suggests_as_you_type(web, monkeypatch):

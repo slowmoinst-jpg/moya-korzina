@@ -408,7 +408,9 @@ def test_topbar_button_says_what_is_set(db):
     from app.web import create_app
 
     client = create_app().test_client()
-    client.post("/login", data={"phone": "79990000001", "next": "/"})
+    from conftest import sign_in
+
+    sign_in(client, "79990000001")
 
     assert "Укажите адрес" in client.get("/").data.decode("utf-8")
     client.post("/address", data={"address": "Екатеринбург, улица Щербакова 4"})

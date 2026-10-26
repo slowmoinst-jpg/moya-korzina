@@ -13,20 +13,26 @@ data/users/<номер>/basket.db. Схема та же, справочник м
 приложение не заводит, поэтому контекст не теряется; если заведёт — контекст надо
 будет передать в поток явно (contextvars.copy_context().run).
 
-Вход пока БЕЗ ПОДТВЕРЖДЕНИЯ: решение владельца 16.09.2026 — «просто по номеру
-телефона, без пароля, без подтверждения». Значит, кто знает номер, тот и войдёт.
-Это осознанная временная мера, и на экране входа об этом сказано словами; подтверждение
-по коду появится вместе с загрузкой чеков из кабинета ФНС, где код из СМС нужен и так.
+ВХОД — НОМЕР И ЛИЧНЫЙ PIN РАБОЧЕГО МЕСТА (25.10.2026). До этого дня был вход по одному
+номеру — решение владельца 16.09.2026: «просто по номеру телефона, без пароля, без
+подтверждения». Владелец решил показать приложение знакомым, а при таком входе знакомый,
+знающий его номер, открывал чеки, адрес, входы в магазины и ключ ФНС. Теперь у каждого
+рабочего места свой PIN: его придумывают при первом входе (у места, заведённого до
+25.10.2026, — при первом входе после выкладки), он лежит в настройках самой базы
+(ключ login.pin, рядом с link.secret) и не открытым текстом. Кода из СМС по-прежнему нет:
+номер никто не проверяет, и кто первым пришёл с новым номером, тот его и занял. Поэтому
+свой PIN владелец ставит сразу после выкладки — первым входом либо с сервера
+(set_workspace_pin): пока у его места PIN нет, занять его может любой знающий номер.
 
-ЗАМОК ВХОДА (21.10.2026, план docs/plans/mobilnaya-versiya-2026-10-21.md, Z0).
-Пока адрес открыт по http на публичном IP, вход по одному номеру значит, что человек,
-знающий номер, видит чужие чеки, адрес и куки кабинетов сетей. Поэтому у установки
-появился НЕОБЯЗАТЕЛЬНЫЙ PIN владельца: он один на установку (это личный сервер, а не
-сервис), лежит на томе данных рядом с базами (data/pin.json) и хранится не открытым
-текстом — PBKDF2-HMAC-SHA256, 200 000 повторов, своя соль. Пустой PIN = замка нет, и
-вход работает ровно как прежде: обратная совместимость обязательна. Вторая половина
-замка — список разрешённых номеров (users.allowed в config.yaml): без него на установку
-войдёт любой, кто знает любой номер и PIN. Пустой список = пускать всех, как было.
+ЗАМОК ВХОДА (21.10.2026, план docs/plans/mobilnaya-versiya-2026-10-21.md, Z0) — теперь
+вторая, ОБЩАЯ дверь. У установки может быть НЕОБЯЗАТЕЛЬНЫЙ PIN владельца: он один на
+установку (это личный сервер, а не сервис), лежит на томе данных рядом с базами
+(data/pin.json) и хранится не открытым текстом — PBKDF2-HMAC-SHA256, 200 000 повторов,
+своя соль. Задан — его спрашивают раньше номера и личного PIN; не задан — этой двери нет,
+остаётся личный PIN. Ставит его владелец с сервера (set_pin): вошедший знакомый ставить
+общий PIN не вправе — он запер бы всех остальных. Вторая половина замка — список
+разрешённых номеров (users.allowed в config.yaml): без него на установку войдёт любой,
+кто знает любой номер и PIN. Пустой список = пускать всех, как было.
 
 ССЫЛКА СО СВОИМ СЕКРЕТОМ (21.10.2026, та же задача Z0). Закладке «Передать вход» кука
 недоступна: она уходит на сайт сети и возвращается на наш адрес с номером в самом
@@ -39,9 +45,13 @@ data/users/<номер>/basket.db. Схема та же, справочник м
 Демо. Рабочее место «demo» — витрина с вымышленным чеком и условиями карт: оно
 наполняется само при первом открытии. Настоящие рабочие места начинаются ПУСТЫМИ:
 подсовывать живому человеку вымышленные покупки в его собственную историю нельзя.
+Демо одно на всех посетителей, поэтому с 25.10.2026 оно только для чтения: запись в него
+закрыта на двери (app/web/auth.py), личного PIN у него нет, а набрать «demo» в форме входа
+нельзя (resolve_login) — войти в него можно только кнопкой «Посмотреть демо».
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import hashlib
 import hmac
@@ -71,6 +81,16 @@ _PIN_LOCK = threading.Lock()
 # он объясняет, что не так, а не просто «ошибка».
 PIN_NOT_DIGITS = "PIN может состоять только из цифр."
 PIN_TOO_SHORT = "PIN короче шести цифр — такой слишком легко подобрать."
+PIN_TOO_SIMPLE = ("PIN из одинаковых цифр или цифр подряд (111111, 123456, 654321) слишком прост — "
+                  "такие подбирают первыми.")
+PIN_MISMATCH = "PIN и повтор не совпадают."
+
+# Личный PIN рабочего места: ключ в настройках ЕГО базы (таблица settings), рядом с
+# link.secret, — а не в data/pin.json. Тот файл принадлежит установке, а этот PIN —
+# человеку: он уезжает и пропадает вместе с его базой, и у каждого свой. Значение —
+# та же запись «соль + хэш PBKDF2», что в pin.json (одна функция на оба PIN).
+LOGIN_PIN_KEY = "login.pin"
+_WORKSPACE_PIN_LOCK = threading.Lock()
 
 # Секрет ссылки входа: ключ в настройках рабочего места (таблица settings его базы).
 # Имя с точкой — как у api.secret и ключей кабинета ФНС: видно, что настройка
@@ -226,58 +246,59 @@ def _read_pin() -> dict | None:
 
 
 def pin_is_set() -> bool:
-    """Задан ли PIN. Ложь — вход как раньше, по одному номеру."""
+    """Задан ли PIN УСТАНОВКИ. Ложь — общей двери нет, остаётся личный PIN рабочего места."""
     return _read_pin() is not None
 
 
-def set_pin(pin: str) -> None:
-    """Поставить или сменить PIN; пустая строка снимает замок.
+def check_new_pin(pin: str | None) -> str:
+    """Годится ли PIN, который собираются поставить; вернуть его без пробелов по краям.
 
-    Открытым текстом PIN не ложится никуда: в файле соль и хэш. Запись идёт через
-    временный файл и os.replace — оборванная запись не оставит полфайла, из
-    которого замок не прочитать.
+    Одно правило на оба PIN — установки (set_pin) и рабочего места (экран входа, /pin):
+    два правила разошлись бы, и один из замков оказался бы слабее другого.
 
     Что НЕ принимается и почему. PIN короче шести цифр — это не замок: четыре
     цифры при двадцати отказах в 15 минут подбираются за дни, а «1» — за одну
     догадку. Нецифровой PIN тоже
     отклоняется: поле на экране числовое, и буквы там означают не «сложный PIN»,
-    а ошибку ввода. Отказ — ValueError с текстом для человека, а не молчание:
-    иначе страница /pin сказала бы «поставлен», а замка не было бы.
+    а ошибку ввода. Пустой — тоже слишком короткий. Отказ — ValueError с текстом для
+    человека, а не молчание: иначе страница сказала бы «поставлен», а замка не было бы.
+
+    Слишком простой PIN — такой же не замок, как короткий: перебор начинает с него. Не
+    принимаются одна цифра (000000, 111111) и цифры подряд вверх или вниз (123456, 234567,
+    012345, 987654, 543210); счёт идёт по кругу, поэтому 567890 и 109876 тоже отказ. Остальные
+    слабые PIN (даты, 121212, 123123) не ловятся — на них остаётся предел попыток.
     """
     value = (pin or "").strip()
     if value and not re.fullmatch(r"[0-9]+", value):
         raise ValueError(PIN_NOT_DIGITS)
-    if value and len(value) < PIN_MIN_DIGITS:
+    if len(value) < PIN_MIN_DIGITS:
         raise ValueError(PIN_TOO_SHORT)
-    path = pin_path()
-    with _PIN_LOCK:
-        if not value:
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
-            return
-        salt = os.urandom(16)
-        digest = hashlib.pbkdf2_hmac("sha256", value.encode("utf-8"), salt, PIN_ITERATIONS)
-        record = {
-            "version": 1,
-            "algorithm": "pbkdf2_hmac_sha256",
-            "iterations": PIN_ITERATIONS,
-            "salt": salt.hex(),
-            "hash": digest.hex(),
-        }
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(record, fh)
-        os.replace(tmp, path)
+    # Разности соседних цифр по кругу (mod 10): все 0 — одна цифра, все 1 — подряд вверх,
+    # все 9 — подряд вниз. Любая другая картина (хоть один излом) — уже не «подряд».
+    if {(int(b) - int(a)) % 10 for a, b in zip(value, value[1:])} in ({0}, {1}, {9}):
+        raise ValueError(PIN_TOO_SIMPLE)
+    return value
 
 
-def check_pin(pin: str) -> bool:
-    """Совпадает ли введённое с PIN. Замка нет — ложь: проверять нечего."""
-    record = _read_pin()
-    if record is None:
-        return False
+def _pin_record(value: str) -> dict:
+    """Запись о PIN для хранения: соль и хэш, открытого текста в ней нет.
+
+    Общая для PIN установки (data/pin.json) и PIN рабочего места (его настройки):
+    хранение разное, а то, как из PIN делают хэш, должно быть одно.
+    """
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", value.encode("utf-8"), salt, PIN_ITERATIONS)
+    return {
+        "version": 1,
+        "algorithm": "pbkdf2_hmac_sha256",
+        "iterations": PIN_ITERATIONS,
+        "salt": salt.hex(),
+        "hash": digest.hex(),
+    }
+
+
+def _pin_matches(record: dict, pin: str | None, where: str) -> bool:
+    """Совпадает ли введённое с записью о PIN; `where` — чья запись, для журнала."""
     value = (pin or "").strip()
     if not value:
         return False
@@ -286,13 +307,196 @@ def check_pin(pin: str) -> bool:
         salt = bytes.fromhex(str(record["salt"]))
         expected = str(record["hash"])
     except (KeyError, TypeError, ValueError):
-        log.warning("замок входа испорчен (%s): не разобрать соль или число повторов",
-                    pin_path())
+        log.warning("замок входа испорчен (%s): не разобрать соль или число повторов", where)
         return False
     digest = hashlib.pbkdf2_hmac("sha256", value.encode("utf-8"), salt, iterations).hex()
     # Сравнение постоянного времени: обычное == по хэшу при переборе рассказывает,
     # сколько первых байт совпало, и сокращает перебор.
     return hmac.compare_digest(digest, expected)
+
+
+def set_pin(pin: str) -> None:
+    """Поставить, сменить или снять (пустая строка) PIN УСТАНОВКИ — только с сервера, руками владельца.
+
+    Со страницы /pin PIN установки не ставится, не меняется и не снимается: его знает каждый,
+    кого пустили, и любой из них, вошедший по своему PIN, запер бы им всех остальных или снял
+    бы замок, поставленный от чужих. Одной строкой на сервере (контейнер `korzina`; через ssh
+    всю команду берут в кавычки):
+
+        поставить или сменить:
+        docker exec korzina python -c "from app import users; users.set_pin('483915')"
+
+        снять:
+        docker exec korzina python -c "from app import users; users.set_pin('')"
+
+    Принимается то же, что и для личного PIN (check_new_pin): '123456' или '111111' — отказ.
+    Забытый PIN установки сбрасывается так же, второй командой (или удалением data/pin.json).
+
+    Открытым текстом PIN не ложится никуда: в файле соль и хэш. Запись идёт через
+    временный файл и os.replace — оборванная запись не оставит полфайла, из
+    которого замок не прочитать. Что принимается — check_new_pin.
+    """
+    value = (pin or "").strip()
+    if value:
+        check_new_pin(value)
+    path = pin_path()
+    with _PIN_LOCK:
+        if not value:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            return
+        record = _pin_record(value)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(record, fh)
+        os.replace(tmp, path)
+
+
+def check_pin(pin: str) -> bool:
+    """Совпадает ли введённое с PIN установки. Замка нет — ложь: проверять нечего."""
+    record = _read_pin()
+    if record is None:
+        return False
+    return _pin_matches(record, pin, pin_path())
+
+
+# ---------- личный PIN рабочего места ----------
+@contextlib.contextmanager
+def _opened(phone: str):
+    """База этого рабочего места на время работы; потом — та, что стояла до неё.
+
+    Замку входа чужая база нужна ДО входа: первый шаг спрашивает, есть ли у номера PIN, а
+    страница входа затем рисуется тем же запросом и читает адрес из базы, привязанной к
+    потоку (views._menu). Человек, который ещё не назвал PIN, не должен оставаться на
+    чужой базе ни одной строки дольше нужного, поэтому открываем и возвращаем как было.
+    """
+    before, who = config.db_override(), current()
+    open_workspace(phone)
+    try:
+        yield
+    finally:
+        config.set_db_override(before)
+        _CURRENT.set(who)
+
+
+def _workspace_pin_raw(phone: str) -> str | None:
+    """Запись о личном PIN в настройках рабочего места; None — PIN не задан.
+
+    Рабочего места может не быть вовсе: первый шаг входа спрашивает про номер, которого
+    в установке ещё нет, и заводить ради вопроса его папку нельзя — случайные номера
+    наполнили бы диск пустыми базами. Поэтому существование проверяется файлом (exists)
+    до открытия: sqlite3.connect создаёт файл сам.
+    """
+    norm = normalize_phone(phone)
+    if not norm or not exists(norm):
+        return None
+    from app import repo                       # поздно: repo тянет за собой app.db
+
+    with _opened(norm):
+        return repo.get_setting(LOGIN_PIN_KEY) or None
+
+
+def workspace_pin_is_set(phone: str) -> bool:
+    """Есть ли у рабочего места личный PIN. Нет места — нет и PIN."""
+    return _workspace_pin_raw(phone) is not None
+
+
+def check_workspace_pin(phone: str, pin: str | None) -> bool:
+    """Совпадает ли введённое с личным PIN рабочего места. PIN не задан — ложь.
+
+    Запись, которую не разобрать, считается ЗАДАННОЙ, но не подходящей никому: у PIN
+    установки битая запись — «замка нет» (владельца нельзя запереть снаружи его же
+    установки), а здесь это было бы приглашением занять чужое рабочее место — первый
+    пришедший придумал бы свой PIN поверх. Сбросить такой PIN можно только с сервера
+    (clear_workspace_pin).
+    """
+    raw = _workspace_pin_raw(phone)
+    if raw is None:
+        return False
+    try:
+        record = json.loads(raw)
+    except ValueError:
+        record = None
+    if not isinstance(record, dict):
+        log.warning("PIN рабочего места испорчен: запись не разобрать")
+        return False
+    return _pin_matches(record, pin, "PIN рабочего места")
+
+
+def _revoke_secrets() -> None:
+    """Отозвать секрет приёмной двери и секрет ссылки входа."""
+    from app import api, repo
+
+    api.revoke_workplace_secret()
+    with _LINK_LOCK:
+        if repo.get_setting(LINK_SECRET_KEY):
+            repo.set_setting(LINK_SECRET_KEY, None)
+            log.info("секрет ссылки входа отозван")
+
+
+def set_workspace_pin(phone: str, pin: str, *, keep_existing: bool = False) -> bool:
+    """Поставить личный PIN рабочего места (создав само место, если его нет).
+
+    keep_existing=True — «только если ещё нет»: так PIN придумывает вход. Двое могут
+    одновременно прийти с одним новым номером; без этого второй молча затёр бы PIN
+    первого, и первый остался бы снаружи своего же рабочего места. Проигравший получает
+    False и дальше проверяется как обычный вошедший. Верно в пределах одного процесса
+    сервера (так он и работает); PIN читает и пишет только веб.
+
+    С сервера, например чтобы занять рабочее место владельца до показа знакомым (иначе
+    его может занять первый, кто назовёт его номер): контейнер, `docker exec korzina
+    python -c "from app import users; users.set_workspace_pin('79991234567', '483915')"`.
+    Что принимается — check_new_pin; ValueError — с текстом для человека.
+    Смена или установка PIN отзывает прежний секрет приёмной двери (api.secret)
+    и секрет ссылки входа (link.secret): новый создастся при открытии «Кабинетов».
+    """
+    norm = normalize_phone(phone)
+    if not norm:
+        raise ValueError("PIN рабочего места: номер не разобрался")
+    value = check_new_pin(pin)
+    from app import repo
+
+    with _WORKSPACE_PIN_LOCK, _opened(norm):
+        had_pin = bool(repo.get_setting(LOGIN_PIN_KEY))
+        if keep_existing and had_pin:
+            return False
+        # Упадёт запись PIN — останется старый PIN без секретов, а не новый PIN со старым секретом.
+        _revoke_secrets()
+        repo.set_setting(LOGIN_PIN_KEY, json.dumps(_pin_record(value)))
+    return True
+
+
+def clear_workspace_pin(phone: str) -> None:
+    """Снять личный PIN: так владелец сбрасывает забытый — напоминания у PIN нет.
+
+    Одной строкой на сервере (контейнер `korzina`; через ssh всю команду берут в кавычки):
+
+        docker exec korzina python -c "from app import users; users.clear_workspace_pin('79991234567')"
+
+    Чеки и всё остальное рабочего места остаются. Следующий вход с этим номером
+    придумает PIN заново — и заняться этим надо самому и сразу: пока PIN нет, рабочее
+    место займёт первый, кто назовёт номер. Нет такого места — ничего не происходит.
+    Надёжнее не снимать, а сразу поставить новый — тогда места без PIN нет ни минуты:
+
+        docker exec korzina python -c "from app import users; users.set_workspace_pin('79991234567', '<новый PIN>')"
+    Снятие PIN отзывает секрет приёмной двери (api.secret) и секрет ссылки
+    входа (link.secret): новый создастся при открытии «Кабинетов».
+    """
+    norm = normalize_phone(phone)
+    if not norm:
+        raise ValueError("PIN рабочего места: номер не разобрался")
+    if not exists(norm):
+        return
+    from app import repo
+
+    with _WORKSPACE_PIN_LOCK, _opened(norm):
+        # Упадёт снятие — останется PIN без секретов, а не место без PIN со старым секретом.
+        _revoke_secrets()
+        repo.set_setting(LOGIN_PIN_KEY, None)
+        log.info("личный PIN рабочего места снят")
 
 
 # ---------- секрет ссылки входа ----------
@@ -390,11 +594,16 @@ def allowed_phones() -> set[str] | None:
 
 
 def resolve_login(raw: str | None) -> tuple[str | None, str | None]:
-    """Что делать с тем, что человек ввёл: (номер, None) либо (None, объяснение)."""
+    """Что делать с тем, что человек ввёл: (номер, None) либо (None, объяснение).
+
+    «demo» номером не считается, хотя normalize_phone его узнаёт (так читается кука
+    демо-гостя): набранный в форме, он дал бы случайному гостю придумать PIN у общей
+    витрины и запереть её от остальных. В демо входят кнопкой «Посмотреть демо».
+    """
     if not (raw or "").strip():
         return None, "Введите номер телефона."
     phone = normalize_phone(raw)
-    if not phone:
+    if not phone or phone == DEMO:
         return None, NOT_A_PHONE
     allowed = allowed_phones()
     if allowed is not None and phone not in allowed:

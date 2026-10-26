@@ -20,7 +20,9 @@ def web(tmp_path, monkeypatch):
     application = create_app()
     application.config.update(TESTING=True)
     client = application.test_client()
-    client.post("/login", data={"phone": PHONE, "next": PATH})
+    from conftest import sign_in
+
+    sign_in(client, PHONE, next=PATH)
     yield client
     users.deactivate()
 

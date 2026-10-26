@@ -202,22 +202,30 @@ def _take_vhod(chain: str, phone: str, packed: str):
     Рабочее место — только того, кто вошёл в «Мою корзину» в этом браузере. Номер
     из адреса больше не принимается: по нему любой вошедший мог положить свой вход
     магазина в чужую базу. Приложение на телефоне шлёт вход телом на /api/handoff.
+
+    В демо вход НЕ сохраняется. Демо одно на всех, кто нажал «Посмотреть демо», и этот путь —
+    GET, а сторож (app/web/auth.py) пропускает в демо любой GET: вход в магазин, положенный
+    сюда, подставлял бы чужой кабинет каждому следующему посетителю. Отказ — теми же словами,
+    что и у ключа ФНС в демо (screens/receipts.py, _take_key).
     """
     import base64
-    try:
-        padded = packed + "=" * ((4 - len(packed) % 4) % 4)
-        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
-    except Exception:
-        decoded = packed
+    if phone == users.DEMO:
+        res, refused = {"ok": False, "error": auth.DEMO_READ_ONLY}, 403
+    else:
+        try:
+            padded = packed + "=" * ((4 - len(packed) % 4) % 4)
+            decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        except Exception:
+            decoded = packed
+        res, refused = _paste(chain, decoded), 400
 
-    res = _paste(chain, decoded)
     if res.get("ok"):
         flash(res.get("note") or f"Вход в «{chain}» успешно сохранён!", "ok")
     else:
         flash(res.get("error") or "Не удалось распознать вход из закладки.", "bad")
 
     if request.args.get("format") == "json" or request.accept_mimetypes.best == "application/json":
-        return jsonify(res), (200 if res.get("ok") else 400)
+        return jsonify(res), (200 if res.get("ok") else refused)
     return redirect(f"{PATH}?store={chain}", 303)
 
 

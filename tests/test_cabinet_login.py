@@ -395,7 +395,9 @@ def web(tmp_path, monkeypatch):
 
 
 def enter(client):
-    return client.post("/login", data={"phone": PHONE, "next": "/"})
+    from conftest import sign_in
+
+    return sign_in(client, PHONE)
 
 
 @pytest.mark.parametrize("chain", CHAINS)
@@ -938,6 +940,40 @@ def test_cabinet_accepts_vhod_via_url_query_parameter(web):
         assert saved is not None, "вход через URL обязан сохраниться"
         names = [c["name"] for c in saved.get("cookies", [])]
         assert "mg_at" in names
+    finally:
+        users.deactivate()
+
+
+def test_the_demo_takes_no_store_login_from_the_url(web, monkeypatch):
+    """В демо вход в магазин из адреса не сохраняется — ни «vhod», ни «keys».
+
+    Демо одно на всех, кто нажал «Посмотреть демо», а сторож пропускает в нём любой GET. Сохранённый
+    здесь вход подставлял бы чужой кабинет магазина каждому следующему посетителю. Контроль — тест
+    выше: настоящему рабочему месту тот же адрес вход сохраняет.
+    """
+    import base64
+    from app import store_accounts
+    from app.shopbrowser import store as shopstore
+    from app.web.auth import DEMO_READ_ONLY
+
+    monkeypatch.setattr("app.demo.ensure", lambda: False)      # витрину здесь никто не собирает
+    packed = base64.urlsafe_b64encode(
+        _handed(cookies=[{"name": "mg_at", "value": "TOKEN123"}]).encode("utf-8")).decode("ascii").rstrip("=")
+    assert web.post("/demo").status_code == 302
+
+    for query in (f"vhod={packed}", f"keys={packed}"):
+        resp = web.get(f"/cabinet?store=magnit&{query}")
+        assert resp.status_code == 303, query
+        assert resp.headers["Location"].endswith("/cabinet?store=magnit")
+
+        resp = web.get(f"/cabinet?store=magnit&{query}&format=json")
+        assert resp.status_code == 403, query
+        assert resp.get_json() == {"ok": False, "error": DEMO_READ_ONLY}
+
+    users.open_workspace(users.DEMO)
+    try:
+        assert shopstore.about("magnit") is None, "в демо появился вход в магазин"
+        assert not store_accounts.connection("magnit").connected, "демо отмечено подключённым"
     finally:
         users.deactivate()
 

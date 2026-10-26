@@ -1,15 +1,21 @@
-"""Замок входа: PIN владельца, предел попыток и список разрешённых номеров.
+"""Замок входа: PIN установки, предел попыток и список разрешённых номеров.
 
 ЧТО ЗДЕСЬ ОХРАНЯЕТСЯ. Сайт стоит по http на публичном адресе, и до 21.10.2026 вход
 был один — номер телефона. Значит, чужой человек, знающий номер, видел чеки, адрес
 и куки кабинетов сетей. Замок (план docs/plans/mobilnaya-versiya-2026-10-21.md, Z0)
-собирается из трёх необязательных частей, и каждая выключена по умолчанию:
+собирается из трёх необязательных частей, и каждая выключена по умолчанию.
 
-    PIN. Задан — спрашивается вместе с номером; не задан — всё как раньше. Это
-    главное обещание замка: он не имеет права сломать вход тем, кто его не ставил.
+С 25.10.2026 вход идёт в два шага: номер (и PIN установки), затем личный PIN рабочего
+места. Личный PIN, второй шаг и страница /pin для него проверяются в
+tests/test_login_pin.py; здесь — то, что осталось от замка 21.10.2026, на двух шагах:
+
+    PIN УСТАНОВКИ. Задан — спрашивается на шаге 1 вместе с номером; не задан — этой двери
+    нет. Это главное обещание замка: он не имеет права сломать вход тем, кто его не ставил.
+    Ставит, меняет и снимает его только владелец с сервера (users.set_pin): со страницы /pin
+    его не тронуть, даже зная его (tests/test_login_hardening.py).
 
     ПРЕДЕЛ ПОПЫТОК. Перебор шестизначного PIN — это миллион догадок. Пять отказов
-    с одного адреса (на все номера сразу) за 15 минут закрывают вход с этого адреса.
+    с одного IP-адреса (на все номера сразу) за 15 минут закрывают вход с этого IP-адреса.
     Двадцать отказов на всю установку за те же 15 минут НЕ запирают вход: они
     добавляют паузу и обычную проверку PIN, чтобы четыре чужих адреса не держали
     владельца снаружи.
@@ -36,10 +42,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from app import config, users  # noqa: E402
+from conftest import sign_in  # noqa: E402
 
 PHONE = "79990000051"
 STRANGER = "79990000052"
-PIN = "432100"
+PIN = "432100"                 # PIN установки
+MY_PIN = "482915"              # личный PIN рабочего места (его же ставит conftest.sign_in)
 
 
 @pytest.fixture
@@ -67,10 +75,17 @@ def web(tmp_path, monkeypatch):
 
 
 def enter(client, phone: str = PHONE, pin: str | None = None, **kwargs):
+    """ШАГ 1 входа: номер и (если задан) PIN установки. Вошёл ли человек, тут ещё не решено."""
     data = {"phone": phone, "next": "/"}
     if pin is not None:
         data["pin"] = pin
     return client.post("/login", data=data, **kwargs)
+
+
+def second(client, phone: str = PHONE, pin: str = MY_PIN, **kwargs):
+    """ШАГ 2 входа: личный PIN. Кука шага 1 едет с тем же клиентом."""
+    return client.post("/login", data={"step": "2", "phone": phone, "next": "/",
+                                       "my_pin": pin, "my_pin2": pin}, **kwargs)
 
 
 def text(answer) -> str:
@@ -93,27 +108,31 @@ def allowed(monkeypatch, value) -> None:
     monkeypatch.setattr(config, "get", fake)
 
 
-# ---------- без PIN всё как раньше ----------
+# ---------- без PIN установки остаётся личный PIN ----------
 
-def test_without_a_pin_a_phone_number_still_opens_the_door(web):
-    """Замок не поставлен — вход по одному номеру, ровно как до него."""
+def test_without_an_installation_pin_the_number_alone_is_not_enough(web):
+    """PIN установки не поставлен — общей двери нет, но одного номера мало: нужен личный PIN."""
     assert not users.pin_is_set()
-    answer = enter(web)
+    first = enter(web)
+    assert first.status_code == 200 and "Придумайте PIN" in text(first)
+    assert web.get("/").status_code == 302, "номер без личного PIN открыл рабочее место"
+
+    answer = sign_in(web, PHONE)
     assert answer.status_code == 302
     assert web.get("/").status_code == 200
 
 
-def test_without_a_pin_the_login_page_does_not_ask_for_one(web):
-    """Поля PIN на экране нет: поле обещало бы защиту, которой не существует."""
+def test_without_an_installation_pin_the_login_page_does_not_ask_for_one(web):
+    """Поля PIN установки на экране нет: поле обещало бы защиту, которой не существует."""
     page = text(web.get("/login"))
     assert "Вход" in page
     assert 'name="pin"' not in page
 
 
-# ---------- PIN поставлен ----------
+# ---------- PIN установки поставлен ----------
 
-def test_with_a_pin_the_number_alone_does_not_open(web):
-    """PIN задан — без него не пускают, и на экране появляется поле."""
+def test_with_an_installation_pin_the_number_alone_does_not_open(web):
+    """PIN установки задан — без него не пускают даже на второй шаг, и на экране появляется поле."""
     users.set_pin(PIN)
     assert users.pin_is_set()
 
@@ -132,12 +151,22 @@ def test_with_a_pin_the_number_alone_does_not_open(web):
     assert web.get("/").status_code == 302
 
 
-def test_with_a_pin_the_right_one_lets_in_as_before(web):
+def test_with_an_installation_pin_the_right_one_opens_the_second_step_only(web):
+    """Верный PIN установки пускает на шаг 2, а не внутрь; сам он в страницу не попадает."""
     users.set_pin(PIN)
-    answer = enter(web, pin=PIN)
+    first = enter(web, pin=PIN)
+    assert first.status_code == 200 and "Придумайте PIN" in text(first)
+    assert PIN not in text(first), "PIN установки лежит в странице шага 2 (скрытым полем?)"
+    assert web.get("/").status_code == 302
+
+    answer = second(web)
     assert answer.status_code == 302
     assert answer.headers["Location"] == "/"
     assert web.get("/").status_code == 200
+
+    # И весь вход помощником теста — тот же путь.
+    web.post("/logout")
+    assert sign_in(web, PHONE, install_pin=PIN).status_code == 302
 
 
 def test_empty_and_wrong_pins_are_refused_with_the_same_words(web):
@@ -181,7 +210,7 @@ def test_different_numbers_from_one_address_share_one_limit(web):
     PIN проверяется ДО номера, поэтому перебирающий может слать любой номер — или
     мусор в phone. С ключом «номер + адрес» каждая новая строка получала бы свои
     пять попыток, и PIN подбирался бы заметно быстрее. Здесь пять разных
-    номеров с одного адреса, а шестая попытка — уже с новым номером и верным PIN:
+    номеров с одного IP-адреса, а шестая попытка — уже с новым номером и верным PIN:
     и она не проверяется.
     """
     users.set_pin(PIN)
@@ -205,9 +234,9 @@ def test_the_limit_counts_addresses_separately(web):
                    "79990000052", "79990000053", "79990000054"):
         assert enter(web, phone=number, pin="000000").status_code == 400
 
-    # Другой адрес — не закрыт: счёт свой.
+    # Другой адрес — не закрыт: счёт свой (первый шаг пройден, дальше — личный PIN).
     answer = enter(web, pin=PIN, environ_base={"REMOTE_ADDR": "10.0.0.9"})
-    assert answer.status_code == 302
+    assert answer.status_code == 200 and "Придумайте PIN" in text(answer)
 
 
 def test_the_installation_limit_pauses_instead_of_locking_the_owner_out(web, monkeypatch):
@@ -237,10 +266,12 @@ def test_the_installation_limit_pauses_instead_of_locking_the_owner_out(web, mon
     monkeypatch.setattr(users, "check_pin", check)
 
     answer = enter(web, pin=PIN, environ_base={"REMOTE_ADDR": "10.0.2.1"})
-    assert answer.status_code == 302, "общий предел запер владельца снаружи"
+    assert answer.status_code == 200, "общий предел запер владельца снаружи"
     assert sleeps and 1 <= sleeps[-1] <= 2, "перебор не замедлился паузой"
     assert checked_after_pause and checked_after_pause[-1] >= 1, "PIN проверили до паузы"
 
+    # Шаг 2 идёт на том же счёте: пауза и там, а верный личный PIN проходит.
+    assert second(web, environ_base={"REMOTE_ADDR": "10.0.2.1"}).status_code == 302
     check_page = web.get("/")
     assert check_page.status_code == 200, "после верного PIN внутрь не пустили"
 
@@ -286,7 +317,7 @@ def test_the_installation_limit_is_logged_with_its_count_and_without_the_phone(w
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="app.web.login"):
         assert enter(web, phone=PHONE, pin=PIN,
-                     environ_base={"REMOTE_ADDR": "10.0.4.1"}).status_code == 302
+                     environ_base={"REMOTE_ADDR": "10.0.4.1"}).status_code == 200
 
     messages = [record.getMessage() for record in caplog.records
                 if record.name == "app.web.login"]
@@ -294,21 +325,34 @@ def test_the_installation_limit_is_logged_with_its_count_and_without_the_phone(w
     assert all(PHONE not in message for message in messages), "номер попал в журнал"
 
 
-def test_a_successful_login_resets_the_address_counter(web):
-    """Удачный вход обнуляет счёт адреса: человек вспомнил номер, перебор кончился."""
-    for _ in range(4):
-        assert enter(web, phone="12").status_code == 400, "мусор в phone не считается отказом"
+def test_a_successful_login_does_not_reset_the_address_counter(web):
+    """Удачный вход (оба шага) счёт адреса НЕ обнуляет: окно в 15 минут истекает само.
 
-    assert enter(web, phone=PHONE).status_code == 302
+    Иначе перебор чужого PIN шёл бы пачками: четыре догадки, вход в своё место — и снова пять
+    (tests/test_login_hardening.py — то же на двух номерах).
+    """
+    for _ in range(4):
+        assert enter(web, phone="12").status_code == 400, "до предела ещё далеко"
+
+    assert sign_in(web, PHONE).status_code == 302
     web.post("/logout")
 
-    # Прежний счёт (4) плюс ещё четыре отказа — всё ещё ниже пяти: вход не закрыт.
-    for _ in range(4):
-        assert enter(web, phone="12").status_code == 400
-    assert enter(web, phone=PHONE).status_code == 302, "счёт адреса не сбросился после входа"
+    # Счёт остался (4): ещё один отказ — пятый, и вход с этого адреса закрыт на окно.
+    assert enter(web, phone="12").status_code == 400
+    assert enter(web, phone=PHONE).status_code == 429, "вход обнулил счёт адреса"
 
 
-# ---------- страница /pin: задать, сменить, снять ----------
+# ---------- страница /pin глазами установки с общим замком: PIN установки с неё не трогается ----------
+#
+# Личный PIN рабочего места (придумать, сменить) — tests/test_login_pin.py. PIN установки не
+# ставится, не меняется и не снимается со страницы: его знает каждый, кого пустили, и любой
+# запер бы им всех остальных. Это делает владелец на сервере (users.set_pin).
+
+def locked_in(web) -> None:
+    """У установки стоит PIN установки (его ставит владелец с сервера), человек вошёл."""
+    users.set_pin(PIN)
+    assert sign_in(web, PHONE, install_pin=PIN).status_code == 302
+
 
 def test_the_pin_page_needs_the_door_first(web):
     answer = web.get("/pin")
@@ -316,74 +360,74 @@ def test_the_pin_page_needs_the_door_first(web):
     assert "/login" in answer.headers["Location"]
 
 
-def test_the_pin_page_sets_changes_and_removes_the_lock(web):
-    enter(web)
-    page = text(web.get("/pin"))
-    assert "Замок входа" in page and "Поставить PIN" in page
-    assert "6 цифр" in page, "страница /pin не говорит, какой длины PIN"
+def test_the_pin_page_does_not_change_or_remove_the_installation_pin(web):
+    """Со страницы /pin общий PIN не меняется и не снимается — даже с верным старым PIN.
 
-    answer = web.post("/pin", data={"new_pin": PIN})
-    assert answer.status_code == 302 and "saved=set" in answer.headers["Location"]
-    assert users.pin_is_set() and users.check_pin(PIN)
-
-    page = text(web.get("/pin?saved=set"))
-    assert "PIN поставлен" in page and "Сменить PIN" in page and "Снять PIN" in page
-
-    answer = web.post("/pin", data={"old_pin": PIN, "new_pin": "987654"})
-    assert answer.status_code == 302 and "saved=changed" in answer.headers["Location"]
-    assert users.check_pin("987654") and not users.check_pin(PIN)
-
-    answer = web.post("/pin", data={"old_pin": "987654", "do": "clear"})
-    assert answer.status_code == 302 and "saved=cleared" in answer.headers["Location"]
-    assert not users.pin_is_set()
-
-
-def test_changing_the_pin_needs_the_old_one(web):
-    """Открытая вкладка не снимает замок: старый PIN — та же проверка, что при входе."""
-    enter(web)
-    web.post("/pin", data={"new_pin": PIN})
-
-    answer = web.post("/pin", data={"old_pin": "000000", "new_pin": "111111"})
-    assert answer.status_code == 400
-    assert "Неверный PIN" in text(answer)
-    assert users.check_pin(PIN), "PIN сменился без старого"
-
-    answer = web.post("/pin", data={"old_pin": "000000", "do": "clear"})
-    assert answer.status_code == 400
-    assert users.pin_is_set(), "замок снят без старого PIN"
-
-
-def test_guessing_the_old_pin_on_the_pin_page_is_limited(web):
-    """Неверный old_pin на /pin — тот же подбор, и предел у него тот же.
-
-    Иначе страница смены PIN стала бы обходным путём: перебирай старый PIN сколько
-    хочешь, пока не подберёшь. Пять отказов — и шестая попытка (даже с верным
-    старым PIN) не проверяется.
+    Раньше вошедший, знающий PIN установки (а его знает каждый, кого пустили), мог сменить его
+    или снять: запереть всех остальных или открыть установку чужим. Теперь на странице нет ни
+    полей, ни ветки в обработчике; PIN установки ведёт владелец на сервере (users.set_pin).
     """
-    enter(web)
-    web.post("/pin", data={"new_pin": PIN})
+    locked_in(web)
+    page = text(web.get("/pin"))
+    assert "Замок входа" in page and "6 цифр" in page, "страница /pin не говорит, какой длины PIN"
+    for gone in ('name="old_pin"', 'name="new_pin"', "PIN установки (общий)",
+                 "Сменить PIN установки", "Снять PIN установки"):
+        assert gone not in page, f"на странице /pin осталось {gone!r}"
 
-    for _ in range(5):
-        answer = web.post("/pin", data={"old_pin": "000000", "new_pin": "111111"})
-        assert answer.status_code == 400, "предел сработал раньше пятого отказа"
+    for form in ({"old_pin": PIN, "new_pin": "246802", "do": "change"},
+                 {"old_pin": PIN, "do": "clear"},
+                 {"old_pin": PIN, "new_pin": "  "}):
+        answer = web.post("/pin", data=form)
+        assert answer.status_code == 400 and "на сервере" in text(answer), form
+        assert users.pin_is_set() and users.check_pin(PIN), f"PIN установки тронут: {form}"
+        assert not users.check_pin("246802"), f"PIN установки сменён: {form}"
 
-    sixth = web.post("/pin", data={"old_pin": "000000", "new_pin": "111111"})
-    assert sixth.status_code == 429, "шестая неверная попытка не отказ"
-    assert "Слишком много попыток, подождите 15 минут" in text(sixth)
 
-    # И даже верный старый PIN уже не проверяется: отказ идёт до всякой проверки.
-    seventh = web.post("/pin", data={"old_pin": PIN, "new_pin": "987654"})
-    assert seventh.status_code == 429, "верный old_pin обошёл предел"
-    assert users.check_pin(PIN), "отказ всё-таки сменил PIN"
+def test_an_acquaintance_cannot_set_the_installation_pin(web):
+    """Нет PIN установки — поставить его со страницы нельзя, и полей его на ней нет.
+
+    Вошедший знакомый поставил бы общий PIN и запер бы всех остальных (в том числе
+    владельца): его ставят на сервере (users.set_pin).
+    """
+    assert sign_in(web, PHONE).status_code == 302
+    page = text(web.get("/pin"))
+    assert 'name="old_pin"' not in page and 'name="new_pin"' not in page, \
+        "на странице есть поля PIN установки, которого нет"
+    assert "PIN установки (общий)" not in page
+
+    for form in ({"new_pin": PIN}, {"new_pin": PIN, "do": "set"},
+                 {"new_pin": PIN, "do": "change", "old_pin": ""},
+                 {"old_pin": PIN, "do": "clear"}):
+        answer = web.post("/pin", data=form)
+        assert answer.status_code == 400, form
+        assert "на сервере" in text(answer), "отказ без объяснения"
+        assert not users.pin_is_set(), f"PIN установки поставлен со страницы: {form}"
+
+
+def test_the_pin_page_does_not_tell_a_right_installation_pin_from_a_wrong_one(web):
+    """Старый PIN установки на /pin ничего не проверяет: ответ один и тот же, счёт отказов не растёт.
+
+    Иначе страница осталась бы подсказкой для подбора общего PIN (верный и неверный старый PIN
+    отвечали бы по-разному), а её предел — обходным путём к нему.
+    """
+    locked_in(web)
+    answers = {text(web.post("/pin", data={"old_pin": old, "new_pin": "246802", "do": "change"}))
+               for old in ("000000", PIN)}
+    assert len(answers) == 1, "ответ зависит от того, верен ли старый PIN установки"
+
+    for _ in range(8):
+        assert web.post("/pin", data={"old_pin": "000000", "do": "clear"}).status_code == 400
+    assert enter(web, pin=PIN).status_code == 200, "страница /pin засчитала отказы как подбор"
+    assert users.check_pin(PIN)
 
 
 def test_a_six_digit_pin_is_the_shortest_one_accepted(web):
     """Шесть цифр ставятся и проверяются; пять — уже не замок."""
-    users.set_pin("123456")
+    users.set_pin("483915")
     assert users.pin_is_set()
-    assert users.check_pin("123456"), "поставленный шестизначный PIN не подошёл"
-    assert not users.check_pin("12345")
-    assert not users.check_pin("1234567")
+    assert users.check_pin("483915"), "поставленный шестизначный PIN не подошёл"
+    assert not users.check_pin("48391")
+    assert not users.check_pin("4839150")
 
     with pytest.raises(ValueError) as why:
         users.set_pin("12345")
@@ -402,39 +446,24 @@ def test_a_short_or_non_digit_pin_is_not_set(web):
         assert str(why.value), f"отказ на PIN {bad!r} без объяснения"
         assert not users.pin_is_set(), f"PIN {bad!r} всё-таки поставлен"
 
-    enter(web)
-    for bad in ("1", "1234", "12345", "abcd"):
-        answer = web.post("/pin", data={"new_pin": bad})
-        assert answer.status_code == 400, f"PIN {bad!r} принят со страницы /pin"
-        assert "цифр" in text(answer), f"отказ на PIN {bad!r} без объяснения"
-        assert not users.pin_is_set(), f"PIN {bad!r} всё-таки поставлен"
 
-
-def test_an_empty_new_pin_does_not_silently_remove_the_lock(web):
-    """Пустое поле на «сменить» — ошибка, а не тихое снятие замка."""
-    enter(web)
-    web.post("/pin", data={"new_pin": PIN})
-
-    answer = web.post("/pin", data={"old_pin": PIN, "new_pin": "  "})
-    assert answer.status_code == 400
-    assert users.pin_is_set(), "случайно пустая форма открыла установку"
-
-
-def test_removing_the_pin_returns_the_old_behaviour(web):
-    """Сняли замок — вход снова только по номеру, и поля PIN на экране нет."""
-    users.set_pin(PIN)
-    assert enter(web, pin=PIN).status_code == 302
-    assert web.post("/pin", data={"old_pin": PIN, "do": "clear"}).status_code == 302
+def test_removing_the_installation_pin_on_the_server_returns_the_personal_pin_door(web):
+    """Владелец снял PIN установки на сервере (users.set_pin('')) — поля на входе нет, остаётся личный PIN."""
+    locked_in(web)
     web.post("/logout")
+    users.set_pin("")                                     # так снимает замок владелец, не страница
+    assert not users.pin_is_set()
 
     assert 'name="pin"' not in text(web.get("/login"))
-    assert enter(web).status_code == 302
+    assert enter(web).status_code == 200                  # шаг 1 — без PIN установки
+    assert web.get("/").status_code == 302                # одного номера мало
+    assert second(web).status_code == 302                 # личный PIN тот, что придумали при входе
     assert web.get("/").status_code == 200
 
 
 def test_the_accounts_page_points_to_the_lock(web):
-    """С экрана «Кабинеты» до замка один шаг: иначе PIN негде поставить."""
-    enter(web)
+    """С экрана «Кабинеты» до замка один шаг: иначе PIN негде сменить."""
+    sign_in(web, PHONE)
     page = text(web.get("/accounts"))
     assert "Замок входа (PIN)" in page
     assert 'href="/pin"' in page
@@ -442,14 +471,13 @@ def test_the_accounts_page_points_to_the_lock(web):
 
 def test_the_pin_never_comes_back_to_the_page(web):
     """Введённый PIN не возвращается в разметку — ни при ошибке, ни при удаче."""
-    enter(web)
-    web.post("/pin", data={"new_pin": PIN})
+    locked_in(web)
 
     wrong = text(web.post("/pin", data={"old_pin": "000000", "new_pin": "111111"}))
     assert "000000" not in wrong and "111111" not in wrong
 
     page = text(web.get("/pin"))
-    assert PIN not in page
+    assert PIN not in page and MY_PIN not in page
 
 
 # ---------- PIN на диске ----------
@@ -497,18 +525,18 @@ def test_a_number_out_of_the_list_is_refused_like_a_bad_number(web, monkeypatch)
 def test_a_number_in_the_list_gets_in(web, monkeypatch):
     """Разрешённый номер пускают, и в каком бы написании он ни был в конфиге."""
     allowed(monkeypatch, ["8 999 000 00 51"])          # список
-    assert enter(web, phone="+7 999 000 00 51").status_code == 302
+    assert sign_in(web, "+7 999 000 00 51").status_code == 302
 
     web.post("/logout")
     allowed(monkeypatch, "79990000051, +79990000099")  # строка через запятую
-    assert enter(web, phone="79990000051").status_code == 302
+    assert sign_in(web, "79990000051").status_code == 302
 
 
 def test_an_empty_list_lets_everyone_in(web, monkeypatch):
     """Пустой список — это «как раньше», а не «никому нельзя»."""
     for value in (None, "", [], "   ", "не телефон"):
         allowed(monkeypatch, value)
-        answer = enter(web, phone=STRANGER)
+        answer = sign_in(web, STRANGER)
         assert answer.status_code == 302, f"users.allowed={value!r} закрыл вход всем"
         web.post("/logout")
 
@@ -595,8 +623,8 @@ def test_bookmarks_carry_a_clean_address_and_the_direct_link_still_needs_the_sec
     адрес ?phone=…&vhod=… без t по-прежнему не открывает рабочее место: механизм
     остался, но через закладки больше не выдаётся.
     """
+    sign_in(web, PHONE)
     secret = workspace()
-    enter(web)
 
     pages = {"кабинет": text(web.get("/cabinet?store=magnit")),
              "чеки": text(web.get("/receipts"))}

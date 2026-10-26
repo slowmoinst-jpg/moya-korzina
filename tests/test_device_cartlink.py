@@ -210,7 +210,9 @@ def test_session_of_the_phone_opens_the_door_too(door, monkeypatch):
                                           "matched": [], "missing": [], "why": "", "note": ""})
 
     client = application.test_client()
-    client.post("/login", data={"phone": PHONE, "next": "/"})
+    from conftest import sign_in
+
+    sign_in(client, PHONE)
     answer = client.post("/api/device/cartlink", json={"store": "lenta", "items": ITEMS})
 
     assert answer.status_code == 200, answer.get_json()

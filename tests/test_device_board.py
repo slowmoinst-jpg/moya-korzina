@@ -49,15 +49,17 @@ def test_device_board_returns_all_chains_state(door):
         assert data["ok"] is True
         assert "board" in data
         assert isinstance(data["board"], list)
-        assert len(data["board"]) >= 9
+        assert len(data["board"]) >= 11
 
         codes = {r["code"] for r in data["board"]}
-        for required in ("pyaterochka", "magnit", "dixy", "lenta", "samokat"):
+        for required in ("pyaterochka", "magnit", "dixy", "lenta", "samokat", "vprok", "monetka"):
             assert required in codes, f"Сеть {required} должна быть в board"
 
         for row in data["board"]:
             assert "code" in row
             assert "name" in row
+            assert row["name"] != row["code"], "название сети — из справочника, а не её код"
+            assert "act" in row
             assert "connected" in row
             assert "store_choice" in row
             assert "road" in row

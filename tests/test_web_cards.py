@@ -50,7 +50,9 @@ def web(tmp_path, monkeypatch):
     application = create_app()
     application.config.update(TESTING=True)
     client = application.test_client()
-    client.post("/login", data={"phone": PHONE, "next": "/"})
+    from conftest import sign_in
+
+    sign_in(client, PHONE)
     yield client
     users.deactivate()
 
@@ -369,11 +371,19 @@ def test_about_does_not_promise_an_extension_any_more(web):
     assert "расширени" not in page.lower()
 
 
-def test_about_tells_that_the_entrance_has_no_confirmation(web):
-    """Вход по номеру без кода — осознанная мера, и молчать о ней нельзя."""
+def test_about_tells_that_the_entrance_is_a_number_and_a_pin_without_an_sms_code(web):
+    """Вход — номер и личный PIN, кода из СМС нет, и молчать об этом нельзя.
+
+    До 25.10.2026 здесь стояло «кто знает номер, тот и войдёт», и это было верно. Теперь
+    одного номера мало (app/web/login.py), и та же фраза стала бы неправдой в другую
+    сторону: пугала бы дверью, которой нет, и молчала бы о замке, который есть.
+    """
     page = text_of(web.get("/about"))
-    assert "без подтверждения" in page
-    assert "кто знает номер" in page
+    assert "личному PIN" in page
+    assert "Кода из СМС нет" in page
+    assert "кто знает номер, тот и войдёт" not in page
+    # Сайт без HTTPS: по сети открытым текстом едут номер и PIN, а не только секрет места.
+    assert "номер, PIN и секрет рабочего места едут по сети открытым текстом" in page
 
 
 def test_about_no_longer_repeats_the_stale_september_claims(web):

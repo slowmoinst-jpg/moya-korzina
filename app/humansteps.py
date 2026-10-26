@@ -126,11 +126,16 @@ def render(state: dict) -> str:
     return "\n".join(lines)
 
 
-def board() -> list[dict]:
+def board(signed_in: set[str] | None = None) -> list[dict]:
     """Состояние автосборки по ВСЕМ одиннадцати сетям (Этап 0): вход, магазин, что легло, итог сети.
 
     Ничего не меняет и не ходит в сети: читает подключения и последние строки «Сборки
     корзин». По строке видно, на каком шаге каждая сеть стоит и что делать дальше.
+
+    signed_in — сети, в которые вход СОХРАНЁН: так «подключено» понимает экран «Настройки»
+    (web/phone/common.py, _login), потому что флаг подключения ставится отчётом о сборе и
+    чаще погашен, чем нет. Без него экран показывал бы «подключить сеть» у сети, которая
+    в соседнем списке стоит среди подключённых. Не передан — берётся флаг, как раньше.
     """
     from app import cartrun, carttotal
 
@@ -138,6 +143,7 @@ def board() -> list[dict]:
     out: list[dict] = []
     for conn in store_accounts.connections():
         code = conn.store_code
+        connected = conn.connected if signed_in is None else code in signed_in
         name = names.get(code, code)
         row = cartrun.get(code)
         planned = row.planned if row else 0
@@ -150,17 +156,19 @@ def board() -> list[dict]:
         if code == "magnit":
             if row and row.login == "store":
                 store_choice = "no"
-            elif conn.connected:
+            elif connected:
                 store_choice = "yes"
             else:
                 store_choice = "unknown"
         else:
-            store_choice = "yes" if conn.connected else "unknown"
+            store_choice = "yes" if connected else "unknown"
 
-        if not conn.connected:
+        act = ""    # шаг, который человек делает в окне сети: store — выбрать магазин, login — войти
+        if not connected:
             step = "подключить сеть (войти в кабинет)"
         elif state == cartrun.LOGIN:
-            step = "выбрать магазин в аккаунте" if (row and row.login == "store") else "войти заново: сессия сети истекла"
+            act = "store" if (row and row.login == "store") else "login"
+            step = "выбрать магазин в аккаунте" if act == "store" else "войти заново: сессия истекла"
         elif state in (cartrun.FAILED, cartrun.REFUSED, cartrun.CANT):
             step = note or "сеть не приняла корзину"
         elif state == cartrun.IDLE:
@@ -175,16 +183,17 @@ def board() -> list[dict]:
         out.append({
             "code": code,
             "name": name,
-            "connected": conn.connected,
+            "connected": connected,
             "store_choice": store_choice,
             "road": cartrun.road(code),
             "state": state,
             "planned": planned,
             "landed": landed,
             "network_total": network,
-            "ready": conn.connected and not step,
+            "ready": connected and not step,
             "note": note,
             "next": step,
+            "act": act,
         })
     return out
 

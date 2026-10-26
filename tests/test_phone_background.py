@@ -69,7 +69,9 @@ def client(home, monkeypatch):
     application = create_app()
     application.config.update(TESTING=True)
     web = application.test_client()
-    web.post("/login", data={"phone": PHONE, "next": "/"})
+    from conftest import sign_in
+
+    sign_in(web, PHONE)
     yield web
     result._CALC.clear()
     users.deactivate()

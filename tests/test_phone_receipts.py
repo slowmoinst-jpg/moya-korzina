@@ -67,7 +67,9 @@ def clean_jobs():
 
 
 def enter(client):
-    return client.post("/login", data={"phone": PHONE, "next": "/"})
+    from conftest import sign_in
+
+    return sign_in(client, PHONE)
 
 
 def workspace() -> None:
@@ -317,14 +319,27 @@ def test_disconnect_forgets_the_key_but_keeps_the_receipts(web):
 
 # ---------- демо ----------
 def test_demo_does_not_get_a_cabinet(web):
-    """Демо — общая витрина: чужой ключ от кабинета в ней увидели бы все."""
+    """Демо — общая витрина: чужой ключ от кабинета в ней увидели бы все.
+
+    С 25.10.2026 запись в демо закрыта на самой двери (app/web/auth.py): форма уходит назад
+    переводом 303 с demo=1 и до экрана не доходит, а экран, куда вернулись, говорит про демо.
+    Referer здесь — тот, что браузер присылает из формы этого экрана.
+    """
     web.post("/demo")
 
     page = text(web.get(PATH))
     assert "Демо — общая витрина" in page
 
-    page = text(web.post(PATH, data={"do": "sync"}, follow_redirects=True))
+    answer = web.post(PATH, data={"do": "sync"}, headers={"Referer": "http://localhost" + PATH})
+    assert answer.status_code == 303
+    assert answer.headers["Location"] == f"{PATH}?demo=1"
+    page = text(web.get(answer.headers["Location"]))
     assert "Ключ от настоящего кабинета ФНС сюда класть нельзя" in page
+    assert "Это демо — смотреть можно, менять нельзя." in page
+
+    users.open_workspace(users.DEMO)
+    assert not repo.get_setting("fns.token"), "ключ кабинета лёг в общее демо"
+    users.deactivate()
 
 
 # ---------- настройки ведут сюда ----------

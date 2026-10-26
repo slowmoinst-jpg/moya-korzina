@@ -192,7 +192,9 @@ def test_session_of_the_phone_opens_the_door_too(door, monkeypatch):
                         lambda *a, **kw: {"ok": True, "store": "magnit", "found": []})
 
     client = application.test_client()
-    client.post("/login", data={"phone": PHONE, "next": "/"})
+    from conftest import sign_in
+
+    sign_in(client, PHONE)
     answer = client.post("/api/device/find", json={"store": "magnit", "name": "Молоко"})
 
     assert answer.status_code == 200, answer.get_json()

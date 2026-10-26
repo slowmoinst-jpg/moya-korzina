@@ -67,7 +67,9 @@ def clean_jobs():
 
 
 def enter(client, phone=PHONE):
-    return client.post("/login", data={"phone": phone, "next": PATH})
+    from conftest import sign_in
+
+    return sign_in(client, phone, next=PATH)
 
 
 def page_of(client):
@@ -509,12 +511,25 @@ def test_text_without_prices_is_explained_not_silently_dropped(web):
 
 # ---------- демо ----------
 def test_demo_does_not_get_a_cabinet(web):
-    """Демо — общая витрина: чужой ключ от кабинета в ней увидели бы все."""
-    web.post("/demo")
-    page = web.post(PATH, data={"do": "keys", "keys": "a.b.c"},
-                    follow_redirects=True).data.decode("utf-8")
+    """Демо — общая витрина: чужой ключ от кабинета в ней увидели бы все.
 
-    assert "Демо — общая витрина" in page
+    С 25.10.2026 запись в демо закрыта на самой двери (app/web/auth.py): форма уходит назад
+    переводом 303 с demo=1 и до экрана не доходит, а экран, куда вернулись, говорит про демо.
+    Referer здесь — тот, что браузер присылает из формы этого экрана.
+    """
+    from app import repo
+
+    web.post("/demo")
+    answer = web.post(PATH, data={"do": "keys", "keys": "a.b.c"},
+                      headers={"Referer": "http://localhost" + PATH})
+
+    assert answer.status_code == 303
+    assert answer.headers["Location"] == f"{PATH}?demo=1"
+    assert "Демо — общая витрина" in web.get(answer.headers["Location"]).data.decode("utf-8")
+
+    inside(web, users.DEMO)
+    assert not repo.get_setting("fns.token"), "ключ кабинета лёг в общее демо"
+    users.deactivate()
 
 
 def test_an_unknown_action_does_not_break_the_screen(web):

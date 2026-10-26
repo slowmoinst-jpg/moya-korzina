@@ -119,7 +119,9 @@ def test_a_move_starts_refreshing_the_basket_prices(web, monkeypatch):
     """Сменил адрес — цены последней корзины обновляются сами, ход на «Корзине»."""
     from app.web.screens import basket as basket_screen
 
-    web.post("/login", data={"phone": PHONE, "next": "/"})
+    from conftest import sign_in
+
+    sign_in(web, PHONE)
     users.open_workspace(PHONE)
     milk = repo.upsert_product(Product(id=None, name="Молоко", unit="pcs"))
     basket = repo.create_basket("Неделя 40")

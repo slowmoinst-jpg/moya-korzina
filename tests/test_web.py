@@ -45,7 +45,9 @@ def web(tmp_path, monkeypatch):
 
 
 def enter(client, phone="79990000001"):
-    return client.post("/login", data={"phone": phone, "next": "/"})
+    from conftest import sign_in
+
+    return sign_in(client, phone)
 
 
 # ---------- вход ----------
@@ -79,12 +81,19 @@ def test_a_foreign_address_cannot_ride_the_next_parameter(web):
     Это классическая беда страниц входа: человек вводит номер и оказывается на
     подделке, причём выглядит это как продолжение работы.
     """
-    answer = web.post("/login", data={"phone": "79990000001",
-                                      "next": "https://зло.example/забрать"})
-    assert answer.headers["Location"] == "/"
+    from conftest import sign_in
 
-    answer = web.post("/login", data={"phone": "79990000001", "next": "//зло.example"})
-    assert answer.headers["Location"] == "/"
+    # Обратная косая и табуляция: браузер читает «/\зло» как «//зло» и выбрасывает табуляцию
+    # из адреса, так что обе строки без этой проверки уводили бы на чужой сайт.
+    for foreign in ("https://зло.example/забрать", "//зло.example", "/\\зло.example",
+                    "/\t/зло.example"):
+        answer = sign_in(web, "79990000001", next=foreign)
+        assert answer.headers["Location"] == "/", foreign
+        web.post("/logout")
+
+    # Путь внутри сайта проходит как был — вместе с запросом.
+    answer = sign_in(web, "79990000001", next="/phone/basket?q=1")
+    assert answer.headers["Location"] == "/phone/basket?q=1"
 
 
 # ---------- главное: чужая база ----------

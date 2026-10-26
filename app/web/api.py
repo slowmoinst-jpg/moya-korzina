@@ -36,7 +36,7 @@ def api_options(_subpath=""):
     return _cors_response(resp)
 
 
-def _authenticate(body: dict) -> str:
+def _workplace(body: dict) -> str:
     """Определить рабочее место: из сессии Flask или по замку (workplace + secret)."""
     if body.get("workplace") and body.get("secret"):
         return api._unlock(body)
@@ -47,6 +47,21 @@ def _authenticate(body: dict) -> str:
         return phone
 
     return api._unlock(body)
+
+
+def _authenticate(body: dict) -> str:
+    """Рабочее место запроса — но не демо: оно общее, и дверь его не пускает (403).
+
+    Демо одно на всех, кто нажал «Посмотреть демо», и только для чтения (app/web/auth.py).
+    Через эту дверь приложение берёт корзину рабочего места и кладёт её в настоящие корзины
+    сетей, а вошедший в демо приложением положил бы туда демо-корзину. Сессию демо отказывает
+    эта проверка (403), замок с секретом — ещё раньше app.api._unlock (401).
+    """
+    phone = _workplace(body)
+    if phone == users.DEMO:
+        users.deactivate()
+        raise api.Refused(403, auth.DEMO_READ_ONLY, "рабочее место demo открыто только для чтения")
+    return phone
 
 
 @bp.route("/health", methods=["GET"])

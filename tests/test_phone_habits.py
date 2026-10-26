@@ -51,7 +51,9 @@ def web(tmp_path, monkeypatch):
 
 
 def enter(client):
-    return client.post("/login", data={"phone": PHONE, "next": "/"})
+    from conftest import sign_in
+
+    return sign_in(client, PHONE)
 
 
 def workspace() -> None:

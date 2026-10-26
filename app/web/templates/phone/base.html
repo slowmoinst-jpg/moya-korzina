@@ -21,6 +21,18 @@
 <body>
 <div class="ph {% block ph_class %}{% endblock %}">
   <main class="ph-body">
+    {% if is_demo %}
+      {# Демо — общая витрина: её открывает любой, нажавший «Посмотреть демо», поэтому
+         менять в ней нельзя. Строка стоит над каждым экраном, а не в одном месте:
+         человек может зайти на любой. После отказа сервера в изменении адрес приходит
+         с demo=1 — тогда строка заметнее, чтобы отказ не прошёл молча. #}
+      <div class="note act {{ 'bad hot' if request.args.get('demo') else 'warn' }}" role="status">
+        <span>Это демо — смотреть можно, менять нельзя.</span>
+        <form method="post" action="{{ url_for('auth.logout') }}">
+          <button class="bt" type="submit">Войти по своему номеру</button>
+        </form>
+      </div>
+    {% endif %}
     {% block body %}{% endblock %}
   </main>
   <div class="ph-foot">

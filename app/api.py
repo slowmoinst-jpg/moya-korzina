@@ -95,7 +95,9 @@ import json
 import logging
 import re
 import secrets
+import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -122,6 +124,11 @@ MAX_PLAN_LINES = 2000                  # в корзине человека ст
 
 # Сколько отвергнутого тела дверь вежливо дочитывает и выбрасывает, см. Door._spill.
 SPILL_LIMIT = 1024 * 1024
+# Сколько ждать закрытия сокета после отказа на тело неизвестной длины, см. Door._linger.
+LINGER_SEC = 1.0
+# Тайм-аут сокета двери. Без него клиент, который открыл соединение и молчит (или шлёт
+# тело по байту), держит поток двери вечно, а у ThreadingHTTPServer нет потолка потоков.
+IDLE_TIMEOUT_SEC = 30
 
 HEALTH = "/api/health"
 PRICES = "/api/prices"
@@ -203,6 +210,16 @@ def renew_workplace_secret() -> str:
     return fresh
 
 
+def revoke_workplace_secret() -> None:
+    """Отозвать секрет текущего рабочего места: прежний перестаёт отпирать.
+
+    Новый выдаст следующий показ «Кабинетов магазинов».
+    """
+    if repo.get_setting(SECRET_KEY):
+        repo.set_setting(SECRET_KEY, None)
+        log.info("секрет приёмной двери отозван")
+
+
 def _unlock(body: dict) -> str:
     """Проверить замок и направить репозиторий в базу этого человека.
 
@@ -217,6 +234,8 @@ def _unlock(body: dict) -> str:
 
     if not phone:
         raise Refused(401, DENIED, "номер рабочего места не разобрался")
+    if phone == users.DEMO:
+        raise Refused(401, DENIED, "демо в дверь не пускаем: оно одно на всех и только для чтения")
     if not given.strip():
         raise Refused(401, DENIED, f"{phone}: секрет не прислан")
     if not users.exists(phone):
@@ -414,6 +433,7 @@ class Door(BaseHTTPRequestHandler):
     server_version = "korzina"
     sys_version = ""
     protocol_version = "HTTP/1.1"      # ответы всегда с Content-Length, см. _answer
+    timeout = IDLE_TIMEOUT_SEC         # StreamRequestHandler сам ставит его сокету
     _unread = False                    # лежит ли в трубе непрочитанное тело, см. _spill
 
     # ----- мелочи -----
@@ -457,6 +477,8 @@ class Door(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self._cors()
         self.end_headers()
         self.wfile.write(body)
@@ -488,6 +510,30 @@ class Door(BaseHTTPRequestHandler):
                 return
             left -= len(chunk)
 
+    def _linger(self) -> None:
+        """Вычитать и выбросить остаток тела неизвестной длины, чтобы отказ 411 доехал.
+
+        Без этого сокет закрывается с непрочитанными данными в буфере ОС, стек шлёт
+        обрыв (RST) вместо штатного FIN, и клиент вместо ответа 411 видит
+        ConnectionAbortedError [WinError 10053]. Поэтому после ответа закрываем сокет
+        на запись (SHUT_WR) и дочитываем присланное прямо из сокета, пока клиент не
+        закроет соединение, но не дольше LINGER_SEC.
+        """
+        try:
+            self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_WR)
+            deadline = time.monotonic() + LINGER_SEC
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.connection.settimeout(remaining)
+                chunk = self.connection.recv(65536)
+                if not chunk:
+                    break
+        except OSError:
+            pass
+
     def _refuse(self, err: Refused) -> None:
         self._spill()
         if err.status in (401, 403):
@@ -495,6 +541,8 @@ class Door(BaseHTTPRequestHandler):
         else:
             log.info("отказ %d: %s", err.status, err.reason)
         self._answer(err.status, {"ok": False, "error": err.message})
+        if err.status == 411:
+            self._linger()
 
     # ----- разбор запроса -----
     def _check_query(self) -> None:
@@ -551,7 +599,12 @@ class Door(BaseHTTPRequestHandler):
             raise Refused(413, f"Тело запроса больше {limit} — столько дверь не принимает.",
                           f"тело на {length} байт")
         self._unread = False
-        data = self.rfile.read(length) if length else b""
+        try:
+            data = self.rfile.read(length) if length else b""
+        except TimeoutError:
+            self.close_connection = True
+            raise Refused(408, "Тело запроса шло дольше, чем дверь ждёт.",
+                          "тело не дошло за тайм-аут") from None
         if len(data) != length:
             self.close_connection = True
             raise Refused(400, "Тело запроса оборвалось на полпути.",
@@ -694,7 +747,8 @@ def serve(bind: str | None = None, at: int | None = None) -> None:
 
 
 __all__ = ["Door", "Refused", "SECRET_KEY", "MAX_BODY", "PRICES", "CARTPLAN", "HEALTH",
-           "workplace_secret", "renew_workplace_secret", "take_prices", "take_cartplan",
+           "workplace_secret", "renew_workplace_secret", "revoke_workplace_secret",
+           "take_prices", "take_cartplan",
            "make_server", "serve", "serve_in_background", "enabled", "port", "host"]
 
 

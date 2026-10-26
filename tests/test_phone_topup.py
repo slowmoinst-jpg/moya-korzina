@@ -68,7 +68,9 @@ def web(tmp_path, monkeypatch):
 
 def _client(web):
     c = web.test_client()
-    c.post("/login", data={"phone": PHONE, "next": "/"})
+    from conftest import sign_in
+
+    sign_in(c, PHONE)
     return c
 
 

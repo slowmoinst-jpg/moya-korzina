@@ -60,7 +60,9 @@ def web(tmp_path, monkeypatch):
 
 
 def enter(client):
-    return client.post("/login", data={"phone": PHONE, "next": "/"})
+    from conftest import sign_in
+
+    return sign_in(client, PHONE)
 
 
 def seen_by_a_person(client, path: str) -> str:
@@ -166,11 +168,13 @@ def test_every_chain_says_where_its_prices_come_from(web):
         users.deactivate()
 
     # 19.09.2026 сетей стало семь (METRO), 21.09.2026 — восемь (Перекрёсток), 21.10.2026
-    # — девять (Fix Price). Число тут нарочно записано руками: новая сеть не должна
-    # проскочить на экран без описания источника цен, а «поправить цифру» — это и есть
-    # перечитать проверку. Fix Price заведён вместе со своей строкой HOW («частично»:
-    # каталог и цены собирает обход витрины нашим браузером, коннектора нет).
-    assert len(chains) == 9, f"сетей стало {len(chains)} — проверку надо перечитать, а не править"
+    # — девять (Fix Price), 25.10.2026 — одиннадцать (Впрок и Монетка). Число тут нарочно
+    # записано руками: новая сеть не должна проскочить на экран без описания источника
+    # цен, а «поправить цифру» — это и есть перечитать проверку. Fix Price заведён вместе
+    # со своей строкой HOW («частично»: каталог и цены собирает обход витрины нашим
+    # браузером, коннектора нет), Впрок и Монетка — тоже «частично»: сервер читает карту
+    # сайта, а цену приносит телефон.
+    assert len(chains) == 11, f"сетей стало {len(chains)} — проверку надо перечитать, а не править"
     for store in chains:
         assert store.name in page, f"{store.code}: сети нет на экране"
         assert store.code in HOW, f"{store.code}: не сказано, откуда у неё цены"
@@ -235,6 +239,26 @@ def test_the_cabinet_metka_matches_what_the_code_can_actually_do(web):
         f"экран обещает кабинетные цены у {marked}, а собирает их у {set(collect.CHAINS)}")
 
 
+def test_the_chains_without_server_prices_say_the_phone_brings_them():
+    """Перекрёсток, Впрок и Монетка: перечень читает сервер, цену приносит телефон — и код согласен.
+
+    Фраза «цены с сервера нет» верна, пока у сети нет коннектора и дозор цен её не
+    опрашивает. Заведут коннектор или добавят сеть в дозор — фраза станет неправдой, и
+    эта проверка скажет об этом раньше, чем человек.
+    """
+    from app import pricewatch
+    from app.db import SEED_STORES
+    from app.web.screens.stores import HOW, STATE_PARTIAL
+
+    connector = {row[0]: row[5] for row in SEED_STORES}
+    for code in ("perekrestok", "vprok", "monetka"):
+        state, what = HOW[code]
+        assert state == STATE_PARTIAL, f"{code}: сервер читает один перечень, метка — «только каталог»"
+        assert connector[code] == "stub", f"{code}: у сети появился коннектор — текст про цену устарел"
+        assert code not in pricewatch.chains(), f"{code}: дозор спрашивает цену у сети — текст устарел"
+        assert "карты сайта" in what and "на телефоне" in what and "прайс и чеки" in what
+
+
 def test_stores_does_not_pass_the_networks_offer_off_as_our_own(web):
     """Список возможностей сети — не список того, что делает приложение.
 
@@ -251,17 +275,19 @@ def test_stores_does_not_pass_the_networks_offer_off_as_our_own(web):
 
 
 def test_stores_says_how_much_of_this_was_actually_walked_through(web):
-    """Живым заходом пройден один Магнит — и экран не делает вид, что все шесть.
+    """Живым заходом пройден один Магнит — и экран не делает вид, что пройдены все сети.
 
-    Пять сетей встречают наш сервер своей проверкой, и пройдёт ли её человек в
+    Часть сетей встречает наш сервер своей проверкой, и пройдёт ли её человек в
     этом окне, никто пока не знает. Промолчать — значит пообещать; пообещать —
     значит объяснять потом, почему «не работает приложение», хотя приложение тут
-    ни при чём.
+    ни при чём. Числа сетей в тексте нет: с 25.10.2026 их одиннадцать, а когда писалась
+    эта строка, было шесть, и вписанное «остальные пять» стало неправдой.
     """
     enter(web)
     page = seen_by_a_person(web, "/stores")
     assert "Магнит" in page
     assert "не знаем" in page or "неизвестно" in page, "экран не признаёт непроверенного"
+    assert "пять сетей" not in page, "число сетей вписано в текст — оно устареет"
 
 
 # ---------- «О продукте»: обещания, которых приложение не выполняет ----------
@@ -278,6 +304,8 @@ def test_about_does_not_repeat_what_the_app_outgrew(web):
     assert "не отвечает" not in page, "ВкусВилл давно отвечает"
     assert "Лента и Самокат — в планах" not in page
     assert "выгрузка из кабинета ФНС — в планах" not in page.lower()
+    # Число сетей в прозе устаревает при каждой новой сети (было «из шести», сетей — 11).
+    assert "из шести" not in page, "число сетей вписано в текст — оно устареет"
 
 
 def test_about_names_the_window_and_its_limits(web):
@@ -306,17 +334,27 @@ def test_about_says_where_the_keys_to_the_cabinets_lie(web):
 
 
 def test_about_does_not_promise_the_login_confirmation_by_a_date(web):
-    """Вход без подтверждения назван, но срок ему не назначен.
+    """Вход назван таким, какой он есть: номер и PIN, кода из СМС нет — и срока коду не назначено.
 
     Прежний текст обещал код из СМС «вместе с кабинетом ФНС». Кабинет приехал,
     подтверждение входа — нет, и обещание тихо превратилось в неправду. Такие
-    обещания живут на экране дольше события, к которому привязаны.
+    обещания живут на экране дольше события, к которому привязаны. С 25.10.2026 вход —
+    номер и личный PIN (app/web/login.py), и прежнее «кто знает номер, тот и войдёт»
+    стало неправдой в другую сторону: этой фразы на экране больше нет.
     """
+    from app.web.screens.about import STATUS
+
     enter(web)
     page = seen_by_a_person(web, "/about")
-    assert "без подтверждения" in page
-    assert "кто знает номер" in page
+    assert "номер и PIN, без СМС" in page
+    assert "Кода из СМС нет" in page
+    assert "кто знает номер, тот и войдёт" not in page
     assert "вместе с кабинетом ФНС" not in page
+
+    # Строка «Вход» целиком: ни будущего времени, ни срока, ни года — только то, что есть.
+    row = " ".join(next(r for r in STATUS if r[0] == "Вход")[2:]).lower()
+    assert not re.search(r"появит|будет|скоро|позже|ближайш|20\d\d", row), (
+        f"в строке «Вход» обещание на будущее: {row}")
 
 
 def test_about_counts_shops_in_russian(web):

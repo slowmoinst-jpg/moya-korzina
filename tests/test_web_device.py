@@ -35,7 +35,9 @@ def web(tmp_path, monkeypatch):
 
 
 def enter(client, phone="79990000001"):
-    return client.post("/login", data={"phone": phone, "next": "/"})
+    from conftest import sign_in
+
+    return sign_in(client, phone)
 
 
 # ---------- узнавание по User-Agent ----------

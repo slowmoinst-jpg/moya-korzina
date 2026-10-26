@@ -133,7 +133,9 @@ def web(tmp_path, monkeypatch):
 
 def test_phone_with_its_session_records_the_cart(web):
     client = web.test_client()
-    client.post("/login", data={"phone": "79990000004", "next": "/"})
+    from conftest import sign_in
+
+    sign_in(client, "79990000004")
 
     answer = client.post("/api/cart_record", json={"store": "magnit", "entries": [ADD]})
 

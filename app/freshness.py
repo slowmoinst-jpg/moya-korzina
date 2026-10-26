@@ -27,12 +27,15 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app import config, location, repo
 
 # PriceSnapshot.source справочной цены из CSV (connectors/stub.FALLBACK).
 REFERENCE = "fallback"
+
+# Москва и Петербург — UTC+3 круглый год; сервер по UTC.
+SHOWN_TZ = timezone(timedelta(hours=3))
 
 
 def max_age_hours() -> float:
@@ -66,6 +69,23 @@ def _parse(stamp: str | None) -> datetime | None:
 def moment(stamp: str | None) -> datetime | None:
     """Когда снят снимок — местным временем, как пишет repo.NOW. None — дата непонятна."""
     return _parse(stamp)
+
+
+def shown(value: int | float | datetime | str | None) -> datetime | None:
+    """Момент для подписи на экране в поясе SHOWN_TZ (Москва/Петербург, UTC+3)."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value, SHOWN_TZ)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, datetime):
+        return value.astimezone(SHOWN_TZ)
+    if isinstance(value, str):
+        parsed = _parse(value)
+        return parsed.astimezone(SHOWN_TZ) if parsed is not None else None
+    return None
 
 
 def is_fresh(fetched_at: str | None, now: datetime | None = None,
@@ -124,4 +144,4 @@ def price_for(product_id: int, store_id: int, point_key: str | None = None,
     return personal.apply(snap, product_id, store_id)
 
 
-__all__ = ["max_age_hours", "moment", "is_fresh", "before_move", "price_for", "REFERENCE"]
+__all__ = ["max_age_hours", "moment", "shown", "is_fresh", "before_move", "price_for", "REFERENCE", "SHOWN_TZ"]

@@ -371,15 +371,17 @@ def _login(code: str) -> str:
 
 def _home_pause(code: str) -> str:
     """Пауза домашнего выхода после отказа сети. Пусто — паузы нет."""
-    from app import homeexit
+    from app import freshness, homeexit
 
     if not homeexit.configured(code):
         return ""
     until = homeexit.paused_until(code)
     if not until:
         return ""
+    until_dt = freshness.shown(until)
+    when = until_dt.strftime("%H:%M") if until_dt else ""
     return ("Сеть недавно отказала через домашний выход, и до "
-            f"{time.strftime('%H:%M', time.localtime(until))} приложение к ней не ходит: "
+            f"{when} приложение к ней не ходит: "
             "новый стук продлил бы метку на вашем адресе.")
 
 

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 import pytest
@@ -46,7 +47,9 @@ def web(tmp_path, monkeypatch):
 
 
 def enter(client):
-    return client.post("/login", data={"phone": PHONE, "next": "/"})
+    from conftest import sign_in
+
+    return sign_in(client, PHONE)
 
 
 def workspace() -> None:
@@ -342,7 +345,7 @@ def test_the_cabinet_sum_is_signed_by_the_store_and_its_time(web, monkeypatch):
     """Цену места написала сама сеть — так и подписано, со временем её итога."""
     from datetime import datetime, timedelta
 
-    from app import cartrun
+    from app import cartrun, freshness
 
     enter(web)
     workspace()
@@ -352,7 +355,8 @@ def test_the_cabinet_sum_is_signed_by_the_store_and_its_time(web, monkeypatch):
     _substituted(monkeypatch, _one_place("magnit", "Магнит", 110.0))
 
     page = text(web.get("/phone/cheaper"))
-    assert f"корзина кабинета, {at:%d.%m %H:%M}" in page
+    shown_at = at.astimezone(freshness.SHOWN_TZ)
+    assert f"корзина кабинета, {shown_at:%d.%m %H:%M}" in page
 
 
 def _cabinet_row(cartrun, basket_id: int | None, stamp: str, amount: float = 110.0,
@@ -519,7 +523,7 @@ def test_a_catalog_snapshot_does_not_make_a_showcase_at_the_address(web, monkeyp
 
 
 def test_a_phone_only_store_is_checked_by_the_phone(web, monkeypatch):
-    """Пятёрочка, Самокат, Дикси и Перекрёсток серверу витрину не отдают — так и пишем."""
+    """Пятёрочка, Самокат, Перекрёсток, Впрок и Монетка серверу цену не отдают — так и пишем."""
     enter(web)
     workspace()
     _a_basket()
@@ -528,6 +532,21 @@ def test_a_phone_only_store_is_checked_by_the_phone(web, monkeypatch):
     page = text(web.get("/phone/cheaper"))
     assert "проверяется телефоном" in page
     assert "Быстрее" in page
+
+
+def test_the_phone_label_belongs_to_chains_the_server_does_not_read():
+    """«Проверяется телефоном» — про сети без живой цены на сервере, а не про всех, кого собирает телефон.
+
+    С этапов 3–5 корзину в Ленту и METRO тоже кладёт телефон (cartrun.road), но их цену
+    сервер читает сам, дозором (app/pricewatch): подпись про них была бы неправдой.
+    """
+    from app.web.phone import cheaper
+
+    for code in ("pyaterochka", "samokat", "perekrestok", "vprok", "monetka"):
+        assert cheaper._by_phone(code), f"{code}: цену приносит только телефон"
+    for code in ("magnit", "vkusvill", "lenta", "metro", "dixy"):
+        assert not cheaper._by_phone(code), f"{code}: витрину сервер читает сам"
+    assert not cheaper._by_phone("чужая"), "незнакомая сеть телефону не поручена"
 
 
 def test_a_place_without_a_moment_does_not_invent_freshness(web, monkeypatch):
@@ -562,6 +581,78 @@ def test_a_lost_login_asks_to_sign_in_again(web):
     page = text(web.get("/phone/settings"))
     assert "вход истёк" in page
     assert "Войти снова" in page
+
+
+def _section(page: str, title: str) -> str:
+    """Кусок экрана от заголовка раздела до конца его <section>."""
+    start = page.index(f'<div class="grp">{title}</div>')
+    return page[start:page.index("</section>", start)]
+
+
+def test_settings_count_and_lists_cover_the_same_chains(web, monkeypatch):
+    """«Подключено X из N» и оба списка — один набор сетей, и это все сети приложения.
+
+    Живой промах 25.10.2026: Впрок и Монетка были в приложении, а в справочнике
+    магазинов нет — экран писал «0 из 9» при одиннадцати сетях, и две из них пропадали
+    из обоих списков молча.
+    """
+    from app import cartrun, store_accounts
+
+    monkeypatch.setattr(cartrun, "_login", lambda code: "" if code == "magnit" else "connect")
+    enter(web)
+    page = text(web.get("/phone/settings"))
+
+    done, total = map(int, re.search(r"(\d+) из (\d+)</span>", page).groups())
+    waiting = _section(page, "Осталось подключить").count("data-open-store=")
+    kept = _section(page, "Подключено").count('name="store" value=')
+    assert done == kept == 1
+    assert total == waiting + kept == len(store_accounts.ABILITIES)
+    assert "Впрок" in page and "Монетка" in page
+
+
+def test_settings_assembly_block_lists_only_connected_chains_in_plain_words(web, monkeypatch):
+    """«Сборка корзины» — только у подключённых, словами и с названиями из справочника.
+
+    Живой промах 25.10.2026: блок повторял все сети ещё раз под «Осталось подключить»,
+    подписывал их дорогой («Магнит (browser)», «vprok (phone)») и звал «Войти» у сети,
+    которая в соседнем списке уже подключена.
+    """
+    from app import cartrun
+
+    enter(web)
+    workspace()
+    cartrun.save(cartrun.Row(code="lenta", name="Лента", road=cartrun.PHONE, state=cartrun.DONE,
+                             planned=4, landed=["a", "b"], by=cartrun.DEVICE))
+    cartrun.save(cartrun.Row(code="monetka", name="Монетка", state=cartrun.LOGIN, login="again"))
+    users.deactivate()
+    monkeypatch.setattr(cartrun, "_login",
+                        lambda code: "" if code in ("lenta", "monetka", "magnit") else "connect")
+
+    page = text(web.get("/phone/settings"))
+
+    block = _section(page, "Сборка корзины")
+    assert "легло 2 из 4" in block, "что легло — словами, а не «Собрано» у сети без сборки"
+    assert block.count('data-open-store="monetka"') == 1 and "Войти" in block, \
+        "кнопка есть там, где нужен шаг человека"
+    assert 'data-open-store="lenta"' not in block and 'data-open-store="magnit"' not in block, \
+        "у сети без дела кнопки нет"
+    for name in ("Лента", "Монетка", "Магнит"):
+        assert name in block
+    for waiting in ("Самокат", "Пятёрочка", "Впрок", "FixPrice"):
+        assert waiting not in block, f"{waiting} не подключена: её место в «Осталось подключить»"
+    assert not re.search(r"\((phone|browser|link|api)\)", page), "дорога — не для человека"
+    visible = re.sub(r"<[^>]+>", " ", page)
+    assert "monetka" not in visible and "vprok" not in visible, "название — из справочника"
+
+
+def test_settings_without_a_login_has_no_assembly_block(web):
+    """Пока не подключена ни одна сеть, блока сборки нет: сети — в «Осталось подключить»."""
+    enter(web)
+    page = text(web.get("/phone/settings"))
+
+    assert "Осталось подключить" in page
+    assert "Сборка корзины" not in page
+    assert "Сборка по сетям" not in page
 
 
 def test_settings_save_the_address(web, monkeypatch):

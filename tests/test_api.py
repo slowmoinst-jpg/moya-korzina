@@ -32,9 +32,11 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sqlite3
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -292,6 +294,189 @@ def test_body_without_length_is_refused(door, places):
                                  headers={"Transfer-Encoding": "chunked"})
     assert code == 411
     assert "Content-Length" in answer["error"]
+
+
+def test_chunked_stress_all_200_are_411(door):
+    """200 chunked-запросов подряд через door.knock — все 200 ответов 411."""
+    for _ in range(200):
+        code, answer, _ = door.knock(api.PRICES, raw=b"{}",
+                                     headers={"Transfer-Encoding": "chunked"})
+        assert code == 411
+        assert "Content-Length" in answer["error"]
+
+
+def test_post_without_content_length_raw_socket(door):
+    """POST без Content-Length сырым сокетом: тело не меньше 1 МБ, 20 кругов, ответ 411 целиком."""
+    header = (
+        f"POST {api.PRICES} HTTP/1.1\r\n"
+        f"Host: {door.host}:{door.port}\r\n"
+        f"Content-Type: application/json\r\n\r\n"
+    ).encode("utf-8")
+    large_payload = (
+        b'{"workplace":"' + ONE.encode("utf-8") + b'","secret":"xyz","pad":"'
+        + (b"x" * (1024 * 1024)) + b'"}'
+    )
+    raw_req = header + large_payload
+    assert len(large_payload) >= 1024 * 1024
+
+    for _ in range(20):
+        with socket.create_connection((door.host, door.port), timeout=5) as s:
+            s.sendall(raw_req)
+            chunks = []
+            while True:
+                try:
+                    chunk = s.recv(65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            raw_resp = b"".join(chunks).decode("utf-8")
+            status_line = raw_resp.split("\r\n", 1)[0]
+            assert "411" in status_line
+            parts = raw_resp.split("\r\n\r\n", 1)
+            assert len(parts) == 2
+            body = json.loads(parts[1])
+            assert body["ok"] is False
+            assert "Content-Length" in body["error"]
+
+
+def test_only_refusals_of_unknown_length_linger(door, places, monkeypatch):
+    """Счётчик _linger: chunked и сырой сокет без длины зовут _linger, отказы с длиной — нет."""
+    calls = []
+    real_linger = api.Door._linger
+
+    def watched(self):
+        calls.append(1)
+        return real_linger(self)
+
+    monkeypatch.setattr(api.Door, "_linger", watched)
+
+    def wait_calls(expected, timeout=1.0):
+        deadline = time.monotonic() + timeout
+        while len(calls) < expected and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.05)
+        assert len(calls) == expected
+
+    # 1. Chunked через door.knock даёт ровно 1 вызов
+    code, _, _ = door.knock(api.PRICES, raw=b"{}", headers={"Transfer-Encoding": "chunked"})
+    assert code == 411
+    wait_calls(1)
+
+    # 2. POST без Content-Length сырым сокетом даёт 1 вызов (итого 2)
+    with socket.create_connection((door.host, door.port), timeout=5) as s:
+        raw_req = (
+            f"POST {api.PRICES} HTTP/1.1\r\n"
+            f"Host: {door.host}:{door.port}\r\n"
+            f"Content-Type: application/json\r\n\r\n"
+            f'{{"workplace": "{ONE}", "secret": "xyz"}}'
+        ).encode("utf-8")
+        s.sendall(raw_req)
+        while True:
+            try:
+                chunk = s.recv(4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+    wait_calls(2)
+
+    # 3. Кривой JSON (400) даёт 0
+    code, _, _ = door.knock(api.PRICES, raw=b'{"workplace": "7999')
+    assert code == 400
+    wait_calls(2)
+
+    # 4. Тело больше MAX_BODY (413) даёт 0
+    monkeypatch.setattr(api, "MAX_BODY", 2048)
+    body = signed(ONE, places, items=[dict(ITEM, sku=f"sku{i}") for i in range(200)])
+    code, _, _ = door.knock(api.PRICES, body)
+    assert code == 413
+    wait_calls(2)
+
+    # 5. Content-Type text/plain (415) даёт 0
+    code, _, _ = door.knock(api.PRICES, raw=b'{"workplace": "7999"}', content_type="text/plain")
+    assert code == 415
+    wait_calls(2)
+
+
+def test_demo_is_refused_at_the_door(door, places):
+    """Демо в дверь не пускают: ответ 401 как у неизвестного номера, в базе ноль."""
+    users.open_workspace(users.DEMO)
+    repo.set_setting(api.SECRET_KEY, "test_demo_secret_token_123")
+    users.deactivate()
+
+    _, unknown, _ = door.knock(api.PRICES, {"workplace": "79995550000",
+                                            "secret": places[ONE], **report()})
+    code, demo_answer, _ = door.knock(api.PRICES, {"workplace": "demo",
+                                                   "secret": "test_demo_secret_token_123",
+                                                   **report()})
+    assert code == 401
+    assert demo_answer == unknown
+    assert counts(users.DEMO)["store_prices"] == 0
+
+
+def test_door_timeout(door, monkeypatch):
+    """Тайм-аут: закрытие молчащего соединения и отказ 408 на недошедшее тело."""
+    # Тайм-аут стоит по умолчанию; ниже его укорачивают только ради скорости теста.
+    assert api.Door.timeout == api.IDLE_TIMEOUT_SEC > 0
+    monkeypatch.setattr(api.Door, "timeout", 0.5)
+
+    # Молчащее соединение сервер закрывает быстрее 3 с
+    start = time.monotonic()
+    with socket.create_connection((door.host, door.port), timeout=5) as s:
+        try:
+            chunk = s.recv(1024)
+        except OSError:
+            chunk = b""
+        elapsed = time.monotonic() - start
+        assert elapsed < 3.0
+        assert chunk == b""
+
+    # Content-Length: 100, следом 10 байт тела и тишина: ответ 408 быстрее 3 с, не 500.
+    start = time.monotonic()
+    with socket.create_connection((door.host, door.port), timeout=5) as s:
+        req = (
+            f"POST {api.PRICES} HTTP/1.1\r\n"
+            f"Host: {door.host}:{door.port}\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: 100\r\n\r\n"
+            f"0123456789"
+        ).encode("utf-8")
+        s.sendall(req)
+        chunks = []
+        while True:
+            try:
+                chunk = s.recv(4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+        elapsed = time.monotonic() - start
+        assert elapsed < 3.0
+        raw_resp = b"".join(chunks).decode("utf-8")
+        status_line = raw_resp.split("\r\n", 1)[0]
+        assert "408" in status_line
+        assert "500" not in status_line
+        parts = raw_resp.split("\r\n\r\n", 1)
+        assert len(parts) == 2
+        body = json.loads(parts[1])
+        assert body["ok"] is False
+
+
+def test_refusals_411_and_413_carry_connection_close(door, places, monkeypatch):
+    """Ответы 411 (chunked) и 413 несут заголовок Connection: close."""
+    code, _, headers = door.knock(api.PRICES, raw=b"{}",
+                                  headers={"Transfer-Encoding": "chunked"})
+    assert code == 411
+    assert headers.get("Connection", "").lower() == "close"
+
+    monkeypatch.setattr(api, "MAX_BODY", 2048)
+    body = signed(ONE, places, items=[dict(ITEM, sku=f"sku{i}") for i in range(200)])
+    code, _, headers = door.knock(api.PRICES, body)
+    assert code == 413
+    assert headers.get("Connection", "").lower() == "close"
 
 
 def test_broken_json_explains_itself(door, places):

@@ -331,13 +331,25 @@ def _grab() -> dict:
     он не попадает (это стережёт app/api.py), и в шаблоны других экранов его не
     передают: человек видит его ровно на этой странице и только пока сам её открыл.
 
-    Демо — общая витрина, и дверь /api/prices её не пускает вовсе (номер «demo» не
-    разбирается как телефон). Сказать это надо здесь же: иначе владелец возьмёт
-    закладку, отправит пакет и получит отказ без объяснения.
+    Демо — общая витрина, и дверь /api/prices её не пускает вовсе: демо одно на всех
+    и только для чтения, и секрета у демо на экране нет. Сказать это надо здесь же:
+    иначе владелец возьмёт закладку, отправит пакет и получит отказ без объяснения.
     """
     from app import api
 
     phone = auth.current_phone() or ""
+    if phone == users.DEMO:
+        secret = None
+    else:
+        # Кука сверена в начале запроса (_pick_workspace); PIN могли сменить с тех пор, а смена
+        # отзывает секрет под этим же замком — сверяем заново, чтобы свежий секрет не достался
+        # устаревшей куке.
+        # shortcut: замок внутри процесса; смена PIN командой с сервера (docker exec …
+        # set_workspace_pin) с ним не сериализуется, окно между сверкой и выдачей остаётся;
+        # лечится привязкой секрета к отпечатку PIN.
+        with users._WORKSPACE_PIN_LOCK:
+            secret = api.workplace_secret() if auth._cookie_fits_pin(phone) else None
+
     names = {s.code: s.name for s in repo.list_stores()}
     return {
         "bookmarklet": _prices_bookmarklet(),
@@ -346,7 +358,7 @@ def _grab() -> dict:
         # скопировать его из этой строки проще, чем набирать по памяти.
         "workplace": phone,
         "workplace_pretty": users.display(phone),
-        "secret": api.workplace_secret(),
+        "secret": secret,
         "demo": phone == users.DEMO,
         "chains": [{"code": code, "name": names.get(code, code), "into": INTO.get(code, code),
                     **_shelf(code)} for code in GRAB_CHAINS],

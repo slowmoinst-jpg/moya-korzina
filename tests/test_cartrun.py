@@ -640,7 +640,9 @@ def web(home, monkeypatch):
     application = create_app()
     application.config.update(TESTING=True)
     client = application.test_client()
-    client.post("/login", data={"phone": PHONE, "next": "/"})
+    from conftest import sign_in
+
+    sign_in(client, PHONE)
     real = cartrun.start
     # Экран пускает сборку фоном; здесь ждём потоки, чтобы проверить итог.
     monkeypatch.setattr(cartrun, "start", lambda *a, **kw: real(*a, **{**kw, "wait": True}))

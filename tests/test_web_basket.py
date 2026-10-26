@@ -57,7 +57,9 @@ def web(tmp_path, monkeypatch):
 
 
 def enter(client, phone: str = PHONE):
-    return client.post("/login", data={"phone": phone, "next": "/"})
+    from conftest import sign_in
+
+    return sign_in(client, phone)
 
 
 def workspace(phone: str = PHONE) -> None:
@@ -757,3 +759,28 @@ def test_all_three_screens_accept_their_own_actions(web):
     enter(web)
     for path in ("/basket", "/result", "/history"):
         assert web.post(path, data={"do": ""}).status_code in (200, 302), path
+
+
+def test_failed_thread_start_marks_job_failed(web, monkeypatch):
+    """Сбой worker.start() в _start_job не держит работу running и не роняет запрос."""
+    import threading
+    from app.web.screens import basket as basket_screen
+
+    enter(web)
+    workspace()
+    first, _, _ = seed_basket("Корзина для сбоя")
+
+    def broken_start(self):
+        raise RuntimeError("cannot start thread")
+
+    monkeypatch.setattr(threading.Thread, "start", broken_start)
+
+    answer = web.post("/basket", data={"basket": first, "do": "fresh"})
+    assert answer.status_code == 302
+
+    workspace()
+    job = basket_screen.job_of(first)
+    assert job is not None
+    assert job["status"] == "failed"
+    assert "cannot start thread" in job["note"]
+    assert job["finished"] > 0

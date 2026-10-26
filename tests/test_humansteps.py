@@ -81,6 +81,13 @@ def test_store_choice_is_unknown_without_network(monkeypatch):
     assert "магазин выбран: неизвестно" in text, text
 
 
+class _Conn:
+    """Подключение сети, как его отдаёт store_accounts.connections()."""
+
+    def __init__(self, code, connected):
+        self.store_code, self.connected = code, connected
+
+
 def test_board_covers_every_chain_and_names_the_next_step(monkeypatch):
     from app import cartrun, carttotal
 
@@ -92,10 +99,6 @@ def test_board_covers_every_chain_and_names_the_next_step(monkeypatch):
                              total=carttotal.Total(sum=340.0, source=carttotal.NETWORK)),
     }
     monkeypatch.setattr(cartrun, "get", lambda code: rows.get(code))
-
-    class _Conn:
-        def __init__(self, code, connected):
-            self.store_code, self.connected = code, connected
 
     monkeypatch.setattr(humansteps.store_accounts, "connections", lambda: [
         _Conn("pyaterochka", True), _Conn("dixy", True), _Conn("metro", True),
@@ -109,3 +112,27 @@ def test_board_covers_every_chain_and_names_the_next_step(monkeypatch):
     assert board["metro"]["ready"] and board["metro"]["network_total"]
     assert "подключить" in board["lenta"]["next"]
     assert "готово" in humansteps.render_board(list(board.values()))
+
+
+def test_board_takes_the_saved_login_over_the_connection_flag(monkeypatch):
+    """Экран «Настройки» знает вход точнее флага: сеть с сохранённым входом не просит «подключить».
+
+    Флаг подключения ставится отчётом о сборе и чаще погашен, чем нет (web/phone/common.py,
+    _login). Без signed_in сводка звала «Войти» у сети, что в соседнем списке экрана — среди
+    подключённых.
+    """
+    from app import cartrun
+
+    rows = {"dixy": cartrun.Row(code="dixy", state=cartrun.LOGIN, login="again"),
+            "magnit": cartrun.Row(code="magnit", state=cartrun.LOGIN, login="store")}
+    monkeypatch.setattr(cartrun, "get", lambda code: rows.get(code))
+    monkeypatch.setattr(humansteps.store_accounts, "connections", lambda: [
+        _Conn("lenta", False), _Conn("dixy", False), _Conn("magnit", False)])
+
+    by_flag = {r["code"]: r for r in humansteps.board()}
+    assert not by_flag["lenta"]["connected"] and "подключить" in by_flag["lenta"]["next"]
+
+    saved = {r["code"]: r for r in humansteps.board(signed_in={"lenta", "dixy", "magnit"})}
+    assert saved["lenta"]["connected"] and "подключить" not in saved["lenta"]["next"]
+    assert [saved[code]["act"] for code in ("lenta", "dixy", "magnit")] == ["", "login", "store"], \
+        "шаг в окне сети назван полем, а не угадывается по словам"

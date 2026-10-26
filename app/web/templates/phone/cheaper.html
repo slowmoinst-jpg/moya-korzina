@@ -5,15 +5,39 @@
 {% extends 'phone/base.html' %}
 {% from 'phone/_icons.html' import icon, mark %}
 {% block title %}Где дешевле — Моя корзина{% endblock %}
+{# Пока цены узнаются (app/web/phone/cheaper.py, _prices), экран перезагружает себя сам —
+   обычной перезагрузкой страницы, без скрипта. Работа кончилась — перезагрузки нет. #}
+{% block head %}{% if prices and prices.running %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
 {% block body %}
   <a class="back" href="{{ url_for('phone.basket') }}">{{ icon('back') }}Корзина</a>
   <h1 class="title">Где дешевле</h1>
 
+  {% if no_address %}
+    {# Адрес первым делом: без него цены и наличие берутся с точек владельца установки
+       (config.yaml), чужого города. Кнопка ведёт к полю адреса в Настройках. #}
+    <div class="note warn act">
+      <span>Укажите адрес доставки — от него зависят цены и наличие</span>
+      <a class="bt" href="{{ url_for('phone.settings') }}#address">Указать адрес</a>
+    </div>
+  {% endif %}
+
+  {% if prices and prices.failed %}
+    <div class="note warn">Не удалось обновить цены — показаны последние известные.</div>
+  {% endif %}
   {% if basket is none %}
     <div class="empty">Корзина пуста — повторите заказ из истории, и здесь появится, где он дешевле.</div>
   {% elif not variants %}
-    <div class="empty">Пока не хватает цен, чтобы посчитать. Цены по вашему адресу подтягиваются сами — загляните чуть позже.</div>
+    {% if prices and prices.line %}
+      <div class="empty" role="status">{{ prices.line }}</div>
+    {% elif no_address %}
+      <div class="empty">Пока не хватает цен, чтобы посчитать.</div>
+    {% else %}
+      <div class="empty">Пока не хватает цен, чтобы посчитать. Цены по вашему адресу подтягиваются сами — загляните чуть позже.</div>
+    {% endif %}
   {% else %}
+    {% if prices and prices.line %}
+      <div class="note" role="status">{{ prices.line }}</div>
+    {% endif %}
     {% if sent %}
       <div class="note ok">Корзина собирается {{ where(sent) }} — это пара минут. Потом откройте её в приложении магазина и оплатите.{% if left %} Часть товаров не уехала: {{ left }} — сеть их не нашла или они кончились, соберите их поиском в магазине.{% endif %}</div>
     {% elif why == 'link' %}

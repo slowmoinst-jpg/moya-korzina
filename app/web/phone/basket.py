@@ -8,7 +8,7 @@ from app import repo
 from app.web import device
 from app.web.auth import needs_phone
 
-from .common import _basket, _login, _render, _rub, _step, _units, bp
+from .common import _basket, _login, _render, _rub, _step, _units, bp, plural
 
 log = logging.getLogger(__name__)
 
@@ -45,8 +45,59 @@ def basket():
     photos = _photos([r["pid"] for r in rows + habits])
     for row in rows + habits:
         row["photo"] = photos.get(row["pid"])
+    query = (request.args.get("q") or "").strip()
     return _render("basket.html", tab="basket", basket=current, items=rows, habits=habits,
-                   runs=_runs(current) if rows else None, baskets_n=baskets_n)
+                   runs=_runs(current) if rows else None, baskets_n=baskets_n,
+                   q=query, found=_found(query, int(current["id"]) if current else None),
+                   no_address=_no_address())
+
+
+def _found(query: str, basket_id: int | None) -> list[dict]:
+    """Поиск товара под полем «Найти товар»: свои товары и единый каталог сетей.
+
+    ЗАЧЕМ. Привычное (_habits) берётся из истории покупок, а у нового человека её нет:
+    корзина была тупиком — «повторите заказ», которого нет. Поиск тот же, что подсказывает
+    веб-корзина (screens/basket.py, find), а не свой: правила поиска живут в одном месте.
+    Здесь только подпись строки: что за товар и в скольких сетях он известен.
+
+    Строк до 30, а не десять веб-подсказки: на телефоне это экран под пальцем, и на «хлеб»
+    или «сыр» человеку нужно из чего выбирать, а не первые пять из сотен.
+
+    Сбой поиска — пустой список: поиск не повод не открыть корзину.
+    """
+    if not query:
+        return []
+    try:
+        from app.web.screens.basket import find
+
+        return [{"do": hit["do"], "name": hit["name"],
+                 "small": " · ".join(x for x in (hit["small"], _in_chains(hit["n"])) if x)}
+                for hit in find(query, basket_id, limit=30)]
+    except Exception:  # noqa: BLE001 — поиск не повод ронять корзину
+        log.warning("поиск товара не отработал", exc_info=True)
+        return []
+
+
+def _in_chains(n: int) -> str:
+    """«в 1 сети», «в 5 сетях»; «» — товар пока не знаком ни одной сети, и числа не пишем."""
+    return f"в {n} {plural(n, 'сети', 'сетях', 'сетях')}" if n else ""
+
+
+def _no_address() -> bool:
+    """Адрес доставки ещё не сохранён.
+
+    ЗАЧЕМ. Без адреса цены и наличие берутся с точек из config.yaml — это точки
+    владельца установки, не города человека (app/location.py), а чужая цена выглядит
+    как своя. Новый человек этого не знает, поэтому над корзиной стоит просьба указать
+    адрес, пока он не сохранён. Не прочиталось — молчим: просьба не повод не открыть
+    корзину.
+    """
+    from app import location
+
+    try:
+        return not (location.address() or "").strip()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _photos(pids: list[int]) -> dict[int, str]:
@@ -339,40 +390,55 @@ def _pulse_text(row) -> str:
     Пульса не было (сборка началась и сразу замолчала) — говорим о начале попытки,
     а не выдаём его за пульс.
     """
-    from datetime import datetime
+    from app import freshness
 
     try:
         beat = float(row.beat) if row.beat is not None else 0.0
     except (TypeError, ValueError):
         beat = 0.0
     if beat > 0:
-        return f"последний пульс {datetime.fromtimestamp(beat):%d.%m.%Y %H:%M}"
+        dt = freshness.shown(beat)
+        return f"последний пульс {dt:%d.%m.%Y %H:%M}" if dt else ""
     if row.started_at:
-        try:
-            started = datetime.fromisoformat(str(row.started_at))
-        except (TypeError, ValueError):
-            return ""
-        return f"попытка начата {started:%d.%m.%Y %H:%M}"
+        dt = freshness.shown(row.started_at)
+        return f"попытка начата {dt:%d.%m.%Y %H:%M}" if dt else ""
     return ""
 
 
 def _change(current: dict | None):
-    """«−», «+», «убрать» и «добавить из привычного».
+    """«−», «+», «убрать», «добавить из привычного» и «В корзину» из поиска.
 
     Количество меняется на шаг, ноль убирает товар из корзины. «Добавить» — та же
     арифметика, только товара в корзине может ещё не быть, и корзины может не быть
     вовсе: её тогда заводит само «+» из привычного. Именно ради этого случая блок и
     показывается на пустом экране — человек набирает корзину с нуля.
+
+    «В КОРЗИНУ» ИЗ ПОИСКА (catalog:<номер единого товара>) — тот же «добавить» после
+    того, как товар каталога сетей взят в базу человека (adopt: эталон и подтверждённые
+    сопоставления). Как это делает веб-корзина (screens/basket.py, _act), а не свой разбор.
+
+    СЛОВО ПОИСКА ЕДЕТ В ФОРМЕ (q) И ВОЗВРАЩАЕТСЯ В АДРЕС: после нажатия список найденного
+    остаётся на месте, и можно добавить несколько товаров подряд.
     """
     what, _, pid_text = (request.form.get("do") or "").partition(":")
+    back = url_for("phone.basket", q=(request.form.get("q") or "").strip() or None)
     try:
         pid = int(pid_text)
     except ValueError:
-        return redirect(url_for("phone.basket"), 303)
+        return redirect(back, 303)
+    if what == "catalog":
+        try:
+            from app.catalog.refresh import adopt
+
+            pid = adopt(pid)
+        except Exception:  # noqa: BLE001 — каталог не повод ронять корзину
+            log.warning("товар %s из каталога взять не вышло", pid, exc_info=True)
+            return redirect(back, 303)
+        what = "add"
     if what == "add":
         unit = _units().get(pid)
         if unit is None:  # товара нет в каталоге — класть нечего, корзину не заводим
-            return redirect(url_for("phone.basket"), 303)
+            return redirect(back, 303)
         if current is None:
             basket_id = repo.create_basket("Корзина")
             qty = 0.0
@@ -382,13 +448,18 @@ def _change(current: dict | None):
                          if int(i["product_id"]) == pid), None)
             qty = float(item.get("qty") or 0) if item is not None else 0.0
         repo.set_basket_item(basket_id, pid, round(qty + _step(unit), 3))
-        return redirect(url_for("phone.basket") + f"#it-{pid}", 303)
+        # Пока человек ещё выбирает, цены по корзине уже узнаются: к «Где дешевле» они готовы.
+        # Когда не запускать (демо, работа идёт или свежая) — решает start_prices.
+        from .cheaper import start_prices
+
+        start_prices(basket_id, repo.basket_items(basket_id))
+        return redirect(back + f"#it-{pid}", 303)
     if current is None:
-        return redirect(url_for("phone.basket"), 303)
+        return redirect(back, 303)
     basket_id = int(current["id"])
     item = next((i for i in repo.basket_items(basket_id) if int(i["product_id"]) == pid), None)
     if item is None:
-        return redirect(url_for("phone.basket"), 303)
+        return redirect(back, 303)
     qty = float(item.get("qty") or 0)
     step = _step(item.get("unit"))
     if what == "plus":
@@ -398,6 +469,6 @@ def _change(current: dict | None):
     elif what == "remove":
         qty = 0.0
     else:
-        return redirect(url_for("phone.basket"), 303)
+        return redirect(back, 303)
     repo.set_basket_item(basket_id, pid, max(0.0, qty))
-    return redirect(url_for("phone.basket") + f"#it-{pid}", 303)
+    return redirect(back + f"#it-{pid}", 303)

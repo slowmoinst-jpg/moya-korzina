@@ -19,6 +19,11 @@
 встать к первому кадру — а действие должно быть доступно всегда, когда оно
 возможно.
 
+ДВА РАЗНЫХ ВОПРОСА. on_phone() — «наше приложение»: от этого зависит мост к телефону,
+и обычный браузер им не станет. on_mobile() — «любой телефон»: приложение или Safari
+и Chrome знакомого, которому с главной нужны телефонные экраны (app/web/phone/), а не
+веб для компьютера.
+
 ЧЕГО ЗДЕСЬ НЕТ. Очереди задач: «телефон недоступен, подожди» — это следующий
 шаг (GET /api/device/tasks). Здесь телефон отвечает, только пока приложение
 открыто и страница на экране.
@@ -30,6 +35,10 @@ from flask import request
 # Метка в User-Agent приложения. Слэш в конце — часть метки: без неё слово
 # «KorzinaApp» в чужой строке (например, у расширения) давало бы ложный ответ.
 MARK = "KorzinaApp/"
+
+# Слова User-Agent обычного браузера на телефоне: Chrome и Safari телефона пишут
+# «Mobile», планшет Android — «Android», iPad — «iPad». У браузера компьютера их нет.
+MOBILE_WORDS = ("Mobile", "Android", "iPhone", "iPad")
 
 
 def app_version() -> str | None:
@@ -48,6 +57,12 @@ def on_phone() -> bool:
     return app_version() is not None
 
 
+def on_mobile() -> bool:
+    """Правда ли, что сайт открыт на телефоне: нашим приложением или обычным браузером."""
+    ua = request.headers.get("User-Agent") or ""
+    return on_phone() or any(word in ua for word in MOBILE_WORDS)
+
+
 def install(flask_app) -> None:
     """Отдать узнавание в шаблоны: device_phone и device_app у каждой страницы."""
 
@@ -56,4 +71,4 @@ def install(flask_app) -> None:
         return {"device_phone": on_phone(), "device_app": app_version()}
 
 
-__all__ = ["MARK", "app_version", "on_phone", "install"]
+__all__ = ["MARK", "MOBILE_WORDS", "app_version", "on_phone", "on_mobile", "install"]

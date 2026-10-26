@@ -110,7 +110,9 @@ def web(tmp_path, monkeypatch):
     application = create_app()
     application.config.update(TESTING=True)
     client = application.test_client()
-    client.post("/login", data={"phone": "79990000003", "next": "/"})
+    from conftest import sign_in
+
+    sign_in(client, "79990000003")
     yield client
     users.deactivate()
 

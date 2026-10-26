@@ -1464,35 +1464,55 @@ def search_folded(terms, limit: int = 80, conn: sqlite3.Connection | None = None
             conn.close()
 
 
-def search_items(query: str, limit: int = 20, conn: sqlite3.Connection | None = None) -> list[dict]:
+def search_items(query: str, limit: int = 20, conn: sqlite3.Connection | None = None, *,
+                 by_name: bool = False) -> list[dict]:
     """Поиск по единым товарам: все слова запроса должны войти в название.
 
-    Порядок: сначала те, у которых название НАЧИНАЕТСЯ с первого слова запроса («молоко»
-    — это молоко, а не творог марки «Лебедянь молоко»), внутри — известные большему
-    числу сетей (их корзина уедет в магазины без ручного поиска), потом короткие названия.
-    """
-    from app.catalog.match import ordered_words
+    Порядок считает сам SQL, до LIMIT: пересортировка в Python видела только первые
+    `limit*6` строк по числу сетей, и настоящий «Хлеб …» вытесняли «Хлебцы», знакомые
+    большему числу сетей. Сначала названия, где первое слово запроса стоит в начале целым
+    словом («молоко» — это молоко, а не творог марки «Лебедянь молоко»), потом где оно
+    начало слова («хлебцы» для «хлеб», «сырок» для «сыр»), потом остальные; внутри каждой
+    группы — известные большему числу сетей (их корзина уедет в магазины без ручного
+    поиска), потом короткие названия.
 
-    words = ordered_words(query)
-    if not words:
+    by_name — только для поиска человека (подсказка и телефонная «Корзина»). Родовые слова
+    («сыр», «мягкий») нормализация выбрасывает, и в norm их нет; с by_name они ищутся в
+    сыром названии и обязательны, как остальные слова запроса. Остальные вызовы сопоставляют строки
+    чеков и сетей, и родовое слово дало бы им только лишних кандидатов — для них без изменений.
+    """
+    import re
+
+    from app.catalog.match import ordered_words
+    from app.matcher.normalize import NOISE_WORDS
+
+    forms = [("i.norm", (w,)) for w in ordered_words(query)]
+    if by_name:
+        # Родовые слова обязательны, как остальные: «сыр российский» без «сыр» отдавал шоколад
+        # «Российский». LIKE различает регистр у кириллицы, а LOWER() её не берёт: три написания.
+        noise = dict.fromkeys(w for w in re.findall(r"[0-9a-zа-я]+", query.lower()) if w in NOISE_WORDS)
+        forms += [("i.name", (w, w.capitalize(), w.upper())) for w in noise]
+    if not forms:
         return []
-    where = " AND ".join("i.norm LIKE ?" for _ in words)
-    params = [f"%{w}%" for w in words] + [max(limit * 6, 60)]
+    where = " AND ".join("(" + " OR ".join(f"{col} LIKE ?" for _ in f) + ")" for col, f in forms)
+    column, head = forms[0]       # слова — из [0-9a-zа-я], подстановочных % и _ в них нет
+    whole = " OR ".join(f"{column} = ? OR {column} LIKE ?" for _ in head)
+    prefix = " OR ".join(f"{column} LIKE ?" for _ in head)
+    params = ([f"%{w}%" for _, f in forms for w in f]
+              + [x for w in head for x in (w, f"{w} %")] + [f"{w}%" for w in head] + [limit])
     sql = ("SELECT i.*, COUNT(DISTINCT p.chain) AS chains_n,"
            " GROUP_CONCAT(DISTINCT p.chain) AS chain_codes"
            " FROM catalog_items i LEFT JOIN chain_products p ON p.item_id=i.id AND p.active=1"
-           f" WHERE {where} GROUP BY i.id ORDER BY chains_n DESC, LENGTH(i.name) ASC LIMIT ?")
+           f" WHERE {where} GROUP BY i.id"
+           f" ORDER BY CASE WHEN {whole} THEN 0 WHEN {prefix} THEN 1 ELSE 2 END,"
+           " chains_n DESC, LENGTH(i.name), i.id LIMIT ?")
     if conn is not None:                 # сопоставление зовёт тысячи раз: init уже был
         rows = conn.execute(sql, params).fetchall()
     else:
         init()
         with connect() as own:
             rows = own.execute(sql, params).fetchall()
-    head = words[0]
-    ranked = sorted((dict(r) for r in rows),
-                    key=lambda r: (0 if (r.get("norm") or "").startswith(head) else 1,
-                                   -(r.get("chains_n") or 0), len(r.get("name") or "")))
-    return ranked[:limit]
+    return [dict(r) for r in rows]
 
 
 def item_count() -> dict:

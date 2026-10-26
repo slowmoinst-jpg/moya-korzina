@@ -45,6 +45,12 @@
   {% if waiting %}
     <section>
       <div class="grp">Осталось подключить</div>
+      {% if not device_app %}
+        {# Вне приложения «Подключить» ведёт в окно магазина на сервере (/cabinet): страница
+           для компьютера, и часть сетей серверный браузер не пускает. Знакомому с телефоном
+           сразу сказано, где вход идёт как обычно, — дорога через сервер при этом остаётся. #}
+        <div class="note">{% if 'Android' in (request.headers.get('User-Agent') or '') %}Входить в магазины удобнее в приложении для Android: сайт магазина откроется у вас на телефоне. <a href="{{ url_for('apk.download') }}">Скачать приложение</a>. {% endif %}В браузере вход идёт через окно магазина на нашем сервере, и часть сетей его не пускает.</div>
+      {% endif %}
       <div class="card">
         {% for s in waiting %}
           <div class="row">
@@ -79,31 +85,23 @@
     </section>
   {% endif %}
 
+  {# Сборка корзины — только у подключённых сетей: метка, название, под ним серым одной
+     строкой — что с корзиной. Строка остаётся в обычные 48 px, как соседние: длинная подпись
+     обрезается многоточием, а не растягивает её. Кнопка есть лишь там, где человеку нужно
+     шагнуть в окне сети: войти заново или выбрать магазин. #}
   {% if board %}
     <section>
-      <div class="grp">Сборка по сетям (все 11 сетей)</div>
+      <div class="grp">Сборка корзины</div>
       <div class="card">
         {% for b in board %}
-          <div class="row" style="align-items: flex-start; padding: 10px 14px">
+          <div class="row">
             {{ mark(b.code, b.name) }}
-            <span class="grow" style="display: flex; flex-direction: column; gap: 2px">
-              <span style="font-weight: 600">{{ b.name }} <span class="mut small">({{ b.road }})</span></span>
-              <span class="small fnt">
-                {% if b.ready %}
-                  <span class="gd">Собрано</span> · итог сети: {{ 'да' if b.network_total else 'нет' }}
-                {% elif b.next %}
-                  <span class="warn">{{ b.next }}</span>
-                {% else %}
-                  <span class="mut">легло {{ b.landed }}/{{ b.planned }}</span>
-                {% endif %}
-              </span>
+            <span class="grow">
+              <span>{{ b.name }}</span>
+              <span class="small {{ 'gd' if b.ready else 'fnt' }}" style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ 'собрано, итог сети прочитан' if b.ready else b.next }}</span>
             </span>
-            {% if b.next and ('войти' in b.next or 'подключить' in b.next or 'выбрать' in b.next) %}
-              <a class="bt ghost small" href="/cabinet?store={{ b.code }}" data-open-store="{{ b.code }}">
-                {{ 'Выбрать' if 'выбрать' in b.next else ('Войти' if 'войти' in b.next else 'Подключить') }}
-              </a>
-            {% elif b.ready %}
-              <span class="badge white">готово</span>
+            {% if b.act %}
+              <a class="bt ghost" href="/cabinet?store={{ b.code }}" data-open-store="{{ b.code }}">{{ 'Выбрать' if b.act == 'store' else 'Войти' }}</a>
             {% endif %}
           </div>
         {% endfor %}

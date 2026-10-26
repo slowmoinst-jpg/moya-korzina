@@ -1,50 +1,86 @@
 {% extends "layout.html" %}
 {% block title %}Вход — Моя корзина{% endblock %}
 {% block body %}
+{# Поля шрифтом не меньше 16 px: на меньшем Safari увеличивает страницу при фокусе
+   (rem в korzina.css даёт 15 px). Высота 42 px — под палец, как строки остальных экранов. #}
+<style>.pinf{font-size:16px;height:42px;}</style>
 <div class="card" style="max-width:520px;margin:6vh auto;">
   <div class="eyebrow">Вход</div>
-  <h1>Ваши чеки, корзина и карты — под вашим номером</h1>
-  <p class="muted">Введите телефон — откроется ваше рабочее место. Всё, что вы загрузите,
-    останется только в нём.</p>
 
-  {% if error %}<div class="note bad">{{ error }}</div>{% endif %}
+  {% if login_phone %}
+    {# Шаг 2 — личный PIN рабочего места (app/web/login.py, _second_step). Страница та же,
+       что у шага 1, и без JS: её показывает и WebView приложения. Какой из двух видов,
+       решил сервер по базе (creating), а не форма: скрытое поле здесь только номер. #}
+    <h1>{{ 'Придумайте PIN' if creating else 'Введите PIN' }}</h1>
+    <p class="muted">{{ login_label }}.
+      {% if creating %}Это ваш личный PIN: с ним чужие чеки и входы в магазины никто не увидит,
+        даже зная ваш номер. Напоминания нет — запомните его. Не дату рождения и не 123456 —
+        такие подбирают первыми.{% endif %}</p>
 
-  <form method="post" action="{{ url_for('auth.enter') }}">
-    <input type="hidden" name="next" value="{{ next }}">
-    <label class="dim" for="phone">Номер телефона</label>
-    <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel"
-           placeholder="+7 999 123-45-67" value="{{ typed }}" autofocus>
-    {# Поле PIN показывается только когда замок поставлен (app/users.py): у
-       установки без PIN лишнего поля быть не должно — оно обещало бы защиту,
-       которой нет. #}
-    {% if pin_required %}
-      <label class="dim" for="pin" style="margin-top:10px">PIN (6 цифр)</label>
-      <input id="pin" name="pin" type="password" inputmode="numeric" autocomplete="current-password"
-             placeholder="PIN установки" value="">
-    {% endif %}
-    <div class="row" style="margin-top:12px">
-      <button class="btn main" type="submit">Войти</button>
-    </div>
-  </form>
+    {% if notice %}<div class="note info">{{ notice }}</div>{% endif %}
+    {% if error %}<div class="note bad">{{ error }}</div>{% endif %}
 
-  <form method="post" action="{{ url_for('auth.demo') }}" style="margin-top:10px">
-    <button class="btn wide" type="submit">Посмотреть демо</button>
-  </form>
-
-  {# Сказано словами нарочно: вход без подтверждения — осознанная временная мера
-     (решение владельца 16.09.2026), а не забытая защита. Молчание об этом
-     превратило бы меру в дыру. Поставлен PIN — обещание другое, и оно тоже
-     сказано словами: у замка нет напоминания, и сбросить его можно только на
-     сервере (файл pin.json рядом с базой, в каталоге данных). #}
-  {% if pin_required %}
-    <p class="dim" style="margin-top:14px">Вход по номеру и PIN владельца (6 цифр). PIN знаете
-      только вы; напоминания нет, а сбросить его можно лишь на сервере. Пять неверных
-      попыток за 15 минут с одного адреса закрывают вход на эти 15 минут. Общий перебор
-      со многих адресов замедляется, но верный PIN проходит.</p>
+    <form method="post" action="{{ url_for('auth.enter') }}">
+      <input type="hidden" name="step" value="2">
+      <input type="hidden" name="phone" value="{{ login_phone }}">
+      <input type="hidden" name="next" value="{{ next }}">
+      <label class="dim" for="my_pin">{{ 'PIN (6 цифр и больше)' if creating else 'PIN' }}</label>
+      <input id="my_pin" name="my_pin" class="pinf" type="password" inputmode="numeric"
+             autocomplete="{{ 'new-password' if creating else 'current-password' }}" value="" autofocus>
+      {% if creating %}
+        <label class="dim" for="my_pin2" style="margin-top:10px">Повторите PIN</label>
+        <input id="my_pin2" name="my_pin2" class="pinf" type="password" inputmode="numeric"
+               autocomplete="new-password" value="">
+      {% endif %}
+      <div class="row" style="margin-top:12px">
+        <button class="btn main" type="submit">{{ 'Сохранить и войти' if creating else 'Войти' }}</button>
+        <a class="btn" href="{{ url_for('auth.login', next=next) }}">Другой номер</a>
+      </div>
+    </form>
   {% else %}
-    <p class="dim" style="margin-top:14px">Пока вход без пароля и без кода: кто знает номер,
-      тот и войдёт. Подтверждение по СМС появится вместе с загрузкой чеков из кабинета ФНС.
-      Не вводите здесь чужие номера.</p>
+    <h1>Ваши чеки, корзина и карты — под вашим номером</h1>
+    <p class="muted">Введите телефон — дальше PIN, и откроется ваше рабочее место. Всё, что вы
+      загрузите, останется только в нём.</p>
+
+    {% if error %}<div class="note bad">{{ error }}</div>{% endif %}
+
+    <form method="post" action="{{ url_for('auth.enter') }}">
+      <input type="hidden" name="next" value="{{ next }}">
+      <label class="dim" for="phone">Номер телефона</label>
+      <input id="phone" name="phone" class="pinf" type="tel" inputmode="tel" autocomplete="tel"
+             placeholder="+7 999 123-45-67" value="{{ typed }}" autofocus>
+      {# Поле PIN установки показывается только когда общий замок поставлен (app/users.py):
+         у установки без него лишнего поля быть не должно — оно обещало бы защиту, которой
+         нет. Личный PIN спрашивается следующим шагом. #}
+      {% if pin_required %}
+        <label class="dim" for="pin" style="margin-top:10px">PIN установки (6 цифр)</label>
+        <input id="pin" name="pin" class="pinf" type="password" inputmode="numeric"
+               autocomplete="current-password" placeholder="PIN установки" value="">
+      {% endif %}
+      <div class="row" style="margin-top:12px">
+        <button class="btn main" type="submit">Дальше</button>
+      </div>
+    </form>
+
+    <form method="post" action="{{ url_for('auth.demo') }}" style="margin-top:10px">
+      <button class="btn wide" type="submit">Посмотреть демо</button>
+    </form>
+
+    {# Сказано словами нарочно: что защищает вход и чего у него нет. Вход идёт по номеру и
+       личному PIN, кода из СМС нет и номер никто не подтверждает, поэтому свой PIN придумывают
+       сразу — иначе рабочее место займёт первый, кто назвал номер. У замка нет напоминания,
+       и сбросить его можно только на сервере. #}
+    <p class="dim" style="margin-top:14px">Вход по номеру и PIN. PIN вы придумываете при первом
+      входе — без него чужие чеки и входы в магазины никто не увидит, даже зная ваш номер.
+      Напоминания нет: забытый PIN сбрасывается только на сервере. Не вводите здесь чужие номера.</p>
+    {% if pin_required %}
+      <p class="dim" style="margin-top:8px">Сначала спрашивается PIN установки (6 цифр): он общий,
+        его дал владелец. Пять неверных попыток за 15 минут с одного IP-адреса закрывают вход на
+        эти 15 минут. Общий перебор со многих адресов замедляется, но верный PIN проходит.</p>
+    {% else %}
+      <p class="dim" style="margin-top:8px">Пять неверных попыток за 15 минут с одного IP-адреса
+        закрывают вход на эти 15 минут.</p>
+    {% endif %}
   {% endif %}
 </div>
 {% endblock %}

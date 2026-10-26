@@ -43,7 +43,7 @@ import time
 
 from flask import redirect, render_template, request
 
-from app import repo
+from app import freshness, repo
 from app.web.screens.basket import num, pct, plural_items, rub, unit_label
 from app.web.views import SCREEN_BY_KEY
 
@@ -99,6 +99,7 @@ def _bundle(basket_id: int, again: bool = False) -> dict:
     if kept and not again and kept["stamp"] == stamp and time.time() - kept["at"] < CALC_TTL:
         return kept
 
+    started_at = time.time()
     # refresh=False: цены в сеть здесь не спрашиваем. Обновление — отдельное,
     # долгое и видимое действие на экране «Корзина»; страница, которая молча
     # уходит в сеть на две минуты, выглядит зависшей.
@@ -115,7 +116,8 @@ def _bundle(basket_id: int, again: bool = False) -> dict:
     except Exception:  # noqa: BLE001 — проверка достоверности не повод ронять экран
         doubts = {"rows": [], "products": 0, "total": len(items)}
 
-    fresh = {"stamp": stamp, "at": time.time(), "when": time.strftime("%H:%M"),
+    shown_at = freshness.shown(started_at)
+    fresh = {"stamp": stamp, "at": started_at, "when": shown_at.strftime("%H:%M") if shown_at else "",
              "variants": list(variants or []), "baseline": baseline,
              "effortless": list(effortless or []), "doubts": doubts, "positions": len(items),
              # чья база из чеков человека, а чья — у магазина: от этого подпись базы

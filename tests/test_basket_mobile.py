@@ -60,7 +60,9 @@ def web(tmp_path, monkeypatch):
 
 
 def enter(client, phone: str = PHONE):
-    return client.post("/login", data={"phone": phone, "next": "/"})
+    from conftest import sign_in
+
+    return sign_in(client, phone)
 
 
 def workspace(phone: str = PHONE) -> None:
@@ -155,7 +157,7 @@ def test_a_hint_says_whether_it_is_yours_or_from_the_chains_catalog(web, monkeyp
     workspace()
     basket_id, _, _ = seed_basket()
     add_product("Сникерс домашний")
-    monkeypatch.setattr(catalog_store, "search_items", lambda q, limit=20: [
+    monkeypatch.setattr(catalog_store, "search_items", lambda q, limit=20, **_: [
         {"id": 7, "name": "Батончик Snickers Super 80 г", "weight_g": 80, "brand": "Snickers",
          "chains_n": 2, "chain_codes": "magnit,lenta"}])
 

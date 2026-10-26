@@ -4,7 +4,12 @@
    а не одним общим «Сохранить».
 
    ВИД ПО МОТИВАМ МАГНИТА (22.10.2026): фото слева, счётчик серой таблеткой. Отдельного
-   ✕ нет: товар в один шаг убирает тот же «−», и на нём тогда корзинка (it.last). #}
+   ✕ нет: товар в один шаг убирает тот же «−», и на нём тогда корзинка (it.last).
+
+   НОВЫЙ ЧЕЛОВЕК (25.10.2026): истории покупок у него нет, и «из привычного» корзину не
+   набрать. Над списком — адрес (от него цены) и поиск товара: свои товары и единый
+   каталог сетей. Поиск — обычная форма GET, скрипт не нужен (WebView, старый браузер).
+   В демо (is_demo) витрину только смотрят: ни поиска, ни «−/+», ни сборки в сетях. #}
 {% extends 'phone/base.html' %}
 {% from 'phone/_icons.html' import icon, pic %}
 {% block title %}Корзина — Моя корзина{% endblock %}
@@ -17,27 +22,66 @@
       <a class="bt ghost" href="{{ url_for('phone.baskets') }}">Корзины · {{ baskets_n }}</a>
     {% endif %}
   </div>
+  {% if not is_demo %}
+    {% if no_address %}
+      {# Адрес первым делом: без него цены и наличие берутся с точек владельца установки
+         (config.yaml), чужого города. Кнопка ведёт к полю адреса в Настройках. #}
+      <div class="note warn act">
+        <span>Укажите адрес доставки — от него зависят цены и наличие</span>
+        <a class="bt" href="{{ url_for('phone.settings') }}#address">Указать адрес</a>
+      </div>
+    {% endif %}
+    <form class="find" method="get" action="{{ url_for('phone.basket') }}" role="search">
+      <input type="search" name="q" value="{{ q }}" placeholder="Найти товар" aria-label="Найти товар"
+             autocomplete="off" enterkeyhint="search">
+      <button class="bt big" type="submit">Найти</button>
+    </form>
+    {% if found %}
+      {# Найденное: «В корзину» кладёт шаг (штуку или 100 г) и возвращает к списку; слово
+         поиска едет в форме, и найденное остаётся на месте — можно взять несколько подряд. #}
+      <form class="card found" method="post" action="{{ url_for('phone.basket') }}">
+        <input type="hidden" name="q" value="{{ q }}">
+        {% for h in found %}
+          <div class="row">
+            <span class="grow">
+              <span class="name">{{ h.name }}</span>
+              <span class="fnt small sub">{{ h.small }}</span>
+            </span>
+            <button class="bt ghost" type="submit" name="do" value="{{ h.do }}"
+                    aria-label="В корзину: {{ h.name }}">{{ icon('plus', 'i s') }}В корзину</button>
+          </div>
+        {% endfor %}
+      </form>
+    {% elif q %}
+      <div class="mut small">{{ 'Введите хотя бы две буквы.' if q|length < 2 else 'По запросу «' ~ q ~ '» ничего не нашлось — попробуйте другое слово.' }}</div>
+    {% endif %}
+  {% endif %}
   {% if basket and items %}
     <div class="mut small">{{ basket.name }} · {{ goods(items|length) }}</div>
     <form method="post" action="{{ url_for('phone.basket') }}">
+      <input type="hidden" name="q" value="{{ q }}">
       {% for it in items %}
         <div class="it" id="it-{{ it.pid }}">
           {{ pic(it) }}
           <span class="name">{{ it.name }}</span>
           <span class="step">
-            {% if it.last %}
-              <button class="q" type="submit" name="do" value="minus:{{ it.pid }}" aria-label="Убрать: {{ it.name }}">{{ icon('trash', 'i s') }}</button>
-            {% else %}
-              <button class="q" type="submit" name="do" value="minus:{{ it.pid }}" aria-label="Меньше: {{ it.name }}">{{ icon('minus', 'i s') }}</button>
+            {% if not is_demo %}
+              {% if it.last %}
+                <button class="q" type="submit" name="do" value="minus:{{ it.pid }}" aria-label="Убрать: {{ it.name }}">{{ icon('trash', 'i s') }}</button>
+              {% else %}
+                <button class="q" type="submit" name="do" value="minus:{{ it.pid }}" aria-label="Меньше: {{ it.name }}">{{ icon('minus', 'i s') }}</button>
+              {% endif %}
             {% endif %}
             <span class="qn num">{{ qty_label(it.qty, it.unit) }}</span>
-            <button class="q" type="submit" name="do" value="plus:{{ it.pid }}" aria-label="Больше: {{ it.name }}">{{ icon('plus', 'i s') }}</button>
+            {% if not is_demo %}
+              <button class="q" type="submit" name="do" value="plus:{{ it.pid }}" aria-label="Больше: {{ it.name }}">{{ icon('plus', 'i s') }}</button>
+            {% endif %}
           </span>
         </div>
       {% endfor %}
     </form>
   {% else %}
-    <div class="empty">Корзина пуста. Повторите заказ из истории — его товары лягут сюда.</div>
+    <div class="empty">Корзина пуста.{% if not is_demo %} Найдите товар поиском выше — или повторите заказ из «Истории заказов».{% endif %}</div>
   {% endif %}
   {% if habits %}
     {# «Из привычного»: что человек берёт часто и что по циклу пора докупить.
@@ -48,19 +92,22 @@
     <section id="habits" class="habits" aria-label="Из привычного">
       <div class="grp">Из привычного</div>
       <form class="hrow" method="post" action="{{ url_for('phone.basket') }}">
+        <input type="hidden" name="q" value="{{ q }}">
         {% for h in habits %}
           <div class="hcard">
             {{ pic(h) }}
             <span class="name">{{ h.name }}</span>
             <span class="why">{{ h.why }}</span>
-            <button class="bt ghost" type="submit" name="do" value="add:{{ h.pid }}"
-                    aria-label="Добавить: {{ h.name }}">{{ icon('plus', 'i s') }}В корзину</button>
+            {% if not is_demo %}
+              <button class="bt ghost" type="submit" name="do" value="add:{{ h.pid }}"
+                      aria-label="Добавить: {{ h.name }}">{{ icon('plus', 'i s') }}В корзину</button>
+            {% endif %}
           </div>
         {% endfor %}
       </form>
     </section>
   {% endif %}
-  {% if runs %}
+  {% if runs and not is_demo %}
     {# Пока открыта корзина, приложение само собирает её в сетях, где человек вошёл
        (android/app, 1.13): отпечаток корзины и что сервер знает о входах — ему в
        data-collect, ход и итоги — опросом строк, пока сборка идёт. #}

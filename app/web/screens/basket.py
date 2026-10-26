@@ -204,13 +204,20 @@ def _start_job(basket_id: int, kind: str, items: list[dict]) -> None:
         running = _JOBS.get(key)
         if running and running["status"] == "running":
             return
+        # pids — набор товаров, по которым идёт работа: телефон по нему видит, что корзину с
+        # тех пор правили, и не гоняет сети зря (app/web/phone/cheaper.py, start_prices).
         _JOBS[key] = {"kind": kind, "status": "running", "done": 0,
                       "total": max(1, len(items)), "what": "", "note": "",
+                      "pids": tuple(sorted(int(i["product_id"]) for i in items)),
                       "started": time.time(), "finished": 0.0}
 
     worker = threading.Thread(target=_run_job, args=(key, phone, int(basket_id), kind, items),
                               name=f"korzina-{kind}-{basket_id}", daemon=True)
-    worker.start()
+    try:
+        worker.start()
+    except Exception as exc:  # noqa: BLE001 — сбой старта не должен ронять запрос
+        log.exception("поток фоновой работы %s по корзине %s не запустился", kind, basket_id)
+        _mark(key, status="failed", note=str(exc), finished=time.time())
 
 
 def refresh_after_move() -> int | None:
@@ -522,18 +529,22 @@ def _due(basket_id: int) -> list[dict]:
     return found[:12]
 
 
-def _catalog_hits(query: str, stores_n: int) -> list[dict]:
-    """Единый каталог сетей — только по запросу.
+def _catalog_hits(query: str, stores_n: int, limit: int = 8) -> list[dict]:
+    """Единый каталог сетей — только по запросу, не больше limit товаров.
 
     Товар оттуда уже сопоставлен между сетями: положить его значит сразу получить
     эталон и артикулы везде, где он есть. Без слова в поиске список был бы
     каталогом целиком, поэтому пустой запрос сюда не доходит.
+
+    Это поиск человека, поэтому by_name: для него «сыр» — обычное слово, хотя
+    нормализация названий родовые слова выбрасывает, и без by_name «сыр» не находил
+    ни одного из тысяч сыров (store.search_items).
     """
     if not query.strip():
         return []
     try:
         from app.catalog import store as catalog_store
-        found = catalog_store.search_items(query, limit=8)
+        found = catalog_store.search_items(query, limit=limit, by_name=True)
     except Exception:  # noqa: BLE001 — каталог не повод ронять корзину
         return []
     # Сети — по-русски, как в шапке экрана: «magnit, lenta» владелец 17.10.2026
@@ -642,26 +653,28 @@ def page():
 
 
 # ---------- подсказка по мере набора ----------
-def suggest():
-    """Что показать под полем поиска, пока человек ещё набирает. Отвечает данными.
+def find(query: str, basket_id: int | None = None, limit: int = 10) -> list[dict]:
+    """Найти товар по слову: свои товары и единый каталог сетей — одним списком.
 
-    ПОЧЕМУ ЭТО ОТДЕЛЬНЫЙ АДРЕС, А НЕ ЧАСТЬ СТРАНИЦЫ. Подсказка нужна на каждую
-    букву, а страница корзины — это список позиций, цены по сетям и частое: гонять
-    её целиком по мобильной сети на каждое нажатие клавиши нельзя, человек стоит у
-    полки и ждёт. Здесь уезжает десяток строк.
+    ЕЁ ЗОВУТ ДВА ЭКРАНА: подсказка веб-корзины (suggest ниже) и поиск на телефонной
+    «Корзине» (app/web/phone/basket.py). Правила поиска одни, поэтому и функция одна:
+    вторая копия разошлась бы с первой, и телефон нашёл бы не то, что подсказывает веб.
 
     ПОЧЕМУ СВОИ ТОВАРЫ И КАТАЛОГ СЕТЕЙ — ОДНИМ СПИСКОМ. Человеку всё равно, откуда
     товар взялся: он ищет «молоко». Разница не пропадает — у строки из каталога
-    другое действие (catalog: вместо add:) и сказано, в скольких сетях он известен.
+    другое действие (catalog: вместо add:) и сказано, в скольких сетях он известен
+    (n — число сетей, where — то же словами).
 
-    ПОИСК БЕЗ СКРИПТА НЕ ЛОМАЕТСЯ. Это надстройка: обычная форма с кнопкой «Найти»
-    на экране осталась и работает сама по себе. Выключенный JavaScript, старый
-    браузер или оборванная сеть отнимают подсказку, а не поиск.
+    basket_id — корзина, чьё содержимое из ответа убираем; без неё не убираем ничего.
+
+    limit — сколько строк вернуть всего, поровну своих и каталожных. Подсказка под полем
+    берёт десять (5 + 5): она короткая, человек дописывает слово. Телефонной «Корзине»
+    список — целый экран, и она просит 30 (phone/basket._found): на пяти строках «хлеб» и
+    «сыр» упирались в верх каталога из сотен товаров, а дальше человеку идти было некуда.
     """
-    query = (request.args.get("q") or "").strip()
-    basket_id = request.args.get("id", type=int)
     if len(query) < SUGGEST_FROM:
-        return {"q": query, "items": []}
+        return []
+    half = limit // 2
 
     stores = repo.list_stores()
     matrix = repo.mapping_matrix(real_only=True)
@@ -678,18 +691,36 @@ def suggest():
     # важна. Свой товар (часто из чека) бывает знаком одной сети, товар каталога —
     # сразу всем названным, и его корзина уедет в каждую из них (замер владельца
     # 17.10.2026: в подсказке он не отличил одно от другого).
-    items = [{"do": f"add:{p.id}", "name": p.name, "mine": True,
-              "small": " · ".join(x for x in (unit_label(p.unit), p.brand or "") if x),
-              "where": f"ваш товар, в {_ready_in(p.id, matrix, stores)} из {len(stores)} сетей"}
-             for p in mine[:5]]
-    for hit in _catalog_hits(query, len(stores))[:5]:
+    items = []
+    for p in mine[:half]:
+        ready = _ready_in(p.id, matrix, stores)
+        items.append({"do": f"add:{p.id}", "name": p.name, "mine": True, "n": ready,
+                      "small": " · ".join(x for x in (unit_label(p.unit), p.brand or "") if x),
+                      "where": f"ваш товар, в {ready} из {len(stores)} сетей"})
+    for hit in _catalog_hits(query, len(stores), limit=half):
         items.append({"do": f"catalog:{hit['id']}", "name": hit["name"], "mine": False,
-                      "small": hit["small"],
+                      "n": hit["chains_n"], "small": hit["small"],
                       "where": f"каталог сетей: {hit['chains']}" if hit["chains"]
                                else f"каталог сетей, в {hit['chains_n']} из {hit['stores_n']}"})
+    return items[:limit]
+
+
+def suggest():
+    """Что показать под полем поиска, пока человек ещё набирает. Отвечает данными.
+
+    ПОЧЕМУ ЭТО ОТДЕЛЬНЫЙ АДРЕС, А НЕ ЧАСТЬ СТРАНИЦЫ. Подсказка нужна на каждую
+    букву, а страница корзины — это список позиций, цены по сетям и частое: гонять
+    её целиком по мобильной сети на каждое нажатие клавиши нельзя, человек стоит у
+    полки и ждёт. Здесь уезжает десяток строк.
+
+    ПОИСК БЕЗ СКРИПТА НЕ ЛОМАЕТСЯ. Это надстройка: обычная форма с кнопкой «Найти»
+    на экране осталась и работает сама по себе. Выключенный JavaScript, старый
+    браузер или оборванная сеть отнимают подсказку, а не поиск.
+    """
+    query = (request.args.get("q") or "").strip()
     # Запрос возвращаем обратно, чтобы браузер выбросил ответ, опоздавший к уже
     # набранному слову: ответы приходят не в том порядке, в котором их спросили.
-    return {"q": query, "items": items[:10]}
+    return {"q": query, "items": find(query, request.args.get("id", type=int))}
 
 
 def install(flask_app) -> None:
@@ -849,5 +880,5 @@ def _act():
 # страниц: POST /basket — это тот же /basket, просто с нажатой кнопкой.
 page.methods = ("GET", "POST")
 
-__all__ = ["page", "install", "suggest", "SUGGEST_PATH",
+__all__ = ["page", "install", "suggest", "find", "SUGGEST_PATH",
            "rub", "num", "pct", "unit_label", "plural_items"]

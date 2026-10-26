@@ -10,7 +10,7 @@ from datetime import datetime
 import requests
 from flask import Response, g, jsonify, redirect, request, url_for
 
-from app import config, geo, repo
+from app import config, freshness, geo, repo
 from app.web import device
 from app.web.auth import needs_phone
 
@@ -82,7 +82,7 @@ def settings():
     # должно ждать чужую службу. Нет точки — карта откроется по умолчанию,
     # который задан в phone-map.js (Москва).
     center = point
-    board = _board()
+    board = _board({s["code"] for s in connected})
     saved = request.args.get("saved")
     return _render("settings.html", tab="settings", stores=stores,
                    connected=connected, waiting=waiting,
@@ -102,10 +102,17 @@ def settings():
                    tile_base=url_for("phone.map_tile", z=10, x=0, y=0).rsplit("/", 3)[0])
 
 
-def _board() -> list[dict]:
+def _board(signed: set[str]) -> list[dict]:
+    """Сборка корзины по сетям — только у подключённых: остальным место в «Осталось подключить».
+
+    «Подключённые» здесь те же, что в списке «Подключено» (вход сохранён), и названия
+    берутся из справочника магазинов, как везде на экране. Нет ни одной — блока нет.
+    """
+    if not signed:
+        return []
     try:
         from app import humansteps
-        return humansteps.board()
+        return [row for row in humansteps.board(signed_in=signed) if row["code"] in signed]
     except Exception:  # noqa: BLE001
         log.warning("humansteps.board не прочитался", exc_info=True)
         return []
@@ -113,12 +120,8 @@ def _board() -> list[dict]:
 
 def _when_text(value: str | None) -> str | None:
     """Когда была последняя попытка: «21.10.2026 02:14». Не разобрали — None."""
-    if not value:
-        return None
-    try:
-        return f"{datetime.fromisoformat(str(value)):%d.%m.%Y %H:%M}"
-    except (TypeError, ValueError):
-        return None
+    dt = freshness.shown(value)
+    return f"{dt:%d.%m.%Y %H:%M}" if dt else None
 
 
 @bp.post("/settings/disconnect")

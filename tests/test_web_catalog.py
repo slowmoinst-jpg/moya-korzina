@@ -48,7 +48,9 @@ def web(tmp_path, monkeypatch):
     application = create_app()
     application.config.update(TESTING=True)
     client = application.test_client()
-    client.post("/login", data={"phone": PHONE, "next": "/"})
+    from conftest import sign_in
+
+    sign_in(client, PHONE)
     yield client
     users.deactivate()
 
@@ -345,10 +347,10 @@ def test_links_shows_the_queue(web):
     link(pid, "lenta", "L-1", "Творог Лента 5% 200 г")
     page = text(web.get("/links"))
     assert "Творог 5% 200 г" in page
-    # Сетей девять с 21.10.2026: добавился Fix Price. Число берётся из справочника
-    # магазинов, поэтому новая сеть без записи в нём очередь не изменит — а сеть с
-    # записью обязана появиться и здесь.
-    assert "1 из 9" in page, "очередь не показывает, сколько сетей опознано"
+    # Сетей девять с 21.10.2026 (добавился Fix Price), одиннадцать с 25.10.2026 (Впрок и
+    # Монетка). Число берётся из справочника магазинов, поэтому новая сеть без записи в
+    # нём очередь не изменит — а сеть с записью обязана появиться и здесь.
+    assert "1 из 11" in page, "очередь не показывает, сколько сетей опознано"
 
 
 def test_links_names_what_is_confirmed(web):

@@ -838,6 +838,7 @@ public class MainActivity extends Activity {
         /** Открыть сайт сети в этом же WebView. Незнакомый код — ложь, и сайт решает сам. */
         @JavascriptInterface
         public boolean openStore(String code) {
+            if (!bridgeAllowed()) return false;
             return openStore(code, null);
         }
 

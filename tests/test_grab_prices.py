@@ -484,7 +484,9 @@ def _stored_in_the_database(monkeypatch, tmp_path, packet: dict) -> dict:
     web = application.test_client()
 
     phone = "79990000031"
-    web.post("/login", data={"phone": phone, "next": "/"})
+    from conftest import sign_in
+
+    sign_in(web, phone)
     users.open_workspace(phone)
     body = dict(packet, workplace=phone, secret=api.workplace_secret())
     answer = web.post("/api/prices", json=body)
