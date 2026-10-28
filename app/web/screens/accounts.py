@@ -341,14 +341,7 @@ def _grab() -> dict:
     if phone == users.DEMO:
         secret = None
     else:
-        # Кука сверена в начале запроса (_pick_workspace); PIN могли сменить с тех пор, а смена
-        # отзывает секрет под этим же замком — сверяем заново, чтобы свежий секрет не достался
-        # устаревшей куке.
-        # shortcut: замок внутри процесса; смена PIN командой с сервера (docker exec …
-        # set_workspace_pin) с ним не сериализуется, окно между сверкой и выдачей остаётся;
-        # лечится привязкой секрета к отпечатку PIN.
-        with users._WORKSPACE_PIN_LOCK:
-            secret = api.workplace_secret() if auth._cookie_fits_pin(phone) else None
+        secret = api.workplace_secret()
 
     names = {s.code: s.name for s in repo.list_stores()}
     return {

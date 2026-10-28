@@ -52,33 +52,11 @@ def no_network():
 
 def sign_in(client, phone: str, pin: str = "482915", next: str = "/",
             install_pin: str | None = None, **kwargs):
-    """Войти обоими шагами страницы входа; вернуть ответ шага 2 (302 — вошли).
-
-    С 25.10.2026 вход — номер и личный PIN рабочего места, а не один номер (app/web/login.py).
-    Помощник один на все тесты, которым вход нужен только как вход: новый номер здесь
-    придумывает PIN, у номера с PIN он вводится — поэтому поле повтора шлётся всегда (на
-    вводе сервер его не читает). Шаг 2 идёт тем же клиентом, и кука шага 1 едет в нём
-    сама. install_pin — PIN установки на шаге 1, если тест его ставил; kwargs уходят в оба
-    запроса (например, environ_base с другим адресом). Тесты самого входа шлют шаги
-    руками, чтобы проверять каждый ответ отдельно.
-
-    Повторов PBKDF2 на время входа 1000, а не боевые 200 000: хэш занимает ~80 мс на каждый
-    вход, а входов в наборе тысячи, и на минуты набора это не нужно — число повторов
-    лежит в самой записи PIN, и проверка идёт по нему же. Сам хэш проверяют тесты PIN
-    (tests/test_login_pin.py), вызывая users.set_workspace_pin напрямую.
-    """
-    from app import users
-
-    full, users.PIN_ITERATIONS = users.PIN_ITERATIONS, 1_000
-    try:
-        first = {"phone": phone, "next": next}
-        if install_pin is not None:
-            first["pin"] = install_pin
-        client.post("/login", data=first, **kwargs)
-        return client.post("/login", data={"step": "2", "phone": phone, "next": next,
-                                           "my_pin": pin, "my_pin2": pin}, **kwargs)
-    finally:
-        users.PIN_ITERATIONS = full
+    """Войти одним POST /login; вернуть ответ (302 — вошли)."""
+    data = {"phone": phone, "next": next}
+    if install_pin is not None:
+        data["pin"] = install_pin
+    return client.post("/login", data=data, **kwargs)
 
 
 @pytest.fixture(autouse=True)

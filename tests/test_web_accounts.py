@@ -94,19 +94,6 @@ def test_the_screen_says_who_does_what(web):
     assert 'type="password"' not in page
 
 
-def test_the_screen_points_to_the_personal_pin_and_not_to_a_door_that_is_gone(web):
-    """С «Кабинетов» до своего PIN один шаг, и экран не пугает дверью, которой больше нет.
-
-    До 25.10.2026 здесь стояло «пока PIN нет, на этот адрес входит любой, кто знает номер».
-    Теперь у каждого рабочего места свой PIN (app/web/login.py), и фраза стала неправдой.
-    """
-    enter(web)
-    page = web.get("/accounts").data.decode("utf-8")
-    assert "входит любой, кто знает номер" not in page
-    assert 'href="/pin"' in page, "с экрана нет дороги к смене своего PIN"
-    assert "сменить свой PIN" in page
-
-
 def test_the_screen_does_not_send_anyone_to_install_an_extension(web):
     """Расширения в этой дороге больше нет, и обещать его нельзя.
 
