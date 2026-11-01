@@ -27,6 +27,7 @@ from app.models import Product, StoreBreakdown, Variant, VariantLine  # noqa: E4
 PHONE = "79990000071"
 APP_UA = "Mozilla/5.0 (Linux; Android 14; wv) KorzinaApp/1.6"
 CSS = os.path.join(ROOT, "app", "web", "static", "phone.css")
+NBSP = "\u00a0"     # так rub() и whole() держат вместе разряды и ₽
 
 
 @pytest.fixture
@@ -227,7 +228,7 @@ def test_cheaper_answers_where_and_lists_every_place(web):
     assert "Рекомендуем" in page
     assert 'data-place="magnit"' in page and 'data-place="pyaterochka"' in page
     assert "Варианты" in page
-    assert "Всё из корзины" in page            # главное в строке: хватает ли товаров (31.10.2026)
+    assert "2/2" in page            # главное в строке: полнота со значком (01.11.2026)
 
 
 def test_every_store_with_the_basket_is_a_place(web):
@@ -309,34 +310,8 @@ def _substituted(monkeypatch, *variants, positions: int = 2) -> None:
     monkeypatch.setattr(result, "_bundle", lambda basket_id, again=False: bundle)
 
 
-def test_cheaper_offers_one_order_for_the_whole_basket(web, monkeypatch):
-    """Ответ — разбивка на два магазина, а вся корзина есть в одном: блок «Быстрее» рядом с
-    ответом, без обещания срока."""
-    enter(web)
-    workspace()
-    _a_basket()
-    _substituted(monkeypatch, _two_places("magnit", "pyaterochka", 100.0),
-                 _one_place("magnit", "Магнит", 400.0))      # разбивка выгоднее порога 250 ₽: её и советуем
-
-    page = text(web.get("/phone/cheaper"))
-    assert "Быстрее" in page
-    assert "Одним заказом, всё есть" in page
-    assert "без обещания срока" in page
-
-
-def test_the_one_order_block_does_not_repeat_the_answer(web):
-    """Ответ и есть вся корзина в одном магазине — «Быстрее» сказало бы то же слово в слово."""
-    enter(web)
-    workspace()
-    _priced_basket(stores=("magnit",))
-
-    page = text(web.get("/phone/cheaper"))
-    assert 'data-place="magnit"' in page
-    assert "Одним заказом, всё есть" not in page and "без обещания срока" not in page
-
-
-def test_cheaper_does_not_promise_one_order_when_no_store_has_everything(web, monkeypatch):
-    """Нет сети, где есть всё, — блока нет: обещать «одним заказом» не из чего."""
+def test_a_place_with_a_gap_counts_what_was_found(web, monkeypatch):
+    """Ни в одной сети нет всего — строка говорит числом, сколько нашлось: «1/2»."""
     enter(web)
     workspace()
     _a_basket()
@@ -344,8 +319,7 @@ def test_cheaper_does_not_promise_one_order_when_no_store_has_everything(web, mo
 
     page = text(web.get("/phone/cheaper"))
     assert "Варианты" in page
-    assert "Не хватает 1 из 2" in page          # вычерк назван числом, а не словами о «всём в Магните»
-    assert "Одним заказом, всё есть" not in page
+    assert "1/2" in page
 
 
 def test_the_full_basket_comes_first_and_the_gaps_are_counted(web, monkeypatch):
@@ -358,7 +332,7 @@ def test_the_full_basket_comes_first_and_the_gaps_are_counted(web, monkeypatch):
                  _one_place("magnit", "Магнит", 90.0, lines=1, missing=1))
 
     page = text(web.get("/phone/cheaper"))
-    assert "Всё из корзины" in page and "Не хватает 1 из 2" in page
+    assert "2/2" in page and "1/2" in page
     assert page.index('data-place="pyaterochka"') < page.index('data-place="magnit"')
     assert "Ещё варианты" not in page        # обе строки нужны сразу: одна полнее, другая дешевле
 
@@ -373,7 +347,7 @@ def test_a_place_that_is_neither_fuller_nor_cheaper_is_folded(web, monkeypatch):
     page = text(web.get("/phone/cheaper"))
     assert "Ещё варианты — 1" in page
     assert page.index('data-place="magnit"') < page.index("Ещё варианты") < page.index('data-place="pyaterochka"')
-    assert "Всё из корзины" in page and "Не хватает" not in page
+    assert "2/2" in page and "1/2" not in page
 
 
 def _row(n: int, lack: int, total: float, **marks) -> dict:
@@ -398,46 +372,29 @@ def test_fold_never_hides_the_recommended_or_the_picked_place():
     assert cheaper._fold([]) == ([], [])
 
 
-def test_only_a_price_off_the_live_showcase_is_signed_in_the_row():
+def test_live_at_extracts_moment():
     from app.web.phone import cheaper
 
-    assert cheaper._is_live("витрина у адреса, 31.10 20:22")
-    assert cheaper._is_live("витрина у адреса, 31.10 20:22 · витрина у адреса, 31.10 19:00")
-    assert not cheaper._is_live("") and not cheaper._is_live("кэш, 28.10")
-    assert not cheaper._is_live("витрина у адреса, 31.10 20:22 · кэш, 28.10")
     assert cheaper._live_at("витрина у адреса, 31.10 20:22") == "31.10 20:22"
     assert cheaper._live_at("кэш, 28.10") == ""
 
 
-def test_the_extra_for_one_order_is_named(web, monkeypatch):
-    """Разбивка дешевле — блок говорит, сколько стоит взять всё одним заказом."""
-    enter(web)
-    workspace()
-    _a_basket()
-    _substituted(monkeypatch, _two_places("magnit", "pyaterochka", 100.0),
-                 _one_place("magnit", "Магнит", 400.0))      # разбивка выгоднее порога 250 ₽: её и советуем
-
-    page = text(web.get("/phone/cheaper"))
-    assert "Одним заказом, всё есть" in page
-    assert "дороже самого выгодного на 300,00" in page
-
-
-def test_each_place_says_where_its_price_comes_from(web):
-    """У каждого места — источник и свежесть: витрина у адреса или наша копия цен."""
+def test_place_rows_carry_no_price_source(web):
+    """Подписи источника в строках мест больше нет."""
     enter(web)
     workspace()
     _priced_basket()
 
     page = text(web.get("/phone/cheaper"))
-    assert "витрина у адреса, " in page      # Магнит считает по адресу (location.ADDRESS_STORES)
-    assert "кэш, " in page                   # Пятёрочка — только наш снимок цен
+    assert "кэш, " not in page
+    assert "витрина у адреса, " not in page
 
 
-def test_the_cabinet_sum_is_signed_by_the_store_and_its_time(web, monkeypatch):
-    """Цену места написала сама сеть — так и подписано, со временем её итога."""
+def test_the_cabinet_sum_is_named_in_the_receipt(web, monkeypatch):
+    """Цену места написала сама сеть — в чеке «Насчитала сеть» с копейками."""
     from datetime import datetime, timedelta
 
-    from app import cartrun, freshness
+    from app import cartrun
 
     enter(web)
     workspace()
@@ -447,8 +404,7 @@ def test_the_cabinet_sum_is_signed_by_the_store_and_its_time(web, monkeypatch):
     _substituted(monkeypatch, _one_place("magnit", "Магнит", 110.0))
 
     page = text(web.get("/phone/cheaper"))
-    shown_at = at.astimezone(freshness.SHOWN_TZ)
-    assert f"корзина кабинета, {shown_at:%d.%m %H:%M}" in page
+    assert "Насчитала сеть" in page and "110,00" in page
 
 
 def _cabinet_row(cartrun, basket_id: int | None, stamp: str, amount: float = 110.0,
@@ -479,7 +435,7 @@ def _network_dearer(cartrun, monkeypatch, **fields) -> None:
 def test_another_baskets_cabinet_sum_is_not_shown(web, monkeypatch):
     """Строка сборки живёт в настройке рабочего места и переживает правку корзины.
 
-    Итог ПРЕЖНЕЙ сборки — не итог текущей корзины: подпись «корзина кабинета»
+    Итог ПРЕЖНЕЙ сборки — не итог текущей корзины: подпись «Насчитала сеть»
     показывается, только когда совпали basket_id и отпечаток состава.
     """
     from app import cartrun
@@ -491,7 +447,7 @@ def test_another_baskets_cabinet_sum_is_not_shown(web, monkeypatch):
     _substituted(monkeypatch, _one_place("magnit", "Магнит", 110.0))
 
     page = text(web.get("/phone/cheaper"))
-    assert "корзина кабинета" not in page
+    assert "Насчитала сеть" not in page
 
 
 def test_a_cabinet_sum_of_another_basket_composition_is_not_shown(web, monkeypatch):
@@ -505,7 +461,7 @@ def test_a_cabinet_sum_of_another_basket_composition_is_not_shown(web, monkeypat
     _substituted(monkeypatch, _one_place("magnit", "Магнит", 110.0))
 
     page = text(web.get("/phone/cheaper"))
-    assert "корзина кабинета" not in page
+    assert "Насчитала сеть" not in page
 
 
 def test_the_network_total_replaces_our_price_and_changes_the_advice(web, monkeypatch):
@@ -518,12 +474,11 @@ def test_the_network_total_replaces_our_price_and_changes_the_advice(web, monkey
 
     page = text(web.get("/phone/cheaper"))
     assert page.index('data-place="magnit"') < page.index('data-place="pyaterochka"')   # первым — Магнит
-    assert "130,00" in page and "корзина кабинета" in page
-    assert "«Корзина кабинета» — цену написала сама сеть" in page
+    assert f"130{NBSP}₽" in page and "корзина кабинета" not in page
 
 
 def test_the_chosen_place_names_the_network_total(web, monkeypatch):
-    """Выбрано место с итогом сети — под ценой итог сети, а не наши «товары и доставка»."""
+    """Выбрано место с итогом сети — в чеке итог сети, а не наши «товары и доставка»."""
     from app import cartrun
 
     enter(web)
@@ -531,15 +486,15 @@ def test_the_chosen_place_names_the_network_total(web, monkeypatch):
     _network_dearer(cartrun, monkeypatch)
 
     page = text(web.get("/phone/cheaper?pick=0"))        # место 0 — Пятёрочка
-    assert "Итог посчитала сама сеть: 130,00" in page
-    assert "Товары " not in page
-    # Сеть доставку не показала — о ней молчим, а не гадаем «не указана» или «бесплатно».
-    assert "доставка бесплатно" not in page and "не указана" not in page
+    assert "Насчитала сеть" in page and "130,00" in page
+    assert "Товары" not in page
+    # Сеть доставку не показала — о ней молчим: нет ни строки «доставка», ни значка truck.
+    assert "доставка" not in page and "truck" not in page
 
 
-@pytest.mark.parametrize("delivery, said", [(0.0, ", доставка бесплатно"), (59.0, ", доставка 59,00")])
-def test_the_chosen_place_shows_the_network_delivery_and_discount(web, monkeypatch, delivery, said):
-    """Доставку и скидку называем такими, какими их написала сеть: нулевая доставка — «бесплатно»."""
+@pytest.mark.parametrize("delivery, receipt, sign", [(0.0, "0,00", "0"), (59.0, "59,00", "+59")])
+def test_the_chosen_place_shows_the_network_delivery_and_discount(web, monkeypatch, delivery, receipt, sign):
+    """Доставку и скидку называем такими, какими их написала сеть: в чеке с копейками, в значке рублями."""
     from app import cartrun
 
     enter(web)
@@ -547,7 +502,9 @@ def test_the_chosen_place_shows_the_network_delivery_and_discount(web, monkeypat
     _network_dearer(cartrun, monkeypatch, delivery=delivery, discount=20.0)
 
     page = text(web.get("/phone/cheaper?pick=0"))
-    assert "(скидка сети −20,00" in page and said in page
+    assert re.search(rf'<span>скидка сети</span>\s*<span class="num">−20,00{NBSP}₽', page)
+    assert re.search(rf'<span>доставка</span>\s*<span class="num">{receipt}{NBSP}₽', page)
+    assert f'<span class="vh">доставка</span>{sign}{NBSP}₽' in page
 
 
 def test_an_incomplete_cabinet_cart_does_not_set_the_price(web, monkeypatch):
@@ -560,8 +517,7 @@ def test_an_incomplete_cabinet_cart_does_not_set_the_price(web, monkeypatch):
 
     page = text(web.get("/phone/cheaper"))
     assert page.index('data-place="pyaterochka"') < page.index('data-place="magnit"')   # совет прежний
-    assert "130,00" not in page and "корзина кабинета" not in page
-    assert "итог сети не взят: легло 1 из 2" in page
+    assert "130,00" not in page and "Насчитала сеть" not in page
 
 
 def test_a_stale_cabinet_total_does_not_set_the_price(web, monkeypatch):
@@ -574,8 +530,7 @@ def test_a_stale_cabinet_total_does_not_set_the_price(web, monkeypatch):
     _network_dearer(cartrun, monkeypatch, at=datetime.now() - timedelta(days=3))
 
     page = text(web.get("/phone/cheaper"))
-    assert "130,00" not in page
-    assert "итог сети не взят: устарел" in page
+    assert "130,00" not in page and "Насчитала сеть" not in page
 
 
 def test_ordering_without_pick_follows_the_place_the_screen_recommends(web, monkeypatch):
@@ -611,18 +566,21 @@ def test_a_catalog_snapshot_does_not_make_a_showcase_at_the_address(web, monkeyp
 
     page = text(web.get("/phone/cheaper"))
     assert "витрина у адреса" not in page
-    assert "свежесть неизвестна" in page
+    assert "свежесть неизвестна" not in page
 
 
 def test_a_phone_only_store_is_checked_by_the_phone(web, monkeypatch):
-    """Пятёрочка, Самокат, Перекрёсток, Впрок и Монетка серверу цену не отдают — так и пишем."""
+    """Пятёрочка, Самокат, Перекрёсток, Впрок и Монетка серверу цену не отдают — в строках мест подписей нет."""
+    from app.web.phone import cheaper
+
     enter(web)
     workspace()
     _a_basket()
     _substituted(monkeypatch, _one_place("pyaterochka", "Пятёрочка", 120.0))
 
+    assert cheaper._one_source("pyaterochka") == "проверяется телефоном"
     page = text(web.get("/phone/cheaper"))
-    assert "проверяется телефоном" in page
+    assert "проверяется телефоном" not in page
 
 
 def test_the_phone_label_belongs_to_chains_the_server_does_not_read():
@@ -641,14 +599,45 @@ def test_the_phone_label_belongs_to_chains_the_server_does_not_read():
 
 
 def test_a_place_without_a_moment_does_not_invent_freshness(web, monkeypatch):
-    """Цена есть, а когда снята — не знаем: «свежесть неизвестна», а не выдуманное время."""
+    """Цена есть, а когда снята — не знаем: время не выдумывается, подписи на странице нет."""
+    from app.web.phone import cheaper
+
     enter(web)
     workspace()
     _a_basket()
     _substituted(monkeypatch, _one_place("metro", "METRO", 120.0))
 
+    assert cheaper._one_source("metro") == "свежесть неизвестна"
     page = text(web.get("/phone/cheaper"))
-    assert "свежесть неизвестна" in page
+    assert "свежесть неизвестна" not in page
+
+
+def test_shelf_shows_whole_rubles_and_receipt_shows_kopecks(web, monkeypatch):
+    """total 3519.55 → на полке «3 520 ₽» (с неразрывными пробелами), в чеке «3 519,55 ₽»."""
+    enter(web)
+    workspace()
+    _a_basket()
+    _substituted(monkeypatch, _one_place("magnit", "Магнит", 3519.55))
+
+    page = text(web.get("/phone/cheaper"))
+    assert f"3{NBSP}520{NBSP}₽" in page
+    assert f"3{NBSP}519,55{NBSP}₽" in page
+
+
+def test_no_past_order_comparison_or_removed_copy(web, monkeypatch):
+    """С прошлым заказом не сравниваем (владелец, 01.11.2026): разница с ним — рост цен, а не выгода.
+
+    Прошлый заказ стоил 120: Магнит за 100 раньше давал «Выгода», Лента за 150 — «дороже на».
+    Снятых подписей тоже нет: «Быстрее», «Сверху —», «С учётом скидок».
+    """
+    enter(web)
+    workspace()
+    _a_basket()
+    _substituted(monkeypatch, _one_place("magnit", "Магнит", 100.0), _one_place("lenta", "Лента", 150.0))
+
+    for page in (text(web.get("/phone/cheaper")), text(web.get("/phone/cheaper?pick=1"))):
+        assert "Выгода" not in page and "дороже на" not in page
+        assert "Быстрее" not in page and "Сверху —" not in page and "С учётом скидок" not in page
 
 
 # ---------- Настройки ----------

@@ -765,10 +765,13 @@ def test_without_address_prices_do_not_start_and_prompt_is_shown(web, starts):
     assert "по вашему адресу" not in page
 
 
-def test_calculation_timestamp_is_taken_before_calculate(monkeypatch):
+def test_calculation_timestamp_is_taken_before_calculate(tmp_path, monkeypatch):
     """Отметка времени расчёта берётся ДО вызова service.calculate, а не после."""
-    from app import service
+    from app import db, service
     from app.web.screens import result
+
+    monkeypatch.setattr("app.config.ROOT", str(tmp_path))     # не трогать базу в data/
+    db.init_db()
 
     start_time = 1000.0
     calc_time = 1050.0

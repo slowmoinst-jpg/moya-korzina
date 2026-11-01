@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 from flask import Blueprint, render_template
 
@@ -48,8 +49,19 @@ def goods(n: int) -> str:
     return f"{n} {plural(n, 'товар', 'товара', 'товаров')}"
 
 
-def deliveries(n: int) -> str:
-    return f"{n} {plural(n, 'доставка', 'доставки', 'доставок')}"
+NBSP = "\u00a0"
+
+
+def whole(value) -> str:
+    """3519.55 -> «3 520 ₽». Разряды и ₽ через NBSP. Округление половины вверх."""
+    if value is None or value == "":
+        return "—"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    rounded = int(math.floor(number + 0.5)) if number >= 0 else int(math.ceil(number - 0.5))
+    return f"{rounded:,}".replace(",", NBSP) + NBSP + "₽"
 
 
 def qty_label(qty, unit: str | None) -> str:
@@ -110,8 +122,8 @@ def _repeated() -> dict:
 def _render(template: str, **values):
     from app.web.screens.basket import rub
 
-    return render_template(f"phone/{template}", rub=rub, goods=goods, where=where,
-                           qty_label=qty_label, deliveries=deliveries, **values)
+    return render_template(f"phone/{template}", rub=rub, whole=whole, goods=goods, where=where,
+                           qty_label=qty_label, **values)
 
 
 def _rub():

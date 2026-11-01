@@ -15,8 +15,10 @@ from app.web import create_app
 PHONE = "+79991112233"
 
 
-def test_phonecart_plan_drop_skus():
+def test_phonecart_plan_drop_skus(tmp_path, monkeypatch):
     """plan() с параметром drop возвращает url и name по store_products."""
+    monkeypatch.setattr("app.config.ROOT", str(tmp_path))     # не трогать базу в data/
+    db.init_db()
     store = repo.get_store("magnit")
     assert store is not None
 

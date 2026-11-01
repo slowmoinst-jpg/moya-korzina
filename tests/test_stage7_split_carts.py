@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from app import cartrun, netprice, phonecart, repo
+from app import cartrun, db, netprice, phonecart, repo
 from app.carttotal import NETWORK, Total
 from app.models import Product, StoreBreakdown, Variant, VariantLine
 from app.web.phone import cheaper
@@ -14,8 +14,10 @@ NOW = datetime(2026, 10, 24, 12, 0, 0)
 FRESH = "2026-10-24T11:45:00"
 
 
-def test_phonecart_plan_with_custom_lines_builds_split_share_and_distinct_stamp(monkeypatch):
+def test_phonecart_plan_with_custom_lines_builds_split_share_and_distinct_stamp(tmp_path, monkeypatch):
     """plan() с параметром lines собирает наряд только для указанных позиций с отдельным штампом."""
+    monkeypatch.setattr("app.config.ROOT", str(tmp_path))     # не трогать базу в data/
+    db.init_db()
     monkeypatch.setattr(repo, "confirmed_mapping", lambda pid, sid, real_only=False: {
         "id": pid,
         "sku": f"SKU-{pid}",

@@ -30,7 +30,7 @@ from flask import g, redirect, request, url_for
 
 from app.web import device
 
-from .common import WHERE, bp, deliveries, goods, qty_label, where
+from .common import WHERE, bp, goods, qty_label, where
 from . import basket, cheaper, orders, receipts, settings
 
 
@@ -50,4 +50,4 @@ def install(flask_app) -> None:
         return None
 
 
-__all__ = ["bp", "install", "WHERE", "where", "goods", "deliveries", "qty_label"]
+__all__ = ["bp", "install", "WHERE", "where", "goods", "qty_label"]

@@ -1,17 +1,19 @@
-{# «Где дешевле» на телефоне — вариант А (выбор владельца 17.10.2026): ответ, цена и выгода
-   сверху, ниже сколько корзина стоит в каждом месте, внизу «Заказать». Место
+{# «Где дешевле» на телефоне — вариант А (выбор владельца 17.10.2026): самый выгодный вариант
+   сверху значками, ниже сколько корзина стоит в каждом месте, внизу «Заказать». Место
    выбирается касанием строки; рекомендуемое — то, что советует «Результат» веба
    (порог деления на два магазина — там же, app/web/screens/result.py). #}
 {% extends 'phone/base.html' %}
 {% from 'phone/_icons.html' import icon, mark %}
-{# Хватает ли товаров из корзины: зелёная плашка «Всё из корзины» или жёлтая «Не хватает N из M».
-   Человек заказывает ЭТУ корзину и ждёт её целиком (31.10.2026) — это первое, что он ищет. #}
+{# Хватает ли товаров: «16/16» с галочкой или жёлтое «15/16». Человек заказывает ЭТУ корзину
+   и ждёт её целиком (31.10.2026) — это первое, что он ищет. #}
 {% macro fit(full, lack, of) -%}
-  <span class="badge {{ '' if full else 'warn' }}">{% if full %}{{ icon('check', 'i s') }}Всё из корзины{% else %}Не хватает {{ lack }} из {{ of }}{% endif %}</span>
+  {% if full %}
+    <span class="sig"><span style="color: var(--green); display: inline-flex">{{ icon('check') }}</span>{{ of }}/{{ of }}<span class="vh">все товары есть</span></span>
+  {% else %}
+    <span class="sig warn">{{ icon('alert') }}{{ of - lack }}/{{ of }}<span class="vh">нашлось {{ of - lack }} из {{ of }}</span></span>
+  {% endif %}
 {%- endmacro %}
-{# Одно место в списке: сети, цена и всё ли нашлось. Выбранное — белое в рамке, без галочки.
-   Откуда цена — только когда она не с живой витрины (иначе одинаковая подпись в каждой
-   строке — шум). #}
+{# Одно место в списке: сети, цена целыми рублями и всё ли нашлось. Выбранное — белое в рамке. #}
 {% macro place_row(p) -%}
   <a class="opt {{ 'on' if p.on }}" href="{{ url_for('phone.cheaper', pick=p.n) }}"
      data-place="{{ p.codes|join('+') }}" style="color: inherit; text-decoration: none"
@@ -24,10 +26,9 @@
       </span>
       <span class="line">
         {{ fit(p.full, p.lack, p.of) }}
-        {% if p.source %}<span class="src">{{ p.source }}</span>{% endif %}
       </span>
     </span>
-    <span class="num" style="font-weight: 800">{{ rub(p.total) }}</span>
+    <span class="num" style="font-weight: 800">{{ whole(p.total) }}</span>
   </a>
 {%- endmacro %}
 {% block title %}Где дешевле — Моя корзина{% endblock %}
@@ -89,8 +90,8 @@
       <div class="note warn">Корзина {{ where(why_store) }} уже собирается или не собралась. Загляните через пару минут.</div>
     {% endif %}
 
-    {# Ответ — жёлтой полкой, как подборки Магнита (вид 22.10.2026): цена крупно,
-       выгода — зелёной плашкой. #}
+    {# Ответ — жёлтой полкой: цена крупно целыми рублями, под ней значки, по касанию — чек.
+       С прошлым заказом не сравниваем: разница с ним меряет рост цен, а не выгоду (01.11.2026). #}
     <div class="shelf">
       <div style="display: flex; align-items: center; gap: 8px">
         <span class="lgs">{% for c in chosen.codes %}{{ mark(c) }}{% endfor %}</span>
@@ -98,30 +99,72 @@
         {% if chosen.best %}<span class="badge white" style="margin-left: auto">Рекомендуем</span>{% endif %}
       </div>
       <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
-        <span class="num" style="font-size: 34px; font-weight: 800; line-height: 1.1; letter-spacing: -0.01em">{{ rub(chosen.total) }}</span>
-        {% if chosen.figures.saved > 0.005 %}
-          <span class="badge solid num">Выгода {{ rub(chosen.figures.saved) }}</span>
-        {% elif chosen.figures.saved < -0.005 %}
-          <span class="num" style="font-size: 14px; color: var(--amber-ink)">дороже на {{ rub(-chosen.figures.saved) }}</span>
-        {% endif %}
+        <span class="num" style="font-size: 34px; font-weight: 800; line-height: 1.1; letter-spacing: -0.01em">{{ whole(chosen.total) }}</span>
       </div>
-      {# Хватает ли товаров — первое, что человек хочет знать: он заказывает ЭТУ корзину
-         и ждёт её целиком (31.10.2026). Подробности цены — под раскрывашкой. #}
-      <div>{{ fit(chosen.complete.full, chosen.complete.of - chosen.complete.have, chosen.complete.of) }}</div>
       <details class="det">
-        <summary>Из чего сумма</summary>
-        <div style="font-size: 13px; line-height: 1.4; color: var(--amber-ink); padding-top: 4px">
-          {% if chosen.figures.base %}{{ chosen.base.label }} {{ rub(chosen.figures.base) }}. {% endif %}
-          {% if chosen.net %}
-            {# Цена места — итог, который написала сама сеть (app/netprice.py): её скидки,
-               доставка и сборка уже внутри (замер 23.10.2026). Доставку называем, только
-               если сеть её показала. #}
-            Итог посчитала сама сеть: {{ rub(chosen.net.sum) }}{% if chosen.net.discount %} (скидка сети −{{ rub(chosen.net.discount) }}){% endif %}{% if chosen.net.delivery is not none %}, доставка {% if chosen.net.delivery %}{{ rub(chosen.net.delivery) }}{% else %}бесплатно{% endif %}{% endif %}{% if chosen.net.cashback %}, кэшбэк карты −{{ rub(chosen.net.cashback) }}{% endif %}.
-          {% else %}
-            Товары {{ rub(chosen.subtotal) }}{% if chosen.discount %}, скидка и кэшбэк −{{ rub(chosen.discount) }}{% endif %},
-            доставка {% if chosen.delivery %}{{ rub(chosen.delivery) }}{% else %}бесплатно{% endif %}{% if chosen.stores > 1 %} ({{ deliveries(chosen.stores) }}){% endif %}.
+        <summary class="sigs">
+          {{ fit(chosen.complete.full, chosen.complete.of - chosen.complete.have, chosen.complete.of) }}
+          {% set deliv = chosen.net.delivery if chosen.net else chosen.delivery %}
+          {% if deliv is not none %}
+            <span class="sig {{ 'warn' if deliv > 0 else '' }}">
+              {{ icon('truck') }}<span class="vh">доставка</span>{% if deliv > 0 %}+{% endif %}{{ whole(deliv) }}
+            </span>
           {% endif %}
-          {% if chosen.source %}Цены: {{ chosen.source }}.{% endif %}
+          {% if chosen.live_at %}
+            <span class="sig mut">
+              {{ icon('clock') }}<span class="vh">цены на</span>{{ chosen.live_at }}
+            </span>
+          {% endif %}
+          <span class="sig" style="margin-left: auto">
+            {{ icon('receipt') }}<span class="vh">Из чего сумма</span>
+          </span>
+        </summary>
+        <div class="rc">
+          {% if chosen.net %}
+            {# Итог написала сама сеть (app/netprice.py): её скидка и доставка уже внутри —
+               строки с отступом; доставку называем, только если сеть её показала. #}
+            <div>
+              <span>{{ 'Насчитали сети' if chosen.stores > 1 else 'Насчитала сеть' }}</span>
+              <span class="num">{{ rub(chosen.net.sum) }}</span>
+            </div>
+            {% if chosen.net.discount %}
+              <div class="in">
+                <span>скидка сети</span>
+                <span class="num">−{{ rub(chosen.net.discount) }}</span>
+              </div>
+            {% endif %}
+            {% if chosen.net.delivery is not none %}
+              <div class="in">
+                <span>доставка</span>
+                <span class="num">{{ rub(chosen.net.delivery) }}</span>
+              </div>
+            {% endif %}
+            {% if chosen.net.cashback %}
+              <div style="color: var(--green)">
+                <span>Кэшбэк</span>
+                <span class="num">−{{ rub(chosen.net.cashback) }}</span>
+              </div>
+            {% endif %}
+          {% else %}
+            <div>
+              <span>Товары</span>
+              <span class="num">{{ rub(chosen.subtotal) }}</span>
+            </div>
+            {% if chosen.discount %}
+              <div style="color: var(--green)">
+                <span>Скидки и кэшбэк</span>
+                <span class="num">−{{ rub(chosen.discount) }}</span>
+              </div>
+            {% endif %}
+            <div>
+              <span>Доставка{% if chosen.stores > 1 %} ×{{ chosen.stores }}{% endif %}</span>
+              <span class="num">{{ rub(chosen.delivery) }}</span>
+            </div>
+          {% endif %}
+          <div class="tot">
+            <span>Итого</span>
+            <span class="num">{{ rub(chosen.total) }}</span>
+          </div>
         </div>
       </details>
     </div>
@@ -129,30 +172,8 @@
       <div class="note warn">Не нашли цену для: {{ chosen.missing|join(', ') }}.</div>
     {% endif %}
 
-    {# «Быстрее» — второй ответ на тот же вопрос: не «где дешевле всего», а «где
-       взять всё одним заказом». Правило — app/faster.py; здесь только слова и цена.
-       Нет варианта, где вся корзина лежит в одной сети, — блока нет: обещать
-       «одним заказом» там, где его не из чего собрать, нельзя. #}
-    {% if fast and fast.variant %}
-      <section>
-        <div class="grp">Быстрее</div>
-        <div class="card hero">
-          <div style="display: flex; align-items: center; gap: 8px">
-            {{ mark(fast.code) }}
-            <span style="font-weight: 600">Одним заказом, всё есть · <span class="num">{{ rub(fast.variant.total) }}</span></span>
-          </div>
-          <div class="mut" style="font-size: 12.5px">
-            {{ fast.title }}{% if fast.extra > 0.005 %} · дороже самого выгодного на {{ rub(fast.extra) }}{% endif %}
-          </div>
-          <div class="fnt" style="font-size: 12px">{{ fast.note }}</div>
-          {% if fast.pickup %}<div class="fnt" style="font-size: 12px">{{ fast.pickup }}</div>{% endif %}
-        </div>
-      </section>
-    {% endif %}
-
     <section>
       <div class="grp">Варианты</div>
-      <div class="fnt" style="font-size: 12.5px; padding: 0 2px 8px">Сверху — где нашлось больше товаров из корзины.</div>
       {# Места — отдельными серыми карточками, выбранное — белое в чёрной рамке. Что
          проигрывает другому по полноте и цене, лежит под «Ещё варианты». #}
       <div class="opts">
@@ -166,7 +187,6 @@
           </div>
         </details>
       {% endif %}
-      <div class="fnt" style="font-size: 12px; padding: 7px 2px 0">С учётом скидок магазинов, ваших личных скидок, доставки и кэшбэка карт.{% if chosen.live_at %} Цены у вашего адреса — на {{ chosen.live_at }}.{% endif %}{% if nets %} «Корзина кабинета» — цену написала сама сеть по вашей корзине: со скидками, доставкой и сборкой, для способа получения, выбранного в её корзине.{% endif %}</div>
     </section>
   {% endif %}
 {% endblock %}

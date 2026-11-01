@@ -7,7 +7,7 @@ import time
 
 from flask import g, redirect, request, url_for
 
-from app import cartrun, faster, freshness, location, netprice, pricewatch, repo, store_accounts, users
+from app import cartrun, freshness, location, netprice, pricewatch, repo, store_accounts, users
 from app.optimizer import rank_key
 from app.web import device
 from app.web.auth import needs_phone
@@ -139,20 +139,13 @@ def cheaper():
     for n in order:
         variant = every[n]
         lack = len(getattr(variant, "missing_products", None) or [])
-        source = _source(placed[n], product_ids, point_key)
         places.append({"n": n, "title": _names(variant), "total": variant.total,
                        "codes": [s.store_code for s in variant.stores],
-                       # Всё ли из корзины нашлось — главное, что видно в строке. Откуда цена —
-                       # только когда она не с живой витрины: там, где всё одинаково, это шум.
+                       # Всё ли из корзины нашлось — главное, что видно в строке.
                        "lack": lack, "of": positions, "full": lack == 0,
-                       "source": "" if _is_live(source) else source,
                        "best": n == best_n, "on": n == on_n})
     places, more_places = _fold(places)
 
-    figures = result._figures(chosen, bundle["baseline"])
-    fast = _fast(every, positions)
-    if fast.get("variant") is chosen:
-        fast = {}       # «Быстрее» повторило бы полку слово в слово: тот же вариант, та же цена
     parts = []
     for store in (getattr(chosen, "stores", None) or []):
         parts.append(_part(store))
@@ -166,11 +159,10 @@ def cheaper():
     source = _source(shown, product_ids, point_key)
     return _render(
         "cheaper.html", tab=None, basket=current, variants=variants, places=places,
-        more_places=more_places, prices=prices, fast=fast,
-        nets=any(p.net for p in placed),
+        more_places=more_places, prices=prices,
         chosen={"title": _names(chosen), "total": chosen.total, "best": on_n == best_n,
-                # Откуда цены выбранного места: одна подпись на всех, а не в каждой строке.
-                "source": source, "live_at": _live_at(source),
+                # Когда сняты цены выбранного места — значок часов на полке.
+                "live_at": _live_at(source),
                 "stores": len(chosen.stores),
                 # Итог сети, по которому назначена цена выбранного места: экран
                 # называет его, а не наши «товары, скидка, доставка» (netprice.apply).
@@ -181,8 +173,6 @@ def cheaper():
                 # Вся корзина в одну сеть — телефон может положить её сам («Собрать»
                 # в окне сети кладёт корзину целиком). Долю разбивки он так не положит.
                 "whole": len(chosen.stores) == 1,
-                "figures": figures,
-                "base": result._base_words(chosen, bundle.get("from_receipts")),
                 "complete": result._completeness(chosen, bundle["positions"]),
                 "missing": list(getattr(chosen, "missing_products", None) or []),
                 "subtotal": sum(float(s.subtotal or 0) for s in chosen.stores),
@@ -343,27 +333,6 @@ def _places(basket_id: int, bundle: dict) -> list:
     places.sort(key=lambda v: (len(v.missing_products), float(v.total)))
     bundle["phone_places"] = places
     return places
-
-
-def _fast(every: list, positions: int) -> dict:
-    """Блок «Быстрее»: самый дешёвый вариант, где вся корзина в одной сети.
-
-    Своего правила здесь нет — оно живёт в app/faster.py и проверяется без браузера.
-    Здесь только слова для экрана: как называется сеть, что сказать про срок и что
-    про самовывоз. Срок не обещаем ни в каком варианте: его у нас нет ни от одной
-    сети, и выдуманные минуты были бы обещанием, которого мы не выполним.
-    """
-    found = faster.fastest(every, positions)
-    variant = found.get("variant")
-    if variant is None:
-        return found
-    store = (getattr(variant, "stores", None) or [None])[0]
-    code = str(getattr(store, "store_code", "") or "") if store is not None else ""
-    found["code"] = code
-    found["title"] = _title(variant)
-    found["pickup"] = faster.pickup_line(code)
-    found["note"] = "без обещания срока — когда привезёт, решает сама сеть"
-    return found
 
 
 def _cabinets(basket_id: int) -> dict:
@@ -534,27 +503,10 @@ def _fold(places: list[dict]) -> tuple[list[dict], list[dict]]:
     return shown, [p for p in places if p not in shown]
 
 
-def _is_live(source: str) -> bool:
-    """Цена целиком с живой витрины у адреса — такую подпись отдельно в строке не пишем."""
-    return bool(source) and all(part.startswith("витрина у адреса")
-                                for part in source.split(" · "))
-
-
 def _live_at(source: str) -> str:
     """«31.10 20:22» из «витрина у адреса, 31.10 20:22»; пусто, если цена не с витрины."""
     first = source.split(" · ")[0]
     return first.partition(", ")[2] if first.startswith("витрина у адреса, ") else ""
-
-
-def _title(variant) -> str:
-    """«Всё во ВкусВилле» или «Часть в Магните, часть во ВкусВилле»."""
-    parts = list(getattr(variant, "stores", None) or [])
-    if len(parts) == 1:
-        return "Всё " + where(parts[0].store_code, parts[0].store_name)
-    if len(parts) == 2:
-        return (f"Часть {where(parts[0].store_code, parts[0].store_name)}, "
-                f"часть {where(parts[1].store_code, parts[1].store_name)}")
-    return " + ".join(p.store_name for p in parts)
 
 
 def _part(store) -> dict:
