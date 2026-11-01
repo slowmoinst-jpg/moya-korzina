@@ -278,11 +278,14 @@ def _drop_implausible(line: BasketLine) -> None:
             line.prices.pop(code)
             line.in_stock.pop(code, None)
             line.adjust.pop(code, None)
+            line.fallback.pop(code, None)
             line.notes[code] = "цена не похожа на настоящую — в расчёт не берём"
 
 
 def build_basket_lines(basket_id: int) -> list[BasketLine]:
     """Строки корзины с ценами по всем магазинам, где есть подтверждённое сопоставление."""
+    from app import cartstatus
+
     stores = repo.list_stores()
     # Точка с карты читается один раз на корзину, а не на каждую пару «товар ×
     # магазин»: у Ленты, Магнита и METRO цена своя в каждой точке.
@@ -298,6 +301,21 @@ def build_basket_lines(basket_id: int) -> list[BasketLine]:
         )
         weighed = is_weighed(line.product_id, line.unit, item.get("name"))
         for store in stores:
+            fb_id = cartstatus.fallback_in(item, store, point_key=point_key)
+            if fb_id is not None:
+                fb_prod = repo.get_product(fb_id)
+                if fb_prod:
+                    fb_weighed = is_weighed(fb_prod.id, fb_prod.unit, fb_prod.name)
+                    found = line_price(fb_prod.id, store, line.qty, fb_prod.unit,
+                                       fb_prod.weight_g, fb_weighed, point_key=point_key)
+                    if found is not None:
+                        line.prices[store.code] = found["value"]
+                        line.in_stock[store.code] = found["in_stock"]
+                        if found["adjust"]:
+                            line.adjust[store.code] = found["adjust"]
+                        line.notes[store.code] = f"замена: {fb_prod.name}"
+                        line.fallback[store.code] = fb_id
+                    continue
             found = line_price(line.product_id, store, line.qty, line.unit, item.get("weight_g"),
                                weighed, point_key=point_key)
             if found is None:

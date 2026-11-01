@@ -60,8 +60,21 @@ _CALC: dict[tuple[str, int], dict] = {}
 
 
 def _stamp(items) -> tuple:
-    """Отпечаток корзины: по нему видно, что расчёт устарел, без общения с экранами."""
-    return tuple(sorted((int(i["product_id"]), round(float(i.get("qty") or 0), 3)) for i in items))
+    """Отпечаток корзины: по нему видно, что расчёт устарел, без общения с экранами.
+
+    Запасной товар входит в кортеж позиции только когда он задан, чтобы отпечатки
+    корзин без запасных не поменялись.
+    """
+    rows = []
+    for i in items:
+        pid = int(i["product_id"])
+        qty = round(float(i.get("qty") or 0), 3)
+        fb = i.get("fallback_product_id")
+        if fb is not None:
+            rows.append((pid, qty, int(fb)))
+        else:
+            rows.append((pid, qty))
+    return tuple(sorted(rows))
 
 
 def _key(basket_id: int) -> tuple:

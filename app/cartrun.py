@@ -324,8 +324,21 @@ def live(row: Row) -> dict | None:
 
 
 def _stamp(items) -> str:
-    """Отпечаток корзины: другой состав — другая ссылка-корзина."""
-    pairs = sorted((int(i["product_id"]), round(float(i.get("qty") or 0), 3)) for i in items)
+    """Отпечаток корзины: другой состав — другая ссылка-корзина.
+
+    Запасной товар входит в кортеж позиции только когда он задан, чтобы отпечатки
+    корзин без запасных не поменялись.
+    """
+    rows = []
+    for i in items:
+        pid = int(i["product_id"])
+        qty = round(float(i.get("qty") or 0), 3)
+        fb = i.get("fallback_product_id")
+        if fb is not None:
+            rows.append((pid, qty, int(fb)))
+        else:
+            rows.append((pid, qty))
+    pairs = sorted(rows)
     return hashlib.sha1(repr(pairs).encode("utf-8")).hexdigest()[:12]
 
 

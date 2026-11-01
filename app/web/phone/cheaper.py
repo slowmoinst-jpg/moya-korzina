@@ -634,6 +634,8 @@ def _order(basket_id: int):
     if why_not:
         return redirect(f"{back}{sep}why=closed&store={code}", 303)
     try:
+        from app import cartstatus
+        lines = cartstatus.swap_lines(lines, repo.get_store(code), basket_id=basket_id)
         plan = cartplan.build(code, lines, force=True, verify_prices=True)
         if not plan.lines:
             # Пустой наряд — не «корзина уже собирается или не собралась». Класть

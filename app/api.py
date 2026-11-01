@@ -102,7 +102,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from app import cartplan, collector, config, repo, users
+from app import cartplan, cartstatus, collector, config, repo, users
 from app.models import BasketLine
 
 log = logging.getLogger(__name__)
@@ -356,6 +356,12 @@ def _plan_lines(body: dict, store_code: str) -> tuple[list[BasketLine], str]:
         if len(raw_lines) > MAX_PLAN_LINES:
             raise Refused(400, f"в запросе {len(raw_lines)} позиций — в корзине столько не бывает")
         lines = [line for line in (_line_of(item) for item in raw_lines) if line]
+        # Запасной «если нет — беру это» ищем в той корзине, о которой наряд, если она названа.
+        try:
+            sent_basket = int(body["basket"]) if body.get("basket") is not None else None
+        except (TypeError, ValueError):
+            sent_basket = None
+        lines = cartstatus.swap_lines(lines, repo.get_store(store_code), basket_id=sent_basket)
         return _priced(lines, store_code), "В присланном списке нет ни одной позиции с названием."
 
     baskets = repo.list_baskets()
@@ -379,6 +385,7 @@ def _plan_lines(body: dict, store_code: str) -> tuple[list[BasketLine], str]:
     lines = [BasketLine(product_id=int(item["product_id"]), name=str(item["name"]),
                         unit=str(item.get("unit") or "pcs"), qty=float(item.get("qty") or 1))
              for item in items]
+    lines = cartstatus.swap_lines(lines, repo.get_store(store_code), basket_id=basket_id)
     return _priced(lines, store_code), f"Корзина №{basket_id} пуста."
 
 

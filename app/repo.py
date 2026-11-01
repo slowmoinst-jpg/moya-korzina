@@ -757,12 +757,28 @@ def basket_items(basket_id: int) -> list[dict]:
     """Позиции корзины. name — эталон (ключ поиска и сопоставления), title — для глаз человека."""
     with get_conn() as c:
         items = [dict(r) for r in c.execute(
-            "SELECT bi.product_id, bi.qty, p.name, p.unit, p.weight_g, p.brand FROM basket_items bi"
-            " JOIN products p ON p.id = bi.product_id WHERE bi.basket_id=? ORDER BY p.name", (basket_id,))]
+            "SELECT bi.product_id, bi.qty, bi.fallback_product_id, p.name, p.unit, p.weight_g, p.brand"
+            " FROM basket_items bi JOIN products p ON p.id = bi.product_id WHERE bi.basket_id=? ORDER BY p.name",
+            (basket_id,))]
     titles = human_titles({int(i["product_id"]): i["name"] for i in items})
     for item in items:
         item["title"] = titles.get(int(item["product_id"])) or item["name"]
     return items
+
+
+def set_basket_fallback(basket_id: int, product_id: int, fallback_product_id: int | None) -> None:
+    """Запасной товар для строки корзины («если нет — беру это»).
+
+    None — снять запасной. Запасной не может совпадать с самим товаром строки —
+    такой вызов ничего не пишет.
+    """
+    if fallback_product_id is not None and int(fallback_product_id) == int(product_id):
+        return
+    fb_val = int(fallback_product_id) if fallback_product_id is not None else None
+    with get_conn() as c:
+        c.execute("UPDATE basket_items SET fallback_product_id=? WHERE basket_id=? AND product_id=?",
+                  (fb_val, int(basket_id), int(product_id)))
+        c.commit()
 
 
 def delete_basket(basket_id: int) -> None:

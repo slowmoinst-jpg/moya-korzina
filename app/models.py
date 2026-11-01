@@ -107,6 +107,7 @@ class BasketLine:
     # store_code -> поправка ТОЛЬКО ДЛЯ ВЫБОРА (другая фасовка), в оплату не входит
     adjust: dict[str, float] = field(default_factory=dict)
     title: str = ""    # название для глаз человека; name — эталон, по нему ищут и сопоставляют
+    fallback: dict[str, int] = field(default_factory=dict)    # store_code -> id запасного товара
 
 
 @dataclass

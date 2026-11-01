@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS basket_items (
     basket_id INTEGER NOT NULL REFERENCES baskets(id) ON DELETE CASCADE,
     product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
     qty REAL NOT NULL,
+    fallback_product_id INTEGER,
     PRIMARY KEY (basket_id, product_id)
 );
 
@@ -267,6 +268,8 @@ LATE_COLUMNS: list[tuple[str, str, str]] = [
     # (link._choices, ревью 18.10.2026). store_products.raw_name для этого не годится:
     # его переписывают и коннекторы, и единая база.
     ("product_mapping", "seen_name", "TEXT"),
+    # Запасной товар строки корзины («если нет — беру это», решение владельца 01.11.2026)
+    ("basket_items", "fallback_product_id", "INTEGER"),
 ]
 
 
