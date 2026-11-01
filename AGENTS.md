@@ -48,3 +48,8 @@
 Владелец просил выкладывать наработки сразу, не дожидаясь коммита: закончил связную правку
 приложения, тесты зелёные — выполни `.\deploy.ps1` и скажи в отчёте, что именно уехало на сервер.
 Подробности, ручные команды и устройство сервера — в DEPLOY.md, раздел «Боевой сервер».
+
+## Design System
+Read DESIGN.md before visual or UI work: it defines the fonts, colors, spacing, and
+aesthetic direction. Ask the user before departing from it. When reviewing or QA-ing
+UI, flag code that doesn't match DESIGN.md.
