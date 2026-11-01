@@ -576,6 +576,61 @@ public class MainActivity extends Activity {
         "(function(){var c=(window.__kzCalls||[]).slice(0,10);window.__kzCalls=[];return JSON.stringify({calls:c});})()";
 
     /**
+     * Кнопка «−» на карточке своего товара (приложение 1.19): ею снимаем положенное самим
+     * приложением. Только на той карточке, что открывали (путь или артикул в адресе), только
+     * в зоне товара, как «В корзину», и никогда «+», «В корзину», «Очистить», «Оформить»,
+     * «Оплатить». В степпере — кнопка по правилу minus, без подписи — первая, если она не «+».
+     * Число в степпере уходит в ответ: без него касание нечем проверить, и снимать нельзя.
+     */
+    private static final String PICK_MINUS_JS =
+        "(function(p){try{"
+      + "var MARK='data-korzina-add',FENCE=/похож|рекоменд|с этим|покупают|понравит|аналог|вместе|смотрели|популярн|ещё товары|еще товары/i;"
+      + "[].slice.call(document.querySelectorAll('['+MARK+']')).forEach(function(e){e.removeAttribute(MARK);});"
+      + "function dec(x){try{return decodeURIComponent(x||'').replace(/\\/+$/,'');}catch(e){return x||'';}}"
+      + "if(p.path&&dec(location.pathname)!==dec(p.path)&&!(p.sku&&p.sku.length>=4&&location.href.indexOf(p.sku)>=0))"
+      + " return JSON.stringify({found:false,moved:true});"
+      + "var h1=document.querySelector('h1');"
+      + "var top=h1?h1.getBoundingClientRect().top+window.scrollY:null;"
+      + "var limit=(top!==null&&p.below)?top+p.below:Infinity;"
+      + "if(top!==null)[].slice.call(document.querySelectorAll('h2,h3,h4,[role=heading]')).forEach(function(h){"
+      + " var t=(h.innerText||'').replace(/\\s+/g,' ').trim();if(!t||t.length>40||!FENCE.test(t))return;"
+      + " var y=h.getBoundingClientRect().top+window.scrollY;if(y>top&&y<limit)limit=y;});"
+      + "function pinned(e){for(var x=e;x&&x!==document.body;x=x.parentElement){var s=getComputedStyle(x).position;"
+      + " if(s==='fixed'||s==='sticky')return true;}return false;}"
+      + "function inside(e){var r=e.getBoundingClientRect();if(r.width<=0||r.height<=0)return false;"
+      + " if(pinned(e))return r.bottom>0&&r.top<(window.innerHeight||100000);"
+      + " var y=r.top+window.scrollY;if(top!==null&&y<top)return false;return y<limit;}"
+      + "var NEVER=/очист|оформ|оплат|clear|checkout/i;"
+      + "var pat=new RegExp(p.minus||'^[−–-]$|уменьш|minus|decrease|удал|убра|remove|delete','i');"
+      + "var plus=new RegExp(p.plus||'увелич|добавить ещё|плюс|^[+]$','i');"
+      + "var add=new RegExp(p.add||'^(?:в корзину|добавить в корзину|купить)$','i');"
+      + "function label(e){return((e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')+' '+(e.innerText||'')).replace(/\\s+/g,' ').trim();}"
+      + "function bad(l){return NEVER.test(l)||plus.test(l)||add.test(l);}"
+      + "function getCount(s){var inp=s.querySelector('input');"
+      + " if(inp&&inp.value){var v=parseFloat(inp.value.replace(',','.'));if(!isNaN(v))return v;}"
+      + " var m=(s.innerText||'').replace(/\\s+/g,' ').match(/(\\d+(?:[.,]\\d+)?)/);"
+      + " return m?parseFloat(m[1].replace(',','.')):null;}"
+      + "var best=null,count=null;"
+      + "[].slice.call(document.querySelectorAll('[class*=stepper],[class*=Stepper]')).forEach(function(s){"
+      + " if(best||!inside(s))return;"
+      + " var bs=[].slice.call(s.querySelectorAll('button,[role=button]')).filter(function(e){"
+      + "  var q=e.getBoundingClientRect();return !e.disabled&&q.width>0&&q.height>0;});"
+      + " var m=bs.filter(function(e){var l=label(e);return pat.test(l)&&!bad(l);})[0];"
+      + " if(!m&&bs.length>=2&&!bad(label(bs[0])))m=bs[0];"
+      + " if(m){best=m;count=getCount(s);}});"
+      // Без степпера — кнопка по правилу; число берём, только если рядом короткая подпись
+      // вида «− 2 +»: в длинной первым числом была бы цена.
+      + "if(!best){var buttons=[].slice.call(document.querySelectorAll('button,[role=button]'));"
+      + " for(var i=0;i<buttons.length;i++){var b=buttons[i];if(b.disabled||!inside(b))continue;"
+      + "  var l=label(b);if(bad(l)||!pat.test(l))continue;"
+      + "  var box=b.parentElement||b;best=b;"
+      + "  count=(box.innerText||'').replace(/\\s+/g,' ').trim().length<=16?getCount(box):null;break;}}"
+      + "if(!best)return JSON.stringify({found:false});"
+      + "best.setAttribute(MARK,'1');if(!pinned(best))best.scrollIntoView({block:'center',inline:'center'});"
+      + "return JSON.stringify({found:true,count:count});"
+      + "}catch(e){return JSON.stringify({found:false,error:String(e).slice(0,120)});}})(%s)";
+
+    /**
      * Дорога к корзине сети со страницы. Первой — видимая кнопка или пункт меню
      * «Корзина»: её касается приложение, как человек. Замер владельца 17.10.2026 в 1.5:
      * у Магнита корзина открывается пунктом «Корзина» нижнего меню и живёт внутри
@@ -728,7 +783,7 @@ public class MainActivity extends Activity {
 
     // ── Фоновая сборка (1.13) ──
     /** Через сколько после последней правки корзины начинать: «−» и «+» жмут подряд. */
-    private static final int DEBOUNCE_MS = 2500;
+    private static final int DEBOUNCE_MS = 4000;
     /** Не вышла сборка этой корзины — следующая попытка не раньше: сеть могла отказать. */
     private static final long RETRY_MS = 20L * 60 * 1000;
     /** Сколько времени считать завершённую сборку свежей: 6 часов. После этого корзина пересобирается. */
@@ -931,6 +986,27 @@ public class MainActivity extends Activity {
             if (!bridgeAllowed()) return "{}";
             if (currentChain >= 0) return "{}";
             return busyNow;
+        }
+
+        /** Заказ выбран: запомнить в order.current, доля в выбранных, уборка в остальных (1.19). */
+        @JavascriptInterface
+        public boolean ordered(String json) {
+            if (!bridgeAllowed()) return false;
+            if (json == null || json.trim().isEmpty()) return false;
+            try {
+                final JSONObject payload = new JSONObject(json);
+                final String stamp = payload.optString("stamp", "");
+                if (stamp.isEmpty()) return false;
+                // Номер заказа: каждое «Заказать» — новая доля и уборка, даже по той же корзине.
+                payload.put("at", System.currentTimeMillis());
+                handler.post(() -> {
+                    memory().edit().putString("order.current", payload.toString()).apply();
+                    if (lastCollect != null) decide(lastCollect);
+                });
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
         }
     }
 
@@ -1584,6 +1660,11 @@ public class MainActivity extends Activity {
         final WebView view;      // где кладём: окно человека или скрытое окно сети
         final Slot slot;         // фоновая сборка — её скрытое окно; null — «Собрать» человека
         JSONArray linesOverride = null; // Позиции для сборки доли сплита
+        // Сборка после «Заказать» (1.19): номер заказа и отпечаток корзины. Сервер отвечает на
+        // присланную долю своим отпечатком, а «собрано» должно помнить корзину и заказ —
+        // иначе каждая страница с collect запускала бы эту сборку заново.
+        long orderAt = 0;
+        String orderStamp = "";
         JSONObject rules = new JSONObject();
         JSONArray lines = new JSONArray();
         double ourTotal = 0;
@@ -1609,6 +1690,9 @@ public class MainActivity extends Activity {
         // Ответа с ценами не было — карта пуста, и в отчёт цена не попадёт.
         JSONObject prices = new JSONObject();
         JSONObject names = new JSONObject();   // артикул → название: чтобы назвать лишнее
+        // Адрес карточки товара: для перехода при снятии лишнего касаниями (1.19).
+        final JSONObject urls = new JSONObject();
+        int droppedCount = 0;                  // сколько упаковок своего снято (1.19)
         // Артикулы, которые страница корзины сети уже показывала под именем наряда.
         final JSONObject shown = new JSONObject();
         final JSONObject want = new JSONObject();    // артикул → сколько должно лежать
@@ -1772,13 +1856,21 @@ public class MainActivity extends Activity {
 
     /** Взять у сервера наряд: позиции этой сети, правила кнопок, корзину и её отпечаток. */
     private void askPlan(final CartRun r, final Runnable then) {
+        loadLedger(r);
         JSONObject body = new JSONObject();
         try {
             body.put("store", r.code);
             if (r.basket >= 0) body.put("basket", r.basket);
-            if (r.linesOverride != null && r.linesOverride.length() > 0) {
-                body.put("lines", r.linesOverride);
+            // Пустой список тоже уходит: после «Заказать» в невыбранной сети наряд пуст —
+            // только снять своё. Без lines сервер отдал бы всю корзину, и она легла бы снова.
+            if (r.linesOverride != null) body.put("lines", r.linesOverride);
+            JSONArray dropSkus = new JSONArray();
+            Iterator<String> it = r.cart.keys();
+            while (it.hasNext()) {
+                String sku = it.next();
+                if (r.urls.optString(sku, "").isEmpty()) dropSkus.put(sku);
             }
+            if (dropSkus.length() > 0) body.put("drop", dropSkus);
         } catch (Exception ignored) { }
         call("/api/device/cartplan", body, (status, text) -> {
             if (!alive(r)) return;
@@ -1793,6 +1885,18 @@ public class MainActivity extends Activity {
                 r.rules = rules != null ? rules : new JSONObject();
                 r.rules.put("_note", plan.optString("note", ""));
                 r.lines = lines != null ? lines : new JSONArray();
+                JSONArray dropArr = plan.optJSONArray("drop");
+                for (int i = 0; dropArr != null && i < dropArr.length(); i++) {
+                    JSONObject d = dropArr.optJSONObject(i);
+                    if (d == null) continue;
+                    String sku = d.optString("sku", "");
+                    String u = d.optString("url", "");
+                    String n = d.optString("name", "");
+                    if (!sku.isEmpty()) {
+                        if (!u.isEmpty()) r.urls.put(sku, u);
+                        if (!n.isEmpty() && !r.names.has(sku)) r.names.put(sku, n);
+                    }
+                }
                 // Позиции, которых сеть не знает: сервер просит найти их поиском самой сети.
                 // Там, где сервер к витрине не пробивается (Пятёрочка, Самокат — замер
                 // 18.10.2026), это единственная дорога к настоящему артикулу. Строка ложится
@@ -1863,6 +1967,9 @@ public class MainActivity extends Activity {
         }
         JSONObject line = r.lines.optJSONObject(r.at);
         final String sku = line == null ? "" : line.optString("sku", "");
+        if (line != null && !sku.isEmpty() && !line.optString("url", "").isEmpty()) {
+            try { r.urls.put(sku, line.optString("url", "")); } catch (Exception ignored) { }
+        }
         r.target = Math.max(1, line == null ? 1 : line.optInt("clicks", 1));
         // Фоновая сборка кладёт поверх лежащего только недостающее: иначе каждая правка
         // корзины удваивала бы корзину сети. «Собрать» человека кладёт всё, как раньше.
@@ -1990,6 +2097,10 @@ public class MainActivity extends Activity {
         if (r == null || r.linkDone) return;
         r.linkDone = true;
         if (!alive(r)) return;
+        if (shouldDrop(r) && hasExcess(r)) {
+            dropExcess(r, () -> openCart(r));
+            return;
+        }
         openCart(r);
     }
 
@@ -4030,6 +4141,15 @@ public class MainActivity extends Activity {
         JSONObject skip = new JSONObject();
         final String stamp = payload.optString("stamp", "");
         final int basket = payload.optInt("basket", -1);
+        JSONObject order = getOrderCurrent();
+        if (order != null) {
+            String orderStamp = order.optString("stamp", "");
+            if (!stamp.equals(orderStamp)) {
+                // Корзину правили — заказ забыть, сборка как обычно (1.19)
+                memory().edit().remove("order.current").apply();
+                order = null;
+            }
+        }
         JSONArray chains = payload.optJSONArray("chains");
         for (int i = 0; chains != null && i < chains.length(); i++) {
             JSONObject c = chains.optJSONObject(i);
@@ -4067,12 +4187,34 @@ public class MainActivity extends Activity {
                 JSONObject done = doneOf(code);
                 long doneAt = done != null ? done.optLong("at", 0) : 0;
                 boolean fresh = done != null && (System.currentTimeMillis() - doneAt < FRESH_MS);
-                if (done != null && stamp.equals(done.optString("stamp")) && basket == done.optInt("basket", -2)
+                // После «Заказать» прежнее «собрано» не в счёт: доля и уборка — новая сборка (1.19).
+                boolean sameOrder = order == null
+                        || (done != null && done.optLong("order", -1) == order.optLong("at", -2));
+                if (done != null && sameOrder && stamp.equals(done.optString("stamp")) && basket == done.optInt("basket", -2)
                         && ((done.optBoolean("ok") && fresh)
                             || (!done.optBoolean("ok") && System.currentTimeMillis() - doneAt < RETRY_MS))) {
                     skip.put(code, done.optBoolean("ok") ? "уже собрано для этой корзины (свежее)"
                                                          : "не вышло, попробую позже");
                     continue;
+                }
+                if (order != null && stamp.equals(order.optString("stamp", ""))) {
+                    JSONObject orderStores = order.optJSONObject("stores");
+                    boolean inStores = orderStores != null && orderStores.has(code);
+                    if (!inStores) {
+                        // Сеть не из stores — только снятие своего (want = 0 для всего ledger)
+                        // Сборку полной корзины поверх не запускать
+                        JSONObject led = new JSONObject(memory().getString("ledger." + code, "{}"));
+                        boolean hasAny = false;
+                        Iterator<String> lk = led.keys();
+                        while (lk.hasNext()) {
+                            JSONObject it = led.optJSONObject(lk.next());
+                            if (it != null && it.optInt("q", 0) > 0) { hasAny = true; break; }
+                        }
+                        if (!hasAny) {
+                            skip.put(code, "в корзине сети нашего нет");
+                            continue;
+                        }
+                    }
                 }
                 s.pending = stamp;
                 soon(s);
@@ -4112,15 +4254,6 @@ public class MainActivity extends Activity {
         touchBusy();
         if (s.run != null || away || lastCollect == null || s.pending.isEmpty()) return;
         if (cartRun != null && cartRun.chain == s.chain) return;     // человек собирает сам
-        // Темп «одна сеть за раз»: если другой скрытый слот сейчас собирает, откладываем на 5 с
-        for (Slot other : slots.values()) {
-            if (other != s && other.run != null) {
-                s.soon = () -> startBackground(s);
-                handler.postDelayed(s.soon, 5000);
-                touchBusy();
-                return;
-            }
-        }
         if (s.sleep != null) {
             handler.removeCallbacks(s.sleep);
             s.sleep = null;
@@ -4131,6 +4264,20 @@ public class MainActivity extends Activity {
         r.stamp = s.pending;
         s.pending = "";
         s.run = r;
+
+        // «Заказать» (1.19): если отпечаток равен order.stamp, собираем только долю или снимаем своё
+        JSONObject order = getOrderCurrent();
+        if (order != null && r.stamp.equals(order.optString("stamp", ""))) {
+            JSONObject orderStores = order.optJSONObject("stores");
+            if (orderStores != null && orderStores.has(s.code)) {
+                r.linesOverride = orderStores.optJSONArray(s.code);
+            } else {
+                r.linesOverride = new JSONArray(); // не из stores — только снятие своего
+            }
+            r.orderAt = order.optLong("at", 0);
+            r.orderStamp = r.stamp;
+        }
+
         touchBusy();
         r.now = "беру наряд у сервера";
         beat(r, true);
@@ -4139,12 +4286,16 @@ public class MainActivity extends Activity {
 
     /** Наряд пришёл: сначала новые позиции (первая учит запрос сети), потом прибавки, потом лежащие. */
     private void begin(final CartRun r) {
+        loadLedger(r);
         if (r.lines.length() == 0) {
+            if (shouldDrop(r) && hasExcess(r)) {
+                endOfRun(r);   // класть нечего — снять своё и прочитать корзину сети
+                return;
+            }
             String note = r.rules.optString("_note", "");
             endBackground(r, "empty", note.isEmpty() ? "позиции корзины этой сети незнакомы" : note);
             return;
         }
-        loadLedger(r);
         JSONArray fresh = new JSONArray(), more = new JSONArray(), kept = new JSONArray();
         for (int i = 0; i < r.lines.length(); i++) {
             JSONObject line = r.lines.optJSONObject(i);
@@ -4350,6 +4501,7 @@ public class MainActivity extends Activity {
                 if (it.optInt("q", 0) > 0) r.cart.put(sku, it.optInt("q", 0));
                 if (!it.optString("n", "").isEmpty() && !r.names.has(sku)) r.names.put(sku, it.optString("n", ""));
                 if (it.optInt("v", 0) == 1) r.shown.put(sku, true);
+                if (!it.optString("u", "").isEmpty() && !r.urls.has(sku)) r.urls.put(sku, it.optString("u", ""));
             }
         } catch (Exception ignored) { }
     }
@@ -4364,19 +4516,256 @@ public class MainActivity extends Activity {
                 if (q <= 0) continue;
                 JSONObject it = new JSONObject().put("q", q).put("n", r.names.optString(sku, ""));
                 if (r.shown.optBoolean(sku, false)) it.put("v", 1);
+                String u = r.urls.optString(sku, "");
+                if (!u.isEmpty()) it.put("u", u);
                 all.put(sku, it);
             }
             memory().edit().putString("ledger." + r.code, all.toString()).apply();
         } catch (Exception ignored) { }
     }
 
+    private JSONObject getOrderCurrent() {
+        try {
+            String raw = memory().getString("order.current", null);
+            return raw != null ? new JSONObject(raw) : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Нужно ли снимать лишнее своё (1.19): фоновая сборка или после «Заказать». */
+    private boolean shouldDrop(CartRun r) {
+        if (r.slot != null) return true;
+        if (r.linesOverride != null) return true;
+        JSONObject order = getOrderCurrent();
+        if (order != null && !r.stamp.isEmpty() && r.stamp.equals(order.optString("stamp", ""))) return true;
+        return false;
+    }
+
+    // shortcut: строка поиска (sku "") не бережёт найденный ею раньше артикул — его снимем, если
+    // сервер так и не завёл его по отчёту; увидим такое — хранить product_id в ledger.
+    private int wantOf(CartRun r, String sku) {
+        int want = 0;
+        for (int i = 0; i < r.lines.length(); i++) {
+            JSONObject line = r.lines.optJSONObject(i);
+            if (line != null && sku.equals(line.optString("sku", ""))) {
+                want += Math.max(0, line.optInt("clicks", 0));
+            }
+        }
+        return want;
+    }
+
+    private boolean hasExcess(CartRun r) {
+        Iterator<String> keys = r.cart.keys();
+        while (keys.hasNext()) {
+            String sku = keys.next();
+            int q = r.cart.optInt(sku, 0);
+            if (q <= 0) continue;
+            if (q > wantOf(r, sku)) return true;
+        }
+        return false;
+    }
+
+    private static final class DropItem {
+        final String sku;
+        final int drop;
+        final int want;
+        String url;
+        String name;
+
+        DropItem(String sku, int drop, int want, String url, String name) {
+            this.sku = sku;
+            this.drop = drop;
+            this.want = want;
+            this.url = url;
+            this.name = name;
+        }
+    }
+
+    /** Снять своё: уменьшение и удаление из корзины сети (приложение 1.19). */
+    private void dropExcess(final CartRun r, final Runnable then) {
+        if (!alive(r)) return;
+        final List<DropItem> queue = new ArrayList<>();
+        Iterator<String> keys = r.cart.keys();
+        while (keys.hasNext()) {
+            String sku = keys.next();
+            int q = r.cart.optInt(sku, 0);
+            if (q <= 0) continue;
+            int want = wantOf(r, sku);
+            if (q > want) {
+                queue.add(new DropItem(sku, q - want, want, r.urls.optString(sku, ""), r.names.optString(sku, "")));
+            }
+        }
+        if (queue.isEmpty()) {
+            then.run();
+            return;
+        }
+        status(r, r.name + ": снимаю своё (" + queue.size() + " поз.)", false);
+        processDropQueue(r, queue, 0, then);
+    }
+
+    private void processDropQueue(final CartRun r, final List<DropItem> queue, final int idx, final Runnable then) {
+        if (!alive(r)) return;
+        if (idx >= queue.size()) {
+            if (r.droppedCount > 0) {
+                String note = "убрано своё: " + r.droppedCount;
+                r.linkNote = r.linkNote.isEmpty() ? note : (r.linkNote + "; " + note);
+                Log.i(TAG, r.name + ": " + note);
+            }
+            then.run();
+            return;
+        }
+        final DropItem item = queue.get(idx);
+        final Runnable nextItem = () -> processDropQueue(r, queue, idx + 1, then);
+
+        // Сеть с rules.qty_sets и выученным запросом — повтор запроса с количеством want
+        if (r.rules.optBoolean("qty_sets") && r.learned) {
+            replayDrop(r, item, ok -> {
+                if (ok) {
+                    own(r, item.sku, item.want);
+                    r.droppedCount += item.drop;
+                    Log.i(TAG, r.name + ": убрано своё запросом: " + item.sku + " (" + item.drop + " уп.)");
+                    nextItem.run();
+                } else {
+                    r.learned = false;
+                    status(r, r.name + ": отказ запроса снятия, дальше касаниями", true);
+                    tapDropItem(r, item, nextItem);
+                }
+            });
+            return;
+        }
+        tapDropItem(r, item, nextItem);
+    }
+
+    private void replayDrop(final CartRun r, final DropItem item, final ValueCallback<Boolean> callback) {
+        final String key = "drop_" + item.sku;
+        JSONObject p = new JSONObject();
+        try {
+            p.put("sku", item.sku).put("qty", item.want).put("key", key);
+        } catch (Exception ignored) { }
+        r.view.evaluateJavascript(REPLAY_JS.replace("%s", p.toString()), started -> {
+            if (!alive(r)) { callback.onReceiveValue(false); return; }
+            final long until = SystemClock.uptimeMillis() + 15000;
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (!alive(r)) { callback.onReceiveValue(false); return; }
+                    final Runnable again = this;
+                    r.view.evaluateJavascript(REPLAY_POLL_JS.replace("%s", JSONObject.quote(key)), value -> {
+                        if (!alive(r)) { callback.onReceiveValue(false); return; }
+                        JSONObject res = asObject(value);
+                        if (res.length() == 0 && SystemClock.uptimeMillis() < until) {
+                            handler.postDelayed(again, 300);
+                            return;
+                        }
+                        callback.onReceiveValue(res.optBoolean("ok"));
+                    });
+                }
+            }, 300);
+        });
+    }
+
+    private void tapDropItem(final CartRun r, final DropItem item, final Runnable onDone) {
+        if (item.url.isEmpty()) {
+            Log.w(TAG, r.name + ": нет адреса карточки для снятия артикула " + item.sku + " — пропускаю");
+            onDone.run();
+            return;
+        }
+        status(r, r.name + ": открываю карточку для снятия: " + (item.name.isEmpty() ? item.sku : item.name), false);
+        go(r, item.url);
+        whenReady(r, item.url, null, SETTLE_MS, () -> {
+            tapMinusLoop(r, item, item.drop, onDone);
+        });
+    }
+
+    private void tapMinusLoop(final CartRun r, final DropItem item, final int remainingDrop, final Runnable onDone) {
+        if (!alive(r)) return;
+        if (remainingDrop <= 0) {
+            onDone.run();
+            return;
+        }
+        JSONObject p = new JSONObject();
+        try {
+            p.put("minus", r.rules.optString("minus_name", "^[−–-]$|уменьш|minus|decrease|удал|убра|remove|delete"));
+            p.put("plus", r.rules.optString("plus_name", ""));
+            p.put("add", r.rules.optString("add_name", ""));
+            p.put("below", r.rules.optInt("below", 0));
+            p.put("path", pathOf(item.url));
+            p.put("sku", item.sku);
+        } catch (Exception ignored) { }
+        final String pick = PICK_MINUS_JS.replace("%s", p.toString());
+        r.view.evaluateJavascript(pick, value -> {
+            if (!alive(r)) return;
+            JSONObject got = asObject(value);
+            if (!got.optBoolean("found")) {
+                Log.w(TAG, r.name + ": " + (got.optBoolean("moved") ? "открылась не та карточка" : "кнопка «−» не нашлась")
+                    + " (" + item.sku + ") — не снимаю");
+                onDone.run();
+                return;
+            }
+            final double countBefore = got.isNull("count") ? -1 : got.optDouble("count", -1);
+            // Без числа касание нечем проверить; на «нужно» и ниже своего снимать уже нечего.
+            if (countBefore < 0 || countBefore <= item.want) {
+                Log.i(TAG, r.name + ": на карточке " + item.sku + " число "
+                    + (countBefore < 0 ? "не читается" : "уже " + countBefore) + " — не снимаю");
+                if (countBefore >= 0) own(r, item.sku, Math.min(r.cart.optInt(item.sku, 0), (int) countBefore));
+                onDone.run();
+                return;
+            }
+            r.view.evaluateJavascript(COORDS_JS, atValue -> {
+                if (!alive(r)) return;
+                JSONObject at = asObject(atValue);
+                if (!at.optBoolean("found")) {
+                    onDone.run();
+                    return;
+                }
+                tapAt(r.view, at);
+                // Касание было — своего на одно меньше, даже если проверить нечем: так следующая
+                // сборка не снимет лишнего, что положил человек.
+                own(r, item.sku, r.cart.optInt(item.sku, 0) - 1);
+                final int pause = Math.max(300, r.rules.optInt("click_pause_ms", 300));
+                handler.postDelayed(() -> {
+                    if (!alive(r)) return;
+                    r.view.evaluateJavascript(pick, againVal -> {
+                        if (!alive(r)) return;
+                        JSONObject again = asObject(againVal);
+                        double countAfter = !again.optBoolean("found") || again.isNull("count") ? -1 : again.optDouble("count", -1);
+                        // Число уменьшилось, или степпер ушёл вместе с последней штукой.
+                        boolean decreased = countAfter >= 0 ? countAfter < countBefore : countBefore <= 1;
+                        if (!decreased) {
+                            Log.i(TAG, r.name + ": число в виджете не уменьшилось на " + item.sku + " — останавливаюсь");
+                            onDone.run();
+                            return;
+                        }
+                        r.droppedCount++;
+                        handler.postDelayed(() -> tapMinusLoop(r, item, remainingDrop - 1, onDone), pause);
+                    });
+                }, pause);
+            });
+        });
+    }
+
+    /** Своего этого артикула в корзине сети теперь n (0 — забыть совсем); память — в ledger. */
+    private void own(CartRun r, String sku, int n) {
+        if (n <= 0) {
+            r.cart.remove(sku);
+            r.urls.remove(sku);
+            r.shown.remove(sku);
+        } else {
+            try { r.cart.put(sku, n); } catch (Exception ignored) { }
+        }
+        saveLedger(r);
+    }
+
     /** Эту корзину в этой сети собрали (ok) или пытались: без перемен в корзине — не повторять. */
     private void remember(CartRun r, boolean ok) {
         if (r.stamp.isEmpty()) return;
         try {
-            memory().edit().putString("done." + r.code, new JSONObject()
-                .put("stamp", r.stamp).put("basket", r.basket).put("ok", ok)
-                .put("at", System.currentTimeMillis()).toString()).apply();
+            JSONObject done = new JSONObject()
+                .put("stamp", r.orderAt > 0 ? r.orderStamp : r.stamp).put("basket", r.basket).put("ok", ok)
+                .put("at", System.currentTimeMillis());
+            if (r.orderAt > 0) done.put("order", r.orderAt);
+            memory().edit().putString("done." + r.code, done.toString()).apply();
         } catch (Exception ignored) { }
     }
 

@@ -155,7 +155,7 @@ def delete_offer(offer_id: int) -> None:
 def store_product_by_sku(store_id: int, sku: str) -> dict | None:
     """Товар сети рабочего места по артикулу."""
     with get_conn() as c:
-        r = c.execute("SELECT id, unit FROM store_products WHERE store_id=? AND sku=?",
+        r = c.execute("SELECT id, unit, url, raw_name FROM store_products WHERE store_id=? AND sku=?",
                       (store_id, sku)).fetchone()
     return dict(r) if r else None
 

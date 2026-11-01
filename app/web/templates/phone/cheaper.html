@@ -179,7 +179,8 @@
         {% else %}
           <form method="post" action="{{ url_for('phone.cheaper') }}" style="width: 100%"
                 data-store="{{ part.code }}" data-phone-fills="{{ 1 if not part.by_link else 0 }}"
-                data-lines="{{ part.lines_json|e }}">
+                data-lines="{{ part.lines_json|e }}"
+                {% if chosen.order_json %}data-order="{{ chosen.order_json|e }}"{% endif %}>
             <input type="hidden" name="store" value="{{ part.code }}">
             {% if pick is not none %}<input type="hidden" name="pick" value="{{ pick }}">{% endif %}
             <button class="cta" type="submit">Заказать {{ part.where }}<span class="sub num">· {{ rub(part.total) }}</span></button>
@@ -206,6 +207,10 @@
       if (form.getAttribute('data-phone-fills') === '1' && window.KorzinaDevice) {
         var store = form.getAttribute('data-store');
         var lines = form.getAttribute('data-lines');
+        var order = form.getAttribute('data-order');
+        if (order && typeof KorzinaDevice.ordered === 'function') {
+          KorzinaDevice.ordered(order);
+        }
         if (lines && KorzinaDevice.openStore(store, lines)) {
           e.preventDefault();
         } else if (KorzinaDevice.openStore(store)) {

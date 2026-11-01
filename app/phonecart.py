@@ -154,6 +154,8 @@ SEARCH_LIMIT = 8
 # обрезал бы; но и заливкой каталога один запрос быть не должен.
 CARDS_LIMIT = 150
 ITEMS_LIMIT = 120
+# Артикулов «снять своё» за один наряд (приложение 1.19): своего в сети не больше корзины.
+DROP_LIMIT = ITEMS_LIMIT
 PAGE_LIMIT = 20
 API_PATHS_LIMIT = 6
 API_FIELDS_LIMIT = 40
@@ -173,6 +175,7 @@ def rules(store: str) -> dict:
     return {
         "add_name": signals.ADD_NAME,
         "plus_name": signals.PLUS_NAME,
+        "minus_name": signals.MINUS_NAME,
         "gone": signals.GONE,
         "selectors": list(signals.ADD_TO_CART.get(store) or ()),
         "below": cart.BUYBOX_BELOW,
@@ -328,19 +331,30 @@ def plan(body: dict) -> dict:
     if service_skipped:
         # Служебные строки не товар: человек видит, что они не потерялись, а пропущены.
         note = f"{(note or '').strip()} Служебных строк пропущено: {service_skipped}.".strip()
-    return {"ok": True, "store": store, "lines": rows, "unknown": list(built.unknown),
-            "total": built.total, "note": note, "linked": found["linked"], "rules": rules(store),
-            # Позиции, которых сеть не знает: пусть их найдёт телефон поиском самой сети
-            # (app/phonecart.py, SEARCH_LIMIT). Для сетей, куда сервер не пускают
-            # (Пятёрочка, Самокат), это единственная дорога к настоящему артикулу.
-            "search": _search_lines(found.get("unresolved") or [], store),
-            # Какую корзину описывает наряд и её отпечаток: по нему телефон узнаёт, менялась
-            # ли корзина с прошлой сборки в этой сети, и без перемен её не повторяет.
-            "basket": basket_id,
-            "stamp": _stamp(basket_id, custom_lines=picked.get("lines")),
-            # Флаг добора: сколько позиций уже лежит и пропущено в этом наряде.
-            "top_up": top_up,
-            "already_landed": len(already)}
+    res = {"ok": True, "store": store, "lines": rows, "unknown": list(built.unknown),
+           "total": built.total, "note": note, "linked": found["linked"], "rules": rules(store),
+           # Позиции, которых сеть не знает: пусть их найдёт телефон поиском самой сети
+           # (app/phonecart.py, SEARCH_LIMIT). Для сетей, куда сервер не пускают
+           # (Пятёрочка, Самокат), это единственная дорога к настоящему артикулу.
+           "search": _search_lines(found.get("unresolved") or [], store),
+           # Какую корзину описывает наряд и её отпечаток: по нему телефон узнаёт, менялась
+           # ли корзина с прошлой сборки в этой сети, и без перемен её не повторяет.
+           "basket": basket_id,
+           "stamp": _stamp(basket_id, custom_lines=picked.get("lines")),
+           # Флаг добора: сколько позиций уже лежит и пропущено в этом наряде.
+           "top_up": top_up,
+           "already_landed": len(already)}
+    if "drop" in body:
+        # Своё, что телефон снимет из корзины сети (1.19): карточка и название по артикулу.
+        st = repo.get_store(store)
+        res["drop"] = []
+        for sku in [str(x).strip() for x in (body.get("drop") or [])[:DROP_LIMIT] if str(x).strip()]:
+            sp = repo.store_product_by_sku(st.id, sku) if st else None
+            item = {"sku": sku, "name": (sp or {}).get("raw_name") or ""}
+            if sp and sp.get("url"):
+                item["url"] = sp["url"]
+            res["drop"].append(item)
+    return res
 
 
 def _search_lines(unresolved: list[dict], store: str) -> list[dict]:

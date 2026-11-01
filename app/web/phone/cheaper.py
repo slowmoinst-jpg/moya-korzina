@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -155,6 +156,12 @@ def cheaper():
     parts = []
     for store in (getattr(chosen, "stores", None) or []):
         parts.append(_part(store))
+    order_stores = {p["code"]: json.loads(p["lines_json"]) if p.get("lines_json") else [] for p in parts}
+    order_json = json.dumps({
+        "basket": int(current["id"]) if current else None,
+        "stamp": cartrun.stamp_of(int(current["id"])) if current else "",
+        "stores": order_stores,
+    }, ensure_ascii=False)
     shown = placed[on_n]
     source = _source(shown, product_ids, point_key)
     return _render(
@@ -181,6 +188,7 @@ def cheaper():
                 "subtotal": sum(float(s.subtotal or 0) for s in chosen.stores),
                 "delivery": sum(float(s.delivery or 0) for s in chosen.stores),
                 "discount": sum(float(s.discount or 0) for s in chosen.stores),
+                "order_json": order_json,
                 "parts": parts},
         on_phone=device.on_phone(),
         sent=request.args.get("sent"), why=request.args.get("why"),

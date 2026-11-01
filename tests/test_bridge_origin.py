@@ -40,6 +40,7 @@ SAFE = {
     "openFns": "return;",
     "collect": 'return "{}";',
     "busy": 'return "{}";',
+    "ordered": "return false;",
 }
 
 # Первое действие тела: проверка адреса и пустой ответ по типу метода.

@@ -509,6 +509,8 @@ KEEP_POINT_NAME = r"^не сейчас$"
 
 ADD_NAME = r"^(?:в корзину|добавить в корзину|купить)$"
 PLUS_NAME = r"увелич|добавить ещё|плюс|^\+$"
+# «−» — только сам знак: у «-20 %» или «−1 шт.» кнопка про другое (приложение 1.19).
+MINUS_NAME = r"^[−–-]$|уменьш|minus|decrease|удал|убра|remove|delete"
 # «Раскупили» — так Дикси пишет на карточке и на кнопке товара, которого нет (замер
 # владельца 17.10.2026 в приложении на телефоне).
 GONE = r"нет в наличии|закончил|распродан|раскупил|временно отсутствует"
@@ -677,7 +679,7 @@ def logged_in_by_cookies(chain: str, cookies) -> bool | None:
 __all__ = ["logged_in", "logged_in_by_cookies", "guarded", "guard_kind", "account", "points",
            "entrance", "verdict_words", "Entrance", "ENTRANCE", "LAST_STEP",
            "ENTERED", "ANONYMOUS", "STRONG_IN", "AUTH_COOKIE",
-           "ADD_TO_CART", "ADD_NAME", "PLUS_NAME", "GONE", "CARD_NAME",
+           "ADD_TO_CART", "ADD_NAME", "PLUS_NAME", "MINUS_NAME", "GONE", "CARD_NAME",
            "NEEDS_STORE", "NEEDS_STORE_NOTE", "needs_store",
            "NO_SHOWCASE", "no_showcase", "KEEP_POINT_NAME",
            "GUARD", "CHECK", "BLOCKED", "FORBIDDEN",

@@ -82,6 +82,17 @@ window.KorzinaDevice = (function () {
     try { return JSON.parse(k.busy()); } catch (e) { return null; }
   }
 
+  /* Заказ выбран (с приложения 1.19): доля в выбранных сетях, уборка в остальных.
+     Правда, если приложение приняло заказ; ложь вне приложения или в старой сборке. */
+  function ordered(payload) {
+    var k = bridge();
+    if (!k || typeof k.ordered !== 'function') { return false; }
+    try {
+      var s = typeof payload === 'string' ? payload : JSON.stringify(payload || {});
+      return !!k.ordered(s);
+    } catch (e) { return false; }
+  }
+
   return { available: available, info: info, openStore: openStore, openApp: openApp,
-           openFns: openFns, collect: collect, busy: busy };
+           openFns: openFns, collect: collect, busy: busy, ordered: ordered };
 })();
