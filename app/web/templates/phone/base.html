@@ -60,6 +60,24 @@
     {% endif %}
   </div>
 </div>
+{% if not is_demo %}
+<script data-kz-collect-all>
+  function kzCollectAll() {
+    if (document.getElementById('kz-runs')) { return; }
+    if (!window.KorzinaDevice || !KorzinaDevice.collect) { return; }
+    fetch('{{ url_for("phone.basket_runs") }}', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (j && j.collect && window.KorzinaDevice && KorzinaDevice.collect) {
+          KorzinaDevice.collect(j.collect);
+        }
+      })
+      .catch(function () {});
+  }
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', kzCollectAll); }
+  else { kzCollectAll(); }
+</script>
+{% endif %}
 {% block scripts %}{% endblock %}
 </body>
 </html>

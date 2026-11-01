@@ -211,6 +211,19 @@ def test_nothing_starts_while_the_job_runs(web, starts):
     assert starts == []
 
 
+def test_a_changed_basket_reaches_the_running_job(web, starts):
+    """Корзину поправили, пока опрос идёт: работа получает новый набор и дозапустится сама."""
+    enter(web)
+    workspace()
+    basket_id, _milk = unpriced_basket()
+    put_job(basket_id, "running", pids=(), what="Магнит", done=1, total=5)
+    users.deactivate()
+
+    text(web.get("/phone/cheaper"))
+
+    assert starts == [(basket_id, "fresh")]
+
+
 def test_the_demo_starts_nothing(web, starts):
     """Демо — общая витрина: цены в неё приносит дозор, а своей работы по общей базе нет."""
     web.post("/demo")
@@ -779,3 +792,69 @@ def test_calculation_timestamp_is_taken_before_calculate(monkeypatch):
     bundle = result._bundle(12345, again=True)
     assert bundle["at"] == start_time
     assert bundle["at"] != calc_time
+
+
+def test_price_job_reruns_if_basket_changed_during_job(tmp_path, monkeypatch):
+    """Опрос цен дозапускается, если корзину правили во время опроса."""
+    import threading
+    from flask import Flask, g
+    from app import service, users
+    from app.web.screens import basket as basket_screen
+
+    monkeypatch.setattr("app.config.ROOT", str(tmp_path))
+    monkeypatch.setattr(users, "USERS_DIR", str(tmp_path / "users"))
+    users.open_workspace(PHONE)
+
+    calc_calls = []
+    first_entered = threading.Event()
+    release_first = threading.Event()
+
+    def mock_calculate(basket_id, refresh, progress=None, refresh_budget=None, force=False):
+        if refresh:
+            calc_calls.append(len(calc_calls) + 1)
+            if len(calc_calls) == 1:
+                first_entered.set()
+                release_first.wait(timeout=5)
+        return ([], 0.0)
+
+    monkeypatch.setattr(service, "calculate", mock_calculate)
+
+    items_a = [{"product_id": 1}, {"product_id": 2}]
+    items_b = [{"product_id": 1}, {"product_id": 3}]
+
+    app = Flask(__name__)
+    with app.test_request_context():
+        g.phone = PHONE
+        basket_screen._JOBS.clear()
+        basket_screen._start_job(1, "fresh", items_a)
+
+        assert first_entered.wait(timeout=5)
+        # Пока первый идёт, второй вызов с другим набором
+        basket_screen._start_job(1, "fresh", items_b)
+        release_first.set()
+
+        for _ in range(50):
+            job = basket_screen.job_of(1)
+            if job and job.get("status") == "ok":
+                break
+            time.sleep(0.05)
+
+        assert len(calc_calls) == 2, f"calculate вызван {len(calc_calls)} раза вместо 2"
+
+        # Проверяем тот же набор: calculate должен быть вызван ровно один раз
+        calc_calls.clear()
+        first_entered.clear()
+        release_first.clear()
+
+        basket_screen._start_job(1, "fresh", items_a)
+        assert first_entered.wait(timeout=5)
+        basket_screen._start_job(1, "fresh", items_a)
+        release_first.set()
+
+        for _ in range(50):
+            job = basket_screen.job_of(1)
+            if job and job.get("status") == "ok":
+                break
+            time.sleep(0.05)
+
+        assert len(calc_calls) == 1, f"calculate вызван {len(calc_calls)} раза вместо 1"

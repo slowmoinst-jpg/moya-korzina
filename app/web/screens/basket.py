@@ -174,6 +174,7 @@ KEEP_DONE_SEC = 900
 # поток), а не по очереди: по очереди одиннадцать сетей занимали около минуты (замер
 # владельца 31.10.2026), разом — столько, сколько самая медленная, но не дольше срока.
 PRICES_BUDGET_SEC = 45
+PRICES_ROUNDS = 3
 
 
 def _job_key(basket_id: int) -> tuple[str, int]:
@@ -208,6 +209,7 @@ def _start_job(basket_id: int, kind: str, items: list[dict]) -> None:
     with _JOBS_LOCK:
         running = _JOBS.get(key)
         if running and running["status"] == "running":
+            running["again"] = items
             return
         # pids — набор товаров, по которым идёт работа: телефон по нему видит, что корзину с
         # тех пор правили, и не гоняет сети зря (app/web/phone/cheaper.py, start_prices).
@@ -270,8 +272,33 @@ def _run_job(key, phone: str, basket_id: int, kind: str, items: list[dict]) -> N
             # кулдауна (force) — товар мог добавиться, пока сеть спрашивали пять минут назад.
             service.calculate(basket_id, True, progress=step,
                               refresh_budget=PRICES_BUDGET_SEC, force=True)
+
+            for _ in range(PRICES_ROUNDS - 1):
+                again = None
+                with _JOBS_LOCK:
+                    job = _JOBS.get(key)
+                    if job:
+                        candidate = job.pop("again", None)
+                        if candidate:
+                            new_pids = tuple(sorted(int(i["product_id"]) for i in candidate))
+                            if new_pids != job.get("pids"):
+                                job["pids"] = new_pids
+                                job["total"] = max(1, len(candidate))
+                                again = candidate
+                if not again:
+                    break
+                service.calculate(basket_id, True, progress=step,
+                                  refresh_budget=PRICES_BUDGET_SEC, force=True)
+
             note = "Цены обновлены — можно смотреть результат."
         _mark(key, status="ok", note=note, finished=time.time())
+        if kind != "ask":
+            # После отметки «готово»: иначе экран увидел бы работу новее расчёта и пересчитал бы сам.
+            try:
+                from app.web.phone import cheaper
+                cheaper.warm(basket_id, phone)
+            except Exception:  # noqa: BLE001
+                log.warning("прогрев «Где дешевле» не запустился", exc_info=True)
     except Exception as exc:  # noqa: BLE001 — фоновая работа не должна ронять сервер
         log.exception("фоновая работа %s по корзине %s не удалась", kind, basket_id)
         _mark(key, status="failed", note=str(exc), finished=time.time())

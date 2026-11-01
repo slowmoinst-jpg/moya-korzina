@@ -140,6 +140,8 @@ def price_for(product_id: int, store_id: int, point_key: str | None = None,
     store = repo.get_store(store_id)
     if before_move(snap.get("fetched_at"), store.code if store else None):
         return None
+    if snap.get("source") == "cart":
+        return snap
     from app import personal
     return personal.apply(snap, product_id, store_id)
 

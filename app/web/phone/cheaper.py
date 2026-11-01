@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from flask import g, redirect, request, url_for
@@ -26,6 +27,58 @@ PRICES_SLOW_SEC = 600
 PRICES_LIVE_SEC = 3
 
 
+_WARM_JOBS: dict[tuple[str, int], dict] = {}
+_WARM_LOCK = threading.Lock()
+
+
+def warm(basket_id: int, phone: str) -> None:
+    """Прогреть расчёт «Где дешевле» в фоне (решение 01.11.2026).
+
+    Один поток на (phone, basket_id). Если зовут во время расчёта — ставится флаг
+    «ещё раз», и поток повторяет расчёт один раз.
+    """
+    if not phone or phone == users.DEMO:
+        return
+    key = (str(phone), int(basket_id))
+    with _WARM_LOCK:
+        job = _WARM_JOBS.get(key)
+        if job and job.get("running"):
+            job["again"] = True
+            return
+        _WARM_JOBS[key] = {"running": True, "again": False}
+
+    def _worker():
+        from app import users
+        from app.web.screens import result
+
+        while True:
+            try:
+                users.open_workspace(phone)
+                try:
+                    bundle = result._bundle(basket_id, again=True)
+                    _places(basket_id, bundle)
+                finally:
+                    users.deactivate()
+            except Exception:  # noqa: BLE001 — фоновый прогрев не должен ронять процесс
+                log.warning("прогрев «Где дешевле» по корзине %s не удался", basket_id, exc_info=True)
+
+            with _WARM_LOCK:
+                job = _WARM_JOBS.get(key)
+                if job and job.get("again"):
+                    job["again"] = False
+                    continue
+                _WARM_JOBS.pop(key, None)
+                break
+
+    worker = threading.Thread(target=_worker, name=f"cheaper-warm-{basket_id}", daemon=True)
+    try:
+        worker.start()
+    except Exception:  # noqa: BLE001
+        log.warning("поток прогрева «Где дешевле» не запустился", exc_info=True)
+        with _WARM_LOCK:
+            _WARM_JOBS.pop(key, None)
+
+
 # ---------- Где дешевле ----------
 @bp.route("/cheaper", methods=("GET", "POST"))
 @needs_phone
@@ -35,16 +88,32 @@ def cheaper():
 
     current = _basket()
     if current is None:
-        return _render("cheaper.html", tab=None, basket=None, no_address=_no_address())
+        return _render("cheaper.html", tab=None, basket=None, no_address=_no_address(), building=None)
     basket_id = int(current["id"])
     if request.method == "POST":
         return _order(basket_id)
+
+    stamp = cartrun.stamp_of(basket_id)
+    c_rows = [r for r in cartrun.rows() if r.basket_id == basket_id and r.stamp == stamp]
+    going_rows = [r for r in c_rows if r.state == cartrun.GOING]
+    building = None
+    if going_rows:
+        done_count = sum(1 for r in c_rows if r.state == cartrun.DONE)
+        names = []
+        for r in going_rows:
+            st = repo.get_store(r.code)
+            names.append(st.name if st else r.name or r.code)
+        building = {
+            "names": names,
+            "done": done_count,
+            "total": len(going_rows) + done_count,
+        }
 
     bundle, prices = _prices(basket_id, result._bundle(basket_id))
     variants = bundle["variants"]
     if not variants:
         return _render("cheaper.html", tab=None, basket=current, variants=[], prices=prices,
-                       unpriced=_unpriced(basket_id), no_address=_no_address())
+                       unpriced=_unpriced(basket_id), no_address=_no_address(), building=building)
 
     # Итоги кабинетов читаются один раз на страницу: они лежат одной настройкой
     # (app/cartrun), и спрашивать их на каждое место значило бы разбирать её заново.
@@ -118,7 +187,8 @@ def cheaper():
         why_store=request.args.get("store"), pick=picked,
         # Сколько позиций осталось вне корзины сети — вместе с честным «собрано».
         left=request.args.get("left"),
-        no_address=_no_address())
+        no_address=_no_address(),
+        building=building)
 
 
 def _unpriced(basket_id: int) -> list[str]:
@@ -156,7 +226,8 @@ def start_prices(basket_id: int, items: list[dict]) -> None:
       - корзина пуста;
       - это демо: общая витрина (app/web/auth.py), цены в неё приносит дозор
         (prices.watch.demo), а работа по общей базе ушла бы в сети от имени всех, кто её открыл;
-      - по корзине уже что-то идёт;
+      - по корзине уже идёт работа по тому же набору товаров (по другому — она
+        дозапустится сама, screens/basket.py, _run_job);
       - прежняя работа кончилась меньше PRICES_AGAIN_SEC назад, а набор товаров с тех пор
         тот же (поле pids работы, screens/basket.py, _start_job): товара может просто не
         быть в продаже, и гонять сети каждым открытием экрана нельзя.
@@ -168,12 +239,12 @@ def start_prices(basket_id: int, items: list[dict]) -> None:
     if not items or getattr(g, "phone", None) == users.DEMO or _no_address():
         return
     job = web_basket.job_of(basket_id) or {}
-    if job.get("status") == "running":
-        return
+    running = job.get("status") == "running"
     same_goods = sorted(job.get("pids") or ()) == sorted(int(i["product_id"]) for i in items)
-    if same_goods and time.time() - (job.get("finished") or 0.0) < PRICES_AGAIN_SEC:
+    if same_goods and (running or time.time() - (job.get("finished") or 0.0) < PRICES_AGAIN_SEC):
         return
     try:
+        # Идёт работа по прежнему набору — _start_job запомнит новый, и она дозапустится сама.
         web_basket._start_job(basket_id, "fresh", items)
     except Exception:  # noqa: BLE001 — цены в фоне не повод ронять экран
         log.warning("обновление цен корзины %s не запустилось", basket_id, exc_info=True)

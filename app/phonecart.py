@@ -994,7 +994,21 @@ def accept_report(body: dict) -> dict:
              sum(len(v) for v in found.values()))
     _learn(report)
     _stock(report)
+    try:
+        _cart_prices(report)
+    except Exception:  # noqa: BLE001
+        log.warning("%s: цены корзины не записались в рабочее место", store, exc_info=True)
     _to_row(report)
+    if report.get("basket"):
+        try:
+            from app import users
+            from app.web.phone import cheaper
+
+            phone = users.current()
+            if phone and phone != users.DEMO:
+                cheaper.warm(int(report["basket"]), phone)
+        except Exception:  # noqa: BLE001
+            log.warning("прогрев «Где дешевле» после отчёта не запустился", exc_info=True)
     # Отметка «телефон принёс отчёт о корзине» — это и есть доказательство, что фоновая
     # сборка работает. Проверка базы показывает её и ругается, если телефон молчит
     # больше недели (store.mark_device, app/catalog/checkup.py).
@@ -1275,6 +1289,56 @@ def _stock(report: dict) -> None:
         refresh.note_device_prices(chain, report.get("items") or [])
     except Exception:  # noqa: BLE001 — цена тоже не прибыль отчёта
         log.warning("%s: цены с телефона не записались", chain, exc_info=True)
+
+
+def _cart_prices(report: dict) -> int:
+    """Цены и наличие из корзины сети — в цены рабочего места (решение 01.11.2026)."""
+    from app import location
+    from app.catalog import model
+
+    store = repo.get_store(report.get("store") or "")
+    if not store:
+        return 0
+
+    code = store.code
+    pk = location.point_key()
+    saved = 0
+
+    for item in report.get("items") or []:
+        sku = str(item.get("sku") or "").strip()
+        if not sku:
+            continue
+        if model.placeholder_sku(sku, code):
+            continue
+
+        sp = repo.store_product_by_sku(store.id, sku)
+        if not sp:
+            continue
+        sp_id = sp["id"]
+        if not repo.is_mapping_confirmed(sp_id):
+            continue
+
+        price_val = item.get("price")
+        price = float(price_val) if price_val is not None and float(price_val) > 0 else None
+
+        if item.get("in_stock") is False:
+            p = price
+            if p is None:
+                snap = repo.latest_price(sp_id, point_key=pk)
+                if snap and snap.get("price") is not None and float(snap["price"]) > 0:
+                    p = float(snap["price"])
+            if p is not None:
+                repo.save_price(sp_id, p, in_stock=False, source="cart", point_key=pk)
+                saved += 1
+        elif item.get("ok") and price is not None:
+            unit = str(sp.get("unit") or "").strip().lower()
+            if unit in ("kg", "кг"):
+                continue
+            repo.save_price(sp_id, price, in_stock=True, source="cart", point_key=pk)
+            saved += 1
+
+    log.info("%s: цен из корзины сети записано %d", code, saved)
+    return saved
 
 
 def _to_row(report: dict) -> None:

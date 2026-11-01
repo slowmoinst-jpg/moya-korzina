@@ -196,7 +196,7 @@ def basket_runs():
     """Строки «Корзина в магазинах» для опроса, пока телефон собирает: кусок страницы и признак хода."""
     runs = _runs(_basket())
     return {"html": render_template("phone/_runs.html", runs=runs, rub=_rub()),
-            "going": runs["going"], "stamp": runs["stamp"]}
+            "going": runs["going"], "stamp": runs["stamp"], "collect": runs["collect"]}
 
 
 # ---------- Корзины: список и возврат к прежней ----------

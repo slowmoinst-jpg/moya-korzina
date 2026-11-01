@@ -61,7 +61,8 @@ class Place:
     why: str = ""               # итог сети есть, но в цену не взят: почему
 
 
-def check(row, positions: int, now: datetime | None = None) -> tuple[Total | None, str]:
+def check(row, positions: int, now: datetime | None = None,
+          gone_ok: int = 0) -> tuple[Total | None, str]:
     """Итог сети по строке сборки — или None и причина, почему он не годится в цену.
 
     Причина пуста, когда сказать нечего: итога сети нет вовсе («не прочитался» и
@@ -71,11 +72,21 @@ def check(row, positions: int, now: datetime | None = None) -> tuple[Total | Non
     if total is None or total.source != NETWORK or total.sum <= 0:
         return None, ""
     landed = len(row.landed or [])
-    if landed < positions:
-        return None, f"легло {landed} из {positions}"
-    if row.missing or row.unknown:
+    missing = list(getattr(row, "missing", None) or [])
+
+    if missing:
+        all_gone = all(bool(m.get("gone")) for m in missing)
+        if not (all_gone and len(missing) == gone_ok and landed + gone_ok >= positions):
+            if landed < positions:
+                return None, f"легло {landed} из {positions}"
+            return None, "часть позиций не легла"
+    else:
+        if landed < positions:
+            return None, f"легло {landed} из {positions}"
+
+    if getattr(row, "unknown", None):
         return None, "часть позиций не легла"
-    if row.extra:
+    if getattr(row, "extra", None):
         return None, "в корзине сети лежит лишнее"
     at = total.at or row.finished_at or ""
     if not freshness.is_fresh(at, now):
@@ -96,19 +107,27 @@ def apply(variants, cabinets: dict, positions: int, baseline: float,
         stores = list(getattr(variant, "stores", None) or [])
         if len(stores) == 1:
             row = cabinets.get(stores[0].store_code)
-            total, why = check(row, positions, now) if row is not None else (None, "")
+            gone_ok = len(getattr(variant, "missing_products", None) or [])
+            total, why = check(row, positions, now, gone_ok=gone_ok) if row is not None else (None, "")
             if total is None:
                 out.append(Place(variant, why=why))
                 continue
             store = stores[0]
             cashback = float(store.discount or 0.0)
             price = round(max(0.0, total.sum - cashback), 2)
-            out.append(Place(
-                replace(variant, stores=[replace(store, total=price)], total=price,
-                        missing_products=[],
-                        baseline=(baseline or variant.baseline) if variant.missing_products
-                        else variant.baseline),
-                net=total, cashback=cashback))
+            if row is not None and getattr(row, "missing", None):
+                out.append(Place(
+                    replace(variant, stores=[replace(store, total=price)], total=price,
+                            missing_products=variant.missing_products,
+                            baseline=variant.baseline),
+                    net=total, cashback=cashback))
+            else:
+                out.append(Place(
+                    replace(variant, stores=[replace(store, total=price)], total=price,
+                            missing_products=[],
+                            baseline=(baseline or variant.baseline) if variant.missing_products
+                            else variant.baseline),
+                    net=total, cashback=cashback))
         elif len(stores) > 1:
             # Этап 7. Разбивка на два магазина: цена сплита берётся из итогов сетей,
             # только если по КАЖДОЙ сети сплита собран проверенный итог её доли корзины.

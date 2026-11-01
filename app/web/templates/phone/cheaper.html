@@ -33,7 +33,7 @@
 {% block title %}Где дешевле — Моя корзина{% endblock %}
 {# Пока цены узнаются (app/web/phone/cheaper.py, _prices), экран перезагружает себя сам —
    обычной перезагрузкой страницы, без скрипта. Работа кончилась — перезагрузки нет. #}
-{% block head %}{% if prices and prices.running %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
+{% block head %}{% if (prices and prices.running) or building %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
 {% block body %}
   <a class="back" href="{{ url_for('phone.basket') }}">{{ icon('back') }}Корзина</a>
   <h1 class="title">Где дешевле</h1>
@@ -49,6 +49,9 @@
 
   {% if prices and prices.failed %}
     <div class="note warn">Не удалось обновить цены — показаны последние известные.</div>
+  {% endif %}
+  {% if building %}
+    <div class="note" role="status">Собираем корзины в сетях: {{ building.names|join(', ') }}. Готово {{ building.done }} из {{ building.total }}. Экран обновится сам.</div>
   {% endif %}
   {% if basket is none %}
     <div class="empty">Корзина пуста — повторите заказ из истории, и здесь появится, где он дешевле.</div>

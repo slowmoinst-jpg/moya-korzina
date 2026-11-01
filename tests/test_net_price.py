@@ -148,3 +148,42 @@ def test_places_keep_their_number_and_order():
 
     assert [p.variant.stores[0].store_code for p in got] == ["magnit", "pyaterochka"]
     assert got[0].variant is first and got[1].variant.total == 150.0
+
+
+
+def test_partial_row_all_gone_matching_variant_missing_takes_network_price():
+    """Неполная строка, все gone, число совпало с недостающими у варианта → цена сети взята и недостающие остались."""
+    original = place("magnit", 80.0, lines=2, missing=1)
+    gone_items = [{"name": "Сыр", "why": "нет в наличии", "gone": True}]
+    r = row("magnit", 95.0, landed=2, missing=gone_items)
+
+    [got] = priced([original], r, positions=3, baseline=180.0)
+
+    assert got.net is not None and got.why == ""
+    assert got.variant.total == 95.0
+    assert got.variant.missing_products == original.missing_products
+    assert got.variant.baseline == original.baseline
+
+
+def test_partial_row_count_mismatch_refused():
+    """Число недостающих в строке сети не совпало с недостающими у варианта → отказ."""
+    original = place("magnit", 80.0, lines=2, missing=2)
+    gone_items = [{"name": "Сыр", "why": "нет в наличии", "gone": True}]
+    r = row("magnit", 95.0, landed=2, missing=gone_items)
+
+    [got] = priced([original], r, positions=4, baseline=200.0)
+
+    assert got.net is None
+    assert got.why != ""
+
+
+def test_partial_row_with_not_gone_item_refused():
+    """Одна недостающая позиция не gone (не легла по другой причине) → отказ."""
+    original = place("magnit", 80.0, lines=2, missing=1)
+    not_gone_items = [{"name": "Сыр", "why": "кнопка не нашлась", "gone": False}]
+    r = row("magnit", 95.0, landed=2, missing=not_gone_items)
+
+    [got] = priced([original], r, positions=3, baseline=180.0)
+
+    assert got.net is None
+    assert got.why != ""

@@ -152,6 +152,22 @@ def delete_offer(offer_id: int) -> None:
 
 
 # ---------- store_products / mapping / prices ----------
+def store_product_by_sku(store_id: int, sku: str) -> dict | None:
+    """Товар сети рабочего места по артикулу."""
+    with get_conn() as c:
+        r = c.execute("SELECT id, unit FROM store_products WHERE store_id=? AND sku=?",
+                      (store_id, sku)).fetchone()
+    return dict(r) if r else None
+
+
+def is_mapping_confirmed(store_product_id: int) -> bool:
+    """Есть ли у товара сети подтверждённая связь с эталоном."""
+    with get_conn() as c:
+        r = c.execute("SELECT 1 FROM product_mapping WHERE store_product_id=? AND confirmed=1 LIMIT 1",
+                      (store_product_id,)).fetchone()
+    return r is not None
+
+
 def upsert_store_product(store_id: int, sku: str, raw_name: str, weight_g: float | None = None,
                          unit: str | None = None, url: str | None = None,
                          ean: str | None = None, keep_known: bool = False) -> int:
@@ -557,11 +573,33 @@ def save_price(store_product_id: int, price: float, price_per_kg: float | None =
 def latest_price(store_product_id: int, point_key: str | None = None) -> dict | None:
     """Последний снимок цены товара сети.
 
+    Свежая цена корзины (source='cart', не старше freshness.max_age_hours())
+    главнее более нового снимка опроса витрины.
+
     point_key задан — сначала снимок этой точки, а если его нет — общий (point_key
     IS NULL). Снимок ЧУЖОЙ точки не подставляется никогда: это цена другого
     магазина. Без point_key — прежнее поведение: самый свежий снимок любой точки.
     """
+    from datetime import timedelta
+    from app import freshness
+
+    cutoff = (datetime.now() - timedelta(hours=freshness.max_age_hours())).isoformat(timespec="seconds")
     with get_conn() as c:
+        if point_key is None:
+            cart_snap = c.execute(
+                "SELECT * FROM store_prices WHERE store_product_id=? AND source='cart' AND fetched_at >= ?"
+                " ORDER BY fetched_at DESC, id DESC LIMIT 1",
+                (store_product_id, cutoff),
+            ).fetchone()
+        else:
+            cart_snap = c.execute(
+                "SELECT * FROM store_prices WHERE store_product_id=? AND point_key=? AND source='cart' AND fetched_at >= ?"
+                " ORDER BY fetched_at DESC, id DESC LIMIT 1",
+                (store_product_id, point_key, cutoff),
+            ).fetchone()
+        if cart_snap is not None:
+            return dict(cart_snap)
+
         if point_key is None:
             r = c.execute(
                 "SELECT * FROM store_prices WHERE store_product_id=?"
