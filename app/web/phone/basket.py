@@ -33,7 +33,7 @@ def basket():
     # выбирать. Одна корзина — незачем показывать список из одной строки.
     baskets_n = len(repo.list_baskets())
     items = repo.basket_items(int(current["id"])) if current else []
-    rows = [{"pid": int(i["product_id"]), "name": i.get("name") or "—",
+    rows = [{"pid": int(i["product_id"]), "name": i.get("title") or i.get("name") or "—",
              "unit": i.get("unit") or "pcs", "qty": float(i.get("qty") or 0)} for i in items]
     for row in rows:
         # Лежит в один шаг — «−» его уберёт: на кнопке корзинка, а не минус.

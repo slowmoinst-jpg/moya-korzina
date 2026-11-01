@@ -235,6 +235,166 @@ def display_name(raw: str) -> str:
     n = normalize_name(raw)
     return n[:1].upper() + n[1:] if n else raw.strip()
 
+
+# --- название для человека ---------------------------------------------------
+# display_name — ключ поиска: он теряет «%» и запятую («2,5%» -> «2 5»), слова «сыр» и
+# «пакет», а строка чека Пятёрочки к тому же сокращена («САРАФ.Мор.ЗЕФ.эск.ван.гл.8% 75г»).
+# Человеку это не показывают (31.10.2026, владелец: «нужно человеческое название»).
+# human_name раскрывает самые частые ОДНОЗНАЧНЫЕ сокращения; остальное остаётся как в чеке:
+# «мол» — молоко, молочный и молотый, «б/к» — без косточек и белокочанная, и гадать нельзя.
+# Марку не раскрываем никогда: чья она, чек не говорит.
+_LETTERS = "A-Za-zА-Яа-яЁё"
+_ABBR_DOT = re.compile(rf"[{_LETTERS}]\.[{_LETTERS}/]")
+_NOT_A_NAME = re.compile(r"\.(?:ru|ру|com|net|org)\b|www\.|https?:|№\s*\d{5,}", re.I)
+_ODD_CHAR = re.compile(rf"[^{_LETTERS}0-9 .,%/\-№]")
+_GLUED_UNIT = re.compile(r"(?<=\d)(кг|гр|мл|шт|уп|см|мм|г|л)(?![а-яa-z])")
+# «С1» (категория яиц) и «№187» — одно слово, а не буква и число врозь.
+_PIECE = re.compile(rf"(№?\d+(?:[.,]\d+)?|[{_LETTERS}]\d(?![\d.,]))"
+                    rf"|([{_LETTERS}]+(?:[/\-][{_LETTERS}]+)*)(\.?)|(%)")
+_RECEIPT_WIDTH = 40      # строка чека Пятёрочки обрезана по 40 знаков; длиннее — название сети
+_UNITS = {"г", "гр", "кг", "мл", "л", "шт", "уп", "см", "мм"}
+# Первое слово названия — существительное, и от его рода зависят прилагательные дальше.
+_HEAD = {"мол": ("молоко", "n"), "мор": ("мороженое", "n"), "кеф": ("кефир", "m"),
+         "йог": ("йогурт", "m"), "биойог": ("биойогурт", "m"), "печ": ("печенье", "n"),
+         "твор": ("творог", "m"), "колб": ("колбаса", "f"), "изд": ("изделия", "p"),
+         "прод": ("продукт", "m"), "нап": ("напиток", "m"), "з/п": ("зубная паста", "f")}
+# Существительные и вкусы: рода не требуют.
+_NOUN = {"эск": "эскимо", "зеф": "зефир", "бан": "банан", "зем": "земляника",
+         "клуб": "клубника", "арб": "арбуз", "дын": "дыня", "кок": "кокос"}
+# Прилагательные: основа; окончание подбирается по роду первого слова.
+_ADJ = {"гл": "глазированн", "ван": "ванильн", "твор": "творожн", "паст": "пастеризованн",
+        "ул": "ультрапастеризованн", "ул/паст": "ультрапастеризованн", "дет": "детск",
+        "вар": "варён", "жар": "жарен", "сол": "солён", "охл": "охлаждённ", "зам": "замороженн",
+        "бел": "бел", "туал": "туалетн", "кур": "курин", "к/м": "кисломолочн",
+        "н/г": "негазированн", "мак": "макаронн", "струч": "стручков", "класс": "классическ",
+        "клас": "классическ"}
+_ENDING = {"m": "ый", "f": "ая", "n": "ое", "p": "ые"}
+_ENDING_SOFT = {"m": "ий", "f": "ая", "n": "ое", "p": "ие"}     # детский, классический
+# После «с» слово стоит в творительном падеже, прилагательное из словаря тут не годится.
+_WITH = {"гл": "глазурью", "ван": "ванилью", "зелен": "зеленью"}
+_AFTER_NUMBER = {"сл": "слоя", "рул": "рулонов"}
+_PREPOSITIONS = {"с", "со", "из", "без", "для", "на", "в", "по"}
+
+
+def _gender(word: str) -> str:
+    """Род слова по окончанию: колбаса — f, молоко — n, сосиски — p, сыр — m."""
+    last = word[-1:]
+    if word.endswith("ель"):                                     # шницель, кисель
+        return "m"
+    return "f" if last in "аяь" else "n" if last in "ое" else "p" if last in "ыи" else "m"
+
+
+def _expand(low: str, gender: str | None) -> str | None:
+    """Раскрытие одного сокращения или None — слово остаётся как в чеке."""
+    if low in _NOUN:
+        return _NOUN[low]
+    if low in _ADJ:
+        stem = _ADJ[low]
+        return stem + (_ENDING_SOFT if stem.endswith("ск") else _ENDING)[gender or "m"]
+    parts = low.split("/")
+    if len(parts) > 1 and all(p in _NOUN for p in parts):        # «бан/зем»
+        return "/".join(_NOUN[p] for p in parts)
+    return None
+
+
+def _brand(word: str) -> str:
+    """Марка прописными в начале строки: «САРАФ» -> «Сараф», инициалы («ЧЧ», «М») как есть."""
+    return word if len(word) <= 2 else word.title()
+
+
+def human_name(raw: str | None) -> str:
+    """Строка чека — в виде, который читает человек.
+
+    'САРАФ.Мор.ЗЕФ.эск.ван.гл.8% 75г' -> 'Сараф. Мороженое зефир эскимо ванильное
+    глазированное 8% 75 г'. Названия, которые и так читаются («Молоко Домик в деревне
+    2,5% 930 мл»), возвращаются как есть, меняется только то, что чек сократил.
+    """
+    s = " ".join((raw or "").split())
+    if not s or _NOT_A_NAME.search(s):
+        return s
+    s = _GLUED_UNIT.sub(r" \1", s)
+    if s.isupper():
+        return s.capitalize()
+    # Марка прописными в начале: «ТЁМА Биойог…», «С.ЗЕЛ.Мол…», «Д.В Д.Мол…».
+    caps_start = re.match(r"[A-ZА-ЯЁ]{2,}[. \-]|[A-ZА-ЯЁ]\.[A-ZА-ЯЁ]", s)
+    dots = len(_ABBR_DOT.findall(s))
+    if (_ODD_CHAR.search(s) or len(s) > _RECEIPT_WIDTH
+            or not (dots >= 2 or caps_start and (dots or re.search(r"\d", s)))):
+        return s
+    words: list[str] = []
+    brand, glue = bool(caps_start), False     # марка: прописные слова в начале; glue — «С.ЗЕЛ.»
+    gender = start = None                     # род и место первого слова после марки
+    skip = frozen = with_ = False             # после предлога слово не трогаем: падеж неизвестен
+    for number, word, dot, percent in _PIECE.findall(s):
+        if percent:
+            words[-1:] = [words[-1] + "%"] if words else []
+            continue
+        if number:
+            words.append(number.replace(".", ","))
+            brand = False
+            continue
+        low = word.lower()
+        if brand and word.isupper():
+            text = _brand(word) + dot            # точка сокращения остаётся: марку не раскрываем
+            if glue:
+                words[-1] += text
+            else:
+                words.append(text)
+            glue = bool(dot)
+            continue
+        brand = glue = False
+        if start is None:
+            start = len(words)
+        if words and words[-1][-1:].isdigit() and low in _AFTER_NUMBER:
+            text = _AFTER_NUMBER[low]
+        elif low in _UNITS:
+            text = low
+        elif low.startswith("д/") and len(low) > 2:
+            text, frozen = "для " + low[2:], True    # дальше «для чего»: родительный падеж
+        elif low in _HEAD and gender is None:
+            text, gender = _HEAD[low]
+        else:
+            text = _WITH.get(low) if with_ else None
+            if text is None and not (skip or frozen):
+                text = _expand(low, gender)
+            if text is None:                     # неизвестное слово не угадываем
+                text = word.title() if word.isascii() and len(word) > 3 else (
+                    word if word.isascii() else word.lower())
+                text += "." if dot and len(word) <= 5 and low not in _PREPOSITIONS else ""
+            if gender is None and low not in _PREPOSITIONS:
+                gender = _gender(text.rstrip("."))
+        skip = low in _PREPOSITIONS
+        with_ = low in ("с", "со")
+        words.append(text)
+    if start is not None and start < len(words):
+        words[start] = words[start][:1].upper() + words[start][1:]
+    return " ".join(words)
+
+
+def is_derived(name: str | None, raw: str | None) -> bool:
+    """Имя товара выведено из этой строки чека, а не дано человеком.
+
+    Сравниваются слова без чисел: эталон потерял «%» и запятую, и заново нормализованный
+    он теряет ещё и число («8 75 г» -> «75 г»), а правила нормализации с тех пор менялись
+    (слово «об» эталона 19.10 уже не слово). Другая фасовка — другой товар.
+    """
+    if not raw:
+        return False
+    words = lambda text: [t for t in normalize_name(text or "").split() if not t.isdigit()]
+    weights = (parse_weight(name or "")[0], parse_weight(raw)[0])
+    return bool(words(raw)) and words(name) == words(raw) and (
+        None in weights or weights[0] == weights[1])
+
+
+def shown_name(name: str | None, raw: str | None) -> str:
+    """Название товара для экрана: строка чека по-человечески, если имя выведено из неё.
+
+    Эталон, который завёл импорт из строки чека, — ключ поиска, а не название. Имя,
+    которое дал человек или принёс каталог, и товар без строк чека остаются как есть.
+    """
+    return human_name(raw) if raw and (not name or is_derived(name, raw)) else name or ""
+
+
 # --- кириллица и латиница как одно и то же имя -----------------------------
 
 # Одна и та же марка в каталогах пишется по-разному: «Rexona» на ценнике и

@@ -330,7 +330,7 @@ def _build_variant(lines: list[BasketLine], combo: tuple[Store, ...], assign: li
             vlines.append(VariantLine(
                 store_code=store.code, store_name=store.name,
                 card_id=offer.card_id if offer else None, card_name=None,
-                product_id=line.product_id, product_name=line.name,
+                product_id=line.product_id, product_name=line.title or line.name,
                 qty=line.qty, price=price, discount=share,
                 note=line.notes.get(store.code),
             ))
@@ -359,7 +359,7 @@ def _build_variant(lines: list[BasketLine], combo: tuple[Store, ...], assign: li
         baseline=_covered_baseline(lines, missing, baseline, baseline_lines),
         pack_extra=pack_extra,
         penalty=variant_penalty,
-        missing_products=[lines[i].name for i in missing],
+        missing_products=[lines[i].title or lines[i].name for i in missing],
     )
 
 

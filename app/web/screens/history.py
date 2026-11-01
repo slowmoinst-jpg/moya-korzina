@@ -83,7 +83,8 @@ def _receipts(rows: list[dict]) -> list[dict]:
             # Сырое название показываем только когда оно ОТЛИЧАЕТСЯ от опознанного:
             # одинаковые строки подряд читаются как ошибка разбора, а не как уточнение.
             "raw": (row.get("raw_name") if row.get("raw_name")
-                    and row.get("raw_name") != row.get("product_name") else None),
+                    and "".join(row["raw_name"].split())
+                    != "".join((row.get("product_name") or "").split()) else None),
             "qty": row.get("qty"), "unit": unit_label(row.get("unit")),
             "unit_price": row.get("unit_price"), "total": row.get("total"),
         })

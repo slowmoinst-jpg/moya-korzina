@@ -101,7 +101,7 @@ class HistoryConnector(Connector):
                 unit=row["unit"],
             ))
         for pid, row in last_prices(self.code).items():
-            name = (row.get("product_name") or row.get("raw_name") or "").strip()
+            name = (row.get("product_key") or row.get("raw_name") or "").strip()
             if not name:
                 continue
             found.append(Candidate(
@@ -155,7 +155,7 @@ class HistoryConnector(Connector):
                 price_per_kg=price if _bought_unit(row) == "kg" else None,
                 in_stock=True,          # чек говорит, что товар был. Что он есть сейчас — не говорит
                 fetched_at=str(row.get("date") or ""),
-                name=(row.get("product_name") or row.get("raw_name") or "").strip() or None,
+                name=(row.get("product_key") or row.get("raw_name") or "").strip() or None,
             ))
         if missing:
             out.extend(self._fallback_prices(missing))

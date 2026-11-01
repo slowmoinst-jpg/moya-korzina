@@ -691,11 +691,40 @@ def set_basket_item(basket_id: int, product_id: int, qty: float) -> None:
         c.commit()
 
 
-def basket_items(basket_id: int) -> list[dict]:
+def human_titles(names: dict[int, str]) -> dict[int, str]:
+    """Названия для человека у товаров, чьё имя выведено из строки чека: {id: название}.
+
+    Имя такого товара — ключ поиска (display_name): без «%» и запятой, с обрубками чека
+    Пятёрочки («Сараф мор зеф эск ван гл 8 75 г»). Человеку показываем саму строку чека,
+    раскрыв сокращения (normalize.human_name). Товар, который назвал человек, и товар без
+    строк чека в ответ не попадают: у них своё имя и есть название.
+    """
+    from app.matcher.normalize import human_name, is_derived
+
+    out: dict[int, str] = {}
+    if not names:
+        return out
+    marks = ",".join("?" for _ in names)
     with get_conn() as c:
-        return [dict(r) for r in c.execute(
+        for r in c.execute("SELECT product_id, raw_name FROM purchase_history"
+                           f" WHERE product_id IN ({marks}) AND raw_name != ''"
+                           " GROUP BY product_id, raw_name ORDER BY MAX(date) DESC", list(names)):
+            pid = int(r["product_id"])
+            if pid not in out and is_derived(names[pid], r["raw_name"]):
+                out[pid] = human_name(r["raw_name"])
+    return out
+
+
+def basket_items(basket_id: int) -> list[dict]:
+    """Позиции корзины. name — эталон (ключ поиска и сопоставления), title — для глаз человека."""
+    with get_conn() as c:
+        items = [dict(r) for r in c.execute(
             "SELECT bi.product_id, bi.qty, p.name, p.unit, p.weight_g, p.brand FROM basket_items bi"
             " JOIN products p ON p.id = bi.product_id WHERE bi.basket_id=? ORDER BY p.name", (basket_id,))]
+    titles = human_titles({int(i["product_id"]): i["name"] for i in items})
+    for item in items:
+        item["title"] = titles.get(int(item["product_id"])) or item["name"]
+    return items
 
 
 def delete_basket(basket_id: int) -> None:
@@ -746,7 +775,16 @@ def list_history(date_from: str | None = None, date_to: str | None = None,
         sql += " AND h.store_id = ?"
         params.append(store_id)
     with get_conn() as c:
-        return [dict(r) for r in c.execute(sql + " ORDER BY h.date DESC, h.id", tuple(params))]
+        rows = [dict(r) for r in c.execute(sql + " ORDER BY h.date DESC, h.id", tuple(params))]
+    # product_name — то, что читает человек: строка чека с раскрытыми сокращениями.
+    # product_key — эталон (products.name), по нему ищет и сопоставляет коннектор чеков
+    # (connectors/history сверяет его с запросом; подмени он имя, цены Пятёрочки пропали бы).
+    from app.matcher.normalize import shown_name
+
+    for row in rows:
+        row["product_key"] = row["product_name"]
+        row["product_name"] = shown_name(row["product_name"], row["raw_name"]) or None
+    return rows
 
 
 # ---------- settings ----------

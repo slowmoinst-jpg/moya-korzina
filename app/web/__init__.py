@@ -207,7 +207,9 @@ def _install_page_headers(flask_app: Flask) -> None:
     «Не вышло: … Invalid cookie fields», а в журнале сервера за сутки не было ни одной
     такой ошибки: WebView отдал СТАРУЮ страницу из своего кэша. Для страниц это
     недопустимо — они живые (состояние входа, корзины, цены), а кэш показывает прошлое.
-    Статике кэш нужен, её не трогаем.
+    Статике кэш нужен: адрес с отпечатком (static_v, ?v=…) меняется вместе с файлом, и его
+    держат год. Иначе телефон спрашивал бы сервер о phone.css на каждой странице — а «Где
+    дешевле» перезагружает себя раз в 5 секунд, и каждый вопрос — лишний круг по сети.
     """
 
     @flask_app.after_request
@@ -216,6 +218,8 @@ def _install_page_headers(flask_app: Flask) -> None:
             answer.headers["Cache-Control"] = "no-store, max-age=0"
             answer.headers["Pragma"] = "no-cache"
             answer.headers["Expires"] = "0"
+        elif request.endpoint == "static" and request.args.get("v") and answer.status_code == 200:
+            answer.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return answer
 
 

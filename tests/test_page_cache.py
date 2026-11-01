@@ -35,3 +35,21 @@ def test_static_is_not_forbidden_to_cache(client):
 
     assert answer.status_code == 200
     assert "no-store" not in answer.headers.get("Cache-Control", "")
+
+
+def test_a_stamped_static_address_is_cached_for_a_year(client):
+    """Адрес с отпечатком меняется вместе с файлом (static_v), поэтому его не переспрашивают:
+    экран «Где дешевле» перезагружается раз в 5 секунд (31.10.2026, «работает медленно»)."""
+    answer = client.get("/static/phone.css?v=0123456789")
+
+    assert answer.status_code == 200
+    cache = answer.headers.get("Cache-Control", "")
+    assert "max-age=31536000" in cache and "immutable" in cache
+
+
+def test_a_static_address_without_a_stamp_is_still_revalidated(client):
+    """Без отпечатка файл может смениться под тем же адресом — вечный кэш ему не положен."""
+    answer = client.get("/static/phone.css")
+
+    assert answer.status_code == 200
+    assert "immutable" not in answer.headers.get("Cache-Control", "")

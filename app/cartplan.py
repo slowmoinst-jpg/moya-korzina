@@ -206,7 +206,7 @@ def build(store_code: str, lines, *, force: bool = False, verify_prices: bool = 
         mapping = repo.confirmed_mapping(product_id, store.id, real_only=True) if product_id else None
         sku = (mapping or {}).get("sku")
         if not sku:
-            plan.unknown.append(name)
+            plan.unknown.append(getattr(line, "title", None) or name)    # список читает человек
             continue
         shop_unit = (mapping or {}).get("unit")
         plan.lines.append(PlanLine(

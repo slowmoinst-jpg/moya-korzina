@@ -418,8 +418,12 @@ def _refresh_one_store(store_code: str, product_ids: list[int],
         return 0, None
 
     _asked_now(db_path, store_code)
+    began = time.monotonic()
     with held_to_fresh():
         snapshots = connector.get_prices(list(by_sku)) or []
+    # Какая сеть тормозит экран «Где дешевле» — видно только по этой строке (31.10.2026).
+    log.info("%s: ответ сети за %.1f с, товаров %s, цен %s",
+             store_code, time.monotonic() - began, len(by_sku), len(snapshots))
 
     updated = 0
     for snap in snapshots:

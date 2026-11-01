@@ -185,7 +185,7 @@ def test_a_complete_calculation_starts_nothing(web, starts):
     page = text(web.get("/phone/cheaper"))
 
     assert starts == []
-    assert "Всё в Магните" in page
+    assert 'data-place="magnit"' in page
 
 
 def test_an_empty_basket_starts_nothing(web, starts):
@@ -381,6 +381,46 @@ def test_a_finished_job_does_not_reload_the_screen(web, starts, make):
     assert "Узнаём цены" not in page and FAILED_LINE not in page
 
 
+def test_a_finished_job_without_prices_names_the_goods_instead_of_promising(web, starts):
+    """Работа кончилась, а цен нет: «подтянутся сами» — неправда, экран называет, чего нет."""
+    from app.matcher.normalize import display_name
+
+    raw = "САРАФ.Мор.ЗЕФ.эск.ван.гл.8% 75г"
+    enter(web)
+    workspace()
+    basket_id, milk = unpriced_basket()
+    receipt = add_product(display_name(raw))
+    repo.add_history_row("2026-08-21", None, receipt, raw, 1, 100.0, 100.0)
+    repo.set_basket_item(basket_id, receipt, 1.0)
+    put_job(basket_id, "ok", ago=30, pids=(milk, receipt))
+    users.deactivate()
+
+    page = text(web.get("/phone/cheaper"))
+
+    assert "Пока нет цен ни в одной сети на:" in page
+    assert "· Молоко 930 мл" in page
+    assert "· Сараф. Мороженое зефир эскимо ванильное глазированное 8% 75 г" in page
+    assert "подтягиваются сами" not in page and EMPTY_LINE not in page
+
+
+def test_the_list_of_goods_without_prices_is_cut_at_five(web, starts):
+    enter(web)
+    workspace()
+    basket_id = repo.create_basket("Неделя")
+    names = [f"Товар номер {n}" for n in range(1, 8)]
+    pids = [add_product(name) for name in names]
+    for pid in pids:
+        repo.set_basket_item(basket_id, pid, 1.0)
+    put_job(basket_id, "ok", ago=30, pids=pids)
+    users.deactivate()
+
+    page = text(web.get("/phone/cheaper"))
+
+    assert all(f"· {name}" in page for name in names[:5])
+    assert not any(name in page for name in names[5:])
+    assert "и ещё 2" in page
+
+
 @pytest.mark.parametrize("make", [unpriced_basket, priced_basket])
 def test_a_failed_job_is_said_in_one_line_without_reload(web, starts, make):
     enter(web)
@@ -448,7 +488,7 @@ def test_prices_that_came_are_shown_without_waiting_for_the_cache(web, monkeypat
     users.deactivate()
 
     page = text(web.get("/phone/cheaper"))
-    assert "Узнаём цены у вашего адреса" in page and "Всё в Магните" not in page
+    assert "Узнаём цены у вашего адреса" in page and 'data-place="magnit"' not in page
 
     workspace()
     price(milk, "magnit", 40.0)                    # сеть ответила
@@ -457,8 +497,42 @@ def test_prices_that_came_are_shown_without_waiting_for_the_cache(web, monkeypat
     users.deactivate()
 
     page = text(web.get("/phone/cheaper"))
-    assert "Всё в Магните" in page
+    assert 'data-place="magnit"' in page
     assert "Узнаём цены" not in page and "http-equiv" not in page
+
+
+def test_prices_that_came_show_up_while_the_job_still_runs(web, monkeypatch):
+    """Сети отвечают по очереди: ответила первая — варианты на экране, не через минуту (31.10.2026).
+
+    Расчёт «Результата» держится десять минут, но пока работа идёт, он пересчитывается на
+    каждой перезагрузке экрана, не чаще PRICES_LIVE_SEC (сети тут не спрашиваются: расчёт
+    идёт по снимкам цен).
+    """
+    from app.web.phone import cheaper as phone_cheaper
+    from app.web.screens import basket as basket_screen
+
+    monkeypatch.setattr(basket_screen, "_run_job", lambda *args: None)   # работа «идёт» вечно
+    enter(web)
+    workspace()
+    basket_id, milk = unpriced_basket()
+    users.deactivate()
+
+    page = text(web.get("/phone/cheaper"))
+    assert REFRESH in page and 'data-place="magnit"' not in page
+
+    workspace()
+    price(milk, "magnit", 40.0)                    # первая сеть ответила, работа идёт дальше
+    users.deactivate()
+
+    page = text(web.get("/phone/cheaper"))
+    assert 'data-place="magnit"' not in page, "расчёт моложе PRICES_LIVE_SEC: пересчитывать рано"
+
+    monkeypatch.setattr(phone_cheaper, "PRICES_LIVE_SEC", 0)
+    page = text(web.get("/phone/cheaper"))
+    assert 'data-place="magnit"' in page
+    assert REFRESH in page, "работа не кончилась: экран продолжает обновляться сам"
+    workspace()
+    assert basket_screen.job_of(basket_id)["status"] == "running"
 
 
 def test_the_whole_way_from_an_empty_screen_to_the_calculation(web, monkeypatch):
@@ -472,15 +546,17 @@ def test_the_whole_way_from_an_empty_screen_to_the_calculation(web, monkeypatch)
     from app.web.screens import basket as basket_screen
 
     gate = threading.Event()
+    how: list[dict] = []
 
     def asked(product_ids, store_codes, progress=None, **kwargs):
+        how.append(kwargs)
         progress(0, 2, "magnit")                   # сеть, которую спрашивают сейчас
         assert gate.wait(10), "тест не отпустил работу"
         price(product_ids[0], "magnit", 40.0)      # поток работы сидит в базе человека
         progress(1, 2, "lenta")
         return {"updated": 1, "errors": []}
 
-    monkeypatch.setattr("app.matcher.refresh_prices", asked)
+    monkeypatch.setattr("app.matcher.refresh_prices_parallel", asked)
     enter(web)
     workspace()
     basket_id, _ = unpriced_basket()
@@ -495,14 +571,18 @@ def test_the_whole_way_from_an_empty_screen_to_the_calculation(web, monkeypatch)
     finally:
         gate.set()
     assert "Узнаём цены у вашего адреса: Магнит (0 из 2). Экран обновится сам." in during
-    assert REFRESH in during and "Всё в Магните" not in during
+    assert REFRESH in during and 'data-place="magnit"' not in during
 
     workspace()
     wait_for(lambda: basket_screen.job_of(basket_id)["status"] != "running")
     assert basket_screen.job_of(basket_id)["status"] == "ok"
+    # Сети спрашиваются разом (по очереди выходила минута), без кулдауна и в пределах срока.
+    (kwargs,) = how
+    assert kwargs["force"] is True
+    assert kwargs["total_deadline"] == kwargs["per_store_deadline"] == basket_screen.PRICES_BUDGET_SEC
     users.deactivate()
     after = text(web.get("/phone/cheaper"))
-    assert "Всё в Магните" in after
+    assert 'data-place="magnit"' in after
     assert REFRESH not in after and "Узнаём цены" not in after
 
 

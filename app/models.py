@@ -106,6 +106,7 @@ class BasketLine:
     notes: dict[str, str] = field(default_factory=dict)        # store_code -> как получена цена
     # store_code -> поправка ТОЛЬКО ДЛЯ ВЫБОРА (другая фасовка), в оплату не входит
     adjust: dict[str, float] = field(default_factory=dict)
+    title: str = ""    # название для глаз человека; name — эталон, по нему ищут и сопоставляют
 
 
 @dataclass

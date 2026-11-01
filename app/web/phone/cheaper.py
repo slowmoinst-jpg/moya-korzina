@@ -10,7 +10,7 @@ from app.optimizer import rank_key
 from app.web import device
 from app.web.auth import needs_phone
 
-from .common import WHOM, _basket, _login, _render, bp, deliveries, goods, where
+from .common import WHOM, _basket, _login, _render, bp, where
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +21,9 @@ PRICES_AGAIN_SEC = 600
 # Сколько работа может идти, пока экран перезагружает себя сам. Сети отвечают за минуты;
 # дольше — работа, скорее всего, зависла, и вечная перезагрузка раз в 5 секунд только мешает.
 PRICES_SLOW_SEC = 600
+# Расчёт, снятый раньше этого, пока идёт опрос сетей, пересчитывается: экран перезагружается
+# раз в 5 секунд, и пересчитывать чаще, чем он открывается, незачем.
+PRICES_LIVE_SEC = 3
 
 
 # ---------- Где дешевле ----------
@@ -41,7 +44,7 @@ def cheaper():
     variants = bundle["variants"]
     if not variants:
         return _render("cheaper.html", tab=None, basket=current, variants=[], prices=prices,
-                       no_address=_no_address())
+                       unpriced=_unpriced(basket_id), no_address=_no_address())
 
     # Итоги кабинетов читаются один раз на страницу: они лежат одной настройкой
     # (app/cartrun), и спрашивать их на каждое место значило бы разбирать её заново.
@@ -61,33 +64,38 @@ def cheaper():
         # Итоги сетей сдвинули цены: порядок на экране — по новым, а номер места (pick)
         # остаётся индексом в _places: по нему понимает «Заказать» (_order).
         order.sort(key=lambda n: (len(every[n].missing_products), float(every[n].total)))
+    positions = int(bundle.get("positions") or 0)
     places = []
     for n in order:
         variant = every[n]
-        size = len(getattr(variant, "stores", None) or [])
-        diff = round(float(variant.total) - float(best.total), 2)
-        missing = len(getattr(variant, "missing_products", None) or [])
-        if missing:
-            sub = f"{deliveries(size)} · нет {goods(missing)}"
-        elif variant is not best and diff < 0:
-            sub = f"дешевле на {result.rub(-diff)}, но {deliveries(size)}"
-        else:
-            sub = deliveries(size)
-        places.append({"n": n, "title": _title(variant), "total": variant.total, "sub": sub,
+        lack = len(getattr(variant, "missing_products", None) or [])
+        source = _source(placed[n], product_ids, point_key)
+        places.append({"n": n, "title": _names(variant), "total": variant.total,
                        "codes": [s.store_code for s in variant.stores],
-                       "source": _source(placed[n], product_ids, point_key),
+                       # Всё ли из корзины нашлось — главное, что видно в строке. Откуда цена —
+                       # только когда она не с живой витрины: там, где всё одинаково, это шум.
+                       "lack": lack, "of": positions, "full": lack == 0,
+                       "source": "" if _is_live(source) else source,
                        "best": n == best_n, "on": n == on_n})
+    places, more_places = _fold(places)
 
     figures = result._figures(chosen, bundle["baseline"])
+    fast = _fast(every, positions)
+    if fast.get("variant") is chosen:
+        fast = {}       # «Быстрее» повторило бы полку слово в слово: тот же вариант, та же цена
     parts = []
     for store in (getattr(chosen, "stores", None) or []):
         parts.append(_part(store))
     shown = placed[on_n]
+    source = _source(shown, product_ids, point_key)
     return _render(
         "cheaper.html", tab=None, basket=current, variants=variants, places=places,
-        prices=prices, fast=_fast(every, bundle.get("positions") or 0),
+        more_places=more_places, prices=prices, fast=fast,
         nets=any(p.net for p in placed),
-        chosen={"title": _title(chosen), "total": chosen.total, "best": on_n == best_n,
+        chosen={"title": _names(chosen), "total": chosen.total, "best": on_n == best_n,
+                # Откуда цены выбранного места: одна подпись на всех, а не в каждой строке.
+                "source": source, "live_at": _live_at(source),
+                "stores": len(chosen.stores),
                 # Итог сети, по которому назначена цена выбранного места: экран
                 # называет его, а не наши «товары, скидка, доставка» (netprice.apply).
                 "net": ({"sum": shown.net.sum, "discount": shown.net.discount,
@@ -111,6 +119,27 @@ def cheaper():
         # Сколько позиций осталось вне корзины сети — вместе с честным «собрано».
         left=request.args.get("left"),
         no_address=_no_address())
+
+
+def _unpriced(basket_id: int) -> list[str]:
+    """Товары корзины, у которых нет цены ни в одной сети, — что именно «не хватает».
+
+    ЗАЧЕМ (31.10.2026). Товары из чека Пятёрочки сети по сокращённому названию не находят, и
+    «подтягиваются сами — загляните позже» было неправдой: сколько ни жди, цены не придут.
+    Экран называет товары и говорит, что делать. Только когда опрос сетей уже кончился:
+    пока цен не спрашивали или спрашивают, «загляните позже» остаётся правдой. Не
+    посчиталось — пусто, и текст прежний.
+    """
+    from app import service
+    from app.web.screens import basket as web_basket
+
+    if (web_basket.job_of(basket_id) or {}).get("status") != "ok":
+        return []
+    try:
+        return [ln.title or ln.name for ln in service.build_basket_lines(basket_id) if not ln.prices]
+    except Exception:  # noqa: BLE001 — подпись не повод ронять экран
+        log.warning("список товаров без цен не собрался", exc_info=True)
+        return []
 
 
 def start_prices(basket_id: int, items: list[dict]) -> None:
@@ -172,7 +201,12 @@ def _prices(basket_id: int, bundle: dict) -> tuple[dict, dict | None]:
 
     job = web_basket.job_of(basket_id) or {}
     finished = job.get("finished") or 0.0           # 0 — работы нет или она ещё идёт
-    if bundle.get("at") is not None and finished > bundle["at"]:
+    taken = bundle.get("at")
+    if taken is not None and (finished > taken or (
+            job.get("status") == "running" and time.time() - taken >= PRICES_LIVE_SEC)):
+        # Цены приходят по сетям, а не разом: пока работа идёт, расчёт обновляется на каждой
+        # перезагрузке экрана, и варианты видны, как только ответила первая сеть, а не через
+        # минуту. Сети здесь не спрашиваются (_bundle считает по снимкам).
         bundle = result._bundle(basket_id, again=True)
 
     variants = bundle["variants"]
@@ -384,6 +418,53 @@ def _by_phone(code: str) -> bool:
     Ленту и METRO тоже кладёт телефон, хотя их витрину сервер читает сам.
     """
     return code in store_accounts.ABILITIES and code not in pricewatch.chains()
+
+
+def _names(variant) -> str:
+    """«Магнит» или «Магнит + Лента»: сети варианта и ничего больше.
+
+    «Всё в Магните» стояло и над вариантом, где не хватало четырёх товаров, — слова
+    спорили с цифрой. Хватает ли товаров, говорит строка под названием (cheaper.html).
+    """
+    return " + ".join(s.store_name for s in (getattr(variant, "stores", None) or []))
+
+
+# Сколько позиций можно не добрать против самого полного варианта, чтобы он всё ещё стоял в
+# списке сразу. Дальше — «Ещё варианты»: владелец заказывает корзину целиком (31.10.2026),
+# и «дёшево, но из двенадцати товаров два» — не выбор, а шум.
+SHOWN_GAP = 2
+
+
+def _fold(places: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Что показать сразу, а что убрать под «Ещё варианты»: (сразу, остальное).
+
+    Сразу — варианты, где не хватает не больше, чем у самого полного, плюс SHOWN_GAP, и
+    которые не проигрывают другому по обоим признакам (не полнее и не дешевле: такой
+    вариант никому не нужен). Рекомендуемый и выбранный стоят в списке всегда.
+    """
+    if not places:
+        return [], []
+    fewest = min(p["lack"] for p in places)
+
+    def beaten(p: dict) -> bool:
+        return any(q is not p and q["lack"] <= p["lack"] and q["total"] <= p["total"]
+                   and (q["lack"], q["total"]) != (p["lack"], p["total"]) for q in places)
+
+    shown = [p for p in places if p["on"] or p["best"]
+             or (p["lack"] <= fewest + SHOWN_GAP and not beaten(p))]
+    return shown, [p for p in places if p not in shown]
+
+
+def _is_live(source: str) -> bool:
+    """Цена целиком с живой витрины у адреса — такую подпись отдельно в строке не пишем."""
+    return bool(source) and all(part.startswith("витрина у адреса")
+                                for part in source.split(" · "))
+
+
+def _live_at(source: str) -> str:
+    """«31.10 20:22» из «витрина у адреса, 31.10 20:22»; пусто, если цена не с витрины."""
+    first = source.split(" · ")[0]
+    return first.partition(", ")[2] if first.startswith("витрина у адреса, ") else ""
 
 
 def _title(variant) -> str:

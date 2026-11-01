@@ -170,6 +170,11 @@ _JOBS_LOCK = threading.Lock()
 # срока строка «цены обновлены» висела бы вечно и через день врала бы о свежести.
 KEEP_DONE_SEC = 900
 
+# Сколько обновление цен ждёт самую медленную сеть. Сети спрашиваются разом (каждой свой
+# поток), а не по очереди: по очереди одиннадцать сетей занимали около минуты (замер
+# владельца 31.10.2026), разом — столько, сколько самая медленная, но не дольше срока.
+PRICES_BUDGET_SEC = 45
+
 
 def _job_key(basket_id: int) -> tuple[str, int]:
     from app import config
@@ -261,7 +266,10 @@ def _run_job(key, phone: str, basket_id: int, kind: str, items: list[dict]) -> N
                 store = repo.get_store(code)
                 _mark(key, done=done, total=total, what=store.name if store else code)
 
-            service.calculate(basket_id, True, progress=step)   # нужны свежие снимки цен
+            # Нужны свежие снимки цен, и человек их ждёт: сети спрашиваются разом и без
+            # кулдауна (force) — товар мог добавиться, пока сеть спрашивали пять минут назад.
+            service.calculate(basket_id, True, progress=step,
+                              refresh_budget=PRICES_BUDGET_SEC, force=True)
             note = "Цены обновлены — можно смотреть результат."
         _mark(key, status="ok", note=note, finished=time.time())
     except Exception as exc:  # noqa: BLE001 — фоновая работа не должна ронять сервер
@@ -609,7 +617,8 @@ def page():
     for item in items:
         pid = int(item["product_id"])
         prices = _prices_of(pid, stores, cell)
-        rows.append({"pid": pid, "name": item.get("name"), "unit": item.get("unit") or "pcs",
+        rows.append({"pid": pid, "name": item.get("title") or item.get("name"),
+                     "unit": item.get("unit") or "pcs",
                      "qty": float(item.get("qty") or 0), "prices": prices,
                      "best": _best_of(prices)})
 

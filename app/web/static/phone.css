@@ -234,7 +234,21 @@ div.empty { padding: 28px 12px; text-align: center; color: var(--ink2); }
        border-radius: 16px; border: 2px solid transparent; background: var(--tint);
        font-size: 14.5px; line-height: 1.25; }
 .opt.on { background: #FFFFFF; border-color: var(--ink); }
-.opt .marks { display: flex; width: 38px; flex: none; }
+.opt .marks { display: flex; min-width: 38px; flex: none; }
+
+/* Хватает ли товаров из корзины — первое, что видно в строке места и на полке: человек
+   заказывает ЭТУ корзину. Зелёная плашка — «всё», жёлтая — сколько не хватает. */
+.badge.warn { background: var(--amber-soft); color: var(--amber-ink); }
+.opt .line { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; margin-top: 4px; }
+.opt .src { font-size: 12px; color: var(--ink3); }
+
+/* Подробности — под раскрывашкой, по умолчанию свёрнуты: на первом экране только цена и «всё ли». */
+.det summary { list-style: none; cursor: pointer; padding: 4px 0; font-size: 13px; font-weight: 600; color: var(--ink2); }
+.det summary::-webkit-details-marker { display: none; }
+.det summary::after { content: " \25BE"; }
+.det[open] summary::after { content: " \25B4"; }
+.det.more { margin-top: 8px; }
+.det.more[open] > .opts { margin-top: 6px; }
 
 /* Настройки: поле адреса. */
 .field { display: flex; gap: 8px; padding: 8px 12px; }

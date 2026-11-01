@@ -294,6 +294,7 @@ def build_basket_lines(basket_id: int) -> list[BasketLine]:
             name=item["name"],
             unit=item["unit"] or "pcs",
             qty=float(item["qty"]),
+            title=item["title"],
         )
         weighed = is_weighed(line.product_id, line.unit, item.get("name"))
         for store in stores:
@@ -422,8 +423,8 @@ def price_coverage(basket_id: int) -> dict[str, tuple[int, int]]:
 
 
 def calculate(basket_id: int, refresh: bool = True,
-              progress=None, refresh_budget: float | None = None
-              ) -> tuple[list[Variant], float]:
+              progress=None, refresh_budget: float | None = None,
+              force: bool = False) -> tuple[list[Variant], float]:
     """Главный расчёт: (топ-N вариантов, baseline).
 
     refresh=True сначала обновляет цены коннекторами по подтверждённым сопоставлениям.
@@ -431,8 +432,12 @@ def calculate(basket_id: int, refresh: bool = True,
 
     refresh_budget (секунды) — «цена в моменте»: обновление идёт по всем сетям разом
     (matcher.refresh_prices_parallel) и обязано уложиться в срок, потому что за ним
-    ждёт экран. Без бюджета — прежний последовательный обход: кнопка «Обновить» и
-    дозор цен спрашивают сети по одной и показывают ход.
+    ждёт экран. Без бюджета — прежний последовательный обход: дозор цен спрашивает сети
+    по одной и показывает ход.
+
+    force — спросить и те сети, что спрашивали меньше пятнадцати минут назад (кулдаун
+    параллельного обхода). Нужен, когда человек сам просит свежие цены: добавил товар в
+    корзину, а сеть, спрошенная пять минут назад, про него ничего не знает.
     """
     items = repo.basket_items(basket_id)
     if not items:
@@ -445,8 +450,14 @@ def calculate(basket_id: int, refresh: bool = True,
             store_codes = [s.code for s in repo.list_stores()]
             product_ids = [it["product_id"] for it in items]
             if refresh_budget:
-                refresh_prices_parallel(product_ids, store_codes, progress=progress,
-                                        total_deadline=float(refresh_budget))
+                # Сети ждут не по очереди, а разом: у каждой свой поток. Общий срок — и есть
+                # срок для самой медленной, поэтому он же — её личный.
+                done = refresh_prices_parallel(product_ids, store_codes, progress=progress,
+                                               per_store_deadline=float(refresh_budget),
+                                               total_deadline=float(refresh_budget), force=force) or {}
+                log.info("цены сетей обновлены за %s с: записано %s, не ответили %s, "
+                         "пропущены %s, сбои %s", done.get("seconds"), done.get("updated"),
+                         done.get("timed_out"), done.get("skipped"), done.get("errors"))
             else:
                 refresh_prices(product_ids, store_codes, progress=progress)
         except Exception as exc:  # коннектор/матчер недоступен — работаем на снимках цен
