@@ -141,6 +141,7 @@ def cheaper():
         lack = len(getattr(variant, "missing_products", None) or [])
         places.append({"n": n, "title": _names(variant), "total": variant.total,
                        "codes": [s.store_code for s in variant.stores],
+                       "counts": [(s.store_code, len(s.lines or [])) for s in variant.stores],
                        # Всё ли из корзины нашлось — главное, что видно в строке.
                        "lack": lack, "of": positions, "full": lack == 0,
                        "best": n == best_n, "on": n == on_n})

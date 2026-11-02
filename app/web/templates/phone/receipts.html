@@ -21,7 +21,7 @@
     <div class="grp">Ваша история</div>
     {% if headline %}<div class="mut small" style="padding: 0 2px">{{ headline }}</div>{% endif %}
     <div class="card">
-      <div class="row" style="flex-wrap: wrap; gap: 6px; padding-top: 10px; padding-bottom: 10px">
+      <div class="row" style="flex-wrap: wrap; gap: 6px; padding-top: 8px; padding-bottom: 8px">
         {% if have.receipts %}
           <span class="chip"><span class="mut">Чеков</span> <b class="num">{{ have.receipts }}</b></span>
         {% endif %}
@@ -99,7 +99,7 @@
         {# Внутри приложения кабинет открывается своим окном: вход и капчу человек
            проходит сам, а панель по кнопке забирает ключ его сессии. Вне приложения
            моста нет — кнопка остаётся, но рядом честная подсказка и поле ключа. #}
-        <div class="row" style="padding-top: 6px; padding-bottom: 4px">
+        <div class="row" style="padding-top: 8px; padding-bottom: 4px">
           <button class="bt" type="button" data-open-fns>Войти в кабинет ФНС</button>
         </div>
         <div class="note warn" id="fns-hint" style="margin: 4px 0 8px"
@@ -113,7 +113,7 @@
           <summary class="row" style="list-style: none; cursor: pointer">
             {{ icon('receipt') }}
             <span class="grow">{{ 'Вставить новый ключ' if connected else 'Подключить ключом из закладки' }}</span>
-            {{ icon('next', 'i s fnt') }}
+            {{ icon('next', 'i s mut') }}
           </summary>
           <form method="post" action="{{ url_for('phone.receipts') }}"
                 style="padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 8px">
@@ -123,8 +123,8 @@
                       placeholder='{"source": "lkdr-keys", "token": "…", "refresh": "…"}'
                       aria-label="Ключ кабинета ФНС"
                       style="width: 100%; border: 1px solid var(--line2); border-radius: 8px;
-                             padding: 8px 10px; background: #FFFFFF; color: var(--ink);
-                             font: 400 13px/1.35 'Rubik', system-ui, sans-serif"></textarea>
+                             padding: 8px 12px; background: #FFFFFF; color: var(--ink);
+                             font: 400 16px/1.35 'Onest', system-ui, sans-serif"></textarea>
             <button class="bt" type="submit" style="align-self: flex-start">Подключить</button>
           </form>
         </details>
@@ -137,7 +137,7 @@
     <div class="grp">Загрузка</div>
     <div class="card">
       {% if job and job.running %}
-        <div class="row" style="align-items: flex-start; padding-top: 10px; padding-bottom: 10px">
+        <div class="row" style="align-items: flex-start; padding-top: 8px; padding-bottom: 8px">
           <span class="spin" style="margin-top: 3px"></span>
           <span class="grow small">
             <b>{{ job.saying }}</b><br>
@@ -148,12 +148,12 @@
           </span>
         </div>
         {% if job.total %}
-          <div class="bar" style="margin: 0 12px 10px">
+          <div class="bar" style="margin: 0 12px 8px">
             <span style="width: {{ (job.done * 100 / job.total)|round|int }}%"></span>
           </div>
         {% endif %}
       {% elif job and job.error %}
-        <div class="note bad" style="margin: 10px 12px">Кабинет ответил: {{ job.error }}</div>
+        <div class="note bad" style="margin: 8px 12px">Кабинет ответил: {{ job.error }}</div>
       {% elif connected %}
         <div class="row" style="padding-top: 8px; padding-bottom: 8px">
           <span class="grow small mut">Новые чеки забираются отдельным потоком: страницу можно
@@ -170,7 +170,7 @@
   {# ---------- чего экран не может: обещать это нельзя ---------- #}
   <section>
     <div class="grp">Чего этот экран не может</div>
-    <div class="card" style="padding: 10px 12px; display: flex; flex-direction: column; gap: 7px">
+    <div class="card" style="padding: 8px 12px; display: flex; flex-direction: column; gap: 8px">
       <div class="small"><b>Вход без человека невозможен.</b> Кабинет требует капчу и код из
         СМС — их проходит только человек в своём браузере.</div>
       <div class="small"><b>История может быть неполной.</b> Часть чеков ФНС уже не хранит

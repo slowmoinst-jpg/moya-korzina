@@ -13,28 +13,36 @@
     <span class="sig warn">{{ icon('alert') }}{{ of - lack }}/{{ of }}<span class="vh">нашлось {{ of - lack }} из {{ of }}</span></span>
   {% endif %}
 {%- endmacro %}
-{# Одно место в списке: сети, цена целыми рублями и всё ли нашлось. Выбранное — белое в рамке. #}
+{# Одно место в списке: метки с числом товаров, суммы столбцом. Выбранное — белое в рамке. #}
 {% macro place_row(p) -%}
   <a class="opt {{ 'on' if p.on }}" href="{{ url_for('phone.cheaper', pick=p.n) }}"
      data-place="{{ p.codes|join('+') }}" style="color: inherit; text-decoration: none"
      {% if p.on %}aria-current="true"{% endif %}>
-    <span class="marks"><span class="lgs">{% for c in p.codes %}{{ mark(c) }}{% endfor %}</span></span>
-    <span style="flex: 1; min-width: 0">
-      <span style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap">
-        <span style="font-weight: 600">{{ p.title }}</span>
+    <span class="ol">
+      <span class="ot">{{ p.title }}</span>
+      <span class="os">
+        {% if p.counts|length > 1 %}
+          <span class="mcs">
+            {%- for code, n in p.counts -%}
+              {% if not loop.first %}<span class="dot" aria-hidden="true">·</span>{% endif %}
+              <span class="mc">{{ mark(code) }}{{ n }}<span class="vh">{{ goods(n) }} {{ where(code) }}</span></span>
+            {%- endfor -%}
+          </span>
+        {% else %}
+          {{ mark(p.codes[0]) }}
+        {% endif %}
+        {{ fit(p.full, p.lack, p.of) }}
         {% if p.best and not p.on %}<span class="badge white">Рекомендуем</span>{% endif %}
       </span>
-      <span class="line">
-        {{ fit(p.full, p.lack, p.of) }}
-      </span>
     </span>
-    <span class="num" style="font-weight: 800">{{ whole(p.total) }}</span>
+    <span class="op num">{{ whole(p.total, big=True) }}</span>
   </a>
 {%- endmacro %}
 {% block title %}Где дешевле — Моя корзина{% endblock %}
-{# Пока цены узнаются (app/web/phone/cheaper.py, _prices), экран перезагружает себя сам —
-   обычной перезагрузкой страницы, без скрипта. Работа кончилась — перезагрузки нет. #}
-{% block head %}{% if (prices and prices.running) or building %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
+{# Пока цены узнаются (app/web/phone/cheaper.py, _prices), экран перезагружается каждые 5 с:
+   перезагружает скрипт внизу (он же держит порядок мест под пальцем), без скрипта — meta
+   в noscript. Работа кончилась — перезагрузки нет. #}
+{% block head %}{% if (prices and prices.running) or building %}<noscript><meta http-equiv="refresh" content="5"></noscript>{% endif %}{% endblock %}
 {% block body %}
   <a class="back" href="{{ url_for('phone.basket') }}">{{ icon('back') }}Корзина</a>
   <h1 class="title">Где дешевле</h1>
@@ -95,11 +103,11 @@
     <div class="shelf">
       <div style="display: flex; align-items: center; gap: 8px">
         <span class="lgs">{% for c in chosen.codes %}{{ mark(c) }}{% endfor %}</span>
-        <span style="font-size: 18px; font-weight: 800; line-height: 1.2">{{ chosen.title }}</span>
-        {% if chosen.best %}<span class="badge white" style="margin-left: auto">Рекомендуем</span>{% endif %}
+        <span style="font-size: 19px; font-weight: 800; line-height: 1.2; letter-spacing: -0.005em">{{ chosen.title }}</span>
       </div>
-      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
-        <span class="num" style="font-size: 34px; font-weight: 800; line-height: 1.1; letter-spacing: -0.01em">{{ whole(chosen.total) }}</span>
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px">
+        <span class="num" style="font-size: 34px; font-weight: 800; line-height: 1.1; letter-spacing: -0.01em">{{ whole(chosen.total, big=True) }}</span>
+        {% if chosen.best %}<span class="badge white">Рекомендуем</span>{% endif %}
       </div>
       <details class="det">
         <summary class="sigs">
@@ -203,12 +211,12 @@
                 {% if chosen.order_json %}data-order="{{ chosen.order_json|e }}"{% endif %}>
             <input type="hidden" name="store" value="{{ part.code }}">
             {% if pick is not none %}<input type="hidden" name="pick" value="{{ pick }}">{% endif %}
-            <button class="cta" type="submit">Заказать {{ part.where }}<span class="sub num">· {{ rub(part.total) }}</span></button>
+            <button class="cta" type="submit">Заказать {{ part.where }}<span class="sub num">· {{ whole(part.total) }}</span></button>
           </form>
         {% endif %}
       {% endfor %}
       {% if on_phone and chosen.whole and not chosen.parts[0].by_link and not chosen.parts[0].needs_login %}
-        <div class="fnt" style="font-size: 12px; text-align: center">Откроется сайт магазина — нажмите «Собрать» на панели, и товары лягут в его корзину.</div>
+        <div class="mut small" style="text-align: center">Откроется сайт магазина — нажмите «Собрать» на панели, и товары лягут в его корзину.</div>
       {% endif %}
     </div>
   {% endif %}
@@ -238,5 +246,64 @@
         }
       }
     });
+    /* Места встают по местам, пока сети отвечают (DESIGN.md, раздел Motion). Пока идут цены,
+       экран перезагружается каждые 5 с, поэтому позиции мест живут в sessionStorage по
+       data-place, и сдвиг идёт от прошлых: место едет 240 мс, новое проявляется снизу за
+       180 мс. Пока палец на списке, перезагрузки нет: порядок под пальцем стоит и встаёт
+       заново через 0,8 с после отпускания. При «уменьшить движение» всё сразу. */
+    (function () {
+      var list = document.querySelector('.opts');
+      var KEY = 'kz-places';
+      var still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      function tops() {
+        var out = {};
+        if (!list) { return out; }
+        var base = list.getBoundingClientRect().top;
+        for (var i = 0; i < list.children.length; i++) {
+          var id = list.children[i].getAttribute('data-place');
+          if (id) { out[id] = list.children[i].getBoundingClientRect().top - base; }
+        }
+        return out;
+      }
+      function keep() {
+        try { sessionStorage.setItem(KEY, JSON.stringify({ at: Date.now(), tops: tops() })); } catch (e) {}
+      }
+      var was = null;
+      try { was = JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch (e) {}
+      keep();   // до сдвига: пока места едут, их прямоугольники смещены
+      window.addEventListener('pagehide', keep);
+      // Позиции старше 15 с остались от прошлого захода на экран, а не от перезагрузки.
+      if (list && was && was.tops && Date.now() - was.at < 15000 && !still) {
+        var now = tops();
+        for (var i = 0; i < list.children.length; i++) {
+          var el = list.children[i], id = el.getAttribute('data-place');
+          if (!id || !el.animate) { continue; }
+          if (!(id in was.tops)) {
+            el.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }],
+                       { duration: 180, easing: 'ease-out' });
+          } else if (Math.abs(was.tops[id] - now[id]) > 0.5) {
+            el.animate([{ transform: 'translateY(' + (was.tops[id] - now[id]) + 'px)' }, { transform: 'none' }],
+                       { duration: 240, easing: 'ease-in-out' });
+          }
+        }
+      }
+{% if (prices and prices.running) or building %}
+      var held = false, due = false, thaw = 0;
+      function reload() {
+        if (held) { due = true; return; }
+        keep();
+        location.reload();
+      }
+      setTimeout(reload, 5000);
+      if (list) { list.addEventListener('pointerdown', function () { held = true; clearTimeout(thaw); }); }
+      function release() {
+        if (!held) { return; }
+        clearTimeout(thaw);
+        thaw = setTimeout(function () { held = false; if (due) { reload(); } }, 800);
+      }
+      window.addEventListener('pointerup', release);
+      window.addEventListener('pointercancel', release);
+{% endif %}
+    })();
   </script>
 {% endblock %}

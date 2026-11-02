@@ -20,16 +20,16 @@
         {{ mark(r.code, r.name) }}
         <span class="grow">
           <span class="rn">{{ r.name }}</span>
-          <span class="fnt small sub" data-run-words>{{ r.words }}</span>
-          {% if r.state == 'going' and (r.now or r.left) %}<span class="fnt small sub" data-run-now>{{ r.now }}{% if r.left %} · {{ r.left }}{% endif %}</span>{% endif %}
-          {% if r.state in ('failed', 'empty', 'interrupted') and r.note %}<span class="fnt small sub">{{ r.note }}</span>{% endif %}
-          {% if r.state == 'done' and r.gone %}<span class="fnt small sub">нет в наличии: {{ r.gone }}</span>{% endif %}
-          {% if r.state == 'done' and r.extra_note %}<span class="fnt small sub">{{ r.extra_note }}</span>{% endif %}
+          <span class="mut small sub" data-run-words>{{ r.words }}</span>
+          {% if r.state == 'going' and (r.now or r.left) %}<span class="mut small sub" data-run-now>{{ r.now }}{% if r.left %} · {{ r.left }}{% endif %}</span>{% endif %}
+          {% if r.state in ('failed', 'empty', 'interrupted') and r.note %}<span class="mut small sub">{{ r.note }}</span>{% endif %}
+          {% if r.state == 'done' and r.gone %}<span class="mut small sub">нет в наличии: {{ r.gone }}</span>{% endif %}
+          {% if r.state == 'done' and r.extra_note %}<span class="mut small sub">{{ r.extra_note }}</span>{% endif %}
         </span>
         {% if r.state == 'login' %}
           <span class="bt small" style="white-space: nowrap">{{ 'Выбрать магазин' if r.login == 'store' else 'Войти' }}</span>
         {% elif r.total %}
-          <span class="num {{ 'fnt' if r.state == 'old' }}" style="font-weight: 800">{{ rub(r.total.sum) }}</span>
+          <span class="num {{ 'mut' if r.state == 'old' }}" style="font-weight: 800">{{ rub(r.total.sum) }}</span>
           {% if r.total.network %}<span class="badge white" title="Итог посчитала сама сеть: с её скидками и акциями">сеть</span>{% endif %}
         {% elif r.state == 'going' %}
           <span class="spin" aria-hidden="true"></span>
@@ -38,7 +38,7 @@
     {% endfor %}
     {% if runs.idle %}
       <a class="row small" href="{{ url_for('phone.settings') }}">
-        <span class="grow fnt">Без входа: {{ runs.idle|join(', ') }}</span>
+        <span class="grow mut">Без входа: {{ runs.idle|join(', ') }}</span>
         <span style="font-weight: 600">Подключить</span>{{ icon('next', 'i s') }}
       </a>
     {% endif %}

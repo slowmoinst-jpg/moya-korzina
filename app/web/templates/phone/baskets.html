@@ -28,7 +28,7 @@
           <div class="row">
             <span class="grow">
               <span style="display: block">{{ b.name }}</span>
-              <span class="fnt small">создана {{ b.day }} · {{ goods(b.count) }}</span>
+              <span class="mut small">создана {{ b.day }} · {{ goods(b.count) }}</span>
             </span>
             {% if b.open %}
               <span class="gd small" style="display: inline-flex; align-items: center; gap: 4px; font-weight: 500">{{ icon('check', 'i s') }}открыта</span>

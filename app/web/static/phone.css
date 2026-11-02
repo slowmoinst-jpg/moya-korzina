@@ -22,7 +22,7 @@
    метка-квадратик, подписью он не бывает. */
 
 :root {
-  --ink: #141414; --ink2: #5C5B5A; --ink3: #666564;
+  --ink: #141414; --ink2: #5C5B5A; --ink-press: #2C2C2B; --ink-sub: #BDBCBA;
   --line: #EDEDEC; --line2: #DAD9D7; --soft: #E7E7E5; --tint: #F5F5F4; --tint2: #ECECEA;
   --green: #17703A; --green-soft: #E8F5EC; --green-ink: #17703A;
   --red: #C40D00; --red-soft: #FEEBEA; --amber-ink: #5C4A12; --amber-soft: #FFF3D1;
@@ -59,7 +59,7 @@ button, input { font: inherit; color: inherit; }
 .ph { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; background: #FFFFFF; }
 /* Серый холст — у Истории заказов: белые карточки заказов на сером, как у Магнита. */
 .ph.grey { background: var(--tint); }
-.ph-body { flex: 1; padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 10px; }
+.ph-body { flex: 1; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
 .ph.grey .ph-body { padding-left: 12px; padding-right: 12px; }
 .ph-foot {
   position: sticky; bottom: 0; z-index: 5; background: #FFFFFF;
@@ -70,14 +70,14 @@ button, input { font: inherit; color: inherit; }
 .disp { font-family: 'Onest', system-ui, sans-serif; font-weight: 800; }
 .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mut { color: var(--ink2); }
-.fnt { color: var(--ink3); }
+.r { font-size: .7em; }   /* знак ₽ в суммах от 19 px — DESIGN.md, Typography */
 .gd { color: var(--green); }
-.small { font-size: 13px; }
+.small { font-size: 13px; font-weight: 500; }
 
-h1.title { margin: 0; font: 800 26px/1.15 'Onest', system-ui, sans-serif; letter-spacing: -0.01em; }
+h1.title { margin: 0; font: 800 22px/1.15 'Onest', system-ui, sans-serif; letter-spacing: -0.01em; }
 .back {
-  display: inline-flex; align-items: center; gap: 2px; height: 36px; margin: -6px 0 -4px;
-  color: var(--ink); text-decoration: none; font-size: 14px; font-weight: 500; align-self: flex-start;
+  display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 8px; margin: -4px 0 -4px -8px;
+  border-radius: 8px; color: var(--ink2); text-decoration: none; font-size: 14px; font-weight: 500; align-self: flex-start;
 }
 
 .i { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor;
@@ -87,45 +87,61 @@ h1.title { margin: 0; font: 800 26px/1.15 'Onest', system-ui, sans-serif; letter
 /* Метка сети: квадратик её цвета с буквой — как вкладки «Магнит», «Аптека» у Магнита.
    Букву и цвет даёт макрос mark (phone/_icons.html). На жёлтой Пятёрочке буква тёмная. */
 .lg { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
-      flex: none; border-radius: 7px; background: var(--ink3); color: #FFFFFF;
+      flex: none; border-radius: 7px; background: var(--ink2); color: #FFFFFF;
       font: 800 12px/1 'Onest', system-ui, sans-serif; }
 .lg.s-pyaterochka { color: var(--ink); }
 .lgs { display: inline-flex; flex: none; }
-.lgs .lg + .lg { margin-left: -6px; box-shadow: 0 0 0 2px var(--tint); }
+.lgs .lg + .lg { margin-left: -6px; box-shadow: 0 0 0 2px var(--ring, #FFFFFF); }
 
 /* Кнопки: в строке — 32 px, главная внизу — 48 px. Чёрная — действие, серая — остальное. */
 .bt {
   display: inline-flex; align-items: center; justify-content: center; gap: 4px;
   height: 32px; padding: 0 12px; border-radius: 8px; border: 0;
-  background: var(--ink); color: #FFFFFF; font: 600 13.5px/1 'Onest', system-ui, sans-serif;
+  background: var(--ink); color: #FFFFFF; font: 600 14px/1 'Onest', system-ui, sans-serif;
   white-space: nowrap; cursor: pointer; text-decoration: none;
 }
-.bt:hover { color: #FFFFFF; background: #2C2C2B; }
 .bt.ghost { background: var(--tint); color: var(--ink); }
-.bt.ghost:hover { color: var(--ink); background: var(--tint2); }
 /* На серой подложке серая кнопка пропала бы — там она белая. */
 .card .bt.ghost, .ph.grey .bt.ghost { background: #FFFFFF; }
-.bt.big { height: 36px; padding: 0 18px; border-radius: 10px; font-size: 14.5px; }
+.bt.big { height: 36px; padding: 0 16px; border-radius: 8px; font-size: 15px; }
 .cta {
   display: flex; align-items: center; justify-content: center; gap: 8px; height: 48px;
   padding: 0 16px; border-radius: 12px; border: 0; background: var(--ink); color: #FFFFFF;
   font: 600 16px/1 'Onest', system-ui, sans-serif; cursor: pointer; text-decoration: none;
   white-space: nowrap; width: 100%;
 }
-.cta:hover { color: #FFFFFF; background: #2C2C2B; }
-.cta .sub { font-weight: 500; color: #BDBCBA; }
+.cta .sub { font-weight: 500; color: var(--ink-sub); }
 .cta.ghost { background: var(--tint); color: var(--ink); font-size: 15px; width: auto; }
-.cta.ghost:hover { color: var(--ink); background: var(--tint2); }
-.cta[disabled], .bt[disabled] { opacity: .45; cursor: default; }
-.actions { display: flex; gap: 8px; padding: 10px 16px; }
+.cta[disabled], .bt[disabled] { opacity: .45; cursor: default; pointer-events: none; }
+.actions { display: flex; gap: 8px; padding: 8px 16px; }
 
 /* Нижние вкладки: Корзина и Настройки. */
 .tabs { display: flex; height: 56px; }
 .tab {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 3px; font-size: 11px; font-weight: 500; color: var(--ink2); text-decoration: none;
+  gap: 4px; font: 600 12px/1 'Onest', system-ui, sans-serif; color: var(--ink2); text-decoration: none;
 }
 .tab.on { color: var(--ink); font-weight: 700; }
+
+/* Нажатие темнит и сжимает за 100 мс; наведение — только где есть мышь: на телефоне
+   :hover залипает после касания (DESIGN.md, Components и Motion). */
+.bt, .cta, .q, .opt, a.row, .back, .tab {
+  transition: background-color 100ms ease-out, color 100ms ease-out, transform 100ms ease-out;
+}
+.bt:active, .cta:active { background: var(--ink-press); transform: scale(.97); }
+.bt.ghost:active, .cta.ghost:active, .q:active, .opt:active, a.row:active { background: var(--tint2); }
+.card .bt.ghost:active, .ph.grey .bt.ghost:active, .opt.on:active, .back:active { background: var(--tint); }
+.tab:active { color: var(--ink); }
+@media (hover: hover) {
+  .bt:hover, .cta:hover { background: var(--ink-press); }
+  .bt.ghost:hover, .cta.ghost:hover, .q:hover, .opt:hover, a.row:hover { background: var(--tint2); }
+  .card .bt.ghost:hover, .ph.grey .bt.ghost:hover, .opt.on:hover, .back:hover { background: var(--tint); }
+  .tab:hover { color: var(--ink); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; }
+  .bt:active, .cta:active { transform: none; }
+}
 
 /* Разделы, карточки, строки. Заголовок раздела жирный, как у подборок Магнита;
    карточка — серая подложка без рамки, строки в ней делит волосяная линия. */
@@ -134,17 +150,17 @@ h1.title { margin: 0; font: 800 26px/1.15 'Onest', system-ui, sans-serif; letter
 .grp .right { margin-left: auto; font-size: 13px; font-weight: 500; color: var(--ink2); }
 .card { background: var(--tint); border-radius: 16px; overflow: hidden; }
 .row {
-  display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 12px;
+  display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 12px;
   border-bottom: 1px solid var(--soft); color: var(--ink); text-decoration: none;
 }
 .row:last-child { border-bottom: 0; }
 .row .grow { flex: 1; min-width: 0; }
 .chip {
-  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px;
-  border-radius: 999px; background: var(--green-soft); color: var(--green-ink);
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px;
+  border-radius: 999px; background: var(--green-soft); color: var(--ink);
   font-size: 13px; white-space: nowrap;
 }
-.note { font-size: 13px; line-height: 1.4; border-radius: 12px; padding: 10px 12px; }
+.note { font-size: 13px; line-height: 1.4; border-radius: 12px; padding: 8px 12px; }
 .note.ok { background: var(--green-soft); color: var(--green-ink); }
 .note.warn { background: var(--amber-soft); color: var(--amber-ink); }
 .note.bad { background: var(--red-soft); color: var(--red); }
@@ -154,50 +170,50 @@ h1.title { margin: 0; font: 800 26px/1.15 'Onest', system-ui, sans-serif; letter
 .note.act span { flex: 1 1 150px; }
 .note.act form { display: contents; }
 .note.hot { font-weight: 600; }
-.bar { display: flex; height: 6px; border-radius: 999px; overflow: hidden; background: #E3E3E1; }
+.bar { display: flex; height: 6px; border-radius: 999px; overflow: hidden; background: var(--soft); }
 .bar span { background: var(--ink); }
 /* Только блок пустого экрана: у строки сети «класть нечего» тот же класс-состояние
    (.run.empty), и без div она вставала по центру и вдвое выше соседей. */
-div.empty { padding: 28px 12px; text-align: center; color: var(--ink2); }
+div.empty { padding: 24px 12px; text-align: center; color: var(--ink2); }
 .badge { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 999px;
          background: var(--green-soft); color: var(--green-ink); font-size: 12px; font-weight: 600;
          white-space: nowrap; }
-.badge.white { background: #FFFFFF; }
+.badge.white { background: #FFFFFF; color: var(--ink); }
 .vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 /* Полка — жёлтая подложка с крупным скруглением, как подборки Магнита. */
-.shelf { background: var(--shelf); border-radius: 24px; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+.shelf { --ring: var(--shelf); background: var(--shelf); border-radius: 24px; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
 
 /* Фото товара — из единой базы сетей (app/web/phone/basket.py, _photos). Белый фон
    снимка растворяется в серой плитке; фото нет — плитка с пакетом. */
 .pic { width: 44px; height: 44px; flex: none; border-radius: 12px; background: var(--tint); overflow: hidden;
-       display: flex; align-items: center; justify-content: center; color: #A3A2A0; }
+       display: flex; align-items: center; justify-content: center; color: var(--ink2); }
 .pic img { width: 100%; height: 100%; object-fit: contain; mix-blend-mode: multiply; }
 
 /* Корзина: строка товара — фото, название и счётчик серой таблеткой. Когда товар лежит
    в один шаг, «−» его уберёт — на кнопке тогда корзинка, а не минус. */
-.it { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 6px 0;
-      font-size: 14.5px; line-height: 1.3; }
+.it { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 6px 0;
+      font-size: 14px; line-height: 1.35; }
 .it .name { flex: 1; min-width: 0; }
 .it form { display: contents; }
 .step { display: inline-flex; align-items: center; height: 32px; flex: none; border-radius: 8px; background: var(--tint); }
 .q { width: 32px; height: 32px; flex: none; border: 0; border-radius: 8px; background: transparent;
      color: var(--ink); display: inline-flex; align-items: center; justify-content: center;
      padding: 0; cursor: pointer; }
-.qn { min-width: 46px; text-align: center; font-size: 13.5px; font-weight: 600; flex: none; }
+.qn { min-width: 44px; text-align: center; font-size: 14px; font-weight: 600; flex: none; }
 
 /* «Из привычного» — полка с карточками, которые листаются вбок: по высоте она занимает
    одну карточку, сколько бы привычного ни было. */
-.habits { margin: 6px -16px 0; padding: 16px 0 16px 16px; background: var(--shelf); border-radius: 24px; }
+.habits { margin: 8px -16px 0; padding: 16px 0 16px 16px; background: var(--shelf); border-radius: 24px; }
 .habits .grp { padding: 0 16px 0 0; }
-.hrow { display: flex; gap: 8px; overflow-x: auto; padding: 10px 16px 2px 0; scroll-snap-type: x proximity;
+.hrow { display: flex; gap: 8px; overflow-x: auto; padding: 8px 16px 4px 0; scroll-snap-type: x proximity;
         scrollbar-width: none; }
 .hrow::-webkit-scrollbar { display: none; }
 .hcard { width: 132px; flex: none; background: #FFFFFF; border-radius: 16px; padding: 8px;
-         display: flex; flex-direction: column; gap: 6px; scroll-snap-align: start; }
+         display: flex; flex-direction: column; gap: 4px; scroll-snap-align: start; }
 .hcard .pic { width: 100%; height: 84px; }
 .hcard .name { font-size: 13px; line-height: 1.25; height: 32px; overflow: hidden; }
-.hcard .why { font-size: 12px; color: var(--ink2); }
+.hcard .why { font-size: 13px; font-weight: 500; color: var(--ink2); }
 .hcard .bt { width: 100%; }
 
 /* Поиск товара на «Корзине»: поле и кнопка в одну строку, найденное — серой карточкой под
@@ -205,22 +221,24 @@ div.empty { padding: 28px 12px; text-align: center; color: var(--ink2); }
 .find { display: flex; gap: 8px; }
 .find input {
   flex: 1; min-width: 0; height: 36px; border: 1px solid var(--line2); border-radius: 8px;
-  padding: 0 10px; font-size: 16px; background: #FFFFFF; -webkit-appearance: none; appearance: none;
+  padding: 0 12px; font-size: 16px; background: #FFFFFF; -webkit-appearance: none; appearance: none;
 }
-.found .row { padding-top: 6px; padding-bottom: 6px; font-size: 14.5px; line-height: 1.3; }
+.find input::placeholder, .field input::placeholder, .addr-row input::placeholder { color: var(--ink2); }
+.find input:focus, .field input:focus, .addr-row input:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
+.found .row { padding-top: 8px; padding-bottom: 8px; font-size: 14px; line-height: 1.35; }
 .found .name, .found .sub { display: block; }
 .found .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* История заказов: белая карточка заказа на сером холсте, месяц — заголовком. */
-.month { margin: 6px 4px 0; font-size: 17px; font-weight: 800; }
-.ord { background: #FFFFFF; border-radius: 16px; padding: 12px 14px 6px; display: flex; flex-direction: column; }
+.month { margin: 8px 4px 0; font-size: 19px; font-weight: 800; line-height: 1.2; }
+.ord { background: #FFFFFF; border-radius: 16px; padding: 12px 16px 4px; display: flex; flex-direction: column; }
 .oh { display: flex; align-items: center; gap: 8px; }
-.li { display: flex; align-items: baseline; gap: 10px; padding: 4px 0; font-size: 14px; }
+.li { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: 14px; }
 .li .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.lq { width: 48px; text-align: right; color: var(--ink3); font-size: 13px; flex: none; }
-.lp { width: 78px; text-align: right; flex: none; font-weight: 600; }
+.lq { width: 48px; text-align: right; color: var(--ink2); font-size: 13px; flex: none; }
+.lp { width: 80px; text-align: right; flex: none; font-weight: 600; }
 .ord details summary {
-  list-style: none; display: flex; align-items: center; gap: 2px; height: 36px; cursor: pointer;
+  list-style: none; display: flex; align-items: center; gap: 4px; height: 36px; cursor: pointer;
   color: var(--ink); font-size: 14px; font-weight: 600;
 }
 .ord details summary::-webkit-details-marker { display: none; }
@@ -228,25 +246,28 @@ div.empty { padding: 28px 12px; text-align: center; color: var(--ink2); }
 
 /* Где дешевле: ответ на жёлтой полке, места — отдельными серыми карточками;
    выбранное место белое, в чёрной рамке. */
-.hero { padding: 14px; display: flex; flex-direction: column; gap: 6px; }
 .opts { display: flex; flex-direction: column; gap: 8px; }
-.opt { display: flex; align-items: center; gap: 10px; min-height: 60px; padding: 10px 12px;
-       border-radius: 16px; border: 2px solid transparent; background: var(--tint);
-       font-size: 14.5px; line-height: 1.25; }
-.opt.on { background: #FFFFFF; border-color: var(--ink); }
-.opt .marks { display: flex; min-width: 38px; flex: none; }
+.opt { --ring: var(--tint); display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 8px 12px;
+       border-radius: 16px; border: 2px solid transparent; background: var(--tint); }
+.opt.on { --ring: #FFFFFF; background: #FFFFFF; border-color: var(--ink); }
+.ol { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ot { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.os { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-height: 22px; }
+.mcs { display: inline-flex; align-items: center; gap: 6px; }
+.mc { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.dot { color: var(--ink2); font-size: 13px; }
+.op { flex: none; text-align: right; font-size: 19px; font-weight: 800; line-height: 1.2; letter-spacing: -0.005em; }
 
 /* Хватает ли товаров из корзины — первое, что видно в строке места и на полке: человек
    заказывает ЭТУ корзину. Зелёная плашка — «всё», жёлтая — сколько не хватает. */
 .badge.warn { background: var(--amber-soft); color: var(--amber-ink); }
-.opt .line { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; margin-top: 4px; }
 
 /* Значки на полке и в строках мест. */
-.sigs { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+.sigs { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
 .sig { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 500;
        color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sig.warn { color: var(--amber-ink); }
-.sig.mut { color: var(--ink3); }
+.sig.mut { color: var(--ink2); }
 
 /* Подробности — под раскрывашкой, по умолчанию свёрнуты: на первом экране только цена и «всё ли». */
 .det summary { list-style: none; cursor: pointer; padding: 4px 0; font-size: 13px; font-weight: 600; color: var(--ink2); }
@@ -256,20 +277,20 @@ div.empty { padding: 28px 12px; text-align: center; color: var(--ink2); }
 .det summary::after { content: " \25BE"; }
 .det[open] summary::after { content: " \25B4"; }
 .det.more { margin-top: 8px; }
-.det.more[open] > .opts { margin-top: 6px; }
+.det.more[open] > .opts { margin-top: 8px; }
 
 /* Мини-чек раскрывашки. */
-.rc { background: #FFFFFF; border-radius: 12px; padding: 10px 12px; font-size: 13px;
+.rc { background: #FFFFFF; border-radius: 12px; padding: 8px 12px; font-size: 13px;
       font-variant-numeric: tabular-nums; }
 .rc > div { display: flex; justify-content: space-between; }
-.rc .in { padding-left: 10px; color: var(--ink3); }
-.rc .tot { font-weight: 700; border-top: 1px solid var(--line2); margin-top: 6px; padding-top: 6px; }
+.rc .in { padding-left: 12px; color: var(--ink2); }
+.rc .tot { font-weight: 700; border-top: 1px solid var(--line2); margin-top: 4px; padding-top: 6px; }
 
 /* Настройки: поле адреса. */
 .field { display: flex; gap: 8px; padding: 8px 12px; }
 .field input {
   flex: 1; min-width: 0; height: 36px; border: 1px solid var(--line2); border-radius: 8px;
-  padding: 0 10px; font-size: 15px; background: #FFFFFF;
+  padding: 0 12px; font-size: 16px; background: #FFFFFF;
 }
 
 /* Адрес: подсказки лежат НАД страницей, а не раздвигают её. Раздвигающий список
@@ -279,7 +300,7 @@ div.empty { padding: 28px 12px; text-align: center; color: var(--ink2); }
 .addr-row { display: flex; gap: 8px; align-items: center; }
 .addr-row input {
   flex: 1; min-width: 0; height: 36px; border: 1px solid var(--line2); border-radius: 8px;
-  padding: 0 10px; font-size: 15px; background: #FFFFFF;
+  padding: 0 12px; font-size: 16px; background: #FFFFFF;
 }
 .sugg {
   position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 30;
@@ -288,13 +309,13 @@ div.empty { padding: 28px 12px; text-align: center; color: var(--ink2); }
 }
 .sugg[hidden] { display: none; }
 .sugg button {
-  display: block; width: 100%; min-height: 44px; padding: 9px 12px; border: 0;
+  display: block; width: 100%; min-height: 44px; padding: 8px 12px; border: 0;
   border-bottom: 1px solid var(--line); background: #FFFFFF; color: var(--ink);
   font: 400 14px/1.25 'Onest', system-ui, sans-serif; text-align: left; cursor: pointer;
 }
 .sugg button:last-child { border-bottom: 0; }
 .sugg button:active { background: var(--tint); }
-.sugg .hint { padding: 10px 12px; color: var(--ink2); font-size: 13px; }
+.sugg .hint { padding: 8px 12px; color: var(--ink2); font-size: 13px; }
 
 /* Карточка адреса отпускает край: список подсказок лежит НАД страницей, и
    .card{overflow:hidden} иначе обрезал бы его по нижней границе карточки. */
@@ -307,19 +328,19 @@ div.empty { padding: 28px 12px; text-align: center; color: var(--ink2); }
   overflow: hidden; background: #FFFFFF;
 }
 .map[hidden] { display: none; }
-.map-hint { padding: 0 12px 10px; color: var(--ink2); font-size: 12.5px; }
+.map-hint { padding: 0 12px 8px; color: var(--ink2); font-size: 13px; }
 .map-hint[hidden] { display: none; }
 
 /* Корзина в магазинах: строка сети под товарами — метка, название, под ним что с
    корзиной (собираю, легло, не вышло), справа итог сети. */
-.run { min-height: 54px; padding-top: 6px; padding-bottom: 6px; }
-.run .grow { display: flex; flex-direction: column; gap: 1px; }
+.run { min-height: 56px; padding-top: 8px; padding-bottom: 8px; }
+.run .grow { display: flex; flex-direction: column; gap: 2px; }
 .run .rn { font-weight: 600; }
 .run .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run.failed [data-run-words] { color: var(--red); }
-.run.login [data-run-words] { color: var(--amber-ink, #d35400); font-weight: 600; }
+.run.login [data-run-words] { color: var(--amber-ink); font-weight: 600; }
 .run.interrupted [data-run-words] { color: var(--amber-ink); }
-.run.old .badge { background: var(--soft); color: var(--ink3); }
+.run.old .badge { background: var(--soft); color: var(--ink2); }
 .spin { width: 14px; height: 14px; flex: none; border-radius: 50%;
         border: 2px solid var(--line2); border-top-color: var(--ink); animation: kz-spin .9s linear infinite; }
 @keyframes kz-spin { to { transform: rotate(360deg); } }

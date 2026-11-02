@@ -4,6 +4,7 @@ import json
 import math
 
 from flask import Blueprint, render_template
+from markupsafe import Markup
 
 from app import repo
 
@@ -49,11 +50,11 @@ def goods(n: int) -> str:
     return f"{n} {plural(n, 'товар', 'товара', 'товаров')}"
 
 
-NBSP = "\u00a0"
+NNBSP = "\u202f"   # узкий неразрывный пробел: разряды и ₽ (DESIGN.md, Typography)
 
 
-def whole(value) -> str:
-    """3519.55 -> «3 520 ₽». Разряды и ₽ через NBSP. Округление половины вверх."""
+def whole(value, big: bool = False) -> str:
+    """3519.55 -> «3 520 ₽» через U+202F, половина вверх. big — сумма от 19 px: ₽ в span.r на 70 %."""
     if value is None or value == "":
         return "—"
     try:
@@ -61,7 +62,8 @@ def whole(value) -> str:
     except (TypeError, ValueError):
         return "—"
     rounded = int(math.floor(number + 0.5)) if number >= 0 else int(math.ceil(number - 0.5))
-    return f"{rounded:,}".replace(",", NBSP) + NBSP + "₽"
+    text = f"{rounded:,}".replace(",", NNBSP) + NNBSP
+    return Markup(text + '<span class="r">₽</span>') if big else text + "₽"
 
 
 def qty_label(qty, unit: str | None) -> str:

@@ -28,6 +28,7 @@ PHONE = "79990000071"
 APP_UA = "Mozilla/5.0 (Linux; Android 14; wv) KorzinaApp/1.6"
 CSS = os.path.join(ROOT, "app", "web", "static", "phone.css")
 NBSP = "\u00a0"     # так rub() и whole() держат вместе разряды и ₽
+NNBSP = "\u202f"
 
 
 @pytest.fixture
@@ -474,7 +475,7 @@ def test_the_network_total_replaces_our_price_and_changes_the_advice(web, monkey
 
     page = text(web.get("/phone/cheaper"))
     assert page.index('data-place="magnit"') < page.index('data-place="pyaterochka"')   # первым — Магнит
-    assert f"130{NBSP}₽" in page and "корзина кабинета" not in page
+    assert f'130{NNBSP}<span class="r">₽</span>' in page and "корзина кабинета" not in page
 
 
 def test_the_chosen_place_names_the_network_total(web, monkeypatch):
@@ -504,7 +505,7 @@ def test_the_chosen_place_shows_the_network_delivery_and_discount(web, monkeypat
     page = text(web.get("/phone/cheaper?pick=0"))
     assert re.search(rf'<span>скидка сети</span>\s*<span class="num">−20,00{NBSP}₽', page)
     assert re.search(rf'<span>доставка</span>\s*<span class="num">{receipt}{NBSP}₽', page)
-    assert f'<span class="vh">доставка</span>{sign}{NBSP}₽' in page
+    assert f'<span class="vh">доставка</span>{sign}{NNBSP}₽' in page
 
 
 def test_an_incomplete_cabinet_cart_does_not_set_the_price(web, monkeypatch):
@@ -620,7 +621,7 @@ def test_shelf_shows_whole_rubles_and_receipt_shows_kopecks(web, monkeypatch):
     _substituted(monkeypatch, _one_place("magnit", "Магнит", 3519.55))
 
     page = text(web.get("/phone/cheaper"))
-    assert f"3{NBSP}520{NBSP}₽" in page
+    assert f'3{NNBSP}520{NNBSP}<span class="r">₽</span>' in page
     assert f"3{NBSP}519,55{NBSP}₽" in page
 
 
@@ -760,7 +761,7 @@ def test_controls_are_not_bigger_than_the_text(web):
         css = fh.read()
     assert ".q { width: 32px; height: 32px;" in css
     assert "height: 48px;" in css                       # главная кнопка внизу
-    assert ".it { display: flex; align-items: center; gap: 10px; min-height: 56px;" in css
+    assert ".it { display: flex; align-items: center; gap: 12px; min-height: 56px;" in css
 
 
 def test_a_basket_row_shows_the_chain_photo(web):
@@ -796,3 +797,36 @@ def test_a_basket_row_shows_the_chain_photo(web):
     assert 'src="https://img.example/m.jpg"' in page
     assert 'aria-label="Убрать: Молоко 930 мл"' in page       # одна штука — «−» с корзинкой
     assert 'aria-label="Меньше: Хлеб Бородинский"' in page
+
+
+def test_whole_formatting():
+    from app.web.phone.common import whole
+
+    assert whole(3519.55) == f"3{NNBSP}520{NNBSP}₽"
+    assert whole(3519.55, big=True) == f'3{NNBSP}520{NNBSP}<span class="r">₽</span>'
+    assert whole(None, big=True) == "—"
+
+
+def test_place_row_goods_count_for_composite_and_single_places(web, monkeypatch):
+    """Составное место из двух сетей показывает у каждой метки своё число товаров (class="mc"), а из одной — без."""
+    enter(web)
+    workspace()
+    _a_basket()
+    _substituted(
+        monkeypatch,
+        _two_places("magnit", "pyaterochka", 100.0),
+        _one_place("dixy", "Дикси", 120.0),
+    )
+
+    page = text(web.get("/phone/cheaper"))
+    two_match = re.search(r'data-place="magnit\+pyaterochka".*?</a>', page, re.DOTALL)
+    assert two_match is not None
+    two_html = two_match.group(0)
+    assert 'class="mc"' in two_html
+    counts = [int(m) for m in re.findall(r'class="mc">(?:.*?)(\d+)<span', two_html)]
+    assert len(counts) == 2
+    assert sum(counts) == 2
+
+    one_match = re.search(r'data-place="dixy".*?</a>', page, re.DOTALL)
+    assert one_match is not None
+    assert 'class="mc"' not in one_match.group(0)

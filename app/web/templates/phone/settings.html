@@ -31,7 +31,7 @@
   {% endif %}
 
   {% if stores %}
-  <div class="card" style="padding: 14px; display: flex; flex-direction: column; gap: 8px">
+  <div class="card" style="padding: 12px; display: flex; flex-direction: column; gap: 8px">
     <div style="display: flex; align-items: baseline; gap: 8px">
       <span style="font-weight: 700">Магазины</span>
       <span class="mut small">подключено</span>
@@ -55,7 +55,7 @@
         {% for s in waiting %}
           <div class="row">
             {{ mark(s.code, s.name) }}
-            <span class="grow">{{ s.name }}{% if s.again %}<span class="fnt small"> · вход истёк — войти снова{% if s.last %} · последняя попытка {{ s.last }}{% endif %}</span>{% endif %}</span>
+            <span class="grow">{{ s.name }}{% if s.again %}<span class="mut small"> · вход истёк — войти снова{% if s.last %} · последняя попытка {{ s.last }}{% endif %}</span>{% endif %}</span>
             <a class="bt ghost" href="/cabinet?store={{ s.code }}" data-open-store="{{ s.code }}">{{ 'Войти снова' if s.again else 'Подключить' }}</a>
           </div>
         {% endfor %}
@@ -98,7 +98,7 @@
             {{ mark(b.code, b.name) }}
             <span class="grow">
               <span>{{ b.name }}</span>
-              <span class="small {{ 'gd' if b.ready else 'fnt' }}" style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ 'собрано, итог сети прочитан' if b.ready else b.next }}</span>
+              <span class="small {{ 'gd' if b.ready else 'mut' }}" style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ 'собрано, итог сети прочитан' if b.ready else b.next }}</span>
             </span>
             {% if b.act %}
               <a class="bt ghost" href="/cabinet?store={{ b.code }}" data-open-store="{{ b.code }}">{{ 'Выбрать' if b.act == 'store' else 'Войти' }}</a>
@@ -138,7 +138,7 @@
         <summary class="row" style="list-style: none; cursor: pointer">
           {{ icon('pin') }}
           <span class="grow">{{ address or 'Укажите адрес доставки' }}</span>
-          {{ icon('next', 'i s fnt') }}
+          {{ icon('next', 'i s mut') }}
         </summary>
         <form method="post" action="{{ url_for('phone.settings') }}" class="field addr" id="addr-form">
           <div class="addr-box">

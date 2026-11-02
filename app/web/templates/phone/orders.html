@@ -27,10 +27,10 @@
         <div class="oh">
           {{ mark(o.store_code, o.store_name) }}
           <span style="flex: 1; min-width: 0"><span style="font-weight: 700">{{ o.store_name }}</span> <span class="mut small">· {{ o.day }}</span></span>
-          <span class="num" style="font-size: 16px; font-weight: 800">{{ rub(o.total) }}</span>
+          <span class="num" style="font-size: 16px; font-weight: 800">{{ whole(o.total) }}</span>
         </div>
-        <div class="oh" style="padding: 6px 0 4px">
-          <span class="fnt small" style="flex: 1">{{ goods(o.count) }}</span>
+        <div class="oh" style="padding: 8px 0 4px">
+          <span class="mut small" style="flex: 1">{{ goods(o.count) }}</span>
           {% if o.in_basket %}
             <span class="badge">{{ icon('check', 'i s') }}В корзине</span>
           {% else %}

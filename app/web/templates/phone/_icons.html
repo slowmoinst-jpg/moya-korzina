@@ -56,5 +56,5 @@
 {% macro mark(code, name='') -%}
 {%- set letters = {'magnit': 'М', 'pyaterochka': '5', 'vkusvill': 'В', 'lenta': 'Л', 'dixy': 'Д',
                    'samokat': 'С', 'metro': 'M', 'perekrestok': 'П', 'fixprice': 'F'} -%}
-<span class="lg s-{{ code }}" style="background: var(--s-{{ code }}, var(--ink3))" aria-hidden="true">{{ letters.get(code) or ((name or code or '?')[:1])|upper }}</span>
+<span class="lg s-{{ code }}" style="background: var(--s-{{ code }}, var(--ink2))" aria-hidden="true">{{ letters.get(code) or ((name or code or '?')[:1])|upper }}</span>
 {%- endmacro %}
