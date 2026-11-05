@@ -22,6 +22,13 @@ from app.shopbrowser import cart, signals  # noqa: E402
 PHONE = "79990000088"
 
 
+@pytest.fixture(autouse=True)
+def clean_tried():
+    phonecart._TRIED.clear()
+    yield
+    phonecart._TRIED.clear()
+
+
 @pytest.fixture
 def web(tmp_path, monkeypatch):
     """Рабочее место с корзиной «молоко + сыр»: Магниту знакомо всё, Пятёрочке ничего."""
@@ -943,3 +950,96 @@ def test_a_missing_touch_seen_does_not_break_the_report(web, monkeypatch):
 
     assert answer.status_code == 200, answer.get_json()
     assert answer.get_json()["ok"] is True
+
+
+def test_link_skips_recent_and_counts_it(web, monkeypatch):
+    """(а) второй _link той же позиции в течение срока не зовёт ни resolve, ни auto_match и считает её в recent."""
+    from app.catalog import refresh
+    from app import matcher
+
+    users.open_workspace(PHONE)
+    coffee = repo.upsert_product(Product(id=None, name="КОФЕ ЖОКЕЙ 250Г", unit="pcs"))
+    basket_id = repo.create_basket("Кофе")
+    repo.set_basket_item(basket_id, coffee, 1.0)
+    users.deactivate()
+
+    resolve_calls = []
+
+    def fake_resolve(*args, **kwargs):
+        resolve_calls.append(args)
+        return None
+
+    auto_match_calls = []
+
+    def fake_auto_match(ids, codes, **kwargs):
+        auto_match_calls.append((ids, codes))
+        return {"auto": 0, "need_review": []}
+
+    monkeypatch.setattr(refresh, "resolve", fake_resolve)
+    monkeypatch.setattr(matcher, "auto_match", fake_auto_match)
+
+    users.open_workspace(PHONE)
+    try:
+        first = phonecart._link({"basket": basket_id}, "magnit")
+        assert len(resolve_calls) == 1
+        assert len(auto_match_calls) == 1
+        assert first["tried"] == 1
+        assert first["recent"] == 0
+
+        # Второй вызов _link в течение срока
+        second = phonecart._link({"basket": basket_id}, "magnit")
+        assert len(resolve_calls) == 1, "resolve не должен вызываться второй раз"
+        assert len(auto_match_calls) == 1, "auto_match не должен вызываться второй раз"
+        assert second["tried"] == 0
+        assert second["recent"] == 1
+    finally:
+        users.deactivate()
+
+
+def test_link_budget_exhausted_leaves_positions_unasked(web, monkeypatch):
+    """(б) бюджет: LINK_BUDGET_SECONDS = 0 через monkeypatch — auto_match не зовётся, позиции в unasked."""
+    from app import config, matcher
+    from app.catalog import refresh
+
+    users.open_workspace(PHONE)
+    sugar = repo.upsert_product(Product(id=None, name="САХАР ПЕСОК 1КГ", unit="pcs"))
+    basket_id = repo.create_basket("Сахар")
+    repo.set_basket_item(basket_id, sugar, 1.0)
+    users.deactivate()
+
+    monkeypatch.setattr(refresh, "resolve", lambda *a, **kw: None)
+    auto_called = []
+    monkeypatch.setattr(matcher, "auto_match", lambda *a, **kw: auto_called.append(a))
+    monkeypatch.setattr(phonecart, "LINK_BUDGET_SECONDS", 0)
+
+    users.open_workspace(PHONE)
+    try:
+        res = phonecart._link({"basket": basket_id}, "magnit")
+        assert auto_called == [], "при исчерпанном бюджете auto_match не зовётся"
+        assert res["unasked"] == 1
+        # Позиция не получила отметку link
+        assert not phonecart._is_tried("link", str(config.db_path()), "magnit", sugar)
+    finally:
+        users.deactivate()
+
+
+def test_second_plan_gives_search_recent(web, monkeypatch):
+    """(в) второй plan той же корзины отдаёт позицию в search_recent, а не в search."""
+    from app.catalog import refresh
+
+    users.open_workspace(PHONE)
+    tea = repo.upsert_product(Product(id=None, name="ЧАЙ ЧЁРН.ЛИСТ.100Г", unit="pcs"))
+    basket_id = repo.create_basket("Чай")
+    repo.set_basket_item(basket_id, tea, 1.0)
+    users.deactivate()
+    monkeypatch.setattr(refresh, "resolve", lambda *a, **kw: None)
+
+    client = logged_in(web)
+    first_res = client.post("/api/device/cartplan", json={"store": "magnit", "basket": basket_id}).get_json()
+    assert len(first_res.get("search", [])) == 1
+    assert first_res.get("search_recent", []) == []
+
+    second_res = client.post("/api/device/cartplan", json={"store": "magnit", "basket": basket_id}).get_json()
+    assert second_res.get("search", []) == []
+    assert len(second_res.get("search_recent", [])) == 1
+    assert second_res["search_recent"][0]["name"] == "ЧАЙ ЧЁРН.ЛИСТ.100Г"

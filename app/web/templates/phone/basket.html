@@ -286,12 +286,12 @@
           .then(function (j) {
             box.innerHTML = j.html;
             tell();
-            if (more(j)) { timer = setTimeout(poll, 2000); }
+            if (more(j)) { timer = setTimeout(poll, 1000); }
           })
-          .catch(function () { if (more({})) { timer = setTimeout(poll, 4000); } });
+          .catch(function () { if (more({})) { timer = setTimeout(poll, 2000); } });
       }
       window.kzRunsChanged = function () { poll(); };
-      if (started || box.getAttribute('data-going')) { timer = setTimeout(poll, 1500); }
+      if (started || box.getAttribute('data-going')) { timer = setTimeout(poll, 800); }
       box.addEventListener('click', function (e) {
         var link = e.target.closest('[data-open-store]');
         if (link && window.KorzinaDevice && KorzinaDevice.openStore(link.getAttribute('data-open-store'))) {

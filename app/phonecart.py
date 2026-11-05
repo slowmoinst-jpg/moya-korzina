@@ -48,15 +48,35 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
+import time
 from datetime import datetime
 from typing import Any
 
-from app import cartrecord, repo
+from app import cartrecord, config, repo
 
 log = logging.getLogger(__name__)
 
 # Сети, чьи сайты приложение открывает у себя. Свои адреса — те же, что у записи.
 CHAINS = tuple(cartrecord.CHAIN_HOSTS)
+
+# Повторные попытки поиска незнакомых позиций корзины не чаще RETRY_SECONDS.
+# Ключ: (вид, путь базы, сеть, product_id) -> time.time().
+RETRY_SECONDS = 6 * 3600
+LINK_BUDGET_SECONDS = 2.5
+_TRIED: dict[tuple[str, str, str, int], float] = {}
+_TRIED_LOCK = threading.Lock()
+
+
+def _tried_mark(kind: str, db_path: str, store: str, product_id: int) -> None:
+    with _TRIED_LOCK:
+        _TRIED[(str(kind), str(db_path), str(store), int(product_id))] = time.time()
+
+
+def _is_tried(kind: str, db_path: str, store: str, product_id: int) -> bool:
+    with _TRIED_LOCK:
+        ts = _TRIED.get((str(kind), str(db_path), str(store), int(product_id)))
+    return bool(ts and (time.time() - ts) < RETRY_SECONDS)
 
 # Куда идти за итогом, если на странице сети не нашлось ссылки на корзину.
 # Замерено только у ВкусВилла (docs/design/store-apis.md: «/cart/ работает»).
@@ -274,7 +294,7 @@ def plan(body: dict) -> dict:
     store = _store(body)
     top_up = bool(body.get("top_up"))
     picked = {k: v for k, v in body.items() if k in ("basket", "lines")}
-    found = {"linked": 0} if picked.get("lines") is not None else _link(picked, store)
+    found = {"linked": 0, "recent": 0} if picked.get("lines") is not None else _link(picked, store)
     lines, empty_note = api._plan_lines(picked, store)
     # Служебные строки чека («Аренда транспортного средства», «Сборка») — не товар:
     # в наряд и в поиск они не идут. Отсекаем ДО cartplan.build, иначе они попали бы
@@ -323,7 +343,8 @@ def plan(body: dict) -> dict:
                     f"{found['in_catalog']}, поиском самой сети — {found['by_search']} "
                     f"из {found['searched']}."
                     + (f" Ещё {found['unasked']} не спрошены — предел живого поиска "
-                       f"{LIVE_LIMIT} за наряд." if found.get("unasked") else ""))
+                       f"{LIVE_LIMIT} за наряд." if found.get("unasked") else "")
+                    + (f" Ещё {found['recent']} спрашивали недавно." if found.get("recent") else ""))
     elif built.unknown:
         # Наряд не пуст, но часть корзины не опознана: сказать, что по ней сделали.
         # Без этих слов строка про незнакомые позиции читается как «даже не пытались».
@@ -331,12 +352,25 @@ def plan(body: dict) -> dict:
     if service_skipped:
         # Служебные строки не товар: человек видит, что они не потерялись, а пропущены.
         note = f"{(note or '').strip()} Служебных строк пропущено: {service_skipped}.".strip()
+    db_path = str(config.db_path())
+    all_search = _search_lines(found.get("unresolved") or [], store)
+    search_lines: list[dict] = []
+    search_recent: list[dict] = []
+    for s_line in all_search:
+        pid = s_line.get("product_id")
+        if pid and _is_tried("search", db_path, store, int(pid)):
+            search_recent.append(s_line)
+        else:
+            if pid:
+                _tried_mark("search", db_path, store, int(pid))
+            search_lines.append(s_line)
     res = {"ok": True, "store": store, "lines": rows, "unknown": list(built.unknown),
            "total": built.total, "note": note, "linked": found["linked"], "rules": rules(store),
            # Позиции, которых сеть не знает: пусть их найдёт телефон поиском самой сети
            # (app/phonecart.py, SEARCH_LIMIT). Для сетей, куда сервер не пускают
            # (Пятёрочка, Самокат), это единственная дорога к настоящему артикулу.
-           "search": _search_lines(found.get("unresolved") or [], store),
+           "search": search_lines,
+           "search_recent": search_recent,
            # Какую корзину описывает наряд и её отпечаток: по нему телефон узнаёт, менялась
            # ли корзина с прошлой сборки в этой сети, и без перемен её не повторяет.
            "basket": basket_id,
@@ -716,14 +750,16 @@ def _link(picked: dict, store: str) -> dict:
     shop = repo.get_store(store)
     baskets = repo.list_baskets()
     if shop is None or not baskets:
-        return {"linked": 0}
+        return {"linked": 0, "recent": 0}
     try:
         basket_id = int(picked["basket"]) if picked.get("basket") is not None else int(baskets[0]["id"])
     except (TypeError, ValueError):
-        return {"linked": 0}                       # неверный номер объяснит _plan_lines
+        return {"linked": 0, "recent": 0}                       # неверный номер объяснит _plan_lines
     basket = next((b for b in baskets if int(b["id"]) == basket_id), None)
     items = repo.basket_items(basket_id)
-    linked = tried = searched = by_search = skipped = 0
+    linked = tried = searched = by_search = skipped = recent = 0
+    db_path = str(config.db_path())
+    t0 = time.monotonic()
     # Позиции, которые так и остались незнакомыми: их отдаём телефону как «найди
     # поиском самой сети» (plan → search). Собираем после всех попыток, иначе в список
     # попали бы и те, что нашлись в каталоге или живым поиском.
@@ -743,6 +779,12 @@ def _link(picked: dict, store: str) -> dict:
         product = repo.get_product(product_id)
         if product is None:
             continue
+        # Позиция уже исследовалась недавно — не тратим время на повторный поиск
+        if _is_tried("link", db_path, store, product_id):
+            recent += 1
+            unresolved.append({"product_id": product_id, "name": product.name})
+            continue
+
         tried += 1
         try:
             found = refresh.resolve(product.name, product.brand, product.weight_g,
@@ -750,10 +792,11 @@ def _link(picked: dict, store: str) -> dict:
             if found and any(r.get("chain") == store for r in found.get("chains") or []):
                 refresh.adopt(int(found["id"]), product_id=product_id)
                 linked += 1
+                _tried_mark("link", db_path, store, product_id)
                 continue
         except Exception:  # noqa: BLE001 — каталог не открылся: спросим поиск сети
             log.warning("%s: позиция %s не опозналась в каталоге", store, product_id, exc_info=True)
-        if searched >= LIVE_LIMIT:
+        if searched >= LIVE_LIMIT or (time.monotonic() - t0) >= LINK_BUDGET_SECONDS:
             continue
         searched += 1
         try:
@@ -767,17 +810,19 @@ def _link(picked: dict, store: str) -> dict:
                     by_search += 1
         except Exception:  # noqa: BLE001 — сеть не ответила: позиция останется незнакомой
             log.warning("%s: поиск сети по позиции %s не удался", store, product_id, exc_info=True)
+        _tried_mark("link", db_path, store, product_id)
         if not repo.confirmed_mapping(product_id, shop.id, real_only=True):
             unresolved.append({"product_id": product_id, "name": product.name})
     # Сколько осталось не спрошенным: предел живого поиска объясняет разницу между
     # «искали все» и «искали десять», и наряд говорит это человеку.
     unasked = max(0, tried - linked - searched)
     log.info("%s: незнакомых позиций корзины %d, в каталоге %d, поиском сети %d из %d "
-             "(не спрошено %d: предел %d), телефону искать %d, служебных пропущено %d",
-             store, tried, linked, by_search, searched, unasked, LIVE_LIMIT, len(unresolved),
+             "(не спрошено %d: предел %d), недавних %d, телефону искать %d, служебных пропущено %d",
+             store, tried, linked, by_search, searched, unasked, LIVE_LIMIT, recent, len(unresolved),
              skipped)
     return {"linked": linked + by_search, "tried": tried, "searched": searched,
             "by_search": by_search, "in_catalog": linked, "unasked": unasked,
+            "recent": recent,
             "unresolved": unresolved, "skipped": skipped,
             "size": len(items),
             "basket": str((basket or {}).get("name") or f"№{basket_id}")}
@@ -791,15 +836,23 @@ def _link_note(found: dict) -> str:
     их просто не спросили — на замере 18.10.2026 двенадцать позиций при пределе десять.
     """
     tried = int(found.get("tried") or 0)
-    if not tried:
+    recent = int(found.get("recent") or 0)
+    if not tried and not recent:
         return ""
-    text = (f" Незнакомых спрашивали: в каталоге нашлось {found.get('in_catalog') or 0}, "
-            f"живым поиском сети — {found.get('by_search') or 0} "
-            f"из {found.get('searched') or 0} спрошенных")
-    unasked = int(found.get("unasked") or 0)
-    if unasked:
-        text += (f", ещё {unasked} не спрошены — предел живого поиска {LIVE_LIMIT} "
-                 "за наряд (сеть бережём)")
+    text = ""
+    if tried:
+        text = (f" Незнакомых спрашивали: в каталоге нашлось {found.get('in_catalog') or 0}, "
+                f"живым поиском сети — {found.get('by_search') or 0} "
+                f"из {found.get('searched') or 0} спрошенных")
+        unasked = int(found.get("unasked") or 0)
+        if unasked:
+            text += (f", ещё {unasked} не спрошены — предел живого поиска {LIVE_LIMIT} "
+                     "за наряд (сеть бережём)")
+    if recent:
+        if text:
+            text += f", ещё {recent} спрашивали недавно"
+        else:
+            text = f" Незнакомых: ещё {recent} спрашивали недавно"
     return text + "."
 
 
@@ -1003,8 +1056,8 @@ def accept_report(body: dict) -> dict:
         "seconds": _count(body.get("seconds")),
     }
     repo.set_setting(REPORT_KEY + store, json.dumps(report, ensure_ascii=False))
-    log.info("корзина с телефона, %s: легло %d из %d, итог сети %s, полей из ответов %d",
-             store, report["landed"], report["planned"], total_of(report),
+    log.info("корзина с телефона, %s: легло %d из %d за %s с, итог сети %s, полей из ответов %d",
+             store, report["landed"], report["planned"], report["seconds"], total_of(report),
              sum(len(v) for v in found.values()))
     _learn(report)
     _stock(report)

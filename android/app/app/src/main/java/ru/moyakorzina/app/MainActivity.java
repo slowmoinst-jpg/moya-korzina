@@ -765,25 +765,25 @@ public class MainActivity extends Activity {
       + "return JSON.stringify({totals:out,count:count,api:nums,page:location.pathname});"
       + "}catch(e){return JSON.stringify({error:String(e).slice(0,120)});}})()";
 
-    /** Сколько дать странице сети улечься после загрузки, мс: витрины дорисовываются скриптом. */
-    private static final int SETTLE_MS = 1500;
+    /** Сколько дать странице сети улечься после загрузки, мс: цель 5 с на сборку, ожидание частым опросом. */
+    private static final int SETTLE_MS = 700;
     /** Сколько ждать после нажатия «Соглашаюсь»: витрина перерисовывает карточку. */
     private static final int CONSENT_WAIT_MS = 1500;
-    private static final int CART_SETTLE_MS = 3000;
-    private static final int READY_POLL_MS = 600;
+    private static final int CART_SETTLE_MS = 800;
+    private static final int READY_POLL_MS = 250;
     private static final int READY_LIMIT_MS = 30000;
     /** Сколько раз ещё поискать кнопку «В корзину», если её пока нет, и через сколько. */
     private static final int PICK_TRIES = 3;
     /** Сколько ещё ждать запоздалый ответ сети на касание, если запросов не видно совсем. */
     private static final int CALLS_WAIT_MS = 2000;
     private static final int PICK_RETRY_MS = 1500;
-    /** Сколько раз перечитать страницу корзины, если итога на ней ещё нет, и через сколько. */
-    private static final int READ_TRIES = 5;
-    private static final int READ_RETRY_MS = 2500;
+    /** Сколько раз перечитать страницу корзины, если итога на ней ещё нет, и через сколько: частый опрос вместо длинных пауз. */
+    private static final int READ_TRIES = 15;
+    private static final int READ_RETRY_MS = 700;
 
     // ── Фоновая сборка (1.13) ──
-    /** Через сколько после последней правки корзины начинать: «−» и «+» жмут подряд. */
-    private static final int DEBOUNCE_MS = 4000;
+    /** Через сколько после последней правки корзины начинать: 600 мс ради цели 5 с на сборку. */
+    private static final int DEBOUNCE_MS = 600;
     /** Не вышла сборка этой корзины — следующая попытка не раньше: сеть могла отказать. */
     private static final long RETRY_MS = 20L * 60 * 1000;
     /** Сколько времени считать завершённую сборку свежей: 6 часов. После этого корзина пересобирается. */
@@ -809,12 +809,76 @@ public class MainActivity extends Activity {
     private FrameLayout stage;
     /** Фоновые сборки: скрытое окно и сборка на сеть, по коду сети. Трогаются только с главного потока. */
     private final Map<String, Slot> slots = new HashMap<>();
+    /** Выученный образец запроса «положить в корзину» по коду сети: живёт в памяти между сборками. */
+    private final Map<String, String> tpls = new HashMap<>();
     private SharedPreferences prefs;
     private SecureVault secureVault;
 
     private SecureVault vault() {
         if (secureVault == null) secureVault = new SecureVault(this);
         return secureVault;
+    }
+
+    /** Снять кавычки JSON-строки, если они есть. */
+    private static String unquote(String val) {
+        if (val == null) return "";
+        val = val.trim();
+        if (val.length() >= 2 && val.startsWith("\"") && val.endsWith("\"")) {
+            try {
+                Object obj = new JSONTokener(val).nextValue();
+                if (obj instanceof String) return (String) obj;
+            } catch (Exception ignored) { }
+            return val.substring(1, val.length() - 1);
+        }
+        return val;
+    }
+
+    /**
+     * Сохранённый образец запроса «положить в корзину» для сети (2.3).
+     * Из памяти (tpls), иначе из SecureVault. Пусто, не JSON или старше 7 суток — null.
+     */
+    private JSONObject storedTpl(String code) {
+        if (code == null || code.isEmpty()) return null;
+        String raw = tpls.get(code);
+        if (raw == null || raw.isEmpty()) {
+            raw = vault().getDecrypted("tpl." + code, null);
+        }
+        if (raw == null || raw.trim().isEmpty()) return null;
+        try {
+            JSONObject obj = new JSONObject(raw);
+            long at = obj.optLong("at", 0);
+            long age = System.currentTimeMillis() - at;
+            if (at <= 0 || age < 0 || age > 7L * 24 * 60 * 60 * 1000) {
+                dropTpl(code);
+                return null;
+            }
+            if (!tpls.containsKey(code)) {
+                tpls.put(code, raw);
+            }
+            return obj;
+        } catch (Exception e) {
+            dropTpl(code);
+            return null;
+        }
+    }
+
+    /** Сбросить сохранённый образец запроса для сети (2.3). */
+    private void dropTpl(String code) {
+        if (code == null || code.isEmpty()) return;
+        tpls.remove(code);
+        vault().putEncrypted("tpl." + code, "");
+    }
+
+    /** Продлить срок годности образца в SecureVault при удачном повторе (2.5). */
+    private void extendTpl(String code) {
+        JSONObject obj = storedTpl(code);
+        if (obj == null) return;
+        try {
+            obj.put("at", System.currentTimeMillis());
+            String raw = obj.toString();
+            tpls.put(code, raw);
+            vault().putEncrypted("tpl." + code, raw);
+        } catch (Exception ignored) { }
     }
     /** Последняя корзина, которую страница отдала на сборку (мост collect). */
     private JSONObject lastCollect;
@@ -1702,6 +1766,9 @@ public class MainActivity extends Activity {
         // позиции кладутся им, без загрузки карточек. Пробуем выучить один раз.
         boolean learned = false;
         boolean learnTried = false;
+        long callsUntil = 0;         // до какого времени ждать запросы сети опросом (1.3)
+        boolean reusedTpl = false;   // образец запроса сети взят из хранилища между сборками (2.4)
+        boolean extendedTpl = false; // срок образца продлён в этой сборке (2.5)
         String how = "tap";          // чем легла текущая позиция: касанием или запросом
         final long startedAt = SystemClock.uptimeMillis();
         String cartHint = "";        // дорога к корзине не нашлась: что похожее было на странице
@@ -1914,6 +1981,29 @@ public class MainActivity extends Activity {
                         .put("search_alt", s.optString("search_alt", ""))
                         .put("clicks", 1).put("sku", "")
                         .put("product_id", s.optInt("product_id", 0)));
+                }
+                JSONArray searchRecent = plan.optJSONArray("search_recent");
+                for (int i = 0; searchRecent != null && i < searchRecent.length(); i++) {
+                    JSONObject s = searchRecent.optJSONObject(i);
+                    if (s == null) continue;
+                    String sName = s.optString("name", "");
+                    if (sName.isEmpty()) continue;
+                    if (r.slot != null) {
+                        r.items.put(new JSONObject()
+                            .put("name", sName).put("sku", "").put("url", "")
+                            .put("ok", false)
+                            .put("why", "поиском сети не нашлась недавно — поищу позже")
+                            .put("put", 0).put("times", 0)
+                            .put("how", "tap").put("calls", new JSONArray()));
+                    } else {
+                        String sUrl = s.optString("url", "");
+                        if (sUrl.isEmpty()) continue;
+                        r.lines.put(new JSONObject()
+                            .put("name", sName).put("url", "").put("search", sUrl)
+                            .put("search_alt", s.optString("search_alt", ""))
+                            .put("clicks", 1).put("sku", "")
+                            .put("product_id", s.optInt("product_id", 0)));
+                    }
                 }
                 r.ourTotal = plan.optDouble("total", 0);
                 if (plan.has("basket") && !plan.isNull("basket")) r.basket = plan.optInt("basket", r.basket);
@@ -3303,8 +3393,12 @@ public class MainActivity extends Activity {
             r.put++;
             r.tries = 0;
             int pause = r.rules.optInt("click_pause_ms", 700);
-            if (r.put < r.clicks) handler.postDelayed(() -> tapAdd(r, true), pause + 500);
-            else handler.postDelayed(() -> checkLine(r, ""), pause + 1200);
+            if (r.put < r.clicks) {
+                handler.postDelayed(() -> tapAdd(r, true), pause + 500);
+            } else {
+                r.callsUntil = SystemClock.uptimeMillis() + pause + 1200 + CALLS_WAIT_MS;
+                handler.postDelayed(() -> checkLine(r, ""), pause);
+            }
         });
     }
 
@@ -3327,8 +3421,12 @@ public class MainActivity extends Activity {
       + "return JSON.stringify({known:known,n:n,on:on});"
       + "}catch(e){return JSON.stringify({known:false,n:0,on:false});}})()";
 
-    /** Один раз после касания: вырос ли признак корзины. Не вырос — отказ с дампом. */
-    private void checkCartSign(final CartRun r, final JSONArray calls) {
+    /**
+     * Один раз после касания: вырос ли признак корзины. Не вырос — перепроверка через
+     * 500 мс (счётчик сеть перерисовывает после ответа, а ждём его теперь опросом),
+     * затем отказ с дампом.
+     */
+    private void checkCartSign(final CartRun r, final JSONArray calls, final boolean retried) {
         if (!alive(r)) return;
         r.view.evaluateJavascript(CART_SIGN_JS, value -> {
             if (!alive(r)) return;
@@ -3337,12 +3435,20 @@ public class MainActivity extends Activity {
             int n = sign.optInt("n", 0);
             boolean on = sign.optBoolean("on");
             if (known && !on && n <= r.badged) {
+                if (!retried) {
+                    handler.postDelayed(() -> checkCartSign(r, calls, true), 500);
+                    return;
+                }
                 final String base = "карточка открылась, кнопка нажата, но сеть не показала товар в корзине";
                 pageDump(r, dump -> lineDone(r, false, cardWhy(base, dump, null), calls));
                 return;
             }
             verifyLine(r, calls);
         });
+    }
+
+    private void checkCartSign(final CartRun r, final JSONArray calls) {
+        checkCartSign(r, calls, false);
     }
 
     /**
@@ -3355,10 +3461,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * `waited` — уже ждали запоздалый ответ сети. Через VPN ответ на касание приходит
-     * дольше, чем мы ждём после него: «+» томатного сока лёг, а сборка сказала «сеть не
-     * обратилась к своей корзине» (эмулятор, 18.10.2026). Поэтому, не увидев ни одного
-     * запроса, спрашиваем ещё раз через CALLS_WAIT_MS.
+     * Опрос ответов сети: пока calls пуст и callsUntil не вышел, перепроверяем каждые 250 мс.
      */
     private void checkLine(final CartRun r, final String failure, final JSONArray before, final boolean waited) {
         if (!alive(r)) return;
@@ -3368,8 +3471,8 @@ public class MainActivity extends Activity {
             final JSONArray calls = new JSONArray();
             for (int i = 0; i < before.length(); i++) calls.put(before.opt(i));
             for (int i = 0; got != null && i < got.length(); i++) calls.put(got.opt(i));
-            if (failure.isEmpty() && calls.length() == 0 && !waited && r.put > 0) {
-                handler.postDelayed(() -> checkLine(r, failure, calls, true), CALLS_WAIT_MS);
+            if (failure.isEmpty() && calls.length() == 0 && r.put > 0 && SystemClock.uptimeMillis() < r.callsUntil) {
+                handler.postDelayed(() -> checkLine(r, failure, calls, false), 250);
                 return;
             }
             boolean anyOk = false;
@@ -3517,19 +3620,20 @@ public class MainActivity extends Activity {
         r.how = "tap";
         // Первая позиция легла касанием «В корзину» — выучить по ней запрос сети и дальше
         // класть им. По касанию «+» учимся только у сети, чей запрос ставит число
-        // (qty_sets): у прочих «ещё одну» бывает другим запросом. Учимся в каждой сборке
-        // заново: заголовки запроса (x-permissions-jwt у Магнита) живут недолго — образец
-        // трёхминутной давности сеть отвергла кодом 500 (эмулятор, 18.10.2026).
+        // (qty_sets): у прочих «ещё одну» бывает другим запросом. Образец хранится
+        // между сборками, а свежесть проверяет сам повтор (не принят — учимся заново).
         boolean sets = r.rules.optBoolean("qty_sets");
-        if (ok && "tap".equals(how) && (r.have == 0 || sets) && !r.learned && !r.learnTried && !sku.isEmpty()
-                && r.at < r.lines.length()) {
+        if (ok && "tap".equals(how) && (r.have == 0 || sets) && !r.learned && !r.learnTried && !sku.isEmpty()) {
             r.learnTried = true;
             // У сети, что ставит число, образец — всегда одна своя позиция: после «+» в теле
             // вся корзина, и повтор с ней положил бы артикул дважды — Магнит ответил 500.
             learn(r, sku, sets);
             return;
         }
-        syncCart(r, taken && r.put > 0 ? sku : "", () -> handler.postDelayed(() -> nextLine(r), pauseNext(r)));
+        syncCart(r, taken && r.put > 0 ? sku : "", () -> {
+            if (r.at >= r.lines.length()) nextLine(r);
+            else handler.postDelayed(() -> nextLine(r), pauseNext(r));
+        });
     }
 
     /** Пауза до следующей позиции: запросом — темп запросов сервера, касаниями — темп покупателя. */
@@ -3552,14 +3656,33 @@ public class MainActivity extends Activity {
         r.view.evaluateJavascript(LEARN_JS.replace("%s", JSONObject.quote(sku) + "," + one), value -> {
             if (!alive(r)) return;
             JSONObject got = asObject(value);
+            Runnable proceed = () -> syncCart(r, sku, () -> {
+                if (r.at >= r.lines.length()) nextLine(r);
+                else handler.postDelayed(() -> nextLine(r), pauseAfter(r));
+            });
             if (got.optBoolean("ok")) {
                 r.learned = true;
                 status(r, r.name + ": дальше кладу запросом сети " + got.optString("method") + " "
                     + got.optString("path"), false);
+                // Сохраняем выученный образец между сборками (2.2)
+                r.view.evaluateJavascript("JSON.stringify({tpl:window.__kzTpl,origin:location.origin})", tplVal -> {
+                    if (!alive(r)) return;
+                    JSONObject payload = asObject(tplVal);
+                    if (payload.has("tpl") && !payload.isNull("tpl")) {
+                        try {
+                            payload.put("at", System.currentTimeMillis());
+                            String raw = payload.toString();
+                            tpls.put(r.code, raw);
+                            vault().putEncrypted("tpl." + r.code, raw);
+                        } catch (Exception ignored) { }
+                    }
+                    proceed.run();
+                });
+                return;
             } else {
                 status(r, r.name + ": запрос сети не выучен (" + got.optString("why", "?") + "), дальше касаниями", false);
+                proceed.run();
             }
-            syncCart(r, sku, () -> handler.postDelayed(() -> nextLine(r), pauseAfter(r)));
         });
     }
 
@@ -3581,6 +3704,19 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) { }
         r.view.evaluateJavascript(REPLAY_JS.replace("%s", p.toString()), started -> {
             if (!alive(r)) return;
+            String st = unquote(started);
+            if (!"started".equals(st)) {
+                if (r.reusedTpl) {
+                    dropTpl(r.code);
+                    r.reusedTpl = false;
+                    r.learnTried = false;
+                }
+                r.learned = false;
+                status(r, r.name + ": сеть не приняла запрос (" + st
+                    + "), дальше касаниями", true);
+                cardLine(r, line);
+                return;
+            }
             final long until = SystemClock.uptimeMillis() + 15000;
             handler.postDelayed(new Runnable() {
                 @Override
@@ -3591,10 +3727,14 @@ public class MainActivity extends Activity {
                         if (!alive(r)) return;
                         JSONObject res = asObject(value);
                         if (res.length() == 0 && SystemClock.uptimeMillis() < until) {
-                            handler.postDelayed(again, 300);
+                            handler.postDelayed(again, 100);
                             return;
                         }
                         if (res.optBoolean("ok")) {
+                            if (r.reusedTpl && !r.extendedTpl) {
+                                extendTpl(r.code);
+                                r.extendedTpl = true;
+                            }
                             r.how = "request";
                             r.put = r.clicks;
                             JSONArray calls = new JSONArray();
@@ -3607,13 +3747,18 @@ public class MainActivity extends Activity {
                             lineDone(r, true, "", calls);
                             return;
                         }
+                        if (r.reusedTpl) {
+                            dropTpl(r.code);
+                            r.reusedTpl = false;
+                            r.learnTried = false;
+                        }
                         r.learned = false;
                         status(r, r.name + ": сеть не приняла запрос (" + res.optInt("status", 0)
                             + "), дальше касаниями", true);
                         cardLine(r, line);
                     });
                 }
-            }, 300);
+            }, 100);
         });
     }
 
@@ -3746,7 +3891,11 @@ public class MainActivity extends Activity {
                 boolean stuck = r.cartFrom != null && r.cartFrom.equals(pathOf(open));
                 // Итога нет — страница корзины ещё дорисовывается: у Магнита через VPN
                 // эмулятора суммы пришли позже 9 с после заголовка (18.10.2026).
-                if (!stuck && r.readTries < READ_TRIES) {
+                // Сеть без итога две сборки подряд перечитываем не больше 3 раз (1.5), но
+                // каждая пятая такая сборка ждёт полностью: медленная сеть не теряет итог навсегда.
+                int miss = memory().getInt("nototal." + r.code, 0);
+                int limit = (r.slot != null && miss >= 2 && miss % 5 != 0) ? 3 : READ_TRIES;
+                if (!stuck && r.readTries < limit) {
                     r.readTries++;
                     handler.postDelayed(() -> readCart(r), READ_RETRY_MS);
                     return;
@@ -3951,6 +4100,32 @@ public class MainActivity extends Activity {
             setChainButtons(currentChain >= 0);
         } else if (r.slot.run == r) {
             r.slot.run = null;
+        }
+
+        // Счётчик фоновых сборок подряд без найденного итога на странице (1.5). Остановленная
+        // сборка корзину не читала — она не в счёт.
+        if (background && stoppedWhy.isEmpty()) {
+            String nototalKey = "nototal." + r.code;
+            if (hasTotal(cart)) {
+                memory().edit().putInt(nototalKey, 0).apply();
+            } else {
+                int count = memory().getInt(nototalKey, 0);
+                memory().edit().putInt(nototalKey, count + 1).apply();
+            }
+        }
+
+        // Не найден товар в корзине сети при повторе запроса — сброс образца (2.6)
+        if (r.reusedTpl) {
+            for (int i = 0; i < r.items.length(); i++) {
+                JSONObject it = r.items.optJSONObject(i);
+                if (it != null && "request".equals(it.optString("how")) && !it.optBoolean("ok")) {
+                    String why = it.optString("why", "");
+                    if (why.contains("в корзине сети его не видно")) {
+                        dropTpl(r.code);
+                        break;
+                    }
+                }
+            }
         }
 
         int landed = 0;
@@ -4284,11 +4459,70 @@ public class MainActivity extends Activity {
         askPlan(r, () -> begin(r));
     }
 
+    /**
+     * Подготовить скрытое окно к повтору сохранённого образца (2.4):
+     * адрес окна должен быть на том же origin, что и образец запроса.
+     */
+    private void ensureTpl(final CartRun r, final Runnable then) {
+        final JSONObject stored = storedTpl(r.code);
+        if (stored == null || !alive(r)) {
+            r.learned = false;
+            r.learnTried = false;
+            r.reusedTpl = false;
+            then.run();
+            return;
+        }
+        final String expectedOrigin = stored.optString("origin", "");
+        final JSONObject tplObj = stored.optJSONObject("tpl");
+        final String tpl = tplObj != null ? tplObj.toString() : stored.optString("tpl", "");
+        if (expectedOrigin.isEmpty() || tpl.isEmpty()) {
+            r.learned = false;
+            r.learnTried = false;
+            r.reusedTpl = false;
+            then.run();
+            return;
+        }
+        r.view.evaluateJavascript("location.origin", currentVal -> {
+            if (!alive(r)) return;
+            String curOrigin = unquote(currentVal);
+            if (expectedOrigin.equals(curOrigin)) {
+                r.view.evaluateJavascript(watchScript(r), null);
+                r.view.evaluateJavascript("window.__kzTpl=" + tpl + ";window.__kzRep=window.__kzRep||{};", ignored -> then.run());
+                return;
+            }
+            go(r, expectedOrigin + "/robots.txt");
+            whenReady(r, null, null, 0, () -> {
+                if (!alive(r)) return;
+                r.view.evaluateJavascript("location.origin", afterVal -> {
+                    if (!alive(r)) return;
+                    String afterOrigin = unquote(afterVal);
+                    if (expectedOrigin.equals(afterOrigin)) {
+                        r.view.evaluateJavascript(watchScript(r), null);
+                        r.view.evaluateJavascript("window.__kzTpl=" + tpl + ";window.__kzRep=window.__kzRep||{};", ignored -> then.run());
+                    } else {
+                        // Не совпал — в этой сборке образец не переиспользовать (dropTpl не звать)
+                        r.learned = false;
+                        r.learnTried = false;
+                        r.reusedTpl = false;
+                        then.run();
+                    }
+                });
+            });
+        });
+    }
+
     /** Наряд пришёл: сначала новые позиции (первая учит запрос сети), потом прибавки, потом лежащие. */
     private void begin(final CartRun r) {
         loadLedger(r);
         if (r.lines.length() == 0) {
             if (shouldDrop(r) && hasExcess(r)) {
+                if (r.slot != null && storedTpl(r.code) != null) {
+                    r.learned = true;
+                    r.learnTried = true;
+                    r.reusedTpl = true;
+                    ensureTpl(r, () -> endOfRun(r));
+                    return;
+                }
                 endOfRun(r);   // класть нечего — снять своё и прочитать корзину сети
                 return;
             }
@@ -4296,24 +4530,34 @@ public class MainActivity extends Activity {
             endBackground(r, "empty", note.isEmpty() ? "позиции корзины этой сети незнакомы" : note);
             return;
         }
-        JSONArray fresh = new JSONArray(), more = new JSONArray(), kept = new JSONArray();
-        for (int i = 0; i < r.lines.length(); i++) {
-            JSONObject line = r.lines.optJSONObject(i);
-            if (line == null) continue;
-            String sku = line.optString("sku", "");
-            int have = sku.isEmpty() ? 0 : r.cart.optInt(sku, 0);
-            int target = Math.max(1, line.optInt("clicks", 1));
-            (have == 0 ? fresh : have < target ? more : kept).put(line);
+        final Runnable proceed = () -> {
+            JSONArray fresh = new JSONArray(), more = new JSONArray(), kept = new JSONArray();
+            for (int i = 0; i < r.lines.length(); i++) {
+                JSONObject line = r.lines.optJSONObject(i);
+                if (line == null) continue;
+                String sku = line.optString("sku", "");
+                int have = sku.isEmpty() ? 0 : r.cart.optInt(sku, 0);
+                int target = Math.max(1, line.optInt("clicks", 1));
+                (have == 0 ? fresh : have < target ? more : kept).put(line);
+            }
+            JSONArray ordered = new JSONArray();
+            for (JSONArray part : new JSONArray[]{fresh, more, kept}) {
+                for (int i = 0; i < part.length(); i++) ordered.put(part.opt(i));
+            }
+            r.lines = ordered;
+            status(r, "позиций " + r.lines.length() + ": новых " + fresh.length() + ", прибавить "
+                + more.length() + ", уже лежат " + kept.length(), false);
+            beat(r, true);
+            nextLine(r);
+        };
+        if (r.slot != null && storedTpl(r.code) != null) {
+            r.learned = true;
+            r.learnTried = true;
+            r.reusedTpl = true;
+            ensureTpl(r, proceed);
+            return;
         }
-        JSONArray ordered = new JSONArray();
-        for (JSONArray part : new JSONArray[]{fresh, more, kept}) {
-            for (int i = 0; i < part.length(); i++) ordered.put(part.opt(i));
-        }
-        r.lines = ordered;
-        status(r, "позиций " + r.lines.length() + ": новых " + fresh.length() + ", прибавить "
-            + more.length() + ", уже лежат " + kept.length(), false);
-        beat(r, true);
-        nextLine(r);
+        proceed.run();
     }
 
     /** Фоновая сборка кончилась без отчёта: класть нечего, наряд не пришёл, сеть не пустила. */
@@ -4645,6 +4889,16 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) { }
         r.view.evaluateJavascript(REPLAY_JS.replace("%s", p.toString()), started -> {
             if (!alive(r)) { callback.onReceiveValue(false); return; }
+            String st = unquote(started);
+            if (!"started".equals(st)) {
+                if (r.reusedTpl) {
+                    dropTpl(r.code);
+                    r.reusedTpl = false;
+                    r.learnTried = false;
+                }
+                callback.onReceiveValue(false);
+                return;
+            }
             final long until = SystemClock.uptimeMillis() + 15000;
             handler.postDelayed(new Runnable() {
                 @Override
@@ -4655,13 +4909,26 @@ public class MainActivity extends Activity {
                         if (!alive(r)) { callback.onReceiveValue(false); return; }
                         JSONObject res = asObject(value);
                         if (res.length() == 0 && SystemClock.uptimeMillis() < until) {
-                            handler.postDelayed(again, 300);
+                            handler.postDelayed(again, 100);
                             return;
                         }
-                        callback.onReceiveValue(res.optBoolean("ok"));
+                        boolean ok = res.optBoolean("ok");
+                        if (ok) {
+                            if (r.reusedTpl && !r.extendedTpl) {
+                                extendTpl(r.code);
+                                r.extendedTpl = true;
+                            }
+                        } else {
+                            if (r.reusedTpl) {
+                                dropTpl(r.code);
+                                r.reusedTpl = false;
+                                r.learnTried = false;
+                            }
+                        }
+                        callback.onReceiveValue(ok);
                     });
                 }
-            }, 300);
+            }, 100);
         });
     }
 
