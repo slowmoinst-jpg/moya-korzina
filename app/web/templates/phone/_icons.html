@@ -38,6 +38,14 @@
 <path d="M2.5 6.5h11v9.5h-11z"></path><path d="M13.5 9.5h4l3 3.2v3.3h-7"></path><circle cx="6.5" cy="17.5" r="1.7"></circle><circle cx="17" cy="17.5" r="1.7"></circle>
 {%- elif name == 'alert' -%}
 <path d="M12 3.5 2.5 20h19z"></path><path d="M12 10v4.5M12 17.3v.2"></path>
+{%- elif name == 'grid' -%}
+<rect x="3.5" y="3.5" width="4.5" height="4.5" rx="1"></rect><rect x="9.75" y="3.5" width="4.5" height="4.5" rx="1"></rect><rect x="16" y="3.5" width="4.5" height="4.5" rx="1"></rect><rect x="3.5" y="9.75" width="4.5" height="4.5" rx="1"></rect><rect x="9.75" y="9.75" width="4.5" height="4.5" rx="1"></rect><rect x="16" y="9.75" width="4.5" height="4.5" rx="1"></rect><rect x="3.5" y="16" width="4.5" height="4.5" rx="1"></rect><rect x="9.75" y="16" width="4.5" height="4.5" rx="1"></rect><rect x="16" y="16" width="4.5" height="4.5" rx="1"></rect>
+{%- elif name == 'list' -%}
+<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"></path>
+{%- elif name == 'more' -%}
+<path d="M5.5 12h.01M12 12h.01M18.5 12h.01" stroke-width="3"></path>
+{%- elif name == 'search' -%}
+<circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.35-4.35"></path>
 {%- endif -%}
 </svg>
 {%- endmacro %}

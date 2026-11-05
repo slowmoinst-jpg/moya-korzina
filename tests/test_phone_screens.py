@@ -228,7 +228,7 @@ def test_cheaper_answers_where_and_lists_every_place(web):
     assert "Где дешевле" in page
     assert "Рекомендуем" in page
     assert 'data-place="magnit"' in page and 'data-place="pyaterochka"' in page
-    assert "Варианты" in page
+    assert '<ol class="board"' in page
     assert "2/2" in page            # главное в строке: полнота со значком (01.11.2026)
 
 
@@ -319,7 +319,7 @@ def test_a_place_with_a_gap_counts_what_was_found(web, monkeypatch):
     _substituted(monkeypatch, _one_place("magnit", "Магнит", 90.0, lines=1, missing=1))
 
     page = text(web.get("/phone/cheaper"))
-    assert "Варианты" in page
+    assert '<ol class="board"' in page
     assert "1/2" in page
 
 
@@ -684,7 +684,7 @@ def test_settings_count_and_lists_cover_the_same_chains(web, monkeypatch):
     page = text(web.get("/phone/settings"))
 
     done, total = map(int, re.search(r"(\d+) из (\d+)</span>", page).groups())
-    waiting = _section(page, "Осталось подключить").count("data-open-store=")
+    waiting = len(re.findall(r'class="wt"[^>]*data-open-store=', page))
     kept = _section(page, "Подключено").count('name="store" value=')
     assert done == kept == 1
     assert total == waiting + kept == len(store_accounts.ABILITIES)
@@ -711,7 +711,7 @@ def test_settings_assembly_block_lists_only_connected_chains_in_plain_words(web,
 
     page = text(web.get("/phone/settings"))
 
-    block = _section(page, "Сборка корзины")
+    block = _section(page, "Подключено")
     assert "легло 2 из 4" in block, "что легло — словами, а не «Собрано» у сети без сборки"
     assert block.count('data-open-store="monetka"') == 1 and "Войти" in block, \
         "кнопка есть там, где нужен шаг человека"
@@ -754,14 +754,13 @@ def test_controls_are_not_bigger_than_the_text(web):
 
     Размер в точках тест не измерит, но поймает переименованный класс или
     возвращённые крупные кнопки: правила плотности стоят в phone.css буквально.
-    Размеры — вида по мотивам Магнита, принятого владельцем 22.10.2026: счётчик 32 px,
-    строка товара 56 px (с фото).
+    Размеры — Светлое табло (DESIGN.md): счётчик 34 px, кнопки 40 px, главная 52 px.
     """
     with open(CSS, encoding="utf-8") as fh:
         css = fh.read()
-    assert ".q { width: 32px; height: 32px;" in css
-    assert "height: 48px;" in css                       # главная кнопка внизу
-    assert ".it { display: flex; align-items: center; gap: 12px; min-height: 56px;" in css
+    assert "height: 34px;" in css                       # счётчик
+    assert "height: 52px;" in css                       # главная кнопка внизу
+    assert ".it {" in css
 
 
 def test_a_basket_row_shows_the_chain_photo(web):
@@ -830,3 +829,107 @@ def test_place_row_goods_count_for_composite_and_single_places(web, monkeypatch)
     one_match = re.search(r'data-place="dixy".*?</a>', page, re.DOTALL)
     assert one_match is not None
     assert 'class="mc"' not in one_match.group(0)
+
+
+def test_cheaper_board_limits_to_three_places_and_formats_diff(web, monkeypatch):
+    """«Где дешевле»: на табло не больше трёх мест, первое — рекомендуемое (класс win);
+    у места, которое не рекомендуемое, есть разница со знаком («+» или «−» U+2212) и U+202F перед ₽."""
+    enter(web)
+    workspace()
+    _a_basket()
+    _substituted(
+        monkeypatch,
+        _one_place("magnit", "Магнит", 150.0, missing=0),
+        _one_place("vkusvill", "ВкусВилл", 100.0, lines=2, missing=1),
+        _one_place("pyaterochka", "Пятёрочка", 80.0, lines=1, missing=2),
+        _one_place("lenta", "Лента", 80.0, lines=1, missing=2),
+        positions=3,
+    )
+    page = text(web.get("/phone/cheaper"))
+    board_match = re.search(r'<ol class="board"[^>]*>(.*?)</ol>', page, re.DOTALL)
+    assert board_match is not None
+    board_html = board_match.group(1)
+    places = re.findall(r'<a class="pl\b[^"]*"', board_html)
+    assert len(places) == 3
+    assert 'class="pl win' in places[0]
+    assert re.search(r'[+\u2212]\d+\u202f₽', board_html)
+
+
+def test_cheaper_split_thumbs_count_and_more(web, monkeypatch):
+    """«Где дешевле»: в карточке .split у части столько миниатюр, сколько товаров в этой сети,
+    но не больше пяти, и «+N», когда товаров больше пяти."""
+    enter(web)
+    workspace()
+    _a_basket()
+    lines = [
+        VariantLine(store_code="magnit", store_name="Магнит", card_id=None, card_name=None,
+                    product_id=n, product_name=f"Товар {n}", qty=1.0, price=100.0)
+        for n in range(1, 8)
+    ]
+    var = Variant(
+        stores=[StoreBreakdown(store_code="magnit", store_name="Магнит", subtotal=700.0,
+                               delivery=0.0, discount=0.0, total=700.0, lines=lines)],
+        total=700.0, baseline=800.0
+    )
+    _substituted(monkeypatch, var)
+    page = text(web.get("/phone/cheaper"))
+    split_match = re.search(r'<section class="split"[^>]*>(.*?)</section>', page, re.DOTALL)
+    assert split_match is not None
+    split_html = split_match.group(1)
+    thumbs = re.findall(r'<span class="t">', split_html)
+    assert len(thumbs) == 5
+    assert "+2" in split_html
+
+
+def test_orders_thumbs_and_more(web):
+    """«История заказов»: у заказа из семи товаров пять миниатюр и «+2»."""
+    enter(web)
+    workspace()
+    seed_order(count=7)
+    page = text(web.get("/phone/orders"))
+    comp_match = re.search(r'<details class="comp">(.*?)</details>', page, re.DOTALL)
+    assert comp_match is not None
+    summary_match = re.search(r'<summary class="th"[^>]*>(.*?)</summary>', comp_match.group(1), re.DOTALL)
+    assert summary_match is not None
+    summary_html = summary_match.group(1)
+    thumbs = re.findall(r'<span class="t">', summary_html)
+    assert len(thumbs) == 5
+    assert "+2" in summary_html
+
+
+def test_settings_connected_assembly_state_and_disconnect_in_details(web, monkeypatch):
+    """«Настройки»: строка подключённой сети показывает её состояние сборки и держит форму «Отключить вход» внутри details;
+    заголовка «Сборка корзины» нет; неподключённая сеть — плитка с data-open-store."""
+    from app import cartrun
+
+    enter(web)
+    workspace()
+    cartrun.save(cartrun.Row(code="magnit", name="Магнит", state=cartrun.DONE,
+                             planned=3, landed=["a", "b", "c"], by=cartrun.DEVICE))
+    users.deactivate()
+    monkeypatch.setattr(cartrun, "_login", lambda code: "" if code == "magnit" else "connect")
+
+    page = text(web.get("/phone/settings"))
+    assert "Сборка корзины" not in page
+    conn_block = _section(page, "Подключено")
+    assert any(w in conn_block for w in ("собрано", "легло", "легла"))
+    assert '<details class="menu">' in conn_block
+    assert 'action="/phone/settings/disconnect"' in conn_block or "Отключить вход" in conn_block
+    assert re.search(r'<a class="wt"[^>]*data-open-store="pyaterochka"', page)
+
+
+def test_basket_header_history_and_view_buttons_and_bdg(web):
+    """«Корзина»: в шапке ссылка с aria-label="История заказов" и две кнопки вида с aria-pressed;
+    у каждого товара есть .bdg с количеством."""
+    enter(web)
+    workspace()
+    pid = add_product("Молоко 930 мл")
+    basket_id = repo.create_basket("Текущая")
+    repo.set_basket_item(basket_id, pid, 2.0)
+
+    page = text(web.get("/phone/basket"))
+    assert 'aria-label="История заказов"' in page
+    assert 'data-v="grid"' in page and 'aria-pressed="true"' in page
+    assert 'data-v="list"' in page and 'aria-pressed="false"' in page
+    assert 'class="bdg num"' in page
+    assert "2\u00a0шт" in page or "2 шт" in page

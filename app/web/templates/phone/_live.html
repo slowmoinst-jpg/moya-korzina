@@ -1,0 +1,39 @@
+{% from 'phone/_icons.html' import icon, mark %}
+{% if top is none %}
+  <a class="live wait" href="{{ url_for('phone.cheaper') }}" data-live="{{ url_for('phone.basket_top') }}" aria-busy="true" aria-label="Где дешевле: считаем">
+    <span class="lv"><span class="spin" aria-hidden="true"></span></span>
+    <span class="lv"><span class="spin" aria-hidden="true"></span></span>
+    <span class="lv"><span class="spin" aria-hidden="true"></span></span>
+    <span class="live-fallback">Где дешевле<span class="sub num"> · {{ items|length }}</span></span>
+  </a>
+{% elif top.places %}
+  {%- set descs = [] -%}
+  {%- for p in top.places -%}
+    {%- if p.full -%}
+      {%- set _ = descs.append(p.title ~ ' ' ~ whole(p.total)) -%}
+    {%- else -%}
+      {%- set _ = descs.append(p.title ~ ' ' ~ whole(p.total) ~ ', нашлось ' ~ (p.of - p.lack) ~ ' из ' ~ p.of) -%}
+    {%- endif -%}
+  {%- endfor -%}
+  <a class="live" href="{{ url_for('phone.cheaper') }}" aria-label="Где дешевле: {{ descs|join('; ') }}">
+    {% for p in top.places %}
+      <span class="lv{{ ' win' if p.best }}">
+        {% if p.codes|length > 1 %}
+          <span class="lgs">
+            {%- for code in p.codes -%}{{ mark(code) }}{%- endfor -%}
+          </span>
+        {% else %}
+          {{ mark(p.codes[0]) }}
+        {% endif %}
+        <span class="num">{{ whole(p.total) }}</span>
+        {% if not p.full %}
+          {{ icon('alert', 'i s wr') }}
+        {% endif %}
+      </span>
+    {% endfor %}
+  </a>
+{% else %}
+  <div class="actions">
+    <a class="cta" href="{{ url_for('phone.cheaper') }}">Где дешевле<span class="sub num"> · {{ items|length }}</span></a>
+  </div>
+{% endif %}

@@ -16,6 +16,7 @@ from .common import (ORDERS_PAGE, REPEATED, SHOWN_LINES, _basket, _repeated,
 @needs_phone
 def orders():
     from app.web.screens import orders as web_orders
+    from .basket import _photos
 
     if request.method == "POST":
         return _repeat(request.form.get("key") or "")
@@ -28,15 +29,23 @@ def orders():
     # долго и листалась бы бесконечно. Свежие — сразу, остальные — «Показать ещё».
     everything = web_orders.orders()
     limit = max(ORDERS_PAGE, request.args.get("n", type=int) or ORDERS_PAGE)
+    page_orders = everything[:limit]
+    all_pids = {int(ln["product_id"]) for order in page_orders for ln in order.get("lines", []) if ln.get("product_id")}
+    photos_by_pid = _photos(list(all_pids)) if all_pids else {}
     shown = []
-    for order in everything[:limit]:
+    for order in page_orders:
         lines = [{"name": ln.get("name") or "—",
                   "qty": qty_label(ln.get("qty") or 0, units.get(ln.get("product_id"))),
-                  "total": ln.get("total")} for ln in order["lines"]]
+                  "total": ln.get("total"),
+                  "photo": photos_by_pid.get(int(ln["product_id"])) or "" if ln.get("product_id") else ""}
+                 for ln in order["lines"]]
+        thumbs = [{"name": ln["name"], "photo": ln["photo"]} for ln in lines[:5]]
+        thumbs_more = max(0, len(lines) - 5)
         shown.append({"key": order["key"], "date": order["date"], "day": order["day"],
                       "store_code": order["store_code"],
                       "store_name": order["store_name"], "total": order["total"],
-                      "count": len(lines), "head": lines[:SHOWN_LINES],
+                      "count": len(lines), "thumbs": thumbs, "thumbs_more": thumbs_more,
+                      "head": lines[:SHOWN_LINES],
                       "rest": lines[SHOWN_LINES:], "in_basket": order["key"] == in_basket})
     more = len(everything) - len(shown)
     # Месяц — заголовком над его заказами, как в веб-истории (тот же by_month).

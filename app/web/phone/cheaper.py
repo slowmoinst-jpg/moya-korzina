@@ -26,6 +26,7 @@ PRICES_SLOW_SEC = 600
 # Расчёт, снятый раньше этого, пока идёт опрос сетей, пересчитывается: экран перезагружается
 # раз в 5 секунд, и пересчитывать чаще, чем он открывается, незачем.
 PRICES_LIVE_SEC = 3
+BOARD = 3
 
 
 _WARM_JOBS: dict[tuple[str, int], dict] = {}
@@ -116,36 +117,20 @@ def cheaper():
         return _render("cheaper.html", tab=None, basket=current, variants=[], prices=prices,
                        unpriced=_unpriced(basket_id), no_address=_no_address(), building=building)
 
-    # Итоги кабинетов читаются один раз на страницу: они лежат одной настройкой
-    # (app/cartrun), и спрашивать их на каждое место значило бы разбирать её заново.
-    placed, best_n = _ranked(basket_id, bundle)
-    every = [p.variant for p in placed]
-    best = every[best_n]
     picked = request.args.get("pick", type=int)
-    on_n = picked if picked is not None and 0 <= picked < len(every) else best_n
+    board = _board(basket_id, bundle, picked)
+    places = board["places"]
+    more_places = board["more_places"]
+    every = board["every"]
+    placed = board["placed"]
+    best_n = board["best_n"]
+    on_n = board["on_n"]
     chosen = every[on_n]
 
     # Товары корзины и точка человека — для подписи «витрина у адреса»: цена должна
     # быть снята по ЭТИМ товарам и у ЭТОЙ точки, а не вообще когда-то в сети.
     product_ids = [int(item["product_id"]) for item in repo.basket_items(basket_id)]
     point_key = location.point_key()
-    order = list(range(len(placed)))
-    if any(p.net for p in placed):
-        # Итоги сетей сдвинули цены: порядок на экране — по новым, а номер места (pick)
-        # остаётся индексом в _places: по нему понимает «Заказать» (_order).
-        order.sort(key=lambda n: (len(every[n].missing_products), float(every[n].total)))
-    positions = int(bundle.get("positions") or 0)
-    places = []
-    for n in order:
-        variant = every[n]
-        lack = len(getattr(variant, "missing_products", None) or [])
-        places.append({"n": n, "title": _names(variant), "total": variant.total,
-                       "codes": [s.store_code for s in variant.stores],
-                       "counts": [(s.store_code, len(s.lines or [])) for s in variant.stores],
-                       # Всё ли из корзины нашлось — главное, что видно в строке.
-                       "lack": lack, "of": positions, "full": lack == 0,
-                       "best": n == best_n, "on": n == on_n})
-    places, more_places = _fold(places)
 
     parts = []
     for store in (getattr(chosen, "stores", None) or []):
@@ -188,6 +173,131 @@ def cheaper():
         left=request.args.get("left"),
         no_address=_no_address(),
         building=building)
+
+
+def _board(basket_id: int, bundle: dict, picked: int | None = None) -> dict:
+    """Сборка словарей мест табло «Где дешевле»: places, more_places, ranks и diffs."""
+    placed, best_n = _ranked(basket_id, bundle)
+    every = [p.variant for p in placed]
+    if not every:
+        return {
+            "places": [],
+            "more_places": [],
+            "every": [],
+            "placed": [],
+            "best_n": 0,
+            "on_n": 0,
+        }
+    on_n = picked if picked is not None and 0 <= picked < len(every) else best_n
+    order = list(range(len(placed)))
+    if any(p.net for p in placed):
+        # Итоги сетей сдвинули цены: порядок на экране — по новым, а номер места (pick)
+        # остаётся индексом в _places: по нему понимает «Заказать» (_order).
+        order.sort(key=lambda n: (len(every[n].missing_products), float(every[n].total)))
+    positions = int(bundle.get("positions") or 0)
+    places = []
+    for n in order:
+        variant = every[n]
+        lack = len(getattr(variant, "missing_products", None) or [])
+        places.append({"n": n, "title": _names(variant), "total": variant.total,
+                       "codes": [s.store_code for s in variant.stores],
+                       "counts": [(s.store_code, len(s.lines or [])) for s in variant.stores],
+                       # Всё ли из корзины нашлось — главное, что видно в строке.
+                       "lack": lack, "of": positions, "full": lack == 0,
+                       "best": n == best_n, "on": n == on_n})
+    places, more_places = _fold(places)
+    best_place = next((p for p in places if p["best"]), None)
+    on_place = next((p for p in places if p["on"]), None)
+    ordered_shown = []
+    if best_place:
+        ordered_shown.append(best_place)
+    if on_place and on_place is not best_place:
+        ordered_shown.append(on_place)
+    for p in places:
+        if p not in ordered_shown:
+            ordered_shown.append(p)
+    places = ordered_shown[:BOARD]
+    more_places = ordered_shown[BOARD:] + more_places
+    best_total = float(best_place["total"]) if best_place else 0.0
+    rank = 1
+    for p in places:
+        p["rank"] = rank
+        p["diff"] = 0 if p.get("best") else round(float(p["total"]) - best_total)
+        rank += 1
+    for p in more_places:
+        p["rank"] = rank
+        p["diff"] = round(float(p["total"]) - best_total)
+        rank += 1
+    return {
+        "places": places,
+        "more_places": more_places,
+        "every": every,
+        "placed": placed,
+        "best_n": best_n,
+        "on_n": on_n,
+    }
+
+
+def top3(basket_id: int, wait: bool = False) -> dict | None:
+    """Три лучших места корзины и цены строк для живой полосы внизу экрана.
+
+    ЗАЧЕМ. Внизу экрана «Корзина» вместо кнопки перехода на отдельный экран сразу
+    показывается живая полоса трёх лучших мест с ценами строк корзины.
+    Функция не ждёт долгого расчёта и не опрашивает сети: она берёт уже готовый свёрток
+    из result._CALC. Если свёртки нет или он не годен (состав корзины изменился,
+    вышло время CALC_TTL или ещё нет phone_places), запускается фоновый прогрев warm,
+    а функция возвращает None — на полосе крутятся спиннеры. При wait=True (демо
+    или запрос полосы) считает сразу в текущем потоке.
+    """
+    from flask import has_app_context
+    from app.web.screens import result
+
+    key = result._key(basket_id)
+    kept = result._CALC.get(key)
+    items = repo.basket_items(basket_id)
+    stamp = result._stamp(items)
+
+    valid = (
+        kept is not None
+        and "phone_places" in kept
+        and kept.get("stamp") == stamp
+        and (time.time() - float(kept.get("at") or 0.0) < result.CALC_TTL)
+    )
+
+    if valid:
+        bundle = kept
+    elif wait:
+        bundle = result._bundle(basket_id)
+        _places(basket_id, bundle)
+    else:
+        phone = (getattr(g, "phone", None) if has_app_context() else None) or users.current()
+        # Опрос полосы раз в 2 с не должен ставить идущему расчёту флаг «ещё раз» — это
+        # второй полный обход сетей. Состав корзины меняют её ручки, они и зовут warm.
+        with _WARM_LOCK:
+            running = (_WARM_JOBS.get((str(phone), int(basket_id))) or {}).get("running")
+        if not running:
+            warm(basket_id, phone)
+        return None
+
+    variants = bundle.get("variants") or []
+    if not variants:
+        return {"places": [], "prices": {}}
+
+    board = _board(basket_id, bundle, None)
+    places = board["places"][:BOARD]
+    every = board["every"]
+    best_n = board["best_n"]
+    best_variant = every[best_n] if 0 <= best_n < len(every) else (every[0] if every else None)
+
+    prices = {}
+    if best_variant:
+        for store in getattr(best_variant, "stores", []) or []:
+            for line in getattr(store, "lines", []) or []:
+                pid = getattr(line, "product_id", None)
+                if pid is not None:
+                    prices[int(pid)] = line.price
+
+    return {"places": places, "prices": prices}
 
 
 def _unpriced(basket_id: int) -> list[str]:
@@ -514,6 +624,7 @@ def _part(store) -> dict:
     """Одна сеть выбранного варианта: сколько и как туда отдать корзину."""
     import json
     from app import handover as ho
+    from .basket import _photos
 
     code = store.store_code
     kind = ho.KIND_BY_STORE.get(code, ho.LIST)
@@ -525,10 +636,18 @@ def _part(store) -> dict:
                    "qty": getattr(ln, "qty", 1.0),
                    "unit": getattr(ln, "unit", "pcs")}
                   for ln in lines]
+    first_lines = lines[:5]
+    pids = [getattr(ln, "product_id", 0) for ln in first_lines if getattr(ln, "product_id", 0)]
+    photos_map = _photos(pids) if pids else {}
+    thumbs = [{"name": getattr(ln, "product_name", ""),
+               "photo": photos_map.get(getattr(ln, "product_id", 0)) or ""}
+              for ln in first_lines]
+    more = max(0, len(lines) - 5)
     return {"code": code, "name": store.store_name, "where": where(code, store.store_name),
             "whom": WHOM.get(code) or store.store_name,
             "total": store.total, "count": len(lines),
             "by_link": by_link,
+            "thumbs": thumbs, "more": more,
             "lines_json": json.dumps(lines_list, ensure_ascii=False) if lines_list else "",
             # Ссылкой сеть отдаёт корзину и без входа; остальным нужен вход человека.
             "needs_login": bool(login), "again": login == "again"}

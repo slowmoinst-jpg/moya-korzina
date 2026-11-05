@@ -82,7 +82,20 @@ def settings():
     # должно ждать чужую службу. Нет точки — карта откроется по умолчанию,
     # который задан в phone-map.js (Москва).
     center = point
+    from .common import _basket
+    from .cheaper import _cabinets
+
+    current_basket = _basket()
+    cabinets = _cabinets(int(current_basket["id"])) if current_basket else {}
     board = _board({s["code"] for s in connected})
+    for b in board:
+        if b.get("ready"):
+            row = cabinets.get(b["code"])
+            tot = getattr(row, "total", None) if row else None
+            b["sum"] = getattr(tot, "sum", None) if tot else None
+        else:
+            b["sum"] = None
+    board_by = {b["code"]: b for b in board}
     saved = request.args.get("saved")
     return _render("settings.html", tab="settings", stores=stores,
                    connected=connected, waiting=waiting,
@@ -98,7 +111,7 @@ def settings():
                    point_text=_point_text(point), center=center,
                    map_open=request.args.get("map") == "1",
                    nearby_text=_nearby_line(address) if saved == "address" else None,
-                   board=board,
+                   board=board, board_by=board_by,
                    tile_base=url_for("phone.map_tile", z=10, x=0, y=0).rsplit("/", 3)[0])
 
 

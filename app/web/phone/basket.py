@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import logging
 
-from flask import redirect, render_template, request, url_for
+from flask import g, redirect, render_template, request, url_for
 
 from app import repo
 from app.web import device
 from app.web.auth import needs_phone
 
-from .common import _basket, _login, _render, _rub, _step, _units, bp, plural
+from .common import _basket, _login, _render, _rub, _step, _units, bp, plural, whole
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +38,18 @@ def basket():
     for row in rows:
         # Лежит в один шаг — «−» его уберёт: на кнопке корзинка, а не минус.
         row["last"] = row["qty"] <= _step(row["unit"]) + 1e-9
+    top = None
+    if items and current:
+        from . import cheaper
+
+        top = cheaper.top3(int(current["id"]))
+        prices_map = (top.get("prices") or {}) if top else {}
+        for row in rows:
+            p_val = prices_map.get(row["pid"])
+            row["price"] = whole(p_val) if p_val is not None else None
+    else:
+        for row in rows:
+            row["price"] = None
     # Привычное показываем и при пустой (или ещё не заведённой) корзине: именно
     # тогда человек набирает её с нуля, и подсказка нужнее всего. Нет истории —
     # список пуст, и блока в шаблоне не будет.
@@ -49,7 +61,7 @@ def basket():
     return _render("basket.html", tab="basket", basket=current, items=rows, habits=habits,
                    runs=_runs(current) if rows else None, baskets_n=baskets_n,
                    q=query, found=_found(query, int(current["id"]) if current else None),
-                   no_address=_no_address())
+                   no_address=_no_address(), top=top)
 
 
 def _found(query: str, basket_id: int | None) -> list[dict]:
@@ -197,6 +209,29 @@ def basket_runs():
     runs = _runs(_basket())
     return {"html": render_template("phone/_runs.html", runs=runs, rub=_rub()),
             "going": runs["going"], "stamp": runs["stamp"], "collect": runs["collect"]}
+
+
+@bp.get("/basket/top")
+@needs_phone
+def basket_top():
+    """Живая полоса трёх лучших мест для опроса со страницы корзины."""
+    from app import users
+    from . import cheaper
+
+    current = _basket()
+    if not current:
+        return {"ready": True, "html": "", "prices": {}}
+    basket_id = int(current["id"])
+    items = repo.basket_items(basket_id)
+    if not items:
+        return {"ready": True, "html": "", "prices": {}}
+    wait = getattr(g, "phone", None) == users.DEMO
+    top = cheaper.top3(basket_id, wait=wait)
+    if top is None:
+        return {"ready": False}
+    html = _render("_live.html", top=top, items=items)
+    prices = {str(pid): whole(pr) for pid, pr in (top.get("prices") or {}).items()}
+    return {"ready": True, "html": html, "prices": prices}
 
 
 # ---------- Корзины: список и возврат к прежней ----------

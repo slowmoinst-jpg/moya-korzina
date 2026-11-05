@@ -1,9 +1,7 @@
-{# История заказов на телефоне — вариант Б (выбор владельца 17.10.2026): у каждого заказа
-   магазин, дата, сумма и первые товары, остальное — «Ещё N товаров». «Повторить»
-   кладёт заказ в корзину; заказ, который уже лежит в ней, помечен «В корзине».
-   Вид 22.10.2026, по мотивам Магнита: белые карточки на сером, месяц — заголовком. #}
+{# История заказов на телефоне — Светлое табло (DESIGN.md): белые карточки на сером,
+   лента миниатюр первых товаров, раскрытие состава, повтор заказа. #}
 {% extends 'phone/base.html' %}
-{% from 'phone/_icons.html' import icon, mark %}
+{% from 'phone/_icons.html' import icon, mark, pic %}
 {% block title %}История заказов — Моя корзина{% endblock %}
 {% block ph_class %}grey{% endblock %}
 {% block body %}
@@ -26,13 +24,46 @@
       <section class="ord" aria-label="Заказ {{ o.day }}, {{ o.store_name }}">
         <div class="oh">
           {{ mark(o.store_code, o.store_name) }}
-          <span style="flex: 1; min-width: 0"><span style="font-weight: 700">{{ o.store_name }}</span> <span class="mut small">· {{ o.day }}</span></span>
-          <span class="num" style="font-size: 16px; font-weight: 800">{{ whole(o.total) }}</span>
+          <span class="sn"><span class="store-name">{{ o.store_name }}</span> <span class="mut small">· {{ o.day }}</span></span>
+          <span class="tot num">{{ whole(o.total) }}</span>
         </div>
-        <div class="oh" style="padding: 8px 0 4px">
-          <span class="mut small" style="flex: 1">{{ goods(o.count) }}</span>
+        <details class="comp">
+          <summary class="th" aria-label="Состав заказа: {{ goods(o.count) }}">
+            {% for t in o.thumbs %}
+              <span class="t">{{ pic(t) }}</span>
+            {% endfor %}
+            {% if o.thumbs_more > 0 %}
+              <span class="more num">+{{ o.thumbs_more }}</span>
+            {% endif %}
+          </summary>
+          <div class="lines">
+            {% for ln in o.head %}
+              <div class="ln">
+                <span class="t">{{ pic(ln) }}</span>
+                <span class="nm">{{ ln.name }}</span>
+                <span class="q num">{{ ln.qty }}</span>
+                <span class="p num">{{ rub(ln.total) }}</span>
+              </div>
+            {% endfor %}
+            {% if o.rest %}
+              <details class="rest-det">
+                <summary class="rest">Ещё {{ goods(o.rest|length) }}{{ icon('down', 'i s') }}</summary>
+                {% for ln in o.rest %}
+                  <div class="ln">
+                    <span class="t">{{ pic(ln) }}</span>
+                    <span class="nm">{{ ln.name }}</span>
+                    <span class="q num">{{ ln.qty }}</span>
+                    <span class="p num">{{ rub(ln.total) }}</span>
+                  </div>
+                {% endfor %}
+              </details>
+            {% endif %}
+          </div>
+        </details>
+        <div class="of">
+          <span class="mut small">{{ goods(o.count) }}</span>
           {% if o.in_basket %}
-            <span class="badge">{{ icon('check', 'i s') }}В корзине</span>
+            <span class="badge inb">{{ icon('check', 'i s') }}В корзине</span>
           {% else %}
             <form method="post" action="{{ url_for('phone.orders') }}">
               <input type="hidden" name="key" value="{{ o.key }}">
@@ -40,17 +71,6 @@
             </form>
           {% endif %}
         </div>
-        {% for ln in o.head %}
-          <div class="li"><span class="name">{{ ln.name }}</span><span class="lq num">{{ ln.qty }}</span><span class="lp num">{{ rub(ln.total) }}</span></div>
-        {% endfor %}
-        {% if o.rest %}
-          <details>
-            <summary>Ещё {{ goods(o.rest|length) }}{{ icon('down', 'i s') }}</summary>
-            {% for ln in o.rest %}
-              <div class="li"><span class="name">{{ ln.name }}</span><span class="lq num">{{ ln.qty }}</span><span class="lp num">{{ rub(ln.total) }}</span></div>
-            {% endfor %}
-          </details>
-        {% endif %}
       </section>
     {% endfor %}
   {% endfor %}

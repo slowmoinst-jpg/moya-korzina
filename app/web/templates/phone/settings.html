@@ -1,8 +1,9 @@
-{# Настройки на телефоне — вариант В (выбор владельца 17.10.2026): сначала сколько магазинов
-   подключено и кого осталось подключить, подключённые — одной строкой, чеки ФНС, внизу
-   телефон и адрес — их задают один раз. «Подключить» внутри приложения открывает сайт
-   сети у самого телефона (вход — номер, код из СМС, капча — человек делает сам), вне
-   приложения ведёт в окно магазина на сервере. #}
+{# Настройки на телефоне — Светлое табло (DESIGN.md, 04.11.2026): сначала сколько магазинов
+   подключено и плитки тех, кого осталось подключить; подключённые — одной строкой на сеть
+   вместе с её сборкой корзины, «Отключить вход» под ⋯; чеки ФНС, внизу телефон и адрес —
+   их задают один раз. «Подключить» внутри приложения открывает сайт сети у самого
+   телефона (вход — номер, код из СМС, капча — человек делает сам), вне приложения ведёт
+   в окно магазина на сервере. #}
 {% extends 'phone/base.html' %}
 {% from 'phone/_icons.html' import icon, mark %}
 {% block title %}Настройки — Моя корзина{% endblock %}
@@ -31,78 +32,71 @@
   {% endif %}
 
   {% if stores %}
-  <div class="card" style="padding: 12px; display: flex; flex-direction: column; gap: 8px">
-    <div style="display: flex; align-items: baseline; gap: 8px">
-      <span style="font-weight: 700">Магазины</span>
-      <span class="mut small">подключено</span>
-      <span class="num" style="margin-left: auto; font-size: 22px; font-weight: 800">{{ connected|length }} из {{ stores|length }}</span>
+  <section class="card sum" aria-label="Магазины">
+    <div class="sr">
+      <span class="lb">Магазины</span>
+      <span class="big num">{{ connected|length }} из {{ stores|length }}</span>
     </div>
-    <div class="bar"><span style="width: {{ ((connected|length) * 100 / (stores|length)) if stores else 0 }}%"></span></div>
-    <div class="mut small">Подключённые магазины дают ваши личные цены и скидки и заказ прямо в их корзине.</div>
-  </div>
-  {% endif %}
-
-  {% if waiting %}
-    <section>
-      <div class="grp">Осталось подключить</div>
+    <div class="bar" aria-hidden="true"><span style="width: {{ ((connected|length) * 100 / (stores|length)) if stores else 0 }}%"></span></div>
+    {% if waiting %}
+      <div class="lt num">Осталось подключить · {{ waiting|length }}</div>
       {% if not device_app %}
         {# Вне приложения «Подключить» ведёт в окно магазина на сервере (/cabinet): страница
            для компьютера, и часть сетей серверный браузер не пускает. Знакомому с телефоном
            сразу сказано, где вход идёт как обычно, — дорога через сервер при этом остаётся. #}
         <div class="note">{% if 'Android' in (request.headers.get('User-Agent') or '') %}Входить в магазины удобнее в приложении для Android: сайт магазина откроется у вас на телефоне. <a href="{{ url_for('apk.download') }}">Скачать приложение</a>. {% endif %}В браузере вход идёт через окно магазина на нашем сервере, и часть сетей его не пускает.</div>
       {% endif %}
-      <div class="card">
+      <div class="wg">
         {% for s in waiting %}
-          <div class="row">
+          <a class="wt" href="/cabinet?store={{ s.code }}" data-open-store="{{ s.code }}"
+             {% if not s.again %}aria-label="Подключить: {{ s.name }}"{% endif %}>
             {{ mark(s.code, s.name) }}
-            <span class="grow">{{ s.name }}{% if s.again %}<span class="mut small"> · вход истёк — войти снова{% if s.last %} · последняя попытка {{ s.last }}{% endif %}</span>{% endif %}</span>
-            <a class="bt ghost" href="/cabinet?store={{ s.code }}" data-open-store="{{ s.code }}">{{ 'Войти снова' if s.again else 'Подключить' }}</a>
-          </div>
+            <span class="wt-name">{{ s.name }}</span>
+            {% if s.again %}
+              <span class="vh"> · вход истёк — войти снова{% if s.last %} · последняя попытка {{ s.last }}{% endif %} · Войти снова</span>
+              {{ icon('alert', 'i s add wr') }}
+            {% else %}
+              {{ icon('plus', 'i s add') }}
+            {% endif %}
+          </a>
         {% endfor %}
       </div>
-    </section>
+    {% endif %}
+  </section>
   {% endif %}
 
   {% if connected %}
     <section>
       <div class="grp">Подключено</div>
-      <div class="card">
+      <div class="card conn-card" aria-label="Подключённые магазины">
         {% for s in connected %}
+          {% set b = board_by.get(s.code) if board_by else None %}
           <div class="row">
             {{ mark(s.code, s.name) }}
-            <span class="grow">{{ s.name }}</span>
-            <form method="post" action="{{ url_for('phone.disconnect_store') }}">
-              <input type="hidden" name="store" value="{{ s.code }}">
-              <button class="bt ghost" type="submit">Отключить вход</button>
-            </form>
-          </div>
-        {% endfor %}
-        <div class="row" style="flex-wrap: wrap; gap: 6px; padding-top: 8px; padding-bottom: 8px">
-          <span class="mut small">«Отключить вход» стирает сохранённые куки на сервере. На этом телефоне сеть может помнить вход, пока не выйдете в её окне.</span>
-          <a class="mut small" href="/accounts" style="margin-left: auto">Изменить</a>
-        </div>
-      </div>
-    </section>
-  {% endif %}
-
-  {# Сборка корзины — только у подключённых сетей: метка, название, под ним серым одной
-     строкой — что с корзиной. Строка остаётся в обычные 48 px, как соседние: длинная подпись
-     обрезается многоточием, а не растягивает её. Кнопка есть лишь там, где человеку нужно
-     шагнуть в окне сети: войти заново или выбрать магазин. #}
-  {% if board %}
-    <section>
-      <div class="grp">Сборка корзины</div>
-      <div class="card">
-        {% for b in board %}
-          <div class="row">
-            {{ mark(b.code, b.name) }}
-            <span class="grow">
-              <span>{{ b.name }}</span>
-              <span class="small {{ 'gd' if b.ready else 'mut' }}" style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ 'собрано, итог сети прочитан' if b.ready else b.next }}</span>
+            <span class="g">
+              <span class="nm">{{ s.name }}</span>
+              {% if b %}
+                {% if b.ready %}
+                  <span class="st ok">{{ icon('check', 'i s') }}собрано{% if b.sum %} · <span class="num">{{ whole(b.sum) }}</span>{% endif %}</span>
+                {% elif b.next %}
+                  <span class="st wr">{{ icon('alert', 'i s') }}<span class="st-text">{{ b.next }}</span></span>
+                {% endif %}
+              {% endif %}
             </span>
-            {% if b.act %}
-              <a class="bt ghost" href="/cabinet?store={{ b.code }}" data-open-store="{{ b.code }}">{{ 'Выбрать' if b.act == 'store' else 'Войти' }}</a>
+            {% if b and b.act %}
+              <a class="bt" href="/cabinet?store={{ s.code }}" data-open-store="{{ s.code }}">{{ 'Выбрать' if b.act == 'store' else 'Войти' }}</a>
             {% endif %}
+            <details class="menu">
+              <summary class="ib" aria-label="Ещё: {{ s.name }}">{{ icon('more') }}</summary>
+              <div class="menu-pop">
+                <form method="post" action="{{ url_for('phone.disconnect_store') }}">
+                  <input type="hidden" name="store" value="{{ s.code }}">
+                  <button class="bt ghost" type="submit">Отключить вход</button>
+                </form>
+                <div class="mut small">«Отключить вход» стирает сохранённые куки на сервере. На этом телефоне сеть может помнить вход, пока не выйдете в её окне.</div>
+                <a class="mut small" href="/accounts">Изменить</a>
+              </div>
+            </details>
           </div>
         {% endfor %}
       </div>

@@ -1,10 +1,8 @@
-{# Корзина на телефоне — вариант Б (выбор владельца 17.10.2026): товары, а внизу рядом
-   «История заказов» и «Где дешевле», обе под большим пальцем. «−» и «+» отправляют
-   одну форму на весь список: без скрипта, и количество сохраняется каждым нажатием,
-   а не одним общим «Сохранить».
-
-   ВИД ПО МОТИВАМ МАГНИТА (22.10.2026): фото слева, счётчик серой таблеткой. Отдельного
-   ✕ нет: товар в один шаг убирает тот же «−», и на нём тогда корзинка (it.last).
+{# Корзина на телефоне — Светлое табло (DESIGN.md, 04.11.2026): плитки по 3 и список с
+   переключателем в шапке, «История заказов» — значком часов там же. «−» и «+» отправляют
+   одну форму на весь список: без скрипта, и количество сохраняется каждым нажатием, а не
+   одним общим «Сохранить». Отдельного ✕ нет: товар в один шаг убирает тот же «−», и на нём
+   тогда корзинка (it.last).
 
    НОВЫЙ ЧЕЛОВЕК (25.10.2026): истории покупок у него нет, и «из привычного» корзину не
    набрать. Над списком — адрес (от него цены) и поиск товара: свои товары и единый
@@ -13,15 +11,36 @@
 {% extends 'phone/base.html' %}
 {% from 'phone/_icons.html' import icon, pic %}
 {% block title %}Корзина — Моя корзина{% endblock %}
+{% block head %}
+<script>
+  try {
+    var v = localStorage.getItem('kz-view') || 'grid';
+    document.documentElement.setAttribute('data-view', v);
+  } catch (e) {}
+</script>
+{% endblock %}
 {% block body %}
-  <div style="display: flex; align-items: center; gap: 8px">
-    <h1 class="title" style="flex: 1">Корзина</h1>
+  <div class="top">
     {% if baskets_n > 1 %}
       {# «Повторить» заводит новую корзину, и прежняя пропадала с телефона: списка
          корзин здесь не было. Ссылка — только когда есть из чего выбирать. #}
-      <a class="bt ghost" href="{{ url_for('phone.baskets') }}">Корзины · {{ baskets_n }}</a>
+      <h1 class="title"><a class="baskets-link" href="{{ url_for('phone.baskets') }}" aria-label="Корзины · {{ baskets_n }} — выбрать корзину">Корзина{{ icon('down', 'i s') }}</a></h1>
+    {% else %}
+      <h1 class="title">Корзина</h1>
     {% endif %}
+    {% if items %}
+      <span class="cnt num" aria-label="{{ goods(items|length) }}">{{ items|length }}</span>
+    {% endif %}
+    <a class="ib hist-btn" href="{{ url_for('phone.orders') }}" aria-label="История заказов">{{ icon('clock') }}</a>
+    <div class="seg" role="group" aria-label="Вид корзины">
+      <button class="sg" type="button" data-v="grid" aria-label="Плитками" aria-pressed="true">{{ icon('grid') }}</button>
+      <button class="sg" type="button" data-v="list" aria-label="Списком" aria-pressed="false">{{ icon('list') }}</button>
+    </div>
   </div>
+  {% if baskets_n > 1 and basket %}
+    <div class="mut small basket-sub">{{ basket.name }}</div>
+  {% endif %}
+
   {% if not is_demo %}
     {% if no_address %}
       {# Адрес первым делом: без него цены и наличие берутся с точек владельца установки
@@ -32,9 +51,12 @@
       </div>
     {% endif %}
     <form class="find" method="get" action="{{ url_for('phone.basket') }}" role="search">
-      <input type="search" name="q" value="{{ q }}" placeholder="Найти товар" aria-label="Найти товар"
-             autocomplete="off" enterkeyhint="search">
-      <button class="bt big" type="submit">Найти</button>
+      <div class="find-field">
+        {{ icon('search', 'i s find-ico') }}
+        <input type="search" name="q" value="{{ q }}" placeholder="Найти товар" aria-label="Найти товар"
+               autocomplete="off" enterkeyhint="search">
+      </div>
+      <button class="ib find-bt" type="submit" aria-label="Найти">{{ icon('search') }}</button>
     </form>
     {% if found %}
       {# Найденное: «В корзину» кладёт шаг (штуку или 100 г) и возвращает к списку; слово
@@ -56,39 +78,50 @@
       <div class="mut small">{{ 'Введите хотя бы две буквы.' if q|length < 2 else 'По запросу «' ~ q ~ '» ничего не нашлось — попробуйте другое слово.' }}</div>
     {% endif %}
   {% endif %}
+
   {% if basket and items %}
-    <div class="mut small">{{ basket.name }} · {{ goods(items|length) }}</div>
     <form method="post" action="{{ url_for('phone.basket') }}">
       <input type="hidden" name="q" value="{{ q }}">
-      {% for it in items %}
-        <div class="it" id="it-{{ it.pid }}">
-          {{ pic(it) }}
-          <span class="name">{{ it.name }}</span>
-          <span class="step">
-            {% if not is_demo %}
-              {% if it.last %}
-                <button class="q" type="submit" name="do" value="minus:{{ it.pid }}" aria-label="Убрать: {{ it.name }}">{{ icon('trash', 'i s') }}</button>
+      <ul class="items" aria-label="Товары в корзине">
+        {% for it in items %}
+          <li class="it" id="it-{{ it.pid }}">
+            <span class="img">
+              {{ pic(it) }}
+              {% if not is_demo %}
+                <button class="bdg num" type="button" aria-expanded="false" aria-label="Количество: {{ it.name }}">{{ qty_label(it.qty, it.unit) }}</button>
               {% else %}
-                <button class="q" type="submit" name="do" value="minus:{{ it.pid }}" aria-label="Меньше: {{ it.name }}">{{ icon('minus', 'i s') }}</button>
+                <span class="bdg num">{{ qty_label(it.qty, it.unit) }}</span>
               {% endif %}
-            {% endif %}
-            <span class="qn num">{{ qty_label(it.qty, it.unit) }}</span>
-            {% if not is_demo %}
-              <button class="q" type="submit" name="do" value="plus:{{ it.pid }}" aria-label="Больше: {{ it.name }}">{{ icon('plus', 'i s') }}</button>
-            {% endif %}
-          </span>
-        </div>
-      {% endfor %}
+            </span>
+            <span class="name">{{ it.name }}</span>
+            <span class="step">
+              {% if not is_demo %}
+                {% if it.last %}
+                  <button class="q" type="submit" name="do" value="minus:{{ it.pid }}" aria-label="Убрать: {{ it.name }}">{{ icon('trash', 'i s') }}</button>
+                {% else %}
+                  <button class="q" type="submit" name="do" value="minus:{{ it.pid }}" aria-label="Меньше: {{ it.name }}">{{ icon('minus', 'i s') }}</button>
+                {% endif %}
+              {% endif %}
+              <span class="qn num">{{ qty_label(it.qty, it.unit) }}</span>
+              {% if not is_demo %}
+                <button class="q" type="submit" name="do" value="plus:{{ it.pid }}" aria-label="Больше: {{ it.name }}">{{ icon('plus', 'i s') }}</button>
+              {% endif %}
+            </span>
+            <span class="pr num">{% if it.price %}{{ it.price }}{% endif %}</span>
+          </li>
+        {% endfor %}
+      </ul>
     </form>
   {% else %}
     <div class="empty">Корзина пуста.{% if not is_demo %} Найдите товар поиском выше — или повторите заказ из «Истории заказов».{% endif %}</div>
   {% endif %}
+
   {% if habits %}
     {# «Из привычного»: что человек берёт часто и что по циклу пора докупить.
        Стоит и при пустой корзине: именно тогда она набирается с нуля, и подсказка
        нужнее всего. «В корзину» кладёт шаг (штуку или 100 г) и возвращает к строке
-       товара; при отсутствии корзины форма заводит её сама. Полка листается вбок,
-       как подборки Магнита: по высоте она — одна карточка. #}
+       товара; при отсутствии корзины форма заводит её сама. Полка листается вбок:
+       по высоте она — одна карточка. #}
     <section id="habits" class="habits" aria-label="Из привычного">
       <div class="grp">Из привычного</div>
       <form class="hrow" method="post" action="{{ url_for('phone.basket') }}">
@@ -107,6 +140,7 @@
       </form>
     </section>
   {% endif %}
+
   {% if runs and not is_demo %}
     {# Пока открыта корзина, приложение само собирает её в сетях, где человек вошёл
        (android/app, 1.13): отпечаток корзины и что сервер знает о входах — ему в
@@ -117,16 +151,103 @@
     </section>
   {% endif %}
 {% endblock %}
+
 {% block actions %}
-  <div class="actions">
-    <a class="cta ghost" href="{{ url_for('phone.orders') }}">{{ icon('clock', 'i s') }}История заказов</a>
-    {% if basket and items %}
-      <a class="cta" style="flex: 1; width: auto" href="{{ url_for('phone.cheaper') }}">Где дешевле<span class="sub num">· {{ items|length }}</span></a>
-    {% else %}
-      <button class="cta" style="flex: 1; width: auto" type="button" disabled>Где дешевле</button>
-    {% endif %}
-  </div>
+  {% if basket and items %}
+    {% include 'phone/_live.html' %}
+  {% else %}
+    <div class="actions">
+      <button class="cta" type="button" disabled>Где дешевле</button>
+    </div>
+  {% endif %}
   <script>
+    (function () {
+      var seg = document.querySelector('.seg');
+      function applyView(view) {
+        document.documentElement.setAttribute('data-view', view);
+        try { localStorage.setItem('kz-view', view); } catch (e) {}
+        if (seg) {
+          var gridBtn = seg.querySelector('[data-v="grid"]');
+          var listBtn = seg.querySelector('[data-v="list"]');
+          if (gridBtn) {
+            gridBtn.setAttribute('aria-pressed', view === 'grid' ? 'true' : 'false');
+            gridBtn.classList.toggle('on', view === 'grid');
+          }
+          if (listBtn) {
+            listBtn.setAttribute('aria-pressed', view === 'list' ? 'true' : 'false');
+            listBtn.classList.toggle('on', view === 'list');
+          }
+        }
+      }
+      var currentView = document.documentElement.getAttribute('data-view') || 'grid';
+      applyView(currentView);
+
+      if (seg) {
+        seg.addEventListener('click', function (e) {
+          var b = e.target.closest('button[data-v]');
+          if (b) {
+            applyView(b.getAttribute('data-v'));
+          }
+        });
+      }
+
+      var openTimer = null;
+      function closeAllTiles() {
+        clearTimeout(openTimer);
+        document.querySelectorAll('.it.open').forEach(function (el) {
+          el.classList.remove('open');
+          var b = el.querySelector('.bdg[aria-expanded]');
+          if (b) { b.setAttribute('aria-expanded', 'false'); }
+        });
+      }
+      function openTile(el) {
+        if (!el) { return; }
+        closeAllTiles();
+        el.classList.add('open');
+        var b = el.querySelector('.bdg[aria-expanded]');
+        if (b) { b.setAttribute('aria-expanded', 'true'); }
+        openTimer = setTimeout(closeAllTiles, 3000);
+      }
+
+      var itemsList = document.querySelector('.items');
+      if (itemsList) {
+        itemsList.addEventListener('click', function (e) {
+          if (document.documentElement.getAttribute('data-view') !== 'grid') { return; }
+          var qBtn = e.target.closest('.step button');
+          if (qBtn) {
+            var it = qBtn.closest('.it');
+            if (it && it.id) {
+              var pid = it.id.replace('it-', '');
+              try { sessionStorage.setItem('kz-open', pid); } catch (err) {}
+            }
+            return;
+          }
+          var it = e.target.closest('.it');
+          if (it) {
+            openTile(it);
+          }
+        });
+      }
+
+      document.addEventListener('click', function (e) {
+        if (document.documentElement.getAttribute('data-view') !== 'grid') { return; }
+        if (!e.target.closest('.it')) {
+          closeAllTiles();
+        }
+      });
+
+      try {
+        var savedPid = sessionStorage.getItem('kz-open');
+        if (savedPid) {
+          sessionStorage.removeItem('kz-open');
+          if (document.documentElement.getAttribute('data-view') === 'grid') {
+            var targetTile = document.getElementById('it-' + savedPid);
+            if (targetTile) { openTile(targetTile); }
+          }
+        }
+      } catch (e) {}
+    })();
+
     /* Корзина в магазинах. Внутри приложения страница отдаёт ему корзину (KorzinaDevice.collect),
        и оно само решает, в каких сетях собрать: вошёл ли человек и менялась ли корзина
        с прошлой сборки. Пока сборка идёт, строки сетей обновляются опросом сервера —
@@ -145,7 +266,6 @@
       if (payload && window.KorzinaDevice && KorzinaDevice.collect) { answer = KorzinaDevice.collect(payload); }
       var skip = (answer && answer.skip) || {};
       function tell() {
-        // «Соберу» у сети, куда приложение не пойдёт, — пустое обещание: скажем почему.
         Object.keys(skip).forEach(function (code) {
           var row = box.querySelector('.run.wait[data-run="' + code + '"] [data-run-words]');
           if (row) { row.textContent = skip[code]; }
@@ -153,8 +273,6 @@
       }
       tell();
       var started = answer && answer.starting && answer.starting.length;
-      // Сколько опрашивать, решает само приложение (busy: что собирается и что ждёт
-      // запуска); у старой сборки без busy — первые 25 секунд и пока сервер говорит «идёт».
       var until = Date.now() + (started ? 25000 : 0), timer = null;
       function more(j) {
         var b = window.KorzinaDevice && KorzinaDevice.busy ? KorzinaDevice.busy() : null;
@@ -172,7 +290,6 @@
           })
           .catch(function () { if (more({})) { timer = setTimeout(poll, 4000); } });
       }
-      // Приложение зовёт это, когда сборка в сети началась или кончилась: строка — сразу.
       window.kzRunsChanged = function () { poll(); };
       if (started || box.getAttribute('data-going')) { timer = setTimeout(poll, 1500); }
       box.addEventListener('click', function (e) {
@@ -184,5 +301,75 @@
     }
     if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', kzRuns); }
     else { kzRuns(); }
+
+    /* Живая полоса трёх лучших мест внизу экрана */
+    function kzLive() {
+      var bar = document.querySelector('[data-live]');
+      if (!bar) { return; }
+      var url = bar.getAttribute('data-live');
+      if (!url) { return; }
+      var deadline = Date.now() + 90000;
+      var timer = null;
+
+      function giveUp() {
+        clearTimeout(timer);
+        var cur = document.querySelector('[data-live]');
+        if (cur) {
+          cur.classList.add('gave');
+          cur.removeAttribute('aria-busy');
+        }
+      }
+
+      function schedule(ms) {
+        clearTimeout(timer);
+        if (Date.now() >= deadline) {
+          giveUp();
+          return;
+        }
+        var delay = Math.min(ms, Math.max(0, deadline - Date.now()));
+        timer = setTimeout(poll, delay);
+      }
+
+      function poll() {
+        if (Date.now() >= deadline) {
+          giveUp();
+          return;
+        }
+        fetch(url, { headers: { Accept: 'application/json' }, credentials: 'same-origin' })
+          .then(function (r) {
+            if (!r.ok) { throw new Error('HTTP ' + r.status); }
+            return r.json();
+          })
+          .then(function (data) {
+            if (data && data.ready) {
+              clearTimeout(timer);
+              var cur = document.querySelector('[data-live]');
+              if (!data.html) {
+                giveUp();
+              } else if (cur) {
+                cur.outerHTML = data.html;
+              }
+              if (data.prices) {
+                Object.keys(data.prices).forEach(function (pid) {
+                  var row = document.getElementById('it-' + pid);
+                  if (row) {
+                    var pr = row.querySelector('.pr');
+                    if (pr) { pr.textContent = data.prices[pid]; }
+                  }
+                });
+              }
+            } else {
+              schedule(2000);
+            }
+          })
+          .catch(function () {
+            schedule(4000);
+          });
+      }
+
+      schedule(2000);
+    }
+    if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', kzLive); }
+    else { kzLive(); }
   </script>
 {% endblock %}
