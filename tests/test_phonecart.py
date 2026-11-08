@@ -1059,3 +1059,90 @@ def test_rules_api_total_verified():
     vkusvill_rules = phonecart.rules("vkusvill")
     assert vkusvill_rules["api_total"] is None
 
+
+def test_link_live_false_defers_search_to_ask_later(web, monkeypatch):
+    """(а) _link(..., live=False) не зовёт auto_match, зовёт _ask_later и кладёт later == 1, повтор — recent."""
+    from app import matcher
+    from app.catalog import refresh
+
+    users.open_workspace(PHONE)
+    cocoa = repo.upsert_product(Product(id=None, name="КАКАО ЗОЛОТОЙ ЯРЛЫК 100Г", unit="pcs"))
+    basket_id = repo.create_basket("Какао")
+    repo.set_basket_item(basket_id, cocoa, 1.0)
+    users.deactivate()
+
+    monkeypatch.setattr(refresh, "resolve", lambda *a, **kw: None)
+    monkeypatch.setattr(matcher, "auto_match", lambda *a, **kw: pytest.fail("auto_match не должен вызываться при live=False"))
+
+    ask_later_calls = []
+
+    def fake_ask_later(pids, store):
+        ask_later_calls.append((pids, store))
+
+    monkeypatch.setattr(phonecart, "_ask_later", fake_ask_later)
+
+    users.open_workspace(PHONE)
+    try:
+        first = phonecart._link({"basket": basket_id}, "magnit", live=False)
+        assert ask_later_calls == [([cocoa], "magnit")]
+        assert first["later"] == 1
+        assert first["tried"] == 1
+        assert first["recent"] == 0
+        assert any(u.get("product_id") == cocoa for u in first.get("unresolved", []))
+
+        # Второй вызов _link в течение срока
+        second = phonecart._link({"basket": basket_id}, "magnit", live=False)
+        assert len(ask_later_calls) == 1, "_ask_later больше не должен вызываться"
+        assert second["later"] == 0
+        assert second["tried"] == 0
+        assert second["recent"] == 1
+    finally:
+        users.deactivate()
+
+
+def test_cartplan_background_preserves_search_lines(web, monkeypatch):
+    """(б) POST /api/device/cartplan с background=true дважды подряд оставляет товар в search, без background — search_recent."""
+    from app import config
+    from app.catalog import refresh
+
+    users.open_workspace(PHONE)
+    juice = repo.upsert_product(Product(id=None, name="СОК ЯБЛОЧНЫЙ 1Л", unit="pcs"))
+    basket_id = repo.create_basket("Сок")
+    repo.set_basket_item(basket_id, juice, 1.0)
+    users.deactivate()
+
+    monkeypatch.setattr(refresh, "resolve", lambda *a, **kw: None)
+    monkeypatch.setattr(phonecart, "_ask_later", lambda *a, **kw: None)
+
+    real_get = config.get
+    monkeypatch.setattr(config, "get",
+                        lambda key, *a, **k: "https://magnit.ru/search?q={q}" if key == "search_url.magnit" else real_get(key, *a, **k),
+                        raising=False)
+
+    client = logged_in(web)
+
+    # 1. background=True дважды подряд: оба раза в search, search_recent пуст
+    res1 = client.post("/api/device/cartplan", json={"store": "magnit", "basket": basket_id, "background": True}).get_json()
+    assert len(res1.get("search", [])) == 1
+    assert res1.get("search_recent", []) == []
+
+    res2 = client.post("/api/device/cartplan", json={"store": "magnit", "basket": basket_id, "background": True}).get_json()
+    assert len(res2.get("search", [])) == 1
+    assert res2.get("search_recent", []) == []
+
+    # 2. Без background: второй наряд кладёт его в search_recent
+    users.open_workspace(PHONE)
+    water = repo.upsert_product(Product(id=None, name="ВОДА МИНЕРАЛЬНАЯ 1Л", unit="pcs"))
+    basket2_id = repo.create_basket("Вода")
+    repo.set_basket_item(basket2_id, water, 1.0)
+    users.deactivate()
+
+    r1 = client.post("/api/device/cartplan", json={"store": "magnit", "basket": basket2_id}).get_json()
+    assert len(r1.get("search", [])) == 1
+    assert r1.get("search_recent", []) == []
+
+    r2 = client.post("/api/device/cartplan", json={"store": "magnit", "basket": basket2_id}).get_json()
+    assert r2.get("search", []) == []
+    assert len(r2.get("search_recent", [])) == 1
+    assert r2["search_recent"][0]["name"] == "ВОДА МИНЕРАЛЬНАЯ 1Л"
+

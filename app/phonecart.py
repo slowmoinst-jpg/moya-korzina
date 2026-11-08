@@ -313,8 +313,9 @@ def plan(body: dict) -> dict:
 
     store = _store(body)
     top_up = bool(body.get("top_up"))
+    background = bool(body.get("background"))
     picked = {k: v for k, v in body.items() if k in ("basket", "lines")}
-    found = {"linked": 0, "recent": 0} if picked.get("lines") is not None else _link(picked, store)
+    found = {"linked": 0, "recent": 0, "later": 0} if picked.get("lines") is not None else _link(picked, store, live=not background)
     lines, empty_note = api._plan_lines(picked, store)
     # Служебные строки чека («Аренда транспортного средства», «Сборка») — не товар:
     # в наряд и в поиск они не идут. Отсекаем ДО cartplan.build, иначе они попали бы
@@ -378,7 +379,9 @@ def plan(body: dict) -> dict:
     search_recent: list[dict] = []
     for s_line in all_search:
         pid = s_line.get("product_id")
-        if pid and _is_tried("search", db_path, store, int(pid)):
+        if background:
+            search_lines.append(s_line)
+        elif pid and _is_tried("search", db_path, store, int(pid)):
             search_recent.append(s_line)
         else:
             if pid:
@@ -733,7 +736,41 @@ def _stamp(basket_id: int | None, custom_lines: list | None = None) -> str:
     return cartrun.stamp_of(basket_id) if basket_id is not None else ""
 
 
-def _link(picked: dict, store: str) -> dict:
+def _ask_later(product_ids: list[int], store: str) -> None:
+    """Спросить живой поиск сети в фоне, не задерживая наряд.
+
+    ЗАЧЕМ. Фоновая сборка не ждёт поиска сети, найденное возьмёт следующий наряд.
+    При фоновой сборке телефон должен быстро собрать знакомые товары и вернуть
+    отчёт за считанные секунды для пересчёта «Где дешевле». Живой поиск сети
+    (до 2,5 с на позицию) вынесен в daemon-поток: он находит артикулы в фоне,
+    учит единую базу, и следующий наряд получит эти позиции уже прямым запросом.
+    """
+    from app import users
+
+    phone = users.current()
+    if not phone:
+        return
+
+    def _worker():
+        from app import matcher, users
+
+        try:
+            users.open_workspace(phone)
+            try:
+                matcher.auto_match(product_ids, [store])
+            finally:
+                users.deactivate()
+        except Exception:  # noqa: BLE001 — фоновый поиск не должен ронять процесс
+            log.warning("фоновый поиск позиций %s в сети %s не удался", product_ids, store, exc_info=True)
+
+    worker = threading.Thread(target=_worker, name=f"link-{store}", daemon=True)
+    try:
+        worker.start()
+    except Exception:  # noqa: BLE001 — сбой старта потока не должен ронять наряд
+        log.warning("поток фонового поиска link-%s не запустился", store, exc_info=True)
+
+
+def _link(picked: dict, store: str, live: bool = True) -> dict:
     """Опознать в едином каталоге позиции корзины, которых эта сеть ещё не знает.
 
     ЗАЧЕМ. Товар из чека связан только с сетью чека, и наряд в другую сеть выходил
@@ -770,14 +807,15 @@ def _link(picked: dict, store: str) -> dict:
     shop = repo.get_store(store)
     baskets = repo.list_baskets()
     if shop is None or not baskets:
-        return {"linked": 0, "recent": 0}
+        return {"linked": 0, "recent": 0, "later": 0}
     try:
         basket_id = int(picked["basket"]) if picked.get("basket") is not None else int(baskets[0]["id"])
     except (TypeError, ValueError):
-        return {"linked": 0, "recent": 0}                       # неверный номер объяснит _plan_lines
+        return {"linked": 0, "recent": 0, "later": 0}                       # неверный номер объяснит _plan_lines
     basket = next((b for b in baskets if int(b["id"]) == basket_id), None)
     items = repo.basket_items(basket_id)
     linked = tried = searched = by_search = skipped = recent = 0
+    ask_later_ids: list[int] = []
     db_path = str(config.db_path())
     t0 = time.monotonic()
     # Позиции, которые так и остались незнакомыми: их отдаём телефону как «найди
@@ -816,8 +854,14 @@ def _link(picked: dict, store: str) -> dict:
                 continue
         except Exception:  # noqa: BLE001 — каталог не открылся: спросим поиск сети
             log.warning("%s: позиция %s не опозналась в каталоге", store, product_id, exc_info=True)
-        if searched >= LIVE_LIMIT or (time.monotonic() - t0) >= LINK_BUDGET_SECONDS:
+        if (searched + len(ask_later_ids)) >= LIVE_LIMIT or (time.monotonic() - t0) >= LINK_BUDGET_SECONDS:
             continue
+        if not live:
+            ask_later_ids.append(product_id)
+            _tried_mark("link", db_path, store, product_id)
+            unresolved.append({"product_id": product_id, "name": product.name})
+            continue
+
         searched += 1
         try:
             if (matcher.auto_match([product_id], [store]) or {}).get("auto"):
@@ -833,16 +877,21 @@ def _link(picked: dict, store: str) -> dict:
         _tried_mark("link", db_path, store, product_id)
         if not repo.confirmed_mapping(product_id, shop.id, real_only=True):
             unresolved.append({"product_id": product_id, "name": product.name})
+
+    if ask_later_ids:
+        _ask_later(ask_later_ids, store)
+
+    later = len(ask_later_ids)
     # Сколько осталось не спрошенным: предел живого поиска объясняет разницу между
     # «искали все» и «искали десять», и наряд говорит это человеку.
-    unasked = max(0, tried - linked - searched)
+    unasked = max(0, tried - linked - searched - later)
     log.info("%s: незнакомых позиций корзины %d, в каталоге %d, поиском сети %d из %d "
-             "(не спрошено %d: предел %d), недавних %d, телефону искать %d, служебных пропущено %d",
-             store, tried, linked, by_search, searched, unasked, LIVE_LIMIT, recent, len(unresolved),
+             "(не спрошено %d: предел %d), позже %d, недавних %d, телефону искать %d, служебных пропущено %d",
+             store, tried, linked, by_search, searched, unasked, LIVE_LIMIT, later, recent, len(unresolved),
              skipped)
     return {"linked": linked + by_search, "tried": tried, "searched": searched,
             "by_search": by_search, "in_catalog": linked, "unasked": unasked,
-            "recent": recent,
+            "recent": recent, "later": later,
             "unresolved": unresolved, "skipped": skipped,
             "size": len(items),
             "basket": str((basket or {}).get("name") or f"№{basket_id}")}

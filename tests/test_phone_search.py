@@ -37,6 +37,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JAVA = os.path.join(ROOT, "android", "app", "app", "src", "main", "java",
                     "ru", "moyakorzina", "app", "MainActivity.java")
+GRADLE = os.path.join(ROOT, "android", "app", "app", "build.gradle")
 
 
 def source() -> str:
@@ -1529,4 +1530,84 @@ def test_rest_loads_robots_txt():
     body = method_body(clean, "private void rest(")
     assert '"/robots.txt"' in body
     assert "storedTpl(s.code)" in body
+
+
+def test_askplan_background_and_search_later():
+    """askPlan кладёт "background" и в цикле search пишет в r.later при slot."""
+    clean = strip_comments(source())
+    body = method_body(clean, "private void askPlan(")
+    assert '"background"' in body
+    assert "r.slot != null" in body
+    assert "r.later" in body
+    assert "r.slot != null ? r.later : r.lines" in body
+
+
+def test_begin_moves_later_to_lines_when_empty():
+    """begin переносит later в lines при пустых lines."""
+    clean = strip_comments(source())
+    body = method_body(clean, "private void begin(")
+    assert "r.lines.length() == 0 && r.later.length() > 0" in body
+    assert "r.lines = r.later" in body
+    assert "r.tail = true" in body
+
+
+def test_opencart_checks_later_before_apitotal():
+    """openCart проверяет r.later.length() > 0 раньше apiTotal(r, api)."""
+    clean = strip_comments(source())
+    body = method_body(clean, "private void openCart(")
+    assert "r.later.length() > 0" in body
+    later_idx = body.find("r.later.length() > 0")
+    api_idx = body.find("apiTotal(r, api)")
+    assert later_idx != -1 and api_idx != -1
+    assert later_idx < api_idx, "r.later.length() должно проверяться раньше apiTotal"
+
+
+def test_finishrun_early_and_starttail():
+    """finishRun содержит "ищу в сети после знакомых", startTail(r) и remember под !early."""
+    clean = strip_comments(source())
+    body = method_body(clean, "private void finishRun(")
+    assert '"ищу в сети после знакомых"' in body
+    assert "startTail(r)" in body
+    assert "!early" in body
+    line_with_remember = next(line for line in body.splitlines() if "remember(r, true)" in line)
+    assert "!early" in line_with_remember
+
+
+def test_starttail_sets_fields_and_checks_pending():
+    """startTail ставит r.tail = true, s.run = r, r.linkDone = false и проверяет s.pending."""
+    clean = strip_comments(source())
+    body = method_body(clean, "private void startTail(")
+    assert "r.tail = true" in body
+    assert "s.run = r" in body
+    assert "r.linkDone = false" in body
+    assert "s.pending" in body
+    # Строки поиска дописываются в конец наряда: по r.lines снятие лишнего (wantOf) знает,
+    # что оставить. Заменой хвост снял бы знакомые товары, положенные первым проходом.
+    assert "r.lines.put(r.later.opt(i))" in body
+    assert "r.at = from" in body
+    assert "r.lines = r.later" not in body
+
+
+def test_endofrun_keeps_excess_while_tail_ahead():
+    """Пока впереди хвост поиска, endOfRun лишнее не снимает: найденное прошлым поиском
+    ещё без артикула в строке и снялось бы, чтобы тут же лечь снова."""
+    clean = strip_comments(source())
+    body = method_body(clean, "private void endOfRun(")
+    assert "r.later.length() == 0 && shouldDrop(r) && hasExcess(r)" in body
+
+
+def test_askcard_calls_superseded():
+    """askCard зовёт superseded(r)."""
+    clean = strip_comments(source())
+    body = method_body(clean, "private void askCard(")
+    assert "superseded(r)" in body
+
+
+def test_build_gradle_version_1_22():
+    """build.gradle — не ниже 1.22 (versionCode 26): хвост поиска после первого отчёта."""
+    with open(GRADLE, encoding="utf-8") as fh:
+        text = fh.read()
+    code = re.search(r"versionCode\s+(\d+)", text)
+    assert code and int(code.group(1)) >= 26, "versionCode должен быть не ниже 26"
+
 

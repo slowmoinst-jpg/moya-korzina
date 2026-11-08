@@ -1751,6 +1751,8 @@ public class MainActivity extends Activity {
         String orderStamp = "";
         JSONObject rules = new JSONObject();
         JSONArray lines = new JSONArray();
+        JSONArray later = new JSONArray(); // фоновая сборка: строки поиска — после первого отчёта
+        boolean tail = false;              // идёт поиск незнакомых после первого отчёта
         double ourTotal = 0;
         int basket = -1;         // какую корзину собираем и отпечаток её состава — из наряда
         String stamp = "";
@@ -1866,6 +1868,36 @@ public class MainActivity extends Activity {
         rest(s);
     }
 
+    /**
+     * Поискать незнакомые товары в сети после первого отчёта.
+     * Пересчёт «Где дешевле» не ждёт поиска и сразу считает знакомые,
+     * а второй отчёт уходит полным — со всеми найденными позициями.
+     */
+    private void startTail(final CartRun r) {
+        Slot s = r.slot;
+        if (s == null || r.stopped) {
+            if (s != null) rest(s);
+            return;
+        }
+        if (!s.pending.isEmpty() && !s.pending.equals(r.stamp)) {
+            rest(s);
+            return;
+        }
+        // Строки поиска — в конец наряда, а не вместо него: по r.lines снятие лишнего
+        // (wantOf) знает, что оставить, а повтор при пустой корзине сети проходит всё.
+        int from = r.lines.length();
+        for (int i = 0; i < r.later.length(); i++) r.lines.put(r.later.opt(i));
+        r.later = new JSONArray();
+        r.at = from;
+        r.tail = true;
+        r.linkDone = false;
+        r.apiTried = false;
+        r.cartRead = false;
+        s.run = r;
+        status(r, "ищу в сети незнакомые: " + r.lines.length(), false);
+        nextLine(r);
+    }
+
     /** Ход сборки: у «Собрать» — на панели сети, у фоновой — на нашем экране, через сервер. */
     private void status(CartRun r, String text, boolean bad) {
         r.now = text;
@@ -1969,6 +2001,7 @@ public class MainActivity extends Activity {
         JSONObject body = new JSONObject();
         try {
             body.put("store", r.code);
+            if (r.slot != null) body.put("background", true);
             if (r.basket >= 0) body.put("basket", r.basket);
             // Пустой список тоже уходит: после «Заказать» в невыбранной сети наряд пуст —
             // только снять своё. Без lines сервер отдал бы всю корзину, и она легла бы снова.
@@ -2018,7 +2051,7 @@ public class MainActivity extends Activity {
                     String sUrl = s == null ? "" : s.optString("url", "");
                     String sName = s == null ? "" : s.optString("name", "");
                     if (sUrl.isEmpty() || sName.isEmpty()) continue;
-                    r.lines.put(new JSONObject()
+                    (r.slot != null ? r.later : r.lines).put(new JSONObject()
                         .put("name", sName).put("url", "").put("search", sUrl)
                         .put("search_alt", s.optString("search_alt", ""))
                         .put("clicks", 1).put("sku", "")
@@ -2238,7 +2271,9 @@ public class MainActivity extends Activity {
         if (r == null || r.linkDone) return;
         r.linkDone = true;
         if (!alive(r)) return;
-        if (shouldDrop(r) && hasExcess(r)) {
+        // Пока впереди поиск незнакомых (хвост фоновой сборки), лишнее не снимаем: найденное
+        // прошлым поиском ещё без артикула в строке и снялось бы, чтобы тут же лечь снова.
+        if (r.later.length() == 0 && shouldDrop(r) && hasExcess(r)) {
             dropExcess(r, () -> openCart(r));
             return;
         }
@@ -2832,6 +2867,7 @@ public class MainActivity extends Activity {
 
     private void askCard(final CartRun r, JSONObject line, final long until, final boolean retried) {
         if (!alive(r)) return;
+        if (superseded(r)) { supersede(r); return; }
         r.view.evaluateJavascript(FIRST_CARD_JS, value -> {
             if (!alive(r)) return;
             JSONObject card = asObject(value);
@@ -4053,6 +4089,7 @@ public class MainActivity extends Activity {
         if (!alive(r)) return;
         if (superseded(r)) { supersede(r); return; }
         if (r.slot != null && !r.again) {
+            if (!r.tail && r.later.length() > 0) { finishRun(r, new JSONObject(), ""); return; }
             // Итог ответом самой сети (api_total наряда, Магнит): без страницы корзины.
             JSONObject api = r.rules.optJSONObject("api_total");
             if (api != null && !r.apiTried) { r.apiTried = true; apiTotal(r, api); return; }
@@ -4340,6 +4377,7 @@ public class MainActivity extends Activity {
     /** Показать, что вышло, и отдать отчёт серверу. Корзину не трогаем: оформляет человек. */
     private void finishRun(final CartRun r, JSONObject cart, String stoppedWhy) {
         final boolean background = r.slot != null;
+        final boolean early = background && !r.tail && r.later.length() > 0 && stoppedWhy.isEmpty();
         if (!background) {
             cartRun = null;
             cartBtn.setText("Собрать");
@@ -4441,7 +4479,9 @@ public class MainActivity extends Activity {
                 .show();
             say(r.name + ": легло " + landed + " из " + r.items.length() + ", отправляю отчёт", false);
         } else {
-            r.now = "легло " + landed + " из " + r.items.length() + " за " + seconds + " с";
+            r.now = early
+                ? "легло " + landed + " из " + (r.items.length() + r.later.length()) + " за " + seconds + " с, ищу в сети ещё " + r.later.length()
+                : "легло " + landed + " из " + r.items.length() + " за " + seconds + " с";
         }
 
         JSONArray pageTotals = new JSONArray();
@@ -4458,12 +4498,31 @@ public class MainActivity extends Activity {
                 } catch (Exception ignored) { }
             }
         }
-        if (stoppedWhy.isEmpty() && r.items.length() > 0) remember(r, true);
+        if (!early && stoppedWhy.isEmpty() && r.items.length() > 0) remember(r, true);
         try {
+            JSONArray reportItems = r.items;
+            if (early) {
+                reportItems = new JSONArray();
+                for (int i = 0; i < r.items.length(); i++) reportItems.put(r.items.opt(i));
+                for (int i = 0; i < r.later.length(); i++) {
+                    JSONObject lat = r.later.optJSONObject(i);
+                    String lName = lat != null ? lat.optString("name", "") : "";
+                    reportItems.put(new JSONObject()
+                        .put("name", lName)
+                        .put("sku", "")
+                        .put("url", "")
+                        .put("ok", false)
+                        .put("why", "ищу в сети после знакомых")
+                        .put("put", 0)
+                        .put("times", 0)
+                        .put("how", "tap")
+                        .put("calls", new JSONArray()));
+                }
+            }
             JSONObject body = new JSONObject()
                 .put("store", r.code)
                 .put("app_version", BuildConfig.VERSION_NAME)
-                .put("items", r.items)
+                .put("items", reportItems)
                 .put("cart_page", cart.optString("page", ""))
                 .put("our_total", r.ourTotal)
                 .put("page_totals", pageTotals)
@@ -4489,7 +4548,7 @@ public class MainActivity extends Activity {
         if (background) {
             Log.i(TAG, r.name + ": фоновая сборка — легло " + landedNow + " из " + r.items.length()
                 + " за " + seconds + " с");
-            rest(r.slot);
+            if (early) startTail(r); else rest(r.slot);
         }
     }
 
@@ -4760,6 +4819,11 @@ public class MainActivity extends Activity {
     /** Наряд пришёл: сначала новые позиции (первая учит запрос сети), потом прибавки, потом лежащие. */
     private void begin(final CartRun r) {
         loadLedger(r);
+        if (r.lines.length() == 0 && r.later.length() > 0) {
+            r.lines = r.later;
+            r.later = new JSONArray();
+            r.tail = true;
+        }
         if (r.lines.length() == 0) {
             if (shouldDrop(r) && hasExcess(r)) {
                 if (r.slot != null && storedTpl(r.code) != null) {
