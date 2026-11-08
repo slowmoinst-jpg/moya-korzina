@@ -472,10 +472,23 @@ def _strong(verdict) -> bool:
     return bool(verdict and verdict[0])
 
 
+def _numbers_disagree(mine: matching.Row, cand: matching.Row) -> bool:
+    """Строка сети молчит о проценте (транслит Перекрёстка без «%» и запятой),
+    а её числа спорят с числами строки человека, где процент назван.
+    Замер 08.11.2026: «Молоко Простоквашино 2,5 %» было связано с «…pasterizovannoe 1 5 930ml»,
+    «Село Зелёное 2,5 %» — с «…6 950ml». Числа без фасовки и штук считает x5.numbers.
+    """
+    from app.catalog import x5     # x5 сам импортирует link, поэтому импорт здесь
+    if mine.pct is None or cand.pct is not None:
+        return False
+    ours, theirs = x5.numbers(mine.name), x5.numbers(cand.name)
+    return bool(ours and theirs) and ours != theirs
+
+
 def _agrees(person: list[matching.Row], cand: matching.Row) -> bool:
     """Строка ничем не спорит ни с одной строкой человека: единица, фасовка, штуки,
-    процент, метки, марка."""
-    return all(matching.compatible(mine, cand) for mine in person)
+    процент, числа строки, молчащей о проценте, метки, марка."""
+    return all(matching.compatible(mine, cand) and not _numbers_disagree(mine, cand) for mine in person)
 
 
 def _weight_ok(person: list[matching.Row], cand: matching.Row) -> bool:

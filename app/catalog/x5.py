@@ -41,11 +41,13 @@ JUNK_HEAD = re.compile(
     re.I,
 )
 JUNK_TAIL = re.compile(r"\s+\d[\d\s]*\s\d{2}\s*₽.*$")
+# Хвост «1l»/«1kg» после ненулевой цифры (WEIGHT, LAT_DEC) — целый литр или килограмм, а цифра
+# перед ним — процент («kefir 1 1kg» = 1 %, 1 кг); «0 1l» остаётся 0,1 л.
 WEIGHT = re.compile(
-    r"(?i)\d+(?:[.,]\d+)?\s*(?:кг|г|гр|мл|л|kg|gr|g|ml|l)(?![а-яёa-z])|\d+\s\d{1,3}(?:l|kg)(?![a-z])"
+    r"(?i)\d+(?:[.,]\d+)?\s*(?:кг|г|гр|мл|л|kg|gr|g|ml|l)(?![а-яёa-z])|(?:0\s|\d+\s(?!1(?:l|kg)(?![a-z])))\d{1,3}(?:l|kg)(?![a-z])"
 )
 PACK = re.compile(r"(?i)\d+\s*(?:шт|sht|st|пак\w*|pak\w*)(?![а-яёa-z])|\d+\s*[xх*]\s*\d+")
-LAT_DEC = re.compile(r"(?<![\d])(\d)\s(\d{1,3})(l|kg)(?![a-z])")
+LAT_DEC = re.compile(r"(?<![\d])(0|\d(?!\s1(?:l|kg)(?![a-z])))\s(\d{1,3})(l|kg)(?![a-z])")
 GAS_NO = re.compile(r"(?i)без\s+газа|не\s*газированн\w*|bez\s+gaza|ne\s*gazirovann\w*")
 GAS_YES = re.compile(r"(?i)(?:с\s+)?газом|газированн\w*|(?:s\s+)?gazom|gazirovann\w*")
 SLUG = re.compile(r"/product/([^/?#]*?)--\d+")
