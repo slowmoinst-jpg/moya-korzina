@@ -57,8 +57,11 @@ def warm(basket_id: int, phone: str) -> None:
             try:
                 users.open_workspace(phone)
                 try:
+                    t0 = time.monotonic()
                     bundle = result._bundle(basket_id, again=True)
                     _places(basket_id, bundle)
+                    log.info("«Где дешевле» по корзине %s посчитан за %.1f с",
+                             basket_id, time.monotonic() - t0)
                 finally:
                     users.deactivate()
             except Exception:  # noqa: BLE001 — фоновый прогрев не должен ронять процесс

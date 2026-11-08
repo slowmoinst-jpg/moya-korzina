@@ -251,3 +251,35 @@ def test_basket_page_live_bar(web, monkeypatch):
     assert "Где дешевле" in page_no_variants
     assert 'class="cta"' in page_no_variants
     assert f"· {len(items)}" in page_no_variants
+
+
+def test_basket_change_warms_cheaper(web, monkeypatch):
+    """Правка корзины (plus) сразу запускает прогрев «Где дешевле» (warm)."""
+    enter(web)
+    users.open_workspace(PHONE)
+    location.save_address("г Москва, ул Арбат, 1")
+    basket_id, milk, bread = make_basket()
+    users.deactivate()
+
+    warm_calls = []
+    monkeypatch.setattr(cheaper, "warm", lambda bid, p: warm_calls.append((bid, p)))
+
+    resp = web.post("/phone/basket", data={"do": f"plus:{milk}"})
+    assert resp.status_code == 303
+    assert len(warm_calls) == 1
+    assert warm_calls[0] == (basket_id, PHONE)
+
+
+def test_basket_page_kz_live_again_and_runs_poll(web):
+    """Страница корзины содержит kzLiveAgain, а скрипт опроса строк сборки её зовёт."""
+    enter(web)
+    users.open_workspace(PHONE)
+    location.save_address("г Москва, ул Арбат, 1")
+    make_basket()
+    users.deactivate()
+
+    page = web.get("/phone/basket").data.decode("utf-8")
+    assert "window.kzLiveAgain" in page
+    assert "window.kzLiveAgain()" in page
+    assert "doneRows" in page
+

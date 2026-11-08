@@ -427,6 +427,24 @@ public class MainActivity extends Activity {
     private static final String REPLAY_POLL_JS =
         "(function(k){var r=(window.__kzRep||{})[k];return r?JSON.stringify(r):'';})(%s)";
 
+    /** Сколько ждать ответа сети с итогом корзины (api_total), мс. */
+    private static final int API_WAIT_MS = 4000;
+    private static final String API_TOTAL_JS =
+        "(function(rule){try{var t=window.__kzTpl||{},h={};"
+      + "Object.keys(t.h||{}).forEach(function(k){if(!/^content-(type|length)$/i.test(k))h[k]=t.h[k];});"
+      + "var u=new URL(rule.path,t.u||location.href).href;window.__kzApi=null;"
+      + "fetch(u,{method:'GET',headers:h,credentials:'include'}).then(function(r){"
+      + " return r.text().then(function(x){var out={ok:r.status>=200&&r.status<300,status:r.status,fields:{}};"
+      + "  try{var o=JSON.parse(x);['total','base','sale','count'].forEach(function(n){var p=rule[n];if(!p)return;"
+      + "   var v=p.split('.').reduce(function(a,k){return a==null?undefined:a[k];},o);"
+      + "   if(typeof v==='string'&&/^-?\\d+(?:[.,]\\d+)?$/.test(v))v=parseFloat(v.replace(',','.'));"
+      + "   if(typeof v==='number'&&isFinite(v))out.fields[p]=v;});}catch(e){out.ok=false;}"
+      + "  window.__kzApi=out;});})"
+      + ".catch(function(e){window.__kzApi={ok:false,status:0};});"
+      + "return 'started';}catch(e){return 'ошибка: '+String(e).slice(0,80);}})(%s)";
+    private static final String API_POLL_JS =
+        "(function(){var r=window.__kzApi;return r?JSON.stringify(r):'';})()";
+
     /**
      * Кнопка «В корзину» ИМЕННО ЭТОГО товара — правило серверной передачи
      * (app/shopbrowser/cart.py, _PICK_JS): первая видимая ниже заголовка и не дальше
@@ -782,10 +800,12 @@ public class MainActivity extends Activity {
     private static final int READ_RETRY_MS = 700;
 
     // ── Фоновая сборка (1.13) ──
-    /** Через сколько после последней правки корзины начинать: 600 мс ради цели 5 с на сборку. */
-    private static final int DEBOUNCE_MS = 600;
+    /** Через сколько после последней правки корзины начинать: 300 мс (правки подряд не теряются, устаревшую сборку сменяет новая). */
+    private static final int DEBOUNCE_MS = 300;
     /** Не вышла сборка этой корзины — следующая попытка не раньше: сеть могла отказать. */
     private static final long RETRY_MS = 20L * 60 * 1000;
+    /** Позиция, которая недавно не легла в эту сеть, в фоновой сборке не повторяется 30 минут. */
+    private static final long FAIL_AGAIN_MS = 30L * 60 * 1000;
     /** Сколько времени считать завершённую сборку свежей: 6 часов. После этого корзина пересобирается. */
     private static final long FRESH_MS = 6L * 3600 * 1000;
     /** Пульс серверу не чаще: строку держит живой и сообщение раз в полторы секунды. */
@@ -1769,6 +1789,8 @@ public class MainActivity extends Activity {
         long callsUntil = 0;         // до какого времени ждать запросы сети опросом (1.3)
         boolean reusedTpl = false;   // образец запроса сети взят из хранилища между сборками (2.4)
         boolean extendedTpl = false; // срок образца продлён в этой сборке (2.5)
+        boolean apiTried = false;  // итог уже спрашивали ответом сети (api_total)
+        boolean cartRead = false; // страницу корзины в этой сборке читали
         String how = "tap";          // чем легла текущая позиция: касанием или запросом
         final long startedAt = SystemClock.uptimeMillis();
         String cartHint = "";        // дорога к корзине не нашлась: что похожее было на странице
@@ -1822,6 +1844,26 @@ public class MainActivity extends Activity {
     private boolean alive(CartRun r) {
         if (r == null || r.stopped) return false;
         return r.slot == null ? r == cartRun : r.slot.run == r;
+    }
+
+    /**
+     * Корзину уже поправили снова: эта фоновая сборка устарела. Журнал 07.11.2026 — Магнит
+     * прошёл четыре сборки подряд (49 с), пока догнал последнюю правку.
+     */
+    private static boolean superseded(CartRun r) {
+        return r.slot != null && !r.slot.pending.isEmpty() && !r.slot.pending.equals(r.stamp);
+    }
+
+    /**
+     * Бросить устаревшую сборку и сразу начать новую. Отчёт не шлём: положенное уже в памяти
+     * телефона (saveLedger), а поздний отчёт старого отпечатка перебил бы строку новой сборки.
+     */
+    private void supersede(CartRun r) {
+        Slot s = r.slot;
+        r.stopped = true;
+        if (s.run == r) s.run = null;
+        Log.i(TAG, r.name + ": корзина поменялась — собираю заново");
+        rest(s);
     }
 
     /** Ход сборки: у «Собрать» — на панели сети, у фоновой — на нашем экране, через сервер. */
@@ -2049,6 +2091,7 @@ public class MainActivity extends Activity {
 
     private void nextLine(final CartRun r) {
         if (!alive(r)) return;
+        if (superseded(r)) { supersede(r); return; }
         if (r.at >= r.lines.length()) {
             // Строки наряда пройдены. У Ленты последний шаг — ссылка на готовую корзину,
             // собранную сервером (Z9): дальше завершение идёт как раньше, через openCart.
@@ -2079,6 +2122,13 @@ public class MainActivity extends Activity {
             keptLine(r, line);
             return;
         }
+        // Фоновая сборка не повторяет позицию, которая недавно не легла в эту сеть: каждая
+        // правка корзины ждала бы её отказа заново (Лента, Самокат, Пятёрочка — 20–50 с на
+        // сборку, журнал 07.11.2026). «Собрать» человека пробует всё.
+        if (r.slot != null) {
+            String failed = failedRecently(r, line);
+            if (!failed.isEmpty()) { laterLine(r, line, failed); return; }
+        }
         r.clicks = r.target - r.have;
         // Прибавка к уже лежащему — запросом, только если сеть им СТАВИТ количество
         // (qty_sets): иначе повтор прибавил бы целое число упаковок ещё раз.
@@ -2100,10 +2150,11 @@ public class MainActivity extends Activity {
      *
      * НЕОБЯЗАТЕЛЬНЫЙ ШАГ. Наряд не ждёт сервер: не ответил за CARTLINK_WAIT_MS — идём
      * читать корзину сети, как раньше. Любой отказ — пометка в отчёте, и только.
+     * В фоновой сборке шаг ссылки пропускается: кнопку на ссылке там никто не нажмёт.
      */
     private void lentaCartLink(final CartRun r) {
         if (!alive(r)) return;
-        if (!"lenta".equals(r.code) || r.linkAsked) {
+        if (!"lenta".equals(r.code) || r.linkAsked || r.slot != null) {
             endOfRun(r);
             return;
         }
@@ -2220,6 +2271,94 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) { }
         r.at++;
         status(r, "уже лежит: " + (line == null ? "" : line.optString("name", "")), false);
+        handler.post(() -> nextLine(r));
+    }
+
+    /** Ключ позиции в памяти отказов: единый товар, иначе артикул сети, иначе имя. */
+    private static String lineKey(JSONObject line) {
+        if (line == null) return "";
+        int id = line.optInt("product_id", 0);
+        if (id > 0) return "p" + id;
+        String sku = line.optString("sku", "").trim();
+        if (!sku.isEmpty()) return "s" + sku;
+        String name = line.optString("name", "").trim();
+        if (!name.isEmpty()) return "n" + name;
+        return "";
+    }
+
+    /** Почему позиция не легла в эту сеть меньше FAIL_AGAIN_MS назад; "" — не отказывала. */
+    private String failedRecently(CartRun r, JSONObject line) {
+        try {
+            if (r == null) return "";
+            String key = lineKey(line);
+            if (key.isEmpty()) return "";
+            String raw = memory().getString("failed." + r.code, "{}");
+            JSONObject map = new JSONObject(raw);
+            JSONObject rec = map.optJSONObject(key);
+            if (rec != null) {
+                long at = rec.optLong("at", 0);
+                if (System.currentTimeMillis() - at < FAIL_AGAIN_MS) {
+                    String why = rec.optString("why", "");
+                    return why.isEmpty() ? "не легла" : why;
+                }
+            }
+        } catch (Exception ignored) { }
+        return "";
+    }
+
+    /** Запомнить отказ позиции (why не пуст) или забыть его (легла). Помним 80 последних. */
+    private void noteFail(CartRun r, JSONObject line, String why) {
+        if (r == null) return;
+        try {
+            String key = lineKey(line);
+            if (key.isEmpty()) return;
+            String prefKey = "failed." + r.code;
+            String raw = memory().getString(prefKey, "{}");
+            JSONObject map = new JSONObject(raw);
+            if (why == null || why.isEmpty()) {
+                if (!map.has(key)) return;
+                map.remove(key);
+            } else {
+                JSONObject rec = new JSONObject();
+                rec.put("at", System.currentTimeMillis());
+                rec.put("why", oneSpace(why, 80));
+                map.put(key, rec);
+
+                if (map.length() > 80) {
+                    List<String> keys = new ArrayList<>();
+                    Iterator<String> it = map.keys();
+                    while (it.hasNext()) keys.add(it.next());
+                    keys.sort((a, b) -> {
+                        JSONObject recA = map.optJSONObject(a);
+                        JSONObject recB = map.optJSONObject(b);
+                        long atA = recA != null ? recA.optLong("at", 0) : 0;
+                        long atB = recB != null ? recB.optLong("at", 0) : 0;
+                        return Long.compare(atA, atB);
+                    });
+                    while (map.length() > 80 && !keys.isEmpty()) {
+                        map.remove(keys.remove(0));
+                    }
+                }
+            }
+            memory().edit().putString(prefKey, map.toString()).apply();
+        } catch (Exception ignored) { }
+    }
+
+    /** Позиция недавно не легла — в отчёт с прежней причиной, без попытки (FAIL_AGAIN_MS). */
+    private void laterLine(final CartRun r, JSONObject line, String why) {
+        String name = line == null ? "" : line.optString("name", "");
+        try {
+            r.items.put(new JSONObject()
+                .put("name", name)
+                .put("sku", line == null ? "" : line.optString("sku", ""))
+                .put("url", line == null ? "" : line.optString("url", ""))
+                .put("ok", false)
+                .put("why", fitWhy("не легла недавно, попробую позже: " + why))
+                .put("put", 0).put("times", r.target)
+                .put("how", "tap").put("calls", new JSONArray()));
+        } catch (Exception ignored) { }
+        r.at++;
+        status(r, "позже: " + name, false);
         handler.post(() -> nextLine(r));
     }
 
@@ -3565,6 +3704,7 @@ public class MainActivity extends Activity {
         // Итоговая причина отказа — не длиннее WHY_LIMIT (сервер режет до 200): в предел
         // входит и отметка о баннере, иначе дамп страницы терялся бы уже на сервере.
         if (!ok) say = fitWhy(say);
+        noteFail(r, line, ok ? "" : say);
         // ПАУЗА ПОСЛЕ НЕУДАЧИ ПОИСКА. Магнит, прогон 21.10.2026: после серии поисков
         // («пять позиций по два запроса») — стена «Выключите VPN», похоже на ограничение
         // частоты. Следующую строку начинаем через SEARCH_PAUSE_MS. Признак — search
@@ -3833,9 +3973,105 @@ public class MainActivity extends Activity {
         "(function(re){try{var t=(document.body&&document.body.innerText||'').toLowerCase().replace(/ё/g,'е');"
       + "return new RegExp(re,'i').test(t)?'1':'';}catch(e){return '';}})(%s)";
 
+    /**
+     * Итог корзины ответом самой сети (api_total наряда). Магнит: checkout/preview, поле
+     * summary.totalFinalPrice сверено со страницей корзины 17.10.2026 (app/phonecart.py,
+     * API_TOTALS). Страница корзины — 3–5 с, ответ — доли секунды. Запрос идёт из скрытого
+     * окна с куками сети и заголовками образца (__kzTpl), значения наружу не уходят. Любой
+     * сбой — прежний путь, страница корзины.
+     */
+    private void apiTotal(final CartRun r, final JSONObject rule) {
+        if (!alive(r)) return;
+        status(r, r.name + ": спрашиваю итог у сети", false);
+        r.view.evaluateJavascript(API_TOTAL_JS.replace("%s", rule.toString()), started -> {
+            if (!alive(r)) return;
+            String st = unquote(started);
+            if (!"started".equals(st)) {
+                openCart(r);
+                return;
+            }
+            final long until = SystemClock.uptimeMillis() + API_WAIT_MS;
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (!alive(r)) return;
+                    final Runnable again = this;
+                    r.view.evaluateJavascript(API_POLL_JS, value -> {
+                        if (!alive(r)) return;
+                        JSONObject res = asObject(value);
+                        if (res.length() == 0 && SystemClock.uptimeMillis() < until) {
+                            handler.postDelayed(again, 100);
+                            return;
+                        }
+                        if (res.length() == 0 || !res.optBoolean("ok")) {
+                            openCart(r);
+                            return;
+                        }
+                        JSONObject fields = res.optJSONObject("fields");
+                        String totalKey = rule.optString("total", "");
+                        if (fields == null || totalKey.isEmpty() || !fields.has(totalKey)) {
+                            openCart(r);
+                            return;
+                        }
+                        try {
+                            double scale = rule.optDouble("scale", 1.0);
+                            double total = Math.round(fields.optDouble(totalKey) * scale * 100.0) / 100.0;
+                            JSONObject cart = new JSONObject();
+                            JSONArray totals = new JSONArray();
+                            JSONObject totalRow = new JSONObject();
+                            totalRow.put("kind", "total");
+                            totalRow.put("label", "Итого");
+                            totalRow.put("amount", total);
+                            totalRow.put("row", "Итого " + money(total) + " (ответ сети)");
+                            totals.put(totalRow);
+                            cart.put("totals", totals);
+                            JSONObject apiObj = new JSONObject();
+                            String path = rule.optString("path", "");
+                            apiObj.put(path, fields);
+                            cart.put("api", apiObj);
+                            cart.put("page", path);
+                            String countKey = rule.optString("count", "");
+                            if (!countKey.isEmpty() && fields.has(countKey)) {
+                                cart.put("count", fields.optInt(countKey));
+                            }
+                            if (nothingPut(r) && cart.optInt("count", -1) == 0) {
+                                openCart(r);
+                                return;
+                            }
+                            finishRun(r, cart, "");
+                        } catch (Exception e) {
+                            openCart(r);
+                        }
+                    });
+                }
+            }, 100);
+        });
+    }
+
     /** Открыть корзину сети: своей ссылкой со страницы, кнопкой «Корзина» или адресом из наряда. */
     private void openCart(final CartRun r) {
         if (!alive(r)) return;
+        if (superseded(r)) { supersede(r); return; }
+        if (r.slot != null && !r.again) {
+            // Итог ответом самой сети (api_total наряда, Магнит): без страницы корзины.
+            JSONObject api = r.rules.optJSONObject("api_total");
+            if (api != null && !r.apiTried) { r.apiTried = true; apiTotal(r, api); return; }
+            // Легло не всё: итог сети «Где дешевле» тогда не берёт (app/netprice.py), а страница
+            // корзины — 3–10 с. Пустую корзину это не прячет: класть что-то удалось.
+            if (!nothingPut(r) && someFailed(r)) { finishRun(r, new JSONObject(), ""); return; }
+            // Страница корзины этой сети две сборки подряд не показала итога — не открываем.
+            // Каждая пятая сборка открывает: вдруг итог появился, и пустую корзину после
+            // заказа тоже видно.
+            if (memory().getInt("nototal." + r.code, 0) >= 2) {
+                int skipped = memory().getInt("noread." + r.code, 0);
+                if (skipped < 4) {
+                    memory().edit().putInt("noread." + r.code, skipped + 1).apply();
+                    finishRun(r, new JSONObject(), "");
+                    return;
+                }
+                memory().edit().putInt("noread." + r.code, 0).apply();
+            }
+        }
         status(r, r.name + ": открываю корзину сети", false);
         r.cartFrom = pathOf(r.view.getUrl());
         JSONArray pages = r.rules.optJSONArray("cart_pages");
@@ -3878,6 +4114,8 @@ public class MainActivity extends Activity {
 
     private void readCart(final CartRun r) {
         if (!alive(r)) return;
+        if (superseded(r)) { supersede(r); return; }
+        r.cartRead = true;
         status(r, r.name + ": читаю итог корзины сети", false);
         // Сторож нужен и здесь: страница корзины пересчитывает её своими запросами.
         r.view.evaluateJavascript(watchScript(r), null);
@@ -3891,11 +4129,9 @@ public class MainActivity extends Activity {
                 boolean stuck = r.cartFrom != null && r.cartFrom.equals(pathOf(open));
                 // Итога нет — страница корзины ещё дорисовывается: у Магнита через VPN
                 // эмулятора суммы пришли позже 9 с после заголовка (18.10.2026).
-                // Сеть без итога две сборки подряд перечитываем не больше 3 раз (1.5), но
-                // каждая пятая такая сборка ждёт полностью: медленная сеть не теряет итог навсегда.
-                int miss = memory().getInt("nototal." + r.code, 0);
-                int limit = (r.slot != null && miss >= 2 && miss % 5 != 0) ? 3 : READ_TRIES;
-                if (!stuck && r.readTries < limit) {
+                // Фоновая сборка сети без итога сюда доходит только каждой пятой (openCart) и
+                // ждёт полностью.
+                if (!stuck && r.readTries < READ_TRIES) {
                     r.readTries++;
                     handler.postDelayed(() -> readCart(r), READ_RETRY_MS);
                     return;
@@ -3975,6 +4211,16 @@ public class MainActivity extends Activity {
             if ("kept".equals(it.optString("how"))) kept = true;
         }
         return kept;
+    }
+
+    /** Хоть одна позиция этой сборки не легла (или отложена). */
+    private static boolean someFailed(CartRun r) {
+        if (r == null || r.items == null) return false;
+        for (int i = 0; i < r.items.length(); i++) {
+            JSONObject it = r.items.optJSONObject(i);
+            if (it != null && !it.optBoolean("ok", false)) return true;
+        }
+        return false;
     }
 
     /**
@@ -4104,7 +4350,7 @@ public class MainActivity extends Activity {
 
         // Счётчик фоновых сборок подряд без найденного итога на странице (1.5). Остановленная
         // сборка корзину не читала — она не в счёт.
-        if (background && stoppedWhy.isEmpty()) {
+        if (background && stoppedWhy.isEmpty() && r.cartRead) {
             String nototalKey = "nototal." + r.code;
             if (hasTotal(cart)) {
                 memory().edit().putInt(nototalKey, 0).apply();
@@ -4604,7 +4850,18 @@ public class MainActivity extends Activity {
             return;
         }
         handler.postDelayed(() -> {
-            if (s.run == null && s.view != null) s.view.loadUrl("about:blank");
+            if (s.run == null && s.view != null) {
+                // Окно с образцом запроса отдыхает на robots.txt своей сети: скриптов сети там
+                // нет, как на пустой странице, а следующей сборке не нужно заново открывать её
+                // адрес (ensureTpl сверяет origin).
+                JSONObject st = storedTpl(s.code);
+                String origin = st != null ? st.optString("origin", "") : "";
+                if (!origin.isEmpty()) {
+                    s.view.loadUrl(origin + "/robots.txt");
+                } else {
+                    s.view.loadUrl("about:blank");
+                }
+            }
         }, 1500);
         if (s.sleep != null) handler.removeCallbacks(s.sleep);
         s.sleep = () -> {

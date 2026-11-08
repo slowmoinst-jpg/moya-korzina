@@ -1464,3 +1464,69 @@ def test_a_second_pass_asks_for_the_link_again():
         "на повторном проходе ссылка не спросится — флаг остался с прошлого"
     assert "r.linkDone = false" in again, \
         "на повторном проходе наряд сразу завершится, не спросив ссылку"
+
+
+def test_nextline_opencart_readcart_start_with_superseded_check():
+    """nextLine, openCart и readCart начинают с проверки superseded(r)."""
+    clean = strip_comments(source())
+    for method in ("private void nextLine(", "private void openCart(", "private void readCart("):
+        body = method_body(clean, method)
+        alive_idx = body.find("!alive(r)")
+        super_idx = body.find("superseded(r)")
+        assert alive_idx != -1, f"метод {method} не содержит проверки alive(r)"
+        assert super_idx != -1, f"метод {method} не содержит проверки superseded(r)"
+        assert super_idx > alive_idx, f"в {method} superseded(r) должна идти после alive(r)"
+        assert "supersede(r)" in body[:super_idx + 60]
+
+
+def test_nextline_calls_failed_recently_only_under_slot_check():
+    """nextLine зовёт failedRecently только под r.slot != null."""
+    clean = strip_comments(source())
+    body = method_body(clean, "private void nextLine(")
+    assert "failedRecently(r, line)" in body
+    call_idx = body.find("failedRecently(r, line)")
+    slot_idx = body.rfind("r.slot != null", 0, call_idx)
+    assert slot_idx != -1, "вызов failedRecently не находится под проверкой r.slot != null"
+    assert "laterLine(r, line, failed)" in body
+
+
+def test_linedone_calls_notefail():
+    """lineDone зовёт noteFail."""
+    clean = strip_comments(source())
+    body = method_body(clean, "private void lineDone(final CartRun r, boolean ok, String why, JSONArray calls, boolean taken)")
+    assert "noteFail(r, line," in body
+
+
+def test_lentacartlink_skips_in_background_slot():
+    """В lentaCartLink условие пропуска содержит r.slot != null."""
+    clean = strip_comments(source())
+    body = method_body(clean, "private void lentaCartLink(")
+    assert "r.slot != null" in body
+    check_line = next(line for line in body.splitlines() if "r.linkAsked" in line)
+    assert "r.slot != null" in check_line
+
+
+def test_opencart_calls_apitotal():
+    """openCart зовёт apiTotal(r, api)."""
+    clean = strip_comments(source())
+    body = method_body(clean, "private void openCart(")
+    assert "apiTotal(r, api)" in body
+
+
+def test_finishrun_nototal_counter_under_cartread():
+    """В finishRun счётчик nototal стоит под r.cartRead."""
+    clean = strip_comments(source())
+    body = method_body(clean, "private void finishRun(")
+    nototal_idx = body.find("nototalKey")
+    assert nototal_idx != -1, "в finishRun нет nototalKey"
+    check_idx = body.rfind("r.cartRead", 0, nototal_idx)
+    assert check_idx != -1, "nototalKey не находится под проверкой r.cartRead"
+
+
+def test_rest_loads_robots_txt():
+    """rest грузит \"/robots.txt\"."""
+    clean = strip_comments(source())
+    body = method_body(clean, "private void rest(")
+    assert '"/robots.txt"' in body
+    assert "storedTpl(s.code)" in body
+

@@ -1043,3 +1043,19 @@ def test_second_plan_gives_search_recent(web, monkeypatch):
     assert second_res.get("search", []) == []
     assert len(second_res.get("search_recent", [])) == 1
     assert second_res["search_recent"][0]["name"] == "ЧАЙ ЧЁРН.ЛИСТ.100Г"
+
+
+def test_rules_api_total_verified():
+    """Сверенное правило итога из ответа сети (API_TOTALS, verified) отдаётся телефону."""
+    magnit_rules = phonecart.rules("magnit")
+    assert magnit_rules["api_total"] == {
+        "path": "/webgate/v1/checkout/preview",
+        "total": "summary.totalFinalPrice",
+        "base": "summary.totalBasePrice",
+        "sale": "summary.itemsTotalSalePrice",
+        "count": "summary.itemsCount",
+        "scale": 0.01,
+    }
+    vkusvill_rules = phonecart.rules("vkusvill")
+    assert vkusvill_rules["api_total"] is None
+

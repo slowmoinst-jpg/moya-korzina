@@ -261,6 +261,7 @@
     function kzRuns() {
       var box = document.getElementById('kz-runs');
       if (!box) { return; }
+      var doneRows = (box.innerHTML.match(/\brun done\b/g) || []).length;
       var payload = null, answer = null;
       try { payload = JSON.parse(box.getAttribute('data-collect') || 'null'); } catch (e) { payload = null; }
       if (payload && window.KorzinaDevice && KorzinaDevice.collect) { answer = KorzinaDevice.collect(payload); }
@@ -286,6 +287,11 @@
           .then(function (j) {
             box.innerHTML = j.html;
             tell();
+            var newDone = ((j.html || '').match(/\brun done\b/g) || []).length;
+            if (newDone !== doneRows) {
+              doneRows = newDone;
+              if (window.kzLiveAgain) { window.kzLiveAgain(); }
+            }
             if (more(j)) { timer = setTimeout(poll, 1000); }
           })
           .catch(function () { if (more({})) { timer = setTimeout(poll, 2000); } });
@@ -304,16 +310,19 @@
 
     /* Живая полоса трёх лучших мест внизу экрана */
     function kzLive() {
-      var bar = document.querySelector('[data-live]');
-      if (!bar) { return; }
-      var url = bar.getAttribute('data-live');
-      if (!url) { return; }
-      var deadline = Date.now() + 90000;
+      /* Адрес — здесь, а не из data-live: готовая полоса его не несёт, а перезапросить
+         её нужно и тогда (kzLiveAgain ниже). */
+      var url = '{{ url_for("phone.basket_top") }}';
+      var deadline = 0;
       var timer = null;
+
+      function strip() {
+        return document.querySelector('[data-live]') || document.querySelector('a.live');
+      }
 
       function giveUp() {
         clearTimeout(timer);
-        var cur = document.querySelector('[data-live]');
+        var cur = strip();
         if (cur) {
           cur.classList.add('gave');
           cur.removeAttribute('aria-busy');
@@ -330,6 +339,15 @@
         timer = setTimeout(poll, delay);
       }
 
+      /* Сборка телефона в сети кончилась: сервер накладывает итоги сетей на тот же
+         расчёт (cheaper._ranked), и полосу достаточно перезапросить. Заводится и при
+         готовой полосе: расчёт, начатый правкой, часто успевает до загрузки страницы. */
+      window.kzLiveAgain = function () {
+        if (!strip()) { return; }
+        deadline = Math.max(deadline, Date.now() + 30000);
+        schedule(0);
+      };
+
       function poll() {
         if (Date.now() >= deadline) {
           giveUp();
@@ -343,7 +361,7 @@
           .then(function (data) {
             if (data && data.ready) {
               clearTimeout(timer);
-              var cur = document.querySelector('[data-live]');
+              var cur = strip();
               if (!data.html) {
                 giveUp();
               } else if (cur) {
@@ -359,15 +377,18 @@
                 });
               }
             } else {
-              schedule(2000);
+              schedule(600);
             }
           })
           .catch(function () {
-            schedule(4000);
+            schedule(2000);
           });
       }
 
-      schedule(2000);
+      /* Расчёта ещё нет — ждём его частым опросом: правка корзины уже запустила его. */
+      if (!document.querySelector('[data-live]')) { return; }
+      deadline = Date.now() + 90000;
+      schedule(300);
     }
     if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', kzLive); }
     else { kzLive(); }

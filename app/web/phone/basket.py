@@ -485,9 +485,12 @@ def _change(current: dict | None):
         repo.set_basket_item(basket_id, pid, round(qty + _step(unit), 3))
         # Пока человек ещё выбирает, цены по корзине уже узнаются: к «Где дешевле» они готовы.
         # Когда не запускать (демо, работа идёт или свежая) — решает start_prices.
-        from .cheaper import start_prices
+        # Расчёт «Где дешевле» — сразу, до перенаправления: экран после перезагрузки застаёт
+        # его уже идущим, а не начинает сам (цель владельца — пересчёт за 5 с, 08.11.2026).
+        from .cheaper import start_prices, warm
 
         start_prices(basket_id, repo.basket_items(basket_id))
+        warm(basket_id, getattr(g, "phone", None) or "")
         return redirect(back + f"#it-{pid}", 303)
     if current is None:
         return redirect(back, 303)
@@ -506,4 +509,7 @@ def _change(current: dict | None):
     else:
         return redirect(back, 303)
     repo.set_basket_item(basket_id, pid, max(0.0, qty))
+    from .cheaper import warm
+
+    warm(basket_id, getattr(g, "phone", None) or "")   # как у «добавить» выше
     return redirect(back + f"#it-{pid}", 303)

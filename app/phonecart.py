@@ -222,7 +222,27 @@ def rules(store: str) -> dict:
         # не трогает уже положенное.
         "check_signal": signals.CHECK,
         "check_pause_ms": _check_pause_ms(),
+        "api_total": _api_total(store),
     }
+
+
+def _api_total(store: str) -> dict | None:
+    """Сверенное правило итога из ответа сети (API_TOTALS, verified): его телефон спрашивает сам.
+
+    ЗАЧЕМ (08.11.2026). Страница корзины сети — 3–5 с каждой фоновой сборки, а ответ сети с
+    тем же итогом — доли секунды. Несверенное правило (carts/lite Магнита) итогом не является
+    и телефону не отдаётся.
+    """
+    for rule in API_TOTALS.get(store, ()):
+        if not rule.get("verified"):
+            continue
+        out = {}
+        for key in ("path", "total", "base", "sale", "count", "scale"):
+            val = rule.get(key)
+            if val is not None:
+                out[key] = val
+        return out if out else None
+    return None
 
 
 def _request_pause_ms() -> int:
