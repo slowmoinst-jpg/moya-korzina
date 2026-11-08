@@ -2415,7 +2415,7 @@ public class MainActivity extends Activity {
         status(r, "кладу " + (r.at + 1) + " из " + r.lines.length() + ": " + line.optString("name", ""), false);
         final String open = r.view.getUrl() == null ? "" : r.view.getUrl();
         final String want = pathOf(url);
-        if (url.equals(open) || (isHostOf(r.chain, open) && want != null && want.equals(pathOf(open)))) {
+        if (url.equals(open) || (isHostOf(r.chain, open) && want != null && samePath(want, pathOf(open)))) {
             // Карточка уже открыта («Положить этот» или сборка начата с неё): перезагрузка
             // только сбила бы её. Тот же путь с другими параметрами — та же карточка, а
             // whenReady принял бы уходящую страницу за пришедшую: путь у них один, и
@@ -3289,7 +3289,7 @@ public class MainActivity extends Activity {
                     String path = trimSlash(st.optString("p", ""));
                     String state = st.optString("s", "");
                     long now = SystemClock.uptimeMillis();
-                    boolean here = !path.isEmpty() && !st.optBoolean("o") && (target != null ? target.equals(path)
+                    boolean here = !path.isEmpty() && !st.optBoolean("o") && (target != null ? samePath(target, path)
                         : (before == null || !before.equals(path) || now - started > SAME_PAGE_MS));
                     boolean usable = "complete".equals(state)
                         || ("interactive".equals(state) && st.optBoolean("h"));
@@ -3313,6 +3313,17 @@ public class MainActivity extends Activity {
         String p = path == null ? "" : path;
         while (p.length() > 1 && p.endsWith("/")) p = p.substring(0, p.length() - 1);
         return p;
+    }
+
+    // Пути совпадают в точности или по коду карточки в хвосте вида «--4212867»: Пятёрочка
+    // открывает /product/--4212867/ и переадресует на /product/<название>--4212867/ (08.11.2026).
+    private static boolean samePath(String target, String path) {
+        if (target == null || path == null) return false;
+        if (target.equals(path)) return true;
+        Pattern p = Pattern.compile("--(\\d+)$");
+        Matcher mt = p.matcher(target);
+        Matcher mp = p.matcher(path);
+        return mt.find() && mp.find() && mt.group(1).equals(mp.group(1));
     }
 
     private void onCard(final CartRun r) {

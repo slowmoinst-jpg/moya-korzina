@@ -91,6 +91,26 @@ def test_a_named_size_is_a_piece_not_a_weight_sale():
     assert slug_size("polotence 50h80sm") == (None, None)
 
 
+def test_a_decimal_size_from_the_address_keeps_its_whole_part():
+    """«…-roal-1-5l»: запятая пропала в адресе, и без разбора дроби 1,5 л становились 5 л.
+
+    Замер 08.11.2026: около 3 900 строк Перекрёстка и Впрока. Жирность и крепость перед
+    объёмом дробью не становятся: «kefir 1 1kg» — 1 %, 1 кг, «moloko 4 1l» — 4 %, 1 л;
+    «40 0 1l» — и 0,1 л, и 40,0 %, 1 л, поэтому остаётся как был.
+    """
+    assert slug_size("napitok gazirovannyj evervess blek roal 1 5l") == (1500.0, "pcs")
+    assert slug_size("viski bulleit bourbon zernovoj 0 7l") == (700.0, "pcs")
+    assert slug_size("viski jack daniels tenessi old no 7 40 0 7l") == (700.0, "pcs")
+    assert slug_size("vino igristoe rozovoe brut 0 75l") == (750.0, "pcs")
+    assert slug_size("pivo zhigulevskoe svetloe 0 33l") == (330.0, "pcs")
+    assert slug_size("kartofel molodoj 2 5kg") == (2500.0, "pcs")
+    assert slug_size("moloko derevenskoe 3 2 0 5l") == (500.0, "pcs")
+    assert slug_size("kefir domik v derevne 1 1kg") == (1000.0, "pcs")
+    assert slug_size("moloko klever toplenoe ultrapasterizovannoe 4 1l") == (1000.0, "pcs")
+    assert slug_size("konak staryj kenigsberg 4 letnij 40 0 1l") == (1000.0, "pcs")
+    assert slug_size("moloko prostokvasino pasterizovannoe 2 5 bzmz 930ml") == (930.0, "pcs")
+
+
 # --- миграция схемы 7: старые строки получают фасовку и единицу ---
 @pytest.fixture()
 def base(tmp_path, monkeypatch):

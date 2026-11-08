@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import re
+import urllib.parse
 
 # Адрес → артикул. Правила сняты с самих сборщиков (app/catalog/crawlers), а не выдуманы:
 # у Пятёрочки и Самоката — их же функции sku_from_url, у остальных — тот же вид адреса
@@ -58,7 +59,7 @@ RULES: dict[str, re.Pattern] = {
 # Сети, чей адрес карточки нам неизвестен: у них артикул из адреса не берём.
 UNKNOWN: tuple[str, ...] = ("metro", "vkusvill")
 
-__all__ = ["RULES", "UNKNOWN", "sku_of"]
+__all__ = ["RULES", "UNKNOWN", "sku_of", "name_of"]
 
 
 def sku_of(chain: str, url: str | None) -> str | None:
@@ -87,3 +88,38 @@ def _own(chain: str, url: str) -> bool:
 
     hosts = CHAIN_HOSTS.get(chain) or ()
     return not hosts or any(host in url for host in hosts)
+
+
+def name_of(url: str | None, sku: str | None = None) -> str | None:
+    """Название товара из адреса карточки, если карточка открылась без имени.
+
+    Снимает артикул сети с головы или хвоста слага, заменяет дефисы на пробелы.
+    Если в итоге нет хотя бы двух букв подряд — возвращает None: цифры и мусор
+    названием товара быть не могут.
+    """
+    if not url:
+        return None
+    path = urllib.parse.urlsplit(str(url)).path
+    segments = [s for s in path.split("/") if s]
+    if not segments:
+        return None
+    slug = urllib.parse.unquote(segments[-1])
+    if slug.lower().endswith(".html"):
+        slug = slug[:-5]
+    sku_str = str(sku).strip() if sku is not None else ""
+    if sku_str and slug != sku_str:
+        if slug.startswith(f"p-{sku_str}-"):
+            slug = slug[len(f"p-{sku_str}-"):]
+        elif slug.startswith(f"p-{sku_str}"):
+            slug = slug[len(f"p-{sku_str}"):]
+        elif slug.startswith(f"{sku_str}-"):
+            slug = slug[len(f"{sku_str}-"):]
+        if slug.endswith(f"--{sku_str}"):
+            slug = slug[:-len(f"--{sku_str}")]
+        elif slug.endswith(f"-{sku_str}"):
+            slug = slug[:-len(f"-{sku_str}")]
+    name = slug.replace("-", " ")
+    name = re.sub(r"\s+", " ", name).strip()
+    if not re.search(r"[a-zа-яё]{2,}", name, re.I):
+        return None
+    return name

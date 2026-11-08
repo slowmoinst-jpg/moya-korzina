@@ -245,6 +245,12 @@ def blocked_page(page, settle_ms: int = BLOCK_SETTLE_MS) -> str | None:
 # знает, и без этой проверки весовой товар считался бы штучным.
 _LATIN_WEIGHED = "vesov"
 
+# Дробь в адресе теряет запятую: «…-roal-1-5l» → «roal 1 5l», и parse_weight читал «5l»
+# (замер 08.11.2026: около 3 900 строк Перекрёстка и Впрока весили 5 л вместо 1,5 л).
+# Дробь — «0 7l» после пробела («viski 40 0 7l» = 40 %, 0,7 л) и «1 5l» после слова.
+# Хвост «1l»/«1kg» не трогаем: «kefir 1 1kg» — это 1 %, 1 кг, «12 0 1l» — и 0,1 л, и 12,0 %, 1 л.
+_SLUG_DECIMAL = re.compile(r"(?:(?<=\s)(0)|(?<=[a-z]\s)([1-9])) (?!1(?:l|kg)\b)(\d{1,3})(l|kg)\b")
+
 
 def slug_size(name: str) -> tuple[float | None, str | None]:
     """Фасовка и единица для названия, собранного из адреса карты сайта.
@@ -270,6 +276,7 @@ def slug_size(name: str) -> tuple[float | None, str | None]:
     text = (name or "").lower()
     if sold_by_weight(text) or _LATIN_WEIGHED in text:
         return None, "kg"
+    text = _SLUG_DECIMAL.sub(lambda m: f"{m[1] or m[2]}.{m[3]}{m[4]}", text)
     weight, _ = parse_weight(text)
     return (weight or None), ("pcs" if weight else None)
 

@@ -1348,6 +1348,13 @@ def link_products(product_ids: list[int] | None = None, *, force: bool = False,
                 report.failed += 1
                 report.network.failed += int(ours)
                 log.exception("единая база: товар %s сопоставить не удалось", product.id)
+        if product_ids is None:
+            try:
+                from app.catalog import x5
+
+                x5.fill(products, write=write, conn=conn)
+            except Exception:  # noqa: BLE001 — сверка X5 не должна обрывать проход
+                log.exception("сверка X5: сбой")
     log.info("единая база: всего товаров %s, привязано %s (сильно %s, слабо %s), сомнительно %s,"
              " не найдено %s, сбоев %s; из чеков наших сетей %s, привязано %s (%.1f %%)",
              report.tried, report.linked, report.strong, report.weak,

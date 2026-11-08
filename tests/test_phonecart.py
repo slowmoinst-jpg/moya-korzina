@@ -777,14 +777,24 @@ def test_a_failed_position_is_learned_under_the_networks_own_name(web, monkeypat
     assert calls[0][1][0]["sku"] == DIXY_ARTICLE
 
 
-def test_a_position_without_the_networks_name_keeps_its_own(web, monkeypatch):
-    """Поля `found_name` нет (старое приложение) — прежнее `name` из отчёта."""
+def test_a_position_without_the_networks_name_takes_the_card_address(web, monkeypatch):
+    """Поля `found_name` нет — имя берётся из адреса карточки."""
     calls = _learned(web, monkeypatch, "dixy", [
         {"name": "Молоко 3,2% 930 мл", "sku": DIXY_ARTICLE, "ok": False,
          "url": DIXY_CARD},
     ])
 
-    assert [row["name"] for row in calls[0][1]] == ["Молоко 3,2% 930 мл"]
+    assert [row["name"] for row in calls[0][1]] == ["moloko 3 2 930 ml"]
+
+
+def test_a_position_without_found_name_and_without_slug_is_not_learned(web, monkeypatch):
+    """Позиция без found_name с адресом без названия не учится."""
+    calls = _learned(web, monkeypatch, "dixy", [
+        {"name": "Молоко 3,2% 930 мл", "sku": "2000328870", "ok": False,
+         "url": "https://dixy.ru/catalog/molochnye-produkty-yaytsa/moloko/2000328870/"},
+    ])
+
+    assert calls == []
 
 
 # --- Цена и наличие с карточки — в ту же строку каталога, что артикул сети -----------

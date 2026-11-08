@@ -1603,11 +1603,26 @@ def test_askcard_calls_superseded():
     assert "superseded(r)" in body
 
 
-def test_build_gradle_version_1_22():
-    """build.gradle — не ниже 1.22 (versionCode 26): хвост поиска после первого отчёта."""
+def test_build_gradle_version_1_23():
+    """build.gradle — не ниже 1.23 (versionCode 27): карточка Пятёрочки с переадресацией."""
     with open(GRADLE, encoding="utf-8") as fh:
         text = fh.read()
     code = re.search(r"versionCode\s+(\d+)", text)
-    assert code and int(code.group(1)) >= 26, "versionCode должен быть не ниже 26"
+    assert code and int(code.group(1)) >= 27, "versionCode должен быть не ниже 27"
+
+
+def test_same_path_handles_pyaterochka_redirect():
+    """Карточка Пятёрочки с переадресацией не ждёт 30 с: whenReady и cardLine зовут samePath."""
+    clean = strip_comments(source())
+    when_ready = method_body(clean, "private void whenReady(")
+    assert "samePath(target, path)" in when_ready, "тело whenReady не зовёт samePath(target, path)"
+    assert "target.equals(path)" not in when_ready, "тело whenReady содержит target.equals(path)"
+
+    same_path = method_body(clean, "private static boolean samePath(")
+    assert r"--(\\d+)$" in same_path, "тело samePath не содержит регулярку хвоста «--» с цифрами"
+
+    card_line = method_body(clean, "private void cardLine(")
+    assert "samePath(want, pathOf(open))" in card_line, "тело cardLine не зовёт samePath(want, pathOf(open))"
+
 
 
