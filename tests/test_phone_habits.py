@@ -233,6 +233,29 @@ def test_without_history_there_is_no_block_and_the_basket_still_works(web):
     assert latest_items()[bread] == 2.0, "«+» у товара на месте"
 
 
+def test_a_change_from_the_app_answers_with_the_new_basket(web):
+    """Скрипт в приложении получает новую корзину ответом на правку: сборка не ждёт страницу."""
+    from app import cartrun
+
+    enter(web)
+    workspace()
+    bread = add_product("Хлеб Бородинский")
+    basket_id = repo.create_basket("Неделя")
+    repo.set_basket_item(basket_id, bread, 1.0)
+    before = cartrun.stamp_of(basket_id)
+
+    answer = web.post("/phone/basket", data={"do": f"plus:{bread}"},
+                      headers={"Accept": "application/json"})
+
+    assert answer.status_code == 200
+    body = answer.get_json()
+    assert body["back"].endswith(f"/phone/basket#it-{bread}")
+    workspace()
+    assert latest_items()[bread] == 2.0
+    assert body["collect"]["basket"] == basket_id
+    assert body["collect"]["stamp"] == cartrun.stamp_of(basket_id) != before
+
+
 def test_an_empty_basket_still_offers_the_usual(web):
     """История есть, корзины нет: «Из привычного» видно, а «+» заводит корзину."""
     enter(web)

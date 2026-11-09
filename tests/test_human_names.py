@@ -131,6 +131,25 @@ def test_cart_plan_names_unknown_goods_by_title(db):
     assert cartplan.build("magnit", [line], force=True).unknown == ["Сараф. Мороженое зефир"]
 
 
+def test_cart_plan_line_reads_in_russian_when_the_chain_names_it_in_translit(db, monkeypatch):
+    """Телефон сверяет название наряда с русским заголовком карточки: транслит адреса
+    Перекрёстка не совпадал ни с одной карточкой (замер 09.11.2026, 0 из 8 за 82 с)."""
+    from app import cartplan
+    from app.models import BasketLine
+
+    rows = {"perekrestok": "moloko selo zelenoe ultrapasterizovannoe 3 2 950ml",
+            "magnit": "Молоко Село Зелёное ультрапастеризованное 3,2% 950 мл"}
+    codes = {s.id: s.code for s in repo.list_stores()}
+    monkeypatch.setattr(repo, "confirmed_mapping", lambda pid, store_id, real_only=False:
+                        {"sku": "123", "raw_name": rows[codes[store_id]]})
+    line = BasketLine(product_id=1, name="С зел мол ул паст 3 2 950 мл", unit="pcs", qty=1,
+                      title="С.Зел. Молоко ультрапастеризованное 3,2% 950 мл")
+    assert cartplan.build("perekrestok", [line], force=True).lines[0].name == line.title
+    assert cartplan.build("magnit", [line], force=True).lines[0].name == rows["magnit"]   # своё русское — как в сети
+    line.title = ""
+    assert cartplan.build("perekrestok", [line], force=True).lines[0].name == line.name
+
+
 def test_receipt_connector_still_matches_by_the_key(db, monkeypatch):
     """Цены Пятёрочки берутся из чеков: коннектор сверяет запрос (products.name) с ключом,
     а не со строкой для глаз, иначе «Сараф мор зеф…» перестало бы находить свою же строку чека."""

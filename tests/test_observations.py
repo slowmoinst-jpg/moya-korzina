@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -23,6 +24,11 @@ def base(tmp_path, monkeypatch):
                      (store.now(), store.now()))
         conn.commit()
     return store
+
+
+def _ago(days: int) -> str:
+    """Момент наблюдения days дней назад: окна обычной цены и истории считаются от «сейчас»."""
+    return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _personal(tmp_path, rows, name: str = "basket.db"):
@@ -46,8 +52,8 @@ def _personal(tmp_path, rows, name: str = "basket.db"):
 
 
 def test_an_observation_becomes_history(base, tmp_path, monkeypatch):
-    path = _personal(tmp_path, [(1, 189.0, "2026-10-19T10:00:00"),
-                                (1, 199.0, "2026-10-20T10:00:00")])
+    path = _personal(tmp_path, [(1, 189.0, _ago(11)),
+                                (1, 199.0, _ago(10))])
     monkeypatch.setattr(users, "list_workspaces", lambda: ["79990000001"])
     monkeypatch.setattr(users, "db_path_for", lambda phone: path)
 
@@ -58,7 +64,7 @@ def test_an_observation_becomes_history(base, tmp_path, monkeypatch):
 
 
 def test_the_same_observation_is_not_written_twice(base, tmp_path, monkeypatch):
-    path = _personal(tmp_path, [(1, 189.0, "2026-10-19T10:00:00")])
+    path = _personal(tmp_path, [(1, 189.0, _ago(11))])
     monkeypatch.setattr(users, "list_workspaces", lambda: ["79990000001"])
     monkeypatch.setattr(users, "db_path_for", lambda phone: path)
 
@@ -71,7 +77,7 @@ def test_the_same_observation_is_not_written_twice(base, tmp_path, monkeypatch):
 
 def test_an_unknown_article_is_skipped(base, tmp_path, monkeypatch):
     """Цена артикула, которого в общей базе нет, не заводит товар-призрак."""
-    path = _personal(tmp_path, [(2, 100.0, "2026-10-19T10:00:00")])
+    path = _personal(tmp_path, [(2, 100.0, _ago(11))])
     monkeypatch.setattr(users, "list_workspaces", lambda: ["79990000001"])
     monkeypatch.setattr(users, "db_path_for", lambda phone: path)
 
@@ -81,7 +87,7 @@ def test_an_unknown_article_is_skipped(base, tmp_path, monkeypatch):
 
 
 def test_a_dry_run_changes_nothing(base, tmp_path, monkeypatch):
-    path = _personal(tmp_path, [(1, 189.0, "2026-10-19T10:00:00")])
+    path = _personal(tmp_path, [(1, 189.0, _ago(11))])
     monkeypatch.setattr(users, "list_workspaces", lambda: ["79990000001"])
     monkeypatch.setattr(users, "db_path_for", lambda phone: path)
 
@@ -92,7 +98,7 @@ def test_a_dry_run_changes_nothing(base, tmp_path, monkeypatch):
 
 
 def test_a_broken_personal_base_does_not_stop_the_rest(base, tmp_path, monkeypatch):
-    good = _personal(tmp_path, [(1, 189.0, "2026-10-19T10:00:00")])
+    good = _personal(tmp_path, [(1, 189.0, _ago(11))])
     monkeypatch.setattr(users, "list_workspaces", lambda: ["битая", "живая"])
     monkeypatch.setattr(users, "db_path_for",
                         lambda phone: good if phone == "живая" else str(tmp_path / "нет.db"))
@@ -108,8 +114,8 @@ def test_the_demo_workplace_is_skipped(base, tmp_path, monkeypatch):
     Замер 20.10.2026: у демо 2 576 «наблюдений» по ВкусВиллу на 12 артикулов — как
     настоящие они испортили бы «обычную цену».
     """
-    demo = _personal(tmp_path, [(1, 999.0, "2026-10-19T10:00:00")], name="demo.db")
-    real = _personal(tmp_path, [(1, 189.0, "2026-10-19T10:00:00")], name="real.db")
+    demo = _personal(tmp_path, [(1, 999.0, _ago(11))], name="demo.db")
+    real = _personal(tmp_path, [(1, 189.0, _ago(11))], name="real.db")
 
     monkeypatch.setattr(users, "list_workspaces", lambda: ["demo", "79990000001"])
     monkeypatch.setattr(users, "db_path_for",
@@ -123,9 +129,9 @@ def test_the_demo_workplace_is_skipped(base, tmp_path, monkeypatch):
 
 def test_usual_price_works_from_app_observations(base, tmp_path, monkeypatch):
     """Главный смысл: по телефонной сети появляется обычная цена."""
-    path = _personal(tmp_path, [(1, 180.0, "2026-10-10T10:00:00"),
-                                (1, 190.0, "2026-10-15T10:00:00"),
-                                (1, 230.0, "2026-10-20T10:00:00")])
+    path = _personal(tmp_path, [(1, 180.0, _ago(20)),
+                                (1, 190.0, _ago(15)),
+                                (1, 230.0, _ago(10))])
     monkeypatch.setattr(users, "list_workspaces", lambda: ["79990000001"])
     monkeypatch.setattr(users, "db_path_for", lambda phone: path)
 

@@ -383,7 +383,8 @@ def _plan_lines(body: dict, store_code: str) -> tuple[list[BasketLine], str]:
 
     items = repo.basket_items(basket_id)
     lines = [BasketLine(product_id=int(item["product_id"]), name=str(item["name"]),
-                        unit=str(item.get("unit") or "pcs"), qty=float(item.get("qty") or 1))
+                        unit=str(item.get("unit") or "pcs"), qty=float(item.get("qty") or 1),
+                        title=str(item.get("title") or ""))
              for item in items]
     lines = cartstatus.swap_lines(lines, repo.get_store(store_code), basket_id=basket_id)
     return _priced(lines, store_code), f"Корзина №{basket_id} пуста."

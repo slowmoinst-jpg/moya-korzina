@@ -1563,14 +1563,20 @@ def test_opencart_checks_later_before_apitotal():
 
 
 def test_finishrun_early_and_starttail():
-    """finishRun содержит "ищу в сети после знакомых", startTail(r) и remember под !early."""
+    """finishRun содержит "ищу в сети после знакомых", хвост через tailLater(r) и remember
+    под !early. tailLater зовёт startTail(r) после TAIL_QUIET_MS, если правок за это время
+    не было: хвост грузит тяжёлые страницы и задерживал правку в соседних сетях (1.25)."""
     clean = strip_comments(source())
     body = method_body(clean, "private void finishRun(")
     assert '"ищу в сети после знакомых"' in body
-    assert "startTail(r)" in body
+    assert "tailLater(r)" in body
     assert "!early" in body
     line_with_remember = next(line for line in body.splitlines() if "remember(r, true)" in line)
     assert "!early" in line_with_remember
+    later = method_body(clean, "private void tailLater(")
+    assert "startTail(r)" in later
+    assert "TAIL_QUIET_MS" in later
+    assert "s.pending.isEmpty()" in later
 
 
 def test_starttail_sets_fields_and_checks_pending():
@@ -1589,11 +1595,17 @@ def test_starttail_sets_fields_and_checks_pending():
 
 
 def test_endofrun_keeps_excess_while_tail_ahead():
-    """Пока впереди хвост поиска, endOfRun лишнее не снимает: найденное прошлым поиском
-    ещё без артикула в строке и снялось бы, чтобы тут же лечь снова."""
+    """Пока впереди хвост поиска, найденное прошлым поиском не снимается: строка его товара
+    ещё без артикула, и товар снялся бы, чтобы тут же лечь снова. С 1.25 это решает
+    searchedAgain по product_id, а не запрет всего снятия: уменьшенное снимается и при
+    ненайденных позициях."""
     clean = strip_comments(source())
     body = method_body(clean, "private void endOfRun(")
-    assert "r.later.length() == 0 && shouldDrop(r) && hasExcess(r)" in body
+    assert "shouldDrop(r) && hasExcess(r)" in body
+    again = method_body(clean, "private boolean searchedAgain(")
+    assert "r.later" in again and "product_id" in again
+    for header in ("private boolean hasExcess(", "private void dropExcess("):
+        assert "!searchedAgain(r, sku)" in method_body(clean, header), header
 
 
 def test_askcard_calls_superseded():

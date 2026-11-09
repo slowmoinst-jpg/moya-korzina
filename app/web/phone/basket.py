@@ -491,7 +491,7 @@ def _change(current: dict | None):
 
         start_prices(basket_id, repo.basket_items(basket_id))
         warm(basket_id, getattr(g, "phone", None) or "")
-        return redirect(back + f"#it-{pid}", 303)
+        return _changed(back + f"#it-{pid}")
     if current is None:
         return redirect(back, 303)
     basket_id = int(current["id"])
@@ -512,4 +512,16 @@ def _change(current: dict | None):
     from .cheaper import warm
 
     warm(basket_id, getattr(g, "phone", None) or "")   # как у «добавить» выше
-    return redirect(back + f"#it-{pid}", 303)
+    return _changed(back + f"#it-{pid}")
+
+
+def _changed(back: str):
+    """Ответ на правку: странице — переход к корзине, скрипту в приложении — новая корзина.
+
+    Скрипт сразу отдаёт её приложению (KorzinaDevice.collect), и сборка в сетях не ждёт
+    перезагрузки: на эмуляторе новая страница была готова только через 6,5 с после
+    касания (09.11.2026), а цель владельца — правка в сетях за 5 с.
+    """
+    if request.accept_mimetypes.best == "application/json":
+        return {"back": back, "collect": _runs(_basket())["collect"]}
+    return redirect(back, 303)

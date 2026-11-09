@@ -33,11 +33,17 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field, replace
 
 from app import repo, store_accounts
 
 log = logging.getLogger(__name__)
+
+# Строки Перекрёстка (и часть Пятёрочки) названы транслитом адреса карточки, а телефон сверяет
+# название наряда с русским заголовком карточки (nameWhy) и отказывал верной карточке: замер
+# 09.11.2026, Перекрёсток 0 из 8 за 82 с. Такой строке в наряде — название из корзины.
+_CYRILLIC = re.compile(r"[а-яё]", re.I)
 
 
 @dataclass(frozen=True)
@@ -209,10 +215,11 @@ def build(store_code: str, lines, *, force: bool = False, verify_prices: bool = 
             plan.unknown.append(getattr(line, "title", None) or name)    # список читает человек
             continue
         shop_unit = (mapping or {}).get("unit")
+        raw = (mapping or {}).get("raw_name") or ""
         plan.lines.append(PlanLine(
             sku=str(sku),
             qty=float(getattr(line, "qty", 1) or 1),
-            name=(mapping or {}).get("raw_name") or name,
+            name=raw if _CYRILLIC.search(raw) else (getattr(line, "title", None) or name),
             unit=shop_unit,
             price=_price(line, store_code),
             url=(mapping or {}).get("url"),

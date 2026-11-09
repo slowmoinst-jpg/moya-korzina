@@ -153,6 +153,10 @@ FULL_CART: dict[str, tuple[str, ...]] = {
 # сетям, пока не замерено, прибавку телефон делает касаниями «+», по одной упаковке.
 QTY_SETS: tuple[str, ...] = ("magnit",)
 
+# Телефон кладёт эти сети запросами из cartapi.js (APK 1.24); убрать сеть из
+# кортежа — вернуть её на касания без выпуска APK.
+API_CARTS: tuple[str, ...] = ("perekrestok", "pyaterochka", "dixy")
+
 # Корзина сети пуста — так пишут её страницы. Если приложение помнит, что клало сюда,
 # а сеть показывает пустую корзину, человек оформил заказ или очистил её сам.
 EMPTY_CART = (r"корзина пуста|в корзине пока|в корзине пусто|в корзине нет товаров|"
@@ -214,6 +218,9 @@ def rules(store: str) -> dict:
         "auth_cookies": list(signals.AUTH_COOKIE.get(store) or ()),
         "full_cart": list(FULL_CART.get(store, ())),
         "qty_sets": store in QTY_SETS,
+        # Телефон кладёт эти сети запросами из cartapi.js (APK 1.24): Перекрёсток, Пятёрочка, Дикси.
+        "api": store in API_CARTS,
+        "api_burst": 3,
         "empty_cart": EMPTY_CART,
         # Сигнал бот-проверки (Пятёрочка, Этап 1): паттерн на странице означает «сеть
         # встретила проверкой». При обнаружении приложение делает паузу check_pause_ms
@@ -1643,6 +1650,6 @@ def last(store: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-__all__ = ["CHAINS", "CART_PAGES", "KINDS", "API_TOTALS", "FULL_CART", "QTY_SETS", "EMPTY_CART",
-           "rules", "plan", "accept_report", "accept_cards", "progress", "network_total",
-           "total_of", "last"]
+__all__ = ["CHAINS", "CART_PAGES", "KINDS", "API_TOTALS", "FULL_CART", "QTY_SETS", "API_CARTS",
+           "EMPTY_CART", "rules", "plan", "accept_report", "accept_cards", "progress",
+           "network_total", "total_of", "last"]

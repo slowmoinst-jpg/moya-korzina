@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from difflib import SequenceMatcher
+from functools import lru_cache
 
 # --- словари ---------------------------------------------------------------
 
@@ -386,6 +387,9 @@ def is_derived(name: str | None, raw: str | None) -> bool:
         None in weights or weights[0] == weights[1])
 
 
+# Кэш: list_history зовёт её на каждую строку истории, а наряд — для каждой сети
+# (8 тыс. вызовов, 1,7 с из 1,9 с наряда, замер 09.11.2026). Функция чистая.
+@lru_cache(maxsize=8192)
 def shown_name(name: str | None, raw: str | None) -> str:
     """Название товара для экрана: строка чека по-человечески, если имя выведено из неё.
 
