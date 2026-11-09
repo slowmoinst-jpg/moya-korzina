@@ -119,6 +119,44 @@ def test_weight_mismatch_is_a_penalty_not_a_veto():
     assert 0 < score < 0.75, "не ноль, но и не уверенное совпадение"
 
 
+# ---------- жирность ----------
+MILK = "Молоко село зеленое ультрапастеризованное 3 2 950 г"     # так товар назван у владельца
+
+
+def test_fat_without_percent_sign_is_compared_by_numbers():
+    """Чек потерял «%» и запятую — сверяем числа без фасовки, как link._numbers_disagree."""
+    assert quality.percent_conflict(MILK, "Молоко Село Зеленое ультрапастеризованное 2.5% 950мл")
+    assert not quality.percent_conflict(MILK, "Молоко Село Зеленое ультрапастеризованное 3.2% 950мл")
+    assert quality.percent_conflict("Молоко Простоквашино 3,2 % 930 мл", "Молоко Простоквашино 2.5% 930мл")
+    assert not quality.percent_conflict("Молоко 1 л", "Молоко Простоквашино 2,5% 930мл")
+    assert "жирность" in quality.doubts(Product(None, MILK, weight_g=950),
+                                        "Молоко Село Зеленое ультрапастеризованное 2.5% 950мл", 950)
+
+
+def test_live_search_does_not_confirm_another_fat(db, monkeypatch):
+    """Настоящий промах 31.10.2026: живой поиск Магнита подтвердил к «3 2» молоко 2,5 %,
+    и телефон клал его в корзину. Тройка поиска — та же, что тогда легла в базу владельца:
+    следующей по похожести шла ЭкоНива 3.2% 1 л (0,78 при пороге 0,75) — чужая марка,
+    её подставлять тоже нельзя."""
+    product_id = repo.upsert_product(Product(None, MILK, weight_g=950))
+    store = repo.get_store("magnit")
+    found = [Candidate("magnit", "1000013732", "Молоко Село Зеленое ультрапастеризованное 2.5% 950мл",
+                       weight_g=950),
+             Candidate("magnit", "1000292821", "Молоко ЭкоНива ультрапастеризованное 2.5% 1л", weight_g=1000),
+             Candidate("magnit", "1000292820", "Молоко ЭкоНива ультрапастеризованное 3.2% 1л", weight_g=1000)]
+    monkeypatch.setattr(matcher, "_search", lambda conn, q, limit: list(found))
+    monkeypatch.setattr(matcher, "_get_connector", lambda code: object())
+
+    report = matcher.auto_match([product_id], ["magnit"])
+    assert report["auto"] == 0 and report["need_review"][0]["reason"] == "жирность"
+    assert repo.confirmed_mapping(product_id, store.id) is None
+
+    found.append(Candidate("magnit", "1000013733", "Молоко Село Зеленое ультрапастеризованное 3.2% 950мл",
+                           weight_g=950))
+    assert matcher.auto_match([product_id], ["magnit"])["auto"] == 1
+    assert repo.confirmed_mapping(product_id, store.id)["sku"] == "1000013733"
+
+
 # ---------- что видит человек ----------
 def test_doubts_name_the_reason():
     product = Product(None, "Страчателла 200 г", weight_g=200)

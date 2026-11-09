@@ -211,7 +211,11 @@ def auto_match(product_ids: list[int], store_codes: list[str], threshold: float 
             by_barcode = bool(digits(getattr(product, "barcode", None))
                               and digits(best.ean) == digits(getattr(product, "barcode", None)))
             fits = by_barcode or weight_ok(product.weight_g, best.weight_g, tol)
-            if best.score >= threshold and fits:
+            # Жирность спорит — другой товар, и следующего по похожести не подставляем:
+            # 31.10.2026 к «3 2» из чека лучшим было «2.5%» Магнита, а за ним ЭкоНива 3.2%
+            # 1 л — чужая марка выше порога. Замену выбирает человек.
+            fat = not by_barcode and quality.percent_conflict(product.name or "", best.name or "")
+            if best.score >= threshold and fits and not fat:
                 from app.catalog.model import placeholder_sku
 
                 stub = placeholder_sku(best.sku, store_code)
@@ -226,7 +230,8 @@ def auto_match(product_ids: list[int], store_codes: list[str], threshold: float 
                 need_review.append({
                     "product_id": product_id, "product_name": product.name,
                     "store_code": store_code,
-                    "reason": "низкий score" if not fits or best.score < threshold else "",
+                    "reason": ("жирность" if fat else
+                               "низкий score" if not fits or best.score < threshold else ""),
                     "best_score": best.score,
                     "candidates": [{"sku": c.sku, "name": c.name, "score": c.score} for c in candidates],
                 })

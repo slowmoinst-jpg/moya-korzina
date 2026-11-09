@@ -126,6 +126,27 @@ def brand_conflict(left: str, right: str) -> bool:
     return bool(a and b and not (a & b))
 
 
+def percent_conflict(left: str, right: str) -> bool:
+    """Жирность (крепость) спорит: «3,2 %» против «2.5%».
+
+    Чек и транслит часто теряют «%» и запятую: «Молоко село зеленое ... 3 2 950 г».
+    Тогда числа такой строки без фасовки и штук сверяются с числами строки, где процент
+    назван, — то же правило, что link._numbers_disagree. Живой поиск 31.10.2026
+    подтвердил к этому молоку «…2.5% 950мл» Магнита, и телефон клал не ту жирность.
+    Обе строки молчат о проценте — молчим и мы.
+    shortcut: «2 слоя» и «6 месяцев» без «с» тоже считаются числами жирности, и живой
+    поиск оставляет такой товар без связи; уточнить, если пропусков станет заметно много.
+    """
+    from app.catalog import match, x5     # x5 тянет link, поэтому импорт здесь
+    a, b = match.parse_percent(left), match.parse_percent(right)
+    if a is not None and b is not None:
+        return not match.percents_agree(a, b)
+    if a is None and b is None:
+        return False
+    ours, theirs = x5.numbers(left), x5.numbers(right)
+    return bool(ours and theirs) and ours != theirs
+
+
 def doubts(product, candidate_name: str, candidate_weight_g=None,
            tolerance_pct: float = 20) -> list[str]:
     """Признаки того, что кандидат выбран зря. Пустой список — возражений нет."""
@@ -137,6 +158,8 @@ def doubts(product, candidate_name: str, candidate_weight_g=None,
         out.append(f"тип: {product_type(name)} ≠ {product_type(candidate_name)}")
     if brand_conflict(name, candidate_name):
         out.append("бренд")
+    if percent_conflict(name, candidate_name):
+        out.append("жирность")
     weight = candidate_weight_g
     if weight is None:
         weight = parse_weight(candidate_name)[0]
