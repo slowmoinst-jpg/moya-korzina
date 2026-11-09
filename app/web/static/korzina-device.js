@@ -43,6 +43,16 @@ window.KorzinaDevice = (function () {
     try { return !!k.openStore(String(code || '')); } catch (e) { return false; }
   }
 
+  /* Вход в сеть (с приложения 1.26): приложение открывает вход сети и само говорит
+     «готово»; старое приложение метода не знает — тогда просто окно сети. */
+  function login(code) {
+    var k = bridge();
+    if (k && typeof k.login === 'function') {
+      try { return !!k.login(String(code || '')); } catch (e) { return false; }
+    }
+    return openStore(code);
+  }
+
   /* Вернуться на наш сайт. Путь всегда свой, начинается с «/» — мост чужие
      адреса не открывает, это проверяется и на его стороне. */
   function openApp(path) {
@@ -93,6 +103,6 @@ window.KorzinaDevice = (function () {
     } catch (e) { return false; }
   }
 
-  return { available: available, info: info, openStore: openStore, openApp: openApp,
+  return { available: available, info: info, openStore: openStore, login: login, openApp: openApp,
            openFns: openFns, collect: collect, busy: busy, ordered: ordered };
 })();

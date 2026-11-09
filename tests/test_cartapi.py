@@ -24,10 +24,11 @@ CARTAPI_JS = os.path.join(ROOT, "android", "app", "app", "src", "main", "assets"
 
 
 def test_rules_api_flags():
-    """Правила api для телефона: Перекрёсток, Дикси — включены, Магнит — выключен."""
+    """Правила api для телефона: Перекрёсток, Дикси, Магнит — включены, Лента — выключена."""
     assert rules("perekrestok")["api"] is True
     assert rules("dixy")["api"] is True
-    assert rules("magnit")["api"] is False
+    assert rules("magnit")["api"] is True
+    assert rules("lenta")["api"] is False
     assert rules("perekrestok")["api_burst"] == 3
 
 
@@ -209,19 +210,23 @@ def test_parse_dixy():
     assert res["total"]["base"] == 319.98
 
 
-# Поддельный XMLHttpRequest для run(): отвечает телом по адресу и записывает, куда ходили.
+# Поддельный XMLHttpRequest для run(): отвечает телом по адресу и записывает, куда ходили
+# (seen) и что отправили (sent: заголовки и тело). Код ответа — из поля __status тела.
 FAKE_XHR = """
 global.window = {};
 const seen = [];
+const sent = [];
 function fakeXhr(answer) {
   global.XMLHttpRequest = function () {
     const x = this;
-    x.open = function (m, u) { x.u = u; seen.push(m + ' ' + u); };
-    x.setRequestHeader = function () {};
+    x.h = {};
+    x.open = function (m, u) { x.m = m; x.u = u; seen.push(m + ' ' + u); };
+    x.setRequestHeader = function (k, v) { x.h[k] = v; };
     x.send = function (b) {
       if (b && b.get) { seen[seen.length - 1] += ' ' + b.get('action'); }
-      const body = answer(x.u, b);
-      x.status = body === null ? 404 : 200;
+      sent.push({h: x.h, b: b});
+      const body = answer(x.u, b, x.m);
+      x.status = body === null ? 404 : (body.__status || 200);
       x.responseText = body === null ? '' : JSON.stringify(body);
       setTimeout(function () { x.onload(); }, 0);
     };
@@ -291,3 +296,165 @@ fakeXhr(function (u, b) {
     assert out["second"] == ["POST /ajax/ajax.php calculateDiscounts", "POST /ajax/ajax.php update",
                              "POST /ajax/ajax.php calculateDiscounts"]
     assert (out["kept"], out["dropped"], out["q"]) == ("kept", 1, 1)
+
+
+# Образец запроса Магнита, выученный касанием: заголовки сайта, магазин и устройство старые.
+MAGNIT_TPL = {"m": "PUT", "u": "https://magnit.ru/webgate/v1/carts/lite",
+              "h": {"content-type": "application/json", "x-service": "express",
+                    "x-store-code": "111", "x-device-id": "old", "user-agent": "UA",
+                    "x-app-version": "2026.11.9"}}
+
+# Корзина Магнита в памяти: PUT ставит число названным позициям (0 — убирает), ответ — вся корзина.
+MAGNIT_CART = """
+global.document = {cookie: COOKIE};
+function cartAnswer(u, b, m) {
+  if (u === '/webgate/v1/carts/lite' && m === 'PUT') {
+    JSON.parse(b).items.forEach(function (it) {
+      if (it.qnty) cart[it.goodId] = it.qnty; else delete cart[it.goodId];
+    });
+  }
+  return {items: Object.keys(cart).map(function (k) { return {goodId: k, offerId: k, qnty: cart[k]}; })};
+}
+"""
+
+
+def _magnit(cookie: str, body: str) -> dict:
+    return _run_node_script(FAKE_XHR + f"const tpl = {json.dumps(MAGNIT_TPL)};\n"
+                            + MAGNIT_CART.replace("COOKIE", json.dumps(cookie)) + body)
+
+
+@pytest.mark.skipif(NODE is None, reason="node не установлен")
+def test_magnit_puts_every_line_with_one_request():
+    """Магнит: чтение, ОДНА запись на все позиции, итог и наличие из оформления."""
+    out = _magnit("shopCode=%22777%22; mg_udi=dev9", """
+let cart = {'1001': 1, '1003': 3};
+fakeXhr(function (u, b, m) {
+  if (u === '/webgate/v1/checkout/preview') {
+    return {summary: {totalFinalPrice: 51097, totalBasePrice: 49297, itemsTotalSalePrice: 41297, itemsCount: 3,
+                      prices: [{title: 'Доставка', value: 5900}, {title: 'Сборка и упаковка', value: 3900}]},
+            suborders: [{items: [{goodId: '1001', qnty: 2, available: true},
+                                 {goodId: '1003', qnty: 3, available: false}]}],
+            unavailableItems: [{goodId: '1002', qnty: 1}]};
+  }
+  return cartAnswer(u, b, m);
+});
+api.run({chain: 'magnit', tpl: tpl, mine: {}, want: {}, drop: false, burst: 10,
+         lines: [{sku: '1001', target: 2}, {sku: '1002', target: 1}, {sku: '1003', target: 1}]})
+  .then(function (r) { console.log(JSON.stringify({seen: seen, put: JSON.parse(sent[1].b), heads: sent[1].h, r: r})); });
+""")
+    assert out["seen"] == ["GET /webgate/v1/carts/lite", "PUT /webgate/v1/carts/lite",
+                           "GET /webgate/v1/checkout/preview"]
+    assert out["put"] == {"items": [{"goodId": "1001", "offerId": "1001", "qnty": 2},
+                                    {"goodId": "1002", "offerId": "1002", "qnty": 1}]}
+    heads = out["heads"]
+    # Магазин и устройство — из свежих кук (без кавычек JSON), остальное из образца;
+    # User-Agent браузер не даст.
+    assert (heads["x-store-code"], heads["x-device-id"]) == ("777", "dev9")
+    assert (heads["x-service"], heads["x-magnit-bff"]) == ("express", "1")
+    assert "user-agent" not in heads
+    lines = out["r"]["lines"]
+    assert (lines["1001"]["ok"], lines["1001"]["put"], lines["1001"]["q"]) == (True, 1, 2)
+    assert (lines["1002"]["ok"], lines["1002"]["gone"]) == (False, True)   # unavailableItems
+    assert (lines["1003"]["how"], lines["1003"]["gone"]) == ("kept", True)  # available: false
+    assert out["r"]["total"] == {"amount": 510.97, "goods": 412.97, "base": 492.97, "discount": 80,
+                                 "delivery": 59, "count": 3, "path": "/webgate/v1/checkout/preview"}
+    assert out["r"]["tpl"] is True
+
+
+@pytest.mark.skipif(NODE is None, reason="node не установлен")
+def test_magnit_refreshes_the_login_once_on_401():
+    """Вход истёк (401): один POST /_auth/refresh, как у самого сайта, и повтор чтения."""
+    out = _magnit("", """
+let cart = {};
+let fresh = false;
+fakeXhr(function (u, b, m) {
+  if (u === '/_auth/refresh') { fresh = true; return {authorized: true}; }
+  if (u === '/webgate/v1/carts/lite' && !fresh) return {__status: 401};
+  return u === '/webgate/v1/carts/lite' ? cartAnswer(u, b, m) : null;
+});
+api.run({chain: 'magnit', tpl: tpl, lines: [], mine: {}, want: {}, drop: false, burst: 10})
+  .then(function (r) { console.log(JSON.stringify({seen: seen, ok: r.ok})); });
+""")
+    assert out["seen"][:3] == ["GET /webgate/v1/carts/lite", "POST /_auth/refresh",
+                               "GET /webgate/v1/carts/lite"]
+    assert out["ok"] is True
+
+
+@pytest.mark.skipif(NODE is None, reason="node не установлен")
+def test_magnit_without_a_learned_request_goes_to_taps():
+    """Образца нет — заголовков сайта не знаем: ни одного запроса, сборка уходит на касания."""
+    out = _magnit("", """
+let cart = {};
+fakeXhr(cartAnswer);
+api.run({chain: 'magnit', lines: [{sku: '1001', target: 1}], mine: {}, want: {}, drop: false})
+  .then(function (r) { console.log(JSON.stringify({seen: seen, ok: r.ok, stage: r.stage})); });
+""")
+    assert out == {"seen": [], "ok": False, "stage": "tpl"}
+
+
+@pytest.mark.skipif(NODE is None, reason="node не установлен")
+def test_magnit_drops_its_own_surplus_without_clearing_the_cart():
+    """Своё снимается отдельным PUT с qnty 0: DELETE carts/lite очистил бы корзину целиком."""
+    out = _magnit("", """
+let cart = {'1001': 1, '2002': 2};
+fakeXhr(function (u, b, m) { return u === '/webgate/v1/carts/lite' ? cartAnswer(u, b, m) : null; });
+api.run({chain: 'magnit', tpl: tpl, lines: [{sku: '1001', target: 2}], mine: {'2002': 2},
+         want: {'1001': 2}, drop: true, burst: 10})
+  .then(function (r) { console.log(JSON.stringify({seen: seen, last: sent[2].b, dropped: r.dropped, cart: r.cart})); });
+""")
+    assert out["seen"] == ["GET /webgate/v1/carts/lite", "PUT /webgate/v1/carts/lite",
+                           "PUT /webgate/v1/carts/lite", "GET /webgate/v1/checkout/preview"]
+    assert json.loads(out["last"]) == {"items": [{"goodId": "2002", "offerId": "2002", "qnty": 0}]}
+    assert (out["dropped"], out["cart"]) == (2, {"1001": 2})
+
+
+@pytest.mark.skipif(NODE is None, reason="node не установлен")
+def test_magnit_refused_write_goes_to_taps():
+    """Запись не принята (образец устарел): сборка уходит на касания, образец не продлевается."""
+    out = _magnit("", """
+let cart = {};
+fakeXhr(function (u, b, m) {
+  if (u !== '/webgate/v1/carts/lite') return null;
+  return m === 'PUT' ? {__status: 400, message: 'Устаревшая версия'} : cartAnswer(u, b, m);
+});
+api.run({chain: 'magnit', tpl: tpl, lines: [{sku: '1001', target: 1}, {sku: '1002', target: 1}],
+         mine: {}, want: {}, drop: false, burst: 10})
+  .then(function (r) { console.log(JSON.stringify({seen: seen, r: r})); });
+""")
+    assert out["seen"] == ["GET /webgate/v1/carts/lite", "PUT /webgate/v1/carts/lite"]
+    assert (out["r"]["ok"], out["r"]["stage"]) == (False, "write")
+    assert out["r"]["why"] == "Магнит: сеть ответила 400: Устаревшая версия"
+    assert "tpl" not in out["r"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node не установлен")
+def test_magnit_weighed_goods_go_to_taps():
+    """Весовой лежит долями (0,4 кг): запрос ставит упаковки, поэтому такую строку кладут касания."""
+    out = _magnit("", """
+let cart = {'1444282012': 0.4};
+fakeXhr(function (u, b, m) { return u === '/webgate/v1/carts/lite' ? cartAnswer(u, b, m) : null; });
+api.run({chain: 'magnit', tpl: tpl, lines: [{sku: '1444282012', target: 1}, {sku: '1001', target: 1}],
+         mine: {}, want: {}, drop: false, burst: 10})
+  .then(function (r) { console.log(JSON.stringify({put: JSON.parse(sent[1].b), lines: r.lines, cart: cart})); });
+""")
+    assert out["put"] == {"items": [{"goodId": "1001", "offerId": "1001", "qnty": 1}]}
+    assert out["lines"]["1444282012"] == {"retry": True}
+    assert out["cart"]["1444282012"] == 0.4
+
+
+@pytest.mark.skipif(NODE is None, reason="node не установлен")
+def test_magnit_rereads_the_cart_when_the_write_answer_is_unclear():
+    """Запись ответила 200 без корзины: не верим на слово, перечитываем корзину."""
+    out = _magnit("", """
+let cart = {};
+fakeXhr(function (u, b, m) {
+  if (u !== '/webgate/v1/carts/lite') return null;
+  if (m === 'PUT') { cartAnswer(u, b, m); return {}; }
+  return cartAnswer(u, b, m);
+});
+api.run({chain: 'magnit', tpl: tpl, lines: [{sku: '1001', target: 2}], mine: {}, want: {}, drop: false, burst: 10})
+  .then(function (r) { console.log(JSON.stringify({seen: seen, line: r.lines['1001']})); });
+""")
+    assert out["seen"][:3] == ["GET /webgate/v1/carts/lite", "PUT /webgate/v1/carts/lite",
+                               "GET /webgate/v1/carts/lite"]
+    assert (out["line"]["ok"], out["line"]["q"]) == (True, 2)

@@ -202,12 +202,13 @@ class Connection:
     gives: tuple[str, ...] = ()            # что реально пришло, а не что обещано
     points: float | None = None            # баллы программы лояльности
     note: str = ""
+    device: bool = False                   # вход живёт в приложении на телефоне, не у сервера
 
     def as_dict(self) -> dict:
         return {"store_code": self.store_code, "connected": self.connected,
                 "connected_at": self.connected_at, "last_seen_at": self.last_seen_at,
                 "account": self.account, "gives": list(self.gives),
-                "points": self.points, "note": self.note}
+                "points": self.points, "note": self.note, "device": self.device}
 
 
 def _now() -> str:
@@ -243,6 +244,7 @@ def connection(store_code: str) -> Connection:
         gives=gives,
         points=raw.get("points"),
         note=str(raw.get("note") or ""),
+        device=bool(raw.get("device")),
     )
 
 
@@ -262,7 +264,7 @@ def connections() -> list[Connection]:
 def mark_connected(store_code: str, *, account: str | None = None,
                    gives: tuple[str, ...] | list[str] | None = None,
                    points: float | None = None,
-                   note: str = "") -> Connection:
+                   note: str = "", device: bool = False) -> Connection:
     """Записать, что сборщик увидел человека вошедшим в этой сети.
 
     Вызывается не кнопкой «подключить», а отчётом сборщика: подключение — это не
@@ -282,6 +284,7 @@ def mark_connected(store_code: str, *, account: str | None = None,
         "gives": list(gives if gives is not None else ABILITIES[store_code].gives),
         "points": points if points is not None else was.get("points"),
         "note": note or was.get("note") or "",
+        "device": device or bool(was.get("device")),
     }
     _save(data)
     log.info("%s: подключение подтверждено сборщиком", store_code)

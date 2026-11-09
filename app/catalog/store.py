@@ -258,13 +258,21 @@ def path() -> str:
 
 def connect() -> sqlite3.Connection:
     file = path()
-    os.makedirs(os.path.dirname(file), exist_ok=True)
+    fresh = file not in _WAL or not os.path.exists(file)
+    if fresh:
+        os.makedirs(os.path.dirname(file), exist_ok=True)
     conn = sqlite3.connect(file, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # Каталог пишет фоновый процесс, читает интерфейс — WAL даёт им не мешать друг другу.
-    conn.execute("PRAGMA journal_mode = WAL")
+    # Режим живёт в файле: раз за процесс, повтор стоил 0,3 мс на соединение (app/db.get_conn).
+    if fresh:
+        conn.execute("PRAGMA journal_mode = WAL")
+        _WAL.add(file)
     return conn
+
+
+_WAL: set[str] = set()
 
 
 # Колонки, добавленные после первых выпусков: CREATE TABLE IF NOT EXISTS до уже
@@ -317,6 +325,20 @@ def init() -> None:
             conn.execute(ddl)
         _migrate(conn)
         conn.commit()
+    _READY.add(path())
+
+
+_READY: set[str] = set()
+
+
+def _ready() -> None:
+    """Схема каталога проверена этим процессом — не прогонять её на каждом чтении.
+
+    init() стоит 1 мс, а наряд телефону читает каталог десятки раз (замер 09.11.2026).
+    Явный init() по-прежнему прогоняет схему и миграции целиком.
+    """
+    if path() not in _READY or not os.path.exists(path()):
+        init()
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -406,7 +428,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 # ---------- запись обхода ----------
 def start_run(chain: str) -> int:
-    init()
+    _ready()
     with connect() as conn:
         cur = conn.execute("INSERT INTO crawl_runs (chain, started_at, status) VALUES (?,?,'running')",
                            (chain, now()))
@@ -429,7 +451,7 @@ def known_pairs() -> set[tuple[str, str]]:
     Нужно переносу наблюдений приложения (app/catalog/observations.py): цена по артикулу,
     которого в общей базе нет, легла бы в историю товара-призрака.
     """
-    init()
+    _ready()
     with connect() as conn:
         return {(str(row["chain"]), str(row["sku"]))
                 for row in conn.execute("SELECT chain, sku FROM chain_products")}
@@ -448,7 +470,7 @@ def record_observation(chain: str, sku: str, price: float, at: str) -> bool:
     """
     if not price or price <= 0 or price > 1_000_000 or not at:
         return False
-    init()
+    _ready()
     with connect() as conn:
         was = conn.execute("SELECT 1 FROM price_history WHERE chain=? AND sku=? AND seen_at=?"
                            " LIMIT 1", (chain, str(sku), str(at))).fetchone()
@@ -471,7 +493,7 @@ def mark_sweep(state: str) -> None:
     «обходов нет», хотя обход шёл. Выкладка в этот момент перезапустила бы контейнер и
     оборвала ночь. Отметка говорит про ОБХОД ЦЕЛИКОМ, а не про одну сеть.
     """
-    init()
+    _ready()
     with connect() as conn:
         conn.execute("INSERT INTO catalog_state (key, value, at) VALUES (?,?,?)"
                      " ON CONFLICT(key) DO UPDATE SET value=excluded.value, at=excluded.at",
@@ -481,7 +503,7 @@ def mark_sweep(state: str) -> None:
 
 def sweep_state(hours: float = 12.0) -> str | None:
     """Идёт ли обход сетей: 'running', 'done', 'stale' (отметка слишком старая) или None."""
-    init()
+    _ready()
     with connect() as conn:
         row = conn.execute("SELECT value, at FROM catalog_state WHERE key=?",
                            (SWEEP_KEY,)).fetchone()
@@ -500,7 +522,7 @@ def sweep_state(hours: float = 12.0) -> str | None:
 
 def sweep_at() -> str | None:
     """Когда обход сетей был отмечен последний раз (любым состоянием)."""
-    init()
+    _ready()
     with connect() as conn:
         row = conn.execute("SELECT at FROM catalog_state WHERE key=?",
                            (SWEEP_KEY,)).fetchone()
@@ -518,7 +540,7 @@ def mark_sweep_step(chain: str) -> None:
     а убитый процесс (OOM, перезапуск контейнера) не оставляет ничего. Отметка «сейчас иду
     по такой-то сети» переживает смерть процесса — утром видно, на ком оборвалось.
     """
-    init()
+    _ready()
     payload = json.dumps({"chain": str(chain), "at": now()}, ensure_ascii=False)
     with connect() as conn:
         conn.execute("INSERT INTO catalog_state (key, value, at) VALUES (?,?,?)"
@@ -529,7 +551,7 @@ def mark_sweep_step(chain: str) -> None:
 
 def sweep_step() -> dict:
     """Последняя сеть, которую трогал обход: {chain, at}. Пусто — отметки нет."""
-    init()
+    _ready()
     with connect() as conn:
         row = conn.execute("SELECT value FROM catalog_state WHERE key=?",
                            (SWEEP_STEP_KEY,)).fetchone()
@@ -552,7 +574,7 @@ def mark_device(chain: str, kind: str, got: int, learned: int = 0) -> None:
     вопрос, на который нечем ответить: строки есть, а пришли они вчера или месяц назад,
     не видно. Проверка базы показывает эти отметки (app/catalog/checkup.py).
     """
-    init()
+    _ready()
     payload = json.dumps({"kind": str(kind), "got": int(got), "learned": int(learned),
                           "at": now()}, ensure_ascii=False)
     with connect() as conn:
@@ -564,7 +586,7 @@ def mark_device(chain: str, kind: str, got: int, learned: int = 0) -> None:
 
 def device_marks() -> dict[str, dict]:
     """Что и когда приносил телефон по сетям: {сеть: {kind, got, learned, at}}."""
-    init()
+    _ready()
     with connect() as conn:
         rows = list(conn.execute("SELECT key, value FROM catalog_state"
                                  " WHERE key LIKE 'device.%'"))
@@ -595,7 +617,7 @@ def mark_map(chain: str, total: int, known: int, left: int, added: int = 0) -> N
     Числа берутся у сборщика (он уже получил перечень, отдельных запросов не нужно) и
     ложатся в catalog_state, чтобы их показала проверка базы.
     """
-    init()
+    _ready()
     payload = json.dumps({"total": int(total), "known": int(known), "left": int(left),
                           "added": int(added), "at": now()}, ensure_ascii=False)
     with connect() as conn:
@@ -607,7 +629,7 @@ def mark_map(chain: str, total: int, known: int, left: int, added: int = 0) -> N
 
 def map_marks() -> dict[str, dict]:
     """Сколько разобрано по сетям: {сеть: {total, known, left, added, at}}."""
-    init()
+    _ready()
     with connect() as conn:
         rows = list(conn.execute("SELECT key, value FROM catalog_state"
                                  " WHERE key LIKE 'map.%'"))
@@ -637,7 +659,7 @@ def phone_new_rows(hours: float = 24.0) -> dict[str, int]:
     раз записывает «неполный» (стена по IP), строк там не появляется — и по грубому
     признаку «сети не было в обходе» их вклад пропадал бы.
     """
-    init()
+    _ready()
     since = (datetime.now() - timedelta(hours=hours)).isoformat(timespec="microseconds")
     with connect() as conn:
         rows = conn.execute(
@@ -658,7 +680,7 @@ def chain_minutes() -> dict[str, float]:
     ждут в другой. Берём последний прогон — он честнее давнего: каталог растёт, и обход
     вместе с ним удлиняется.
     """
-    init()
+    _ready()
     with connect() as conn:
         rows = conn.execute(
             "SELECT r.chain, r.started_at, r.finished_at FROM crawl_runs r"
@@ -690,7 +712,7 @@ def close_stale_runs(hours: float = 6.0) -> int:
     Потолок времени на сеть — 180 минут, шесть часов выше любого живого обхода.
     """
     limit = (datetime.now() - timedelta(hours=hours)).isoformat(timespec="microseconds")
-    init()
+    _ready()
     with connect() as conn:
         cur = conn.execute(
             "UPDATE crawl_runs SET status='failed', finished_at=?,"
@@ -708,7 +730,7 @@ def running_runs() -> list[dict]:
     тех сетей, до которых очередь не дошла. Замер 19.10.2026: так оборвались два обхода
     подряд, и Лента за сутки не обошлась ни разу.
     """
-    init()
+    _ready()
     with connect() as conn:
         return [dict(row) for row in conn.execute(
             "SELECT id, chain, started_at FROM crawl_runs WHERE status='running'"
@@ -880,7 +902,7 @@ def remember_points(points) -> None:
             for p in points or () if getattr(p, "address", None) and getattr(p, "code", None)]
     if not rows:
         return
-    init()
+    _ready()
     with connect() as conn:
         conn.executemany(
             "INSERT INTO address_points (address, chain, point, label, updated_at) VALUES (?,?,?,?,?)"
@@ -967,7 +989,7 @@ def chain_counts() -> dict[str, dict]:
     штрихкодом. Это и есть ответ на «наполнение работает?» — его видно на экране
     «Магазины», а не только в журнале обхода.
     """
-    init()
+    _ready()
     out: dict[str, dict] = {}
     with connect() as conn:
         for row in conn.execute(
@@ -991,7 +1013,7 @@ def chain_counts() -> dict[str, dict]:
 
 def known_skus(chain: str) -> set[str]:
     """Артикулы сети, о которых каталог уже знает название. Нужно сборщикам по sitemap."""
-    init()
+    _ready()
     with connect() as conn:
         return {str(r["sku"]) for r in conn.execute(
             "SELECT sku FROM chain_products WHERE chain=?", (chain,))}
@@ -1010,7 +1032,7 @@ def set_stock(chain: str, rows: list[tuple[bool, str]]) -> int:
     """
     if not rows:
         return 0
-    init()
+    _ready()
     with connect() as conn:
         cur = conn.executemany(
             "UPDATE chain_products SET in_stock=? WHERE chain=? AND sku=? AND active=1",
@@ -1036,7 +1058,7 @@ def touch_seen(chain: str, skus: list[str]) -> int:
     wanted = [str(sku).strip() for sku in (skus or []) if str(sku).strip()]
     if not wanted:
         return 0
-    init()
+    _ready()
     stamp = now()
     with connect() as conn:
         cur = conn.executemany(
@@ -1060,7 +1082,7 @@ def set_prices_seen(chain: str, rows: list[tuple[float, str]]) -> int:
     """
     if not rows:
         return 0
-    init()
+    _ready()
     stamp = now()
     with connect() as conn:
         cur = conn.executemany(
@@ -1079,7 +1101,7 @@ def set_stock_seen(chain: str, rows: list[tuple[bool, str]]) -> int:
     """
     if not rows:
         return 0
-    init()
+    _ready()
     stamp = now()
     with connect() as conn:
         cur = conn.executemany(
@@ -1103,7 +1125,7 @@ def set_prices(chain: str, rows: list[tuple[float, str]]) -> int:
     """
     if not rows:
         return 0
-    init()
+    _ready()
     stamp = now()
     with connect() as conn:
         cur = conn.executemany(
@@ -1122,7 +1144,7 @@ def price_history(chain: str, sku: str, point: str | None = None,
     память о цене не растёт с числом обходов.
     """
     since = (datetime.now() - timedelta(days=days)).isoformat(timespec="microseconds")
-    init()
+    _ready()
     with connect() as conn:
         sql = ("SELECT price, seen_at FROM price_history WHERE chain=? AND sku=? AND seen_at>=?")
         args: list = [chain, str(sku), since]
@@ -1197,7 +1219,7 @@ def thin_skus(chain: str, limit: int) -> list[str]:
     В ОЧЕРЕДЬ ВХОДИТ И СТРОКА БЕЗ ЦЕНЫ. Карточка отдаёт и цену, а 813 строк Ленты лежали
     без цены, но с маркой и штрихкодом — и в добор не попадали вовсе.
     """
-    init()
+    _ready()
     with connect() as conn:
         return [str(r["sku"]) for r in conn.execute(
             "SELECT p.sku,"
@@ -1235,7 +1257,7 @@ def stale_price_skus(chain: str, limit: int, older_than_hours: float = 20.0) -> 
     Цена без даты (price_seen) считается по дате первого знакомства: у строк,
     записанных до появления колонки, другой даты нет, и они самые старые из всех.
     """
-    init()
+    _ready()
     if limit <= 0:
         return []
     cutoff = (datetime.now() - timedelta(hours=older_than_hours)).isoformat(timespec="microseconds")
@@ -1509,14 +1531,14 @@ def search_items(query: str, limit: int = 20, conn: sqlite3.Connection | None = 
     if conn is not None:                 # сопоставление зовёт тысячи раз: init уже был
         rows = conn.execute(sql, params).fetchall()
     else:
-        init()
+        _ready()
         with connect() as own:
             rows = own.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
 
 
 def item_count() -> dict:
-    init()
+    _ready()
     with connect() as conn:
         items = conn.execute("SELECT COUNT(*) AS n FROM catalog_items").fetchone()["n"]
         multi = conn.execute("SELECT COUNT(*) AS n FROM (SELECT item_id FROM chain_products"
@@ -1678,7 +1700,7 @@ def enqueue_address(address: str) -> bool:
     address = " ".join((address or "").split())
     if not address:
         return False
-    init()
+    _ready()
     try:
         with connect() as conn:
             conn.execute("INSERT INTO address_queue (address, requested_at, status)"
@@ -1696,7 +1718,7 @@ def take_address() -> dict | None:
     оставил бы адрес ждущим, и следующий запуск начал бы его заново с нуля — а он
     как раз наполовину загружен.
     """
-    init()
+    _ready()
     with connect() as conn:
         row = conn.execute("SELECT * FROM address_queue WHERE status='waiting'"
                            " ORDER BY requested_at, id LIMIT 1").fetchone()
@@ -1722,7 +1744,7 @@ def revive_stuck() -> int:
     Без этого адрес, застигнутый перезапуском, остался бы «идущим» навсегда, и
     цены по нему никто бы не догрузил.
     """
-    init()
+    _ready()
     with connect() as conn:
         cur = conn.execute("UPDATE address_queue SET status='waiting', started_at=NULL"
                            " WHERE status='running'")
@@ -1732,7 +1754,7 @@ def revive_stuck() -> int:
 
 def queue_state(limit: int = 20) -> list[dict]:
     """Что в очереди — для экрана «Магазины» и для журнала."""
-    init()
+    _ready()
     with connect() as conn:
         return [dict(r) for r in conn.execute(
             "SELECT * FROM address_queue ORDER BY requested_at DESC, id DESC LIMIT ?", (limit,))]
@@ -1743,7 +1765,7 @@ def address_status(address: str) -> dict | None:
     address = " ".join((address or "").split())
     if not address:
         return None
-    init()
+    _ready()
     with connect() as conn:
         row = conn.execute("SELECT * FROM address_queue WHERE address=?"
                            " ORDER BY requested_at DESC, id DESC LIMIT 1", (address,)).fetchone()

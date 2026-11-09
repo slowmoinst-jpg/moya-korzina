@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 
 import requests
-from flask import Response, g, jsonify, redirect, request, url_for
+from flask import Response, abort, g, jsonify, redirect, request, url_for
 
 from app import config, freshness, geo, repo
 from app.web import device
@@ -57,6 +57,11 @@ def settings():
         if conn.store_code not in names:
             continue
         login = _login(conn.store_code)
+        # Вход через приложение (/api/device/connected) куки на сервер не везёт: сервер
+        # видит только отметку подключения, и без неё сеть вечно стояла бы «войти снова».
+        # Пропавший вход окна на сервере (device нет) по-прежнему просит войти.
+        if login == "again" and conn.device:
+            login = ""
         # Последняя попытка — из строки сборки этой сети, если она есть: по ней
         # «вход истёк» перестаёт быть безликим и видно, когда сеть последний раз
         # отвечала. Строки нет — так и остаётся без даты, выдумывать её нечем.
@@ -103,6 +108,10 @@ def settings():
                    # Это не пустое место, а объяснение, зачем вообще входить.
                    first_run=bool(stores) and not connected and bool(waiting),
                    no_stores=not stores,
+                   # «Подключено: …» — только если сервер и правда видит вход, а не по адресу.
+                   connected_name=next((s["name"] for s in connected
+                                        if s["code"] == request.args.get("store")), None)
+                   if saved == "connected" else None,
                    disconnected_name=names.get(request.args.get("store") or "")
                    if saved == "disconnected" else None,
                    fns=_fns(), address=address, on_phone=device.on_phone(),
@@ -113,6 +122,17 @@ def settings():
                    nearby_text=_nearby_line(address) if saved == "address" else None,
                    board=board, board_by=board_by,
                    tile_base=url_for("phone.map_tile", z=10, x=0, y=0).rsplit("/", 3)[0])
+
+
+@bp.get("/connect/<code>")
+@needs_phone
+def connect(code: str):
+    stores = {s.code: s.name for s in repo.list_stores()}
+    if code not in stores:
+        abort(404)
+    name = stores[code]
+    return _render("connect.html", tab="settings", code=code, name=name,
+                   android="Android" in (request.headers.get("User-Agent") or ""))
 
 
 def _board(signed: set[str]) -> list[dict]:

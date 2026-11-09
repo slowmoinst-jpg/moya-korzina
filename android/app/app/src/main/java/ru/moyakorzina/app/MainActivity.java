@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
@@ -840,6 +841,7 @@ public class MainActivity extends Activity {
         if ("perekrestok".equals(chain)) return "https://www.perekrestok.ru";
         if ("pyaterochka".equals(chain)) return "https://5ka.ru";
         if ("dixy".equals(chain)) return "https://dixy.ru";
+        if ("magnit".equals(chain)) return "https://magnit.ru";
         return null;
     }
 
@@ -951,6 +953,16 @@ public class MainActivity extends Activity {
     private Button recordBtn;
     private Button readBtn;
     private Button cartBtn;
+    /**
+     * Режим входа (1.26): окно сети открыто плиткой «Настройки» ради входа. На панели
+     * «←» и одна кнопка — «Я вошёл», после входа «Готово»; вход приложение узнаёт само.
+     */
+    private Button loginDoneBtn;
+    private boolean loginMode = false;
+    private boolean loginSaved = false;
+    /** Сколько раз «Войти» на сайте сети нажато за человека в этот вход (не больше LOGIN_TAPS). */
+    private int loginTaps = 0;
+    private final Runnable loginWatch = this::checkLogin;
     /** Окно кабинета ФНС: панель, её строка состояния и кнопка «Забрать чеки». */
     private View fnsPanel;
     private TextView fnsStatus;
@@ -1037,6 +1049,24 @@ public class MainActivity extends Activity {
                     final int idx = i;
                     final String lines = linesJson;
                     handler.post(() -> openChain(idx, lines));
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * Открыть вход в сеть (1.26): сайт сети в режиме входа — «Войти» на нём жмём за
+         * человека, вход узнаём и сохраняем сами, на панели остаётся «Готово».
+         */
+        @JavascriptInterface
+        public boolean login(String code) {
+            if (!bridgeAllowed()) return false;
+            if (currentChain >= 0) return false;
+            for (int i = 0; i < CHAINS.length; i++) {
+                if (CHAINS[i][1].equals(code)) {
+                    final int idx = i;
+                    handler.post(() -> openLogin(idx));
                     return true;
                 }
             }
@@ -1309,6 +1339,16 @@ public class MainActivity extends Activity {
         cartBtn.setOnClickListener(v -> toggleCart());
         row.addView(cartBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.1f));
 
+        // Только в режиме входа (1.26): «Я вошёл», после входа «Готово». Прочие кнопки тогда спрятаны.
+        loginDoneBtn = new Button(this);
+        loginDoneBtn.setTextSize(14f);
+        loginDoneBtn.setVisibility(View.GONE);
+        loginDoneBtn.setOnClickListener(v -> {
+            if (loginSaved) finishLogin();
+            else loginFound();
+        });
+        row.addView(loginDoneBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f));
+
         panel.addView(row);
         return panel;
     }
@@ -1399,8 +1439,10 @@ public class MainActivity extends Activity {
                 pageOurs = isOurs(pageUrl);
                 // Режим следует за адресом, а не за тем, кто его открыл: человек
                 // мог вернуться «назад» на наш сайт сам — и панель должна уйти
-                // вместе со страницей сети, а не висеть поверх корзины.
-                if (currentChain >= 0 && !isHostOf(currentChain, url)) {
+                // вместе со страницей сети, а не висеть поверх корзины. Режим входа
+                // держим и на чужом адресе: вход сети бывает на отдельном сервисе.
+                if (currentChain >= 0 && !isHostOf(currentChain, url)
+                        && (!loginMode || isOurs(url))) {
                     exitChainMode();
                 }
                 // Кабинет ФНС: вернулись на наш адрес — режим снят, панель ушла.
@@ -1421,8 +1463,8 @@ public class MainActivity extends Activity {
                     // Записанное раньше лежит в sessionStorage и переживает перезагрузку.
                     view.evaluateJavascript(recScript(currentChain), null);
                     if (cartRun == null) say("Идёт запись — " + shortenUrl(url), false);
-                } else if (cartRun == null) {
-                    // Во время сборки строку состояния ведёт она: «кладу 3 из 9».
+                } else if (cartRun == null && !loginMode) {
+                    // Во время сборки строку состояния ведёт она: «кладу 3 из 9», при входе — checkLogin.
                     say(CHAINS[currentChain][0] + " — " + shortenUrl(url), false);
                 }
             }
@@ -1556,10 +1598,21 @@ public class MainActivity extends Activity {
         currentChain = idx;
         chainLinesOverride = linesJson;
         stopRecording();
+        stopLogin();
         chainPanel.setVisibility(View.VISIBLE);
         setChainButtons(true);
         say("Открываю " + CHAINS[idx][0] + "…", false);
         web.loadUrl(CHAINS[idx][2]);
+    }
+
+    /** Окно сети ради входа (1.26): строка-подсказка, «Войти» жмём за человека, вход ловит checkLogin. */
+    private void openLogin(int idx) {
+        openChain(idx, null);
+        for (String[] p : LOGIN_PAGES) if (p[0].equals(CHAINS[idx][1])) web.loadUrl(p[1]);
+        loginMode = true;
+        showLoginPanel(true);
+        say("Войдите своим номером телефона", false);
+        handler.postDelayed(loginWatch, LOGIN_CHECK_MS);
     }
 
     /**
@@ -1610,6 +1663,7 @@ public class MainActivity extends Activity {
         currentChain = -1;
         chainLinesOverride = null;
         stopRecording();
+        stopLogin();
         if (chainPanel != null) chainPanel.setVisibility(View.GONE);
     }
 
@@ -1619,6 +1673,29 @@ public class MainActivity extends Activity {
         recordBtn.setEnabled(on);
         readBtn.setEnabled(on);
         cartBtn.setEnabled(on);
+    }
+
+    /** Панель режима входа: «←» и «Я вошёл»; прочие кнопки сети спрятаны. */
+    private void showLoginPanel(boolean on) {
+        int rest = on ? View.GONE : View.VISIBLE;
+        saveLoginBtn.setVisibility(rest);
+        saveOffersBtn.setVisibility(rest);
+        recordBtn.setVisibility(rest);
+        readBtn.setVisibility(rest);
+        cartBtn.setVisibility(rest);
+        loginDoneBtn.setVisibility(on ? View.VISIBLE : View.GONE);
+        loginDoneBtn.setText("Я вошёл");
+        loginDoneBtn.setBackgroundTintList(null);
+        chainStatus.setTextSize(on ? 15f : 13f);
+        chainPanel.setBackgroundColor(0xF2F5F5F5);
+    }
+
+    private void stopLogin() {
+        handler.removeCallbacks(loginWatch);
+        loginMode = false;
+        loginSaved = false;
+        loginTaps = 0;
+        if (loginDoneBtn != null) showLoginPanel(false);
     }
 
     // ── Кабинет ФНС: вход у человека, ключ — у приложения ──
@@ -4946,7 +5023,7 @@ public class MainActivity extends Activity {
 
     /**
      * APK 1.24 (09.11.2026): сборка корзины собственными запросами сети (cartapi.js)
-     * для Перекрёстка, Пятёрочки и Дикси.
+     * для Перекрёстка, Пятёрочки и Дикси, с 1.26 — и Магнита.
      */
     private void cartApi(final CartRun r) {
         if (!alive(r)) return;
@@ -5043,6 +5120,9 @@ public class MainActivity extends Activity {
             input.put("pause_ms", pauseMs);
             int burst = r.rules.optInt("api_burst", 3);
             input.put("burst", burst);
+            // Заголовки сайта Магнита cartapi.js берёт из образца, выученного касанием; в окне и остаются.
+            JSONObject tpl = storedTpl(r.code);
+            if (tpl != null && tpl.optJSONObject("tpl") != null) input.put("tpl", tpl.getJSONObject("tpl"));
         } catch (Exception e) {
             begin(r);
             return;
@@ -5283,6 +5363,7 @@ public class MainActivity extends Activity {
         }
 
         r.droppedCount += res.optInt("dropped", 0);
+        if (res.optBoolean("tpl", false)) extendTpl(r.code);
 
         JSONObject cartObj = new JSONObject();
         JSONArray totals = new JSONArray();
@@ -6057,14 +6138,15 @@ public class MainActivity extends Activity {
     }
 
     // ── Вход в магазин ──
-    private void saveLogin() {
-        if (currentChain < 0) return;
+    /** Сохранить вход открытой сети. Ложь — кук нет, сохранять нечего. */
+    private boolean saveLogin() {
+        if (currentChain < 0) return false;
         final String chain = CHAINS[currentChain][1];
         String url = web.getUrl();
         String raw = url == null ? null : CookieManager.getInstance().getCookie(url);
         if (raw == null || raw.trim().isEmpty()) {
             say("Нет кук — похоже, вы ещё не вошли в магазин.", true);
-            return;
+            return false;
         }
         try {
             // Концепция 2.0: сессии и токены шифруются в KeyStore на устройстве (AES-256-GCM)
@@ -6077,13 +6159,141 @@ public class MainActivity extends Activity {
                 .put("connected", true)
                 .put("gives", new JSONArray().put("prices").put("cart"));
 
+            // Человеку из «Настроек» — что делать дальше, а не где лежат ключи.
+            String ok = loginMode ? LOGIN_DONE_TEXT
+                : CHAINS[currentChain][0] + " — вход защищённо сохранён в KeyStore";
             say("Сохраняю вход в защищённое хранилище…", false);
-            post("/api/device/connected", body,
-                 CHAINS[currentChain][0] + " — вход защищённо сохранён в KeyStore");
-            say(CHAINS[currentChain][0] + " — вход надёжно сохранён в KeyStore на устройстве", false);
+            post("/api/device/connected", body, ok);
+            say(loginMode ? LOGIN_DONE_TEXT
+                : CHAINS[currentChain][0] + " — вход надёжно сохранён в KeyStore на устройстве", false);
+            return true;
         } catch (Exception e) {
             say("Не получилось сохранить вход: " + e.getMessage(), true);
+            return false;
         }
+    }
+
+    // ── Режим входа (1.26): «Войти» за человека, вход узнаём сами, «Готово» ──
+    private static final long LOGIN_CHECK_MS = 2000;
+    private static final int LOGIN_TAPS = 4;
+    private static final String LOGIN_DONE_TEXT = "✓ Вход сохранён — можно возвращаться";
+
+    /**
+     * Кука, которую сеть ставит только вошедшему (signals.AUTH_COOKIE на сервере). Имя
+     * известно достоверно лишь у Магнита (замер 17.09.2026); у остальных сетей вход
+     * узнаём по словам страницы — LOGIN_STATE_JS.
+     */
+    private static final String[][] LOGIN_COOKIES = {{"magnit", "mg_at"}};
+
+    /** Сети без «Войти» на главной: вход открываем сразу с этой страницы (замер 09.11.2026). */
+    private static final String[][] LOGIN_PAGES = {{"samokat", "https://samokat.ru/profile"}};
+
+    /**
+     * Что страница говорит о входе: in — вошёл, out — гость, vpn и check — стена сети.
+     * Слова те же, что у сервера (app/shopbrowser/signals.py: STRONG_IN, ANONYMOUS, CHECK,
+     * BLOCKED), и смотрим туда же — начало и конец текста, где шапка и нижняя панель.
+     * Строже сервера в одном: «мои заказы» рядом с «войти» — меню гостя, а не вход;
+     * не узнали вход — у человека остаётся «Я вошёл».
+     */
+    private static final String LOGIN_STATE_JS = "(function(){" +
+        "var w=(document.body?document.body.innerText:'').toLowerCase().replace(/ё/g,'е');" +
+        "var t=w.length<=3000?w:w.slice(0,1800)+' … '+w.slice(-1200);" +
+        "if(!t.trim()) return '';" +
+        "if(/выключите vpn|включите vpn|отключите vpn|включен vpn|не удалось загрузить сайт|" +
+        "доступ к сайту[\\s\\S]{0,40}запрещ|403 error forbidden|не удалось открыть веб-страницу|" +
+        "net::err_/.test(t)) return 'vpn';" +
+        "if(/я не робот|подтвердите, что вы|проверка браузера|пройдите проверку|" +
+        "разверните картинку|а не с ботом/.test(t)) return 'check';" +
+        "var inside=/выйти|выход из аккаунта|здравствуйте,|мои заказы|мои покупки|мои купоны|" +
+        "мой профиль|мои бонусы/.test(t);" +
+        "var guest=/войти|вход в личный|зарегистрироваться|регистрация/.test(t);" +
+        "return inside&&!guest?'in':guest?'out':'';})()";
+
+    /**
+     * Нажать за человека «Войти» на сайте сети. Видно поле телефона или пароля — форма
+     * входа уже открыта, жать нечего ('form'). Иначе берём последний по документу видимый
+     * элемент с подписью входа: во вложенной паре он самый глубокий (клик по обёртке до
+     * кнопки не дошёл бы), а у Магнита «Войти» — в нижней панели. «Личный кабинет» —
+     * только когда «Войти» нет: у Дикси он открывает меню, а не вход (замер 09.11.2026).
+     * Не нашли (кнопка под ☰) — жмёт человек, подсказка та же.
+     */
+    private static final String LOGIN_TAP_JS = "(function(){" +
+        "var f=document.querySelectorAll('input');" +
+        "for(var j=0;j<f.length;j++){var x=f[j],q=x.getBoundingClientRect();" +
+        "if(q.width<1||q.height<1) continue;" +
+        "var m=(x.getAttribute('inputmode')||'')+' '+(x.getAttribute('autocomplete')||'');" +
+        "var n=(x.placeholder||'')+' '+(x.name||'')+' '+(x.id||'')+' '+(x.getAttribute('aria-label')||'');" +
+        "if(x.type==='tel'||x.type==='password'||/\\btel\\b/.test(m)||/phone|телефон/i.test(n)) return 'form';}" +
+        "var want=/^(войти|вход|войти или зарегистрироваться|войти или создать профиль|войти по номеру телефона|" +
+        "вход или регистрация|вход и регистрация)$/,lk=/^(вход в )?личный кабинет$/;" +
+        "var all=document.querySelectorAll('a,button,[role=button],div,span'),hit=null,alt=null;" +
+        "for(var i=0;i<all.length;i++){var e=all[i];" +
+        "var s=(e.innerText||'').trim().replace(/\\s+/g,' ').toLowerCase().replace(/ё/g,'е');" +
+        "if(s.length>40||!(want.test(s)||lk.test(s))) continue;" +
+        "var r=e.getBoundingClientRect(); if(r.width<1||r.height<1) continue;" +
+        "if(want.test(s)) hit=e; else alt=e;}" +
+        "hit=hit||alt; if(!hit) return 'none';" +
+        "hit.click(); return 'tap';})()";
+
+    /** Режим входа: раз в LOGIN_CHECK_MS спросить куку и страницу, вошёл ли человек. */
+    private void checkLogin() {
+        if (!loginMode || loginSaved || currentChain < 0) return;
+        final int idx = currentChain;
+        if (hasLoginCookie(idx)) {
+            loginFound();
+            return;
+        }
+        web.evaluateJavascript(LOGIN_STATE_JS, result -> {
+            if (!loginMode || loginSaved || currentChain != idx) return;
+            String state = result == null ? "" : result.replace("\"", "").trim();
+            // Слова «выйти» на чужом сервисе входа ещё не значат, что сеть нас впустила.
+            if ("in".equals(state) && isHostOf(idx, pageUrl)) {
+                loginFound();
+                return;
+            }
+            if ("vpn".equals(state)) say("Сайт не пускает этот адрес — выключите VPN", true);
+            else if ("check".equals(state)) say("Пройдите проверку «я не робот»", false);
+            else say("Войдите своим номером телефона", false);
+            // Кнопку входа сеть дорисовывает не сразу, а нажатие до готовности страницы
+            // теряется (нижняя панель Магнита — через 7–20 с, замер 09.11.2026). Поэтому
+            // жмём на каждой проверке, пока не откроется форма, но не больше LOGIN_TAPS раз.
+            if ("out".equals(state) && loginTaps < LOGIN_TAPS && isHostOf(idx, pageUrl)) {
+                web.evaluateJavascript(LOGIN_TAP_JS, r -> {
+                    if ("\"form\"".equals(r)) loginTaps = LOGIN_TAPS;
+                    else if ("\"tap\"".equals(r)) loginTaps++;
+                });
+            }
+            handler.postDelayed(loginWatch, LOGIN_CHECK_MS);
+        });
+    }
+
+    private boolean hasLoginCookie(int idx) {
+        for (String[] c : LOGIN_COOKIES) {
+            if (!c[0].equals(CHAINS[idx][1])) continue;
+            String jar = CookieManager.getInstance().getCookie(CHAINS[idx][2]);
+            return jar != null && (";" + jar.replace(" ", "")).contains(";" + c[1] + "=");
+        }
+        return false;
+    }
+
+    /** Вход есть (узнали сами или нажато «Я вошёл»): сохранить и сказать, что можно возвращаться. */
+    private void loginFound() {
+        if (loginSaved || currentChain < 0) return;
+        loginSaved = true;              // say() красит строку зелёным, пока вход сохранён
+        if (!saveLogin()) {
+            loginSaved = false;
+            return;
+        }
+        handler.removeCallbacks(loginWatch);
+        chainPanel.setBackgroundColor(0xFFE8F5EC);  // --green-soft из phone.css
+        loginDoneBtn.setText("Готово");
+        loginDoneBtn.setBackgroundTintList(ColorStateList.valueOf(0xFFD4F24A));  // --lime: главное действие
+    }
+
+    /** «Готово»: в «Настройки», где сеть уже среди подключённых. */
+    private void finishLogin() {
+        if (currentChain < 0) return;
+        openOurApp("/phone/settings?saved=connected&store=" + CHAINS[currentChain][1]);
     }
 
     // ── Личные акции ──
@@ -6378,7 +6588,7 @@ public class MainActivity extends Activity {
     private void say(String text, boolean bad) {
         if (chainStatus == null) return;
         chainStatus.setText(text);
-        chainStatus.setTextColor(bad ? 0xFFB71C1C : Color.DKGRAY);
+        chainStatus.setTextColor(bad ? 0xFFB71C1C : loginSaved ? 0xFF17703A : Color.DKGRAY);
     }
 
     private static byte[] readAll(InputStream is) throws java.io.IOException {

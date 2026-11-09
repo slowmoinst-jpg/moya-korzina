@@ -1,5 +1,5 @@
-// cartapi.js — корзина сетей (Перекрёсток, Пятёрочка, Дикси) собственными запросами сети.
-// Встроен в APK «Моей корзины» 1.24 (09.11.2026).
+// cartapi.js — корзина сетей (Перекрёсток, Пятёрочка, Дикси, Магнит) собственными запросами сети.
+// Встроен в APK «Моей корзины» 1.24 (09.11.2026), Магнит — с 1.26.
 // Вызывается из MainActivity.java в скрытом WebView-окне фоновой сборки.
 
 var KZ_CARTAPI = (function () {
@@ -180,12 +180,13 @@ var KZ_CARTAPI = (function () {
     return method + ' ' + p + ' ' + res.status + ' ' + res.ms + 'ms';
   }
 
-  /** Причина отказа сети: detail.message (Пятёрочка), error.message или error.code (Перекрёсток). */
+  /** Причина отказа сети: detail.message (Пятёрочка), error.message или error.code (Перекрёсток), message (Магнит). */
   function errText(res) {
     var j = res.json || {};
     var e = j.error || {};
     if (e.code === 'OUT_OF_STOCK') return 'нет в наличии';
-    return (j.detail && j.detail.message) || e.message || e.code || res.text.slice(0, 80);
+    return (j.detail && j.detail.message) || e.message || e.code
+      || (typeof j.message === 'string' && j.message) || res.text.slice(0, 80);
   }
 
   /**
@@ -375,20 +376,15 @@ var KZ_CARTAPI = (function () {
       return out;
     }
 
-    if (chain !== 'perekrestok' && chain !== 'pyaterochka' && chain !== 'dixy') {
+    var runners = { perekrestok: runPerekrestok, pyaterochka: runPyaterochka, dixy: runDixy, magnit: runMagnit };
+    if (!Object.prototype.hasOwnProperty.call(runners, chain)) {
       return makeFail('chain', 0, 'неизвестная сеть ' + chain);
     }
 
     stats = { requests: 0, paced: 0 };
     var res;
     try {
-      if (chain === 'perekrestok') {
-        res = await runPerekrestok(input, linesIn, pauseMs, burst, tStart, makeFail);
-      } else if (chain === 'pyaterochka') {
-        res = await runPyaterochka(input, linesIn, pauseMs, burst, tStart, makeFail);
-      } else {
-        res = await runDixy(input, linesIn, pauseMs, burst, tStart, makeFail);
-      }
+      res = await runners[chain](input, linesIn, pauseMs, burst, tStart, makeFail);
     } catch (err) {
       res = makeFail('js', 0, 'cartapi.js: ' + (err && err.message ? err.message : String(err)));
     }
@@ -1217,13 +1213,248 @@ var KZ_CARTAPI = (function () {
     };
   }
 
+  // --- Адаптер Магнита (APK 1.26) ---
+  // Протокол — из кода сайта magnit.ru (09.11.2026) и замеров на эмуляторе 18.10.2026:
+  // GET /webgate/v1/carts/lite — корзина (items[]: goodId, offerId, qnty);
+  // PUT того же адреса {items:[{goodId, offerId, qnty}]} СТАВИТ число названным позициям,
+  // прочие не трогает, в ответе корзина целиком (app/phonecart.py, QTY_SETS и FULL_CART);
+  // DELETE того же адреса очищает корзину ЦЕЛИКОМ — его не зовём никогда.
+  // Вход живёт в куке mg_at минуты три, сайт на 401 зовёт POST /_auth/refresh и повторяет.
+  // Заголовки сайта (x-service, x-store-code, устройство, версия) — из образца, выученного
+  // касанием (tpl.magnit): без него сборка уходит на касания и выучит его там.
+  var MAGNIT_CART = '/webgate/v1/carts/lite';
+  var MAGNIT_PREVIEW = '/webgate/v1/checkout/preview';
+  var MAGNIT_OUT = /unavailable|out_?of_?stock|not_?available|sold_?out/i;
+
+  /**
+   * Корзина Магнита из ответа carts/lite (чтение и запись отдают её целиком). Весовой товар
+   * лежит долями (0,4 кг) — такие артикулы в frac: упаковками их не поставить.
+   */
+  function magnitParse(json) {
+    if (!json || !Array.isArray(json.items)) return null;
+    var cart = {};
+    var frac = {};
+    for (var i = 0; i < json.items.length; i++) {
+      var it = json.items[i];
+      var id = it && (it.goodId != null ? it.goodId : it.offerId);
+      if (id == null || id === '') continue;
+      var sku = String(id);
+      var q = parseFloat(it.qnty) || 0;
+      if (q !== Math.round(q)) frac[sku] = true;
+      cart[sku] = (cart[sku] || 0) + (q > 0 ? Math.max(1, Math.round(q)) : 0);
+    }
+    return { cart: cart, frac: frac };
+  }
+
+  /**
+   * Итог и наличие из оформления Магнита (checkout/preview сверен со страницей корзины
+   * 17.10.2026, app/phonecart.py API_TOTALS). Суммы в копейках; доставка — строки
+   * summary.prices с «доставк» в названии, остальное сверх товаров телефон покажет сборкой.
+   * Позиции, которых нет в магазине, лежат под ключами вроде unavailableItems или с available: false.
+   * shortcut: цен позиций не берём — prices.totalFinalPrice строки не сверен (за строку или
+   * за штуку); цены Магнита серверу и так даёт каталог.
+   */
+  function magnitPreview(json, skus) {
+    var s = json && json.summary;
+    if (!s || typeof s.totalFinalPrice !== 'number') return null;
+    var delivery = 0;
+    var rows = [].concat(s.prices || [], s.additionalPrices || []);
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r && typeof r.value === 'number' && /доставк/i.test(String(r.title || ''))) delivery += r.value;
+    }
+    var base = parseFloat(s.totalBasePrice) || 0;
+    var goods = parseFloat(s.itemsTotalSalePrice) || 0;
+    var gone = {};
+    (function walk(o, under, d) {
+      if (!o || typeof o !== 'object' || d > 8) return;
+      var id = o.goodId != null ? o.goodId : o.offerId;
+      if (id != null && skus[String(id)] && o.available === false) gone[String(id)] = true;
+      for (var k in o) {
+        if (!Object.prototype.hasOwnProperty.call(o, k)) continue;
+        var v = o[k];
+        if (under && (typeof v === 'string' || typeof v === 'number') && skus[String(v)]) gone[String(v)] = true;
+        else if (v && typeof v === 'object') walk(v, under || MAGNIT_OUT.test(k), d + 1);
+      }
+    })(json, false, 0);
+    return {
+      total: {
+        amount: s.totalFinalPrice / 100,
+        goods: goods / 100,
+        base: base / 100,
+        discount: Math.max(0, base - goods) / 100,
+        delivery: delivery / 100,
+        count: parseInt(s.itemsCount, 10) || 0,
+        path: MAGNIT_PREVIEW
+      },
+      gone: gone
+    };
+  }
+
+  async function runMagnit(input, linesIn, pauseMs, burst, tStart, makeFail) {
+    var th = input.tpl && input.tpl.h;
+    if (!th || typeof th !== 'object' || !Object.keys(th).length) {
+      return makeFail('tpl', 0, 'Магнит: запрос сети ещё не выучен');
+    }
+    // Магазин и устройство — из свежих кук: человек мог сменить адрес после урока.
+    var base = {};
+    for (var hk in th) {
+      if (!Object.prototype.hasOwnProperty.call(th, hk)) continue;
+      var lk = hk.toLowerCase();
+      if (/^(content-type|content-length|cookie|host|origin|referer|user-agent|accept-encoding|connection)$/.test(lk)) continue;
+      base[lk] = String(th[hk]);
+    }
+    // Куки в кавычках JSON: shopCode=%22992301%22 (замер 20.09.2026, app/shopbrowser/point.py).
+    function cookieText(name) {
+      var v = getCookie(name);
+      return v ? decodeURIComponent(v).replace(/^"|"$/g, '') : '';
+    }
+    var shop = cookieText('shopCode');
+    if (shop) base['x-store-code'] = shop;
+    var udi = cookieText('mg_udi');
+    if (udi) base['x-device-id'] = udi;
+    base['x-magnit-bff'] = '1';
+
+    function headers(hasBody) {
+      var h = {};
+      for (var k in base) h[k] = base[k];
+      if (hasBody) h['content-type'] = 'application/json';
+      return h;
+    }
+
+    // Запрос с одним обновлением входа на 401 за сборку, как делает сам сайт.
+    var refreshed = false;
+    async function call(method, url, body) {
+      await pace(pauseMs, burst);
+      var res = await httpReq(method, url, headers(body != null), body);
+      if (res.status === 401 && !refreshed) {
+        refreshed = true;
+        await pace(pauseMs, burst);
+        var rf = await httpReq('POST', '/_auth/refresh', { 'x-magnit-bff': '1', 'content-type': 'application/json' });
+        if (rf.status >= 200 && rf.status < 300 && rf.json && rf.json.authorized === true) {
+          await pace(pauseMs, burst);
+          res = await httpReq(method, url, headers(body != null), body);
+        }
+      }
+      return res;
+    }
+
+    var initRes = await call('GET', MAGNIT_CART);
+    if (initRes.status === 401) return makeFail('auth', 401, 'Магнит: нет входа на сайте сети');
+    if (initRes.status === 0) return makeFail('net', 0, 'Магнит: обрыв сети');
+    var parsed = initRes.status < 400 ? magnitParse(initRes.json) : null;
+    if (!parsed) return makeFail('read', initRes.status, 'Магнит: корзина не читается');
+    var lastCart = parsed.cart;
+
+    var linesRes = {};
+    var opsLines = [];
+    for (var i = 0; i < linesIn.length; i++) {
+      var s = String(linesIn[i].sku || '');
+      // Весовой (лежит долями) — касаниями: запрос ставит число упаковок, а не вес.
+      if (!/^\d+$/.test(s) || parsed.frac[s]) linesRes[s] = { retry: true };
+      else opsLines.push(linesIn[i]);
+    }
+    var plan = ops(lastCart, opsLines, input.mine, input.want, input.drop);
+    for (var ki = 0; ki < plan.kept.length; ki++) {
+      var kSku = plan.kept[ki];
+      linesRes[kSku] = { ok: true, how: 'kept', put: 0, q: lastCart[kSku] || 0, price: 0, gone: false, retry: false, why: '', calls: [] };
+    }
+
+    // Позиции и своё лишнее — одним запросом; снятие до нуля — отдельным: что qnty 0
+    // убирает строку, не замерено, и его отказ не должен сорвать остальное. Весовое
+    // своё лишнее снимается только целиком: долю упаковками не поставить.
+    var inSet = {};
+    for (var si = 0; si < plan.set.length; si++) inSet[plan.set[si].sku] = true;
+    var drops = plan.drops.filter(function (d) { return !inSet[d.sku] && !(parsed.frac[d.sku] && d.to > 0); });
+    var zeroOps = drops.filter(function (d) { return d.to === 0; });
+    var setOps = plan.set.concat(drops.filter(function (d) { return d.to > 0; }));
+
+    function body(list) {
+      return JSON.stringify({ items: list.map(function (op) { return { goodId: op.sku, offerId: op.sku, qnty: op.to }; }) });
+    }
+
+    // Один PUT на список; ответ — вся корзина, не разобрали его — перечитываем.
+    async function put(list) {
+      var r = await call('PUT', MAGNIT_CART, body(list));
+      var res = { status: r.status, why: '', calls: [formatCall('PUT', MAGNIT_CART, r)] };
+      if (r.status < 200 || r.status >= 300) {
+        res.why = r.status ? 'сеть ответила ' + r.status + ': ' + errText(r) : 'обрыв сети';
+        return res;
+      }
+      var p = magnitParse(r.json);
+      if (!p) {
+        var again = await call('GET', MAGNIT_CART);
+        p = again.status >= 200 && again.status < 300 ? magnitParse(again.json) : null;
+      }
+      if (p) lastCart = p.cart;
+      else res.why = 'ответ на запись не распознан';
+      return res;
+    }
+
+    // Запись не принята — образец устарел или сеть не пускает: сборка уходит на касания, они
+    // и выучат запрос заново. По одной не перебираем: сайт сам шлёт корзину целиком.
+    if (setOps.length) {
+      var setRes = await put(setOps);
+      if (setRes.why) {
+        var stage = setRes.status === 401 ? 'auth' : (setRes.status ? 'write' : 'net');
+        return makeFail(stage, setRes.status, 'Магнит: ' + setRes.why, lastCart);
+      }
+      for (var oi = 0; oi < plan.set.length; oi++) {
+        var op = plan.set[oi];
+        var q = lastCart[op.sku] || 0;
+        var landed = q >= op.to;
+        linesRes[op.sku] = {
+          ok: landed, how: 'request', put: Math.max(0, q - op.from), q: q, price: 0, gone: false, retry: false,
+          why: landed ? '' : (q > op.from ? 'сеть положила ' + q + ' из ' + op.to : 'сеть не положила'),
+          calls: setRes.calls
+        };
+      }
+    }
+    if (zeroOps.length) await put(zeroOps);   // отказ снятия положенному не мешает
+    var dropped = 0;
+    for (var dj = 0; dj < drops.length; dj++) {
+      dropped += Math.max(0, drops[dj].from - Math.max(drops[dj].to, lastCart[drops[dj].sku] || 0));
+    }
+
+    // Итог и наличие — из оформления; не ответило — без итога, позиции уже лежат.
+    var total = null;
+    var known = {};
+    for (var ls in linesRes) known[ls] = true;
+    for (var cs in lastCart) known[cs] = true;
+    var prev = await call('GET', MAGNIT_PREVIEW);
+    var pv = prev.status >= 200 && prev.status < 300 ? magnitPreview(prev.json, known) : null;
+    if (pv) {
+      total = pv.total;
+      for (var gs in pv.gone) {
+        var lr = linesRes[gs];
+        if (lr && !lr.retry) {
+          lr.ok = false;
+          lr.gone = true;
+          lr.why = 'нет в наличии у сети';
+        }
+      }
+    }
+
+    return {
+      ok: true,
+      ms: Date.now() - tStart,
+      lines: linesRes,
+      cart: lastCart,
+      dropped: dropped,
+      total: total,
+      tpl: true
+    };
+  }
+
   return {
     ops: ops,
     run: run,
     parse: {
       perekrestok: perekParse,
       pyaterochka: pyatParse,
-      dixy: dixyParse
+      dixy: dixyParse,
+      magnit: magnitParse,
+      magnitPreview: magnitPreview
     }
   };
 })();

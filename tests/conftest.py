@@ -71,3 +71,11 @@ def no_background_linking(monkeypatch):
     from app.catalog import link
 
     monkeypatch.setattr(link, "link_soon", lambda phone, sync=False: False)
+
+
+@pytest.fixture(autouse=True)
+def no_warm_delay(monkeypatch):
+    """Прогрев «Где дешевле» в тестах не ждёт затишья: иначе его поток просыпался бы в чужом тесте."""
+    from app.web.phone import cheaper
+
+    monkeypatch.setattr(cheaper, "WARM_DELAY_SEC", 0)

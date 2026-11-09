@@ -1305,3 +1305,68 @@ details.menu[open] .menu-pop {
   animation: kz-spin .9s linear infinite;
 }
 @keyframes kz-spin { to { transform: rotate(360deg); } }
+
+/* Вход в сеть (phone/connect.html) */
+.connect-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+.connect-head .lg {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  font: 800 22px/1 'Manrope', system-ui, sans-serif;
+}
+.connect-head .title {
+  margin: 0;
+}
+.connect-steps {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+.connect-step {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px 6px;
+  background: var(--card);
+  border: 1px solid var(--line2);
+  border-radius: 12px;
+  min-height: 84px;
+  text-align: center;
+}
+.connect-step .step-num {
+  font: 700 12px/1 'Unbounded', system-ui, sans-serif;
+  color: var(--ink2);
+}
+.connect-step .i {
+  width: 22px;
+  height: 22px;
+  color: var(--ink);
+}
+.connect-step .step-text {
+  font: 700 13px/1.2 'Manrope', system-ui, sans-serif;
+  color: var(--ink);
+}
+.connect-head ~ .cta,
+.connect-steps ~ .cta {
+  justify-content: center;
+}
+.connect-server {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  text-align: center;
+}
+@media (hover: hover) {
+  .connect-server:hover {
+    color: var(--ink);
+  }
+}

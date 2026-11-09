@@ -139,7 +139,17 @@ class VkusvillConnector(Connector):
 
         Сервер отвечает «Товар по штрих-коду не найден», когда такого у него нет:
         это не ошибка, а честный ответ, и мы его так и трактуем.
+
+        Инструмент берёт только EAN-13 (`^\\d{13}$`). GTIN-14 из чека — тот же код с ведущим
+        нулём, а с другой длиной сервер отвечал ошибкой, и наряд телефону ждал пустой
+        запрос (журнал 09.11.2026).
         """
+        from app.matcher.normalize import gtin   # лениво: пакет matcher сам тянет коннекторы
+
+        code = gtin(barcode)
+        if not code or code[0] != "0":
+            return None
+        barcode = code[1:]
         answer = mcp_client.call_tool(MCP_URL, self.code, "vkusvill_product_barcode",
                                       {"barcode": barcode}, cache_key=f"barcode:{barcode}")
         item = mcp_client.ok_payload(answer)

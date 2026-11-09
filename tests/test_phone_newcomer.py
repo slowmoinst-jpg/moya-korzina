@@ -352,21 +352,20 @@ def test_the_demo_line_is_on_every_phone_screen_and_leads_to_a_real_login(web):
 
 
 def test_a_phone_browser_is_told_that_stores_connect_in_the_android_app(web):
-    """В браузере «Подключить» ведёт в окно магазина на сервере — сказано, где вход проще."""
+    """В браузере плитка ведёт на вход сети, для Android есть ссылка на приложение."""
     enter(web)
 
     iphone = text(web.get("/phone/settings", headers={"User-Agent": IPHONE_UA}))
-    assert "удобнее в приложении для Android" not in iphone
+    assert "Вход в магазины — в приложении" not in iphone
     assert "/static/moya-korzina.apk" not in iphone
-    assert "В браузере вход идёт через окно магазина на нашем сервере" in iphone
-    assert 'href="/cabinet?store=magnit"' in iphone, "дорога через сервер осталась"
+    assert 'href="/phone/connect/magnit"' in iphone
 
     android = text(web.get("/phone/settings", headers={"User-Agent": ANDROID_UA}))
-    assert "удобнее в приложении для Android" in android
+    assert "Вход в магазины — в приложении" in android
     assert 'href="/static/moya-korzina.apk"' in android
-    assert "В браузере вход идёт через окно магазина на нашем сервере" in android
+    assert 'href="/phone/connect/magnit"' in android
 
     app = text(web.get("/phone/settings", headers={"User-Agent": APP_UA}))
-    assert "удобнее в приложении для Android" not in app
+    assert "Вход в магазины — в приложении" not in app
     assert "/static/moya-korzina.apk" not in app
-    assert "В браузере вход идёт через окно магазина на нашем сервере" not in app
+    assert 'href="/phone/connect/magnit"' in app

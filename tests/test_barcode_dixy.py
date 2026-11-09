@@ -89,6 +89,16 @@ def test_vkusvill_finds_by_barcode(monkeypatch):
     assert found.ean == "4690228015816" and found.score == 1.0
 
 
+def test_vkusvill_is_asked_only_with_thirteen_digits(monkeypatch):
+    """Инструмент ВкусВилла берёт только EAN-13: код чека GTIN-14 — без нуля, обрывок — не спрашиваем."""
+    asked = []
+    monkeypatch.setattr(mcp_client, "call_tool", lambda *a, **k: asked.append(a[3]["barcode"]))
+    vkusvill = get_connector("vkusvill")
+    vkusvill.search_barcode("04690228015816")
+    vkusvill.search_barcode("4690228015")
+    assert asked == ["4690228015816"]
+
+
 def test_vkusvill_returns_nothing_when_store_has_no_such_code(monkeypatch):
     refusal = {"ok": False, "error": {"code": "invalid_input",
                                       "message": "Товар по штрих-коду не найден"}}

@@ -326,7 +326,8 @@ def _mark_device_connected(payload: dict) -> dict:
     gives = tuple(str(g) for g in raw_gives) if isinstance(raw_gives, list) else None
 
     if connected:
-        conn = store_accounts.mark_connected(store, account=account, gives=gives, points=points)
+        conn = store_accounts.mark_connected(store, account=account, gives=gives, points=points,
+                                             device=True)
     else:
         conn = store_accounts.forget(store)
 

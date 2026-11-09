@@ -226,7 +226,11 @@ def get_conn() -> sqlite3.Connection:
     целиком теперь означает копировать все три, иначе свежие записи останутся в журнале.
     """
     path = config.db_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # Режим WAL хранится в файле: ставим его раз за процесс на базу. Повтор стоил 0,3 мс на
+    # соединение, а наряд телефону открывает базу ~150 раз (замер на сервере 09.11.2026).
+    fresh = path not in _WAL or not os.path.exists(path)
+    if fresh:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -236,9 +240,14 @@ def get_conn() -> sqlite3.Connection:
     # потолок ниже 25 с, отведённых на сеть: ожидание не съедает весь срок.
     # Ставится ДО journal_mode: переключение в WAL само берёт короткую блокировку.
     conn.execute("PRAGMA busy_timeout = 15000")
-    conn.execute("PRAGMA journal_mode = WAL")
+    if fresh:
+        conn.execute("PRAGMA journal_mode = WAL")
+        _WAL.add(path)
     conn.execute("PRAGMA synchronous = NORMAL")
     return conn
+
+
+_WAL: set[str] = set()
 
 
 # Колонки, добавленные после первых выпусков. CREATE TABLE IF NOT EXISTS их не донесёт

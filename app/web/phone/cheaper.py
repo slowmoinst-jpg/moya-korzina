@@ -31,6 +31,10 @@ BOARD = 3
 
 _WARM_JOBS: dict[tuple[str, int], dict] = {}
 _WARM_LOCK = threading.Lock()
+# Пересчёт ждёт затишья: правка корзины разом поднимает наряды телефона на каждую сеть, и
+# расчёт в ту же секунду (0,6–1,1 с) отнимал у них процессор: процесс один, GIL (замер
+# 09.11.2026, наряд ~1 с). Вызовы за время ожидания покрывает этот же расчёт.
+WARM_DELAY_SEC = 2.0
 
 
 def warm(basket_id: int, phone: str) -> None:
@@ -54,6 +58,11 @@ def warm(basket_id: int, phone: str) -> None:
         from app.web.screens import result
 
         while True:
+            time.sleep(WARM_DELAY_SEC)
+            with _WARM_LOCK:
+                job = _WARM_JOBS.get(key)
+                if job:
+                    job["again"] = False
             try:
                 users.open_workspace(phone)
                 try:

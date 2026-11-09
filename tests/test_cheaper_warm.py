@@ -131,6 +131,8 @@ def test_cheaper_screen_with_going_row_shows_building_and_meta_refresh(tmp_path,
     cartrun.save(row)
     users.deactivate()
 
+    # Без настоящей работы по ценам: её поток переживал тест и звал warm(1, PHONE) в чужом.
+    monkeypatch.setattr(cheaper, "start_prices", lambda basket_id, items: None)
     resp = client.get("/phone/cheaper")
     assert resp.status_code == 200
     html = resp.data.decode("utf-8")

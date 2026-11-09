@@ -1,9 +1,8 @@
 {# Настройки на телефоне — Светлое табло (DESIGN.md, 04.11.2026): сначала сколько магазинов
    подключено и плитки тех, кого осталось подключить; подключённые — одной строкой на сеть
    вместе с её сборкой корзины, «Отключить вход» под ⋯; чеки ФНС, внизу телефон и адрес —
-   их задают один раз. «Подключить» внутри приложения открывает сайт сети у самого
-   телефона (вход — номер, код из СМС, капча — человек делает сам), вне приложения ведёт
-   в окно магазина на сервере. #}
+   их задают один раз. Плитка ведёт на вход сети: в приложении — сразу в сеть, в браузере —
+   на страницу подключения. #}
 {% extends 'phone/base.html' %}
 {% from 'phone/_icons.html' import icon, mark %}
 {% block title %}Настройки — Моя корзина{% endblock %}
@@ -25,6 +24,9 @@
   {% if saved == 'disconnected' %}
     <div class="note ok">{% if disconnected_name %}Вход в «{{ disconnected_name }}» отключён.{% else %}Вход отключён.{% endif %} На этом телефоне сеть может помнить вход, пока не выйдете в её окне.</div>
   {% endif %}
+  {% if connected_name %}
+    <div class="note ok">Подключено: {{ connected_name }}</div>
+  {% endif %}
   {% if no_stores %}
     <div class="note">Магазины не настроены — в приложении пока нет ни одной сети.</div>
   {% elif first_run %}
@@ -40,15 +42,12 @@
     <div class="bar" aria-hidden="true"><span style="width: {{ ((connected|length) * 100 / (stores|length)) if stores else 0 }}%"></span></div>
     {% if waiting %}
       <div class="lt num">Осталось подключить · {{ waiting|length }}</div>
-      {% if not device_app %}
-        {# Вне приложения «Подключить» ведёт в окно магазина на сервере (/cabinet): страница
-           для компьютера, и часть сетей серверный браузер не пускает. Знакомому с телефоном
-           сразу сказано, где вход идёт как обычно, — дорога через сервер при этом остаётся. #}
-        <div class="note">{% if 'Android' in (request.headers.get('User-Agent') or '') %}Входить в магазины удобнее в приложении для Android: сайт магазина откроется у вас на телефоне. <a href="{{ url_for('apk.download') }}">Скачать приложение</a>. {% endif %}В браузере вход идёт через окно магазина на нашем сервере, и часть сетей его не пускает.</div>
+      {% if not device_app and 'Android' in (request.headers.get('User-Agent') or '') %}
+        <div class="note act"><span>Вход в магазины — в приложении</span><a class="bt" href="{{ url_for('apk.download') }}">Скачать</a></div>
       {% endif %}
       <div class="wg">
         {% for s in waiting %}
-          <a class="wt" href="/cabinet?store={{ s.code }}" data-open-store="{{ s.code }}"
+          <a class="wt" href="{{ url_for('phone.connect', code=s.code) }}" data-open-store="{{ s.code }}" data-login
              {% if not s.again %}aria-label="Подключить: {{ s.name }}"{% endif %}>
             {{ mark(s.code, s.name) }}
             <span class="wt-name">{{ s.name }}</span>
@@ -84,7 +83,11 @@
               {% endif %}
             </span>
             {% if b and b.act %}
-              <a class="bt" href="/cabinet?store={{ s.code }}" data-open-store="{{ s.code }}">{{ 'Выбрать' if b.act == 'store' else 'Войти' }}</a>
+              {% if b.act == 'store' %}
+                <a class="bt" href="/cabinet?store={{ s.code }}" data-open-store="{{ s.code }}">Выбрать</a>
+              {% else %}
+                <a class="bt" href="{{ url_for('phone.connect', code=s.code) }}" data-open-store="{{ s.code }}" data-login>Войти</a>
+              {% endif %}
             {% endif %}
             <details class="menu">
               <summary class="ib" aria-label="Ещё: {{ s.name }}">{{ icon('more') }}</summary>
@@ -170,12 +173,16 @@
 {% endblock %}
 {% block actions %}
   <script>
-    /* «Подключить» внутри приложения: сайт сети открывается у телефона, вход человек
-       проходит сам. Вне приложения ссылка ведёт в окно магазина на сервере. */
+    /* Вход в сеть внутри приложения: сайт открывается на телефоне, приложение ловит вход
+       и сообщает о подключении. Вне приложения ссылка ведёт на страницу входа сети. */
     document.addEventListener('click', function (e) {
       var link = e.target.closest('[data-open-store]');
-      if (link && window.KorzinaDevice && KorzinaDevice.openStore(link.getAttribute('data-open-store'))) {
-        e.preventDefault();
+      if (link && window.KorzinaDevice) {
+        var code = link.getAttribute('data-open-store');
+        var ok = link.hasAttribute('data-login') ? KorzinaDevice.login(code) : KorzinaDevice.openStore(code);
+        if (ok) {
+          e.preventDefault();
+        }
       }
     });
   </script>

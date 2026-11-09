@@ -36,6 +36,7 @@ JAVA = os.path.join(ROOT, "android", "app", "app", "src", "main", "java",
 SAFE = {
     "info": 'return "{}";',
     "openStore": "return false;",
+    "login": "return false;",
     "openApp": "return;",
     "openFns": "return;",
     "collect": 'return "{}";',

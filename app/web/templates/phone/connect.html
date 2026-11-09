@@ -1,0 +1,57 @@
+{# Вход в сеть на телефоне: крупная метка сети, заголовок и прямое действие.
+   В приложении — кнопка входа, в Android-браузере — шаги и ссылка на APK,
+   в остальных браузерах — заметка и переход в кабинет на сервере. #}
+{% extends 'phone/base.html' %}
+{% from 'phone/_icons.html' import icon, mark %}
+{% block title %}{{ name }} — Моя корзина{% endblock %}
+{% block body %}
+  <a class="back" href="{{ url_for('phone.settings') }}">{{ icon('back') }}Настройки</a>
+
+  <div class="connect-head">
+    {{ mark(code, name) }}
+    <h1 class="title">{{ name }}</h1>
+  </div>
+
+  {% if device_app %}
+    <a class="cta" href="/cabinet?store={{ code }}" data-open-store="{{ code }}" data-login>Войти · {{ name }}</a>
+  {% elif android %}
+    <div class="connect-steps" aria-label="Шаги подключения">
+      <div class="connect-step">
+        <span class="step-num">1</span>
+        {{ icon('down') }}
+        <span class="step-text">Скачать</span>
+      </div>
+      <div class="connect-step">
+        <span class="step-num">2</span>
+        {{ icon('phone') }}
+        <span class="step-text">Открыть</span>
+      </div>
+      <div class="connect-step">
+        <span class="step-num">3</span>
+        {{ icon('check') }}
+        <span class="step-text">Войти</span>
+      </div>
+    </div>
+    <a class="cta" href="{{ url_for('apk.download') }}">Скачать приложение</a>
+    <a class="mut small connect-server" href="/cabinet?store={{ code }}">Без приложения — окно на сервере</a>
+  {% else %}
+    <div class="note">Приложение пока только для Android.</div>
+    <a class="cta" href="/cabinet?store={{ code }}">Открыть окно входа</a>
+  {% endif %}
+{% endblock %}
+{% block actions %}
+  <script>
+    /* Вход в сеть внутри приложения: сайт открывается на телефоне, приложение ловит вход
+       и сообщает о подключении. Вне приложения ссылка ведёт на страницу входа сети. */
+    document.addEventListener('click', function (e) {
+      var link = e.target.closest('[data-open-store]');
+      if (link && window.KorzinaDevice) {
+        var code = link.getAttribute('data-open-store');
+        var ok = link.hasAttribute('data-login') ? KorzinaDevice.login(code) : KorzinaDevice.openStore(code);
+        if (ok) {
+          e.preventDefault();
+        }
+      }
+    });
+  </script>
+{% endblock %}
