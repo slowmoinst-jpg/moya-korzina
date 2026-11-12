@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime, timedelta
 from typing import Iterable
 
@@ -267,12 +268,16 @@ def connect() -> sqlite3.Connection:
     # Каталог пишет фоновый процесс, читает интерфейс — WAL даёт им не мешать друг другу.
     # Режим живёт в файле: раз за процесс, повтор стоил 0,3 мс на соединение (app/db.get_conn).
     if fresh:
-        conn.execute("PRAGMA journal_mode = WAL")
+        # Двое разом на новой базе получают «database is locked» сразу, мимо timeout: по очереди
+        # (подробно и про предел замка — app/db.get_conn).
+        with _WAL_LOCKS.setdefault(file, threading.Lock()):
+            conn.execute("PRAGMA journal_mode = WAL")
         _WAL.add(file)
     return conn
 
 
 _WAL: set[str] = set()
+_WAL_LOCKS: dict[str, threading.Lock] = {}
 
 
 # Колонки, добавленные после первых выпусков: CREATE TABLE IF NOT EXISTS до уже
@@ -320,7 +325,11 @@ def init() -> None:
         for table, column, kind in LATE_COLUMNS:
             have = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             if column not in have:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+                except sqlite3.OperationalError as err:
+                    if "duplicate column name" not in str(err):     # второй поток добавил её первым
+                        raise
         for ddl in LATE_INDEXES:
             conn.execute(ddl)
         _migrate(conn)
@@ -350,6 +359,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version >= SCHEMA_VERSION:
         return
+    if not conn.in_transaction:
+        # Пишущая транзакция сразу, версия читается заново: второй вход, прождав очереди, видит готовую
+        # версию и не повторяет шаги. Шаг 2 не идемпотентен: цену развесной Ленты он пересчитал бы дважды.
+        conn.execute("BEGIN IMMEDIATE")
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version >= SCHEMA_VERSION:
+            return                  # init() закроет пустую транзакцию
     if version < 1:
         from app.db import FALSE_KG_CHAINS
         from app.matcher.normalize import sold_by_weight

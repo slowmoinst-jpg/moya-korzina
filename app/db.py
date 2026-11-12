@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import threading
 from typing import Iterable
 
 from app import config
@@ -241,13 +242,19 @@ def get_conn() -> sqlite3.Connection:
     # Ставится ДО journal_mode: переключение в WAL само берёт короткую блокировку.
     conn.execute("PRAGMA busy_timeout = 15000")
     if fresh:
-        conn.execute("PRAGMA journal_mode = WAL")
+        # Двое разом на новой базе: оба читают, оба хотят писать, и SQLite отвечает одному
+        # «database is locked» сразу, не вызывая busy_timeout (иначе они ждали бы друг друга вечно).
+        # Замок свой на каждую базу: чужая новая база не ждёт, пока эта одолеет чужую блокировку.
+        # shortcut: замок один на процесс, два процесса на новой базе он не разводит — тогда нужен повтор.
+        with _WAL_LOCKS.setdefault(path, threading.Lock()):
+            conn.execute("PRAGMA journal_mode = WAL")
         _WAL.add(path)
     conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 
 _WAL: set[str] = set()
+_WAL_LOCKS: dict[str, threading.Lock] = {}
 
 
 # Колонки, добавленные после первых выпусков. CREATE TABLE IF NOT EXISTS их не донесёт
@@ -287,7 +294,13 @@ def _add_late_columns(conn: sqlite3.Connection) -> None:
     for table, column, kind in LATE_COLUMNS:
         have = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in have:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+            except sqlite3.OperationalError as err:
+                # Ту же базу открывал второй поток и добавил колонку первым (вход и фоновый сбор
+                # цен разом): под нагрузкой вход падал с ошибкой 500 (тесты, 11.11.2026).
+                if "duplicate column name" not in str(err):
+                    raise
 
 
 def _add_late_indexes(conn: sqlite3.Connection) -> None:
@@ -316,6 +329,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     решения, принятые по сегодняшним данным, а не по тем, ради которых шаг писался.
     """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version < SCHEMA_VERSION and not conn.in_transaction:
+        # Пишущая транзакция сразу, а не «прочёл, потом записал»: двое разом брали снимок базы, один
+        # записывал первым, и второй получал «database is locked» без ожидания (12.11.2026, вход новичка).
+        # Так второй ждёт своей очереди по busy_timeout и после неё видит уже готовую версию.
+        conn.execute("BEGIN IMMEDIATE")
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version < 1:
         _migrate_false_kg(conn)
     if version < 2:
