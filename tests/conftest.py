@@ -18,6 +18,8 @@ monkeypatch», — но держалось оно на внимательнос�
 from __future__ import annotations
 
 import socket
+import threading
+import warnings
 
 import pytest
 
@@ -79,3 +81,39 @@ def no_warm_delay(monkeypatch):
     from app.web.phone import cheaper
 
     monkeypatch.setattr(cheaper, "WARM_DELAY_SEC", 0)
+
+
+# Фоновые работы, которые кончаются сами и открывают рабочее место человека в своём потоке:
+# прогрев «Где дешевле», расчёт корзины, поиск позиций, загрузка из ФНС, сдача корзины в сетях,
+# сбор цен и передача корзины человеку. Остальные потоки (`korzina-api`, `pricewatch`) живут, пока
+# жив процесс, и ждать их нельзя.
+_BACKGROUND = ("cheaper-warm-", "korzina-", "link-", "fns-sync", "cartrun-", "prices-", "handover-")
+_FOREVER = {"korzina-api"}
+_GAVE_UP: set[threading.Thread] = set()     # кого не дождались, второй раз не ждём: каждый тест платил бы таймаут
+
+
+@pytest.fixture(autouse=True)
+def wait_for_background_threads(monkeypatch, request):
+    """Фоновые потоки теста кончаются до отката его подмен путей (12.11.2026).
+
+    Поток, переживший тест, читает `users.USERS_DIR` и `config.ROOT` в момент вызова: после отката
+    это настоящая папка данных, а в следующем тесте с тем же номером телефона он открывал свежую базу
+    рядом со входом и ломал его («database is locked» в `tests/test_phone_newcomer.py`). Так же в
+    `data/users` попали папки тестовых номеров 7999000*.
+
+    `monkeypatch` в списке ради порядка: фикстура, зависящая от него, закрывается раньше, чем он
+    откатит подмены, то есть поток досчитывает ещё на путях теста.
+    """
+    yield
+    for _ in range(5):      # заново после каждого круга: ждомый поток мог запустить следующий (например, прогрев)
+        pending = [t for t in threading.enumerate()
+                   if t.name.startswith(_BACKGROUND) and t.name not in _FOREVER
+                   and t is not threading.current_thread() and t not in _GAVE_UP]
+        if not pending:
+            return
+        for thread in pending:
+            thread.join(timeout=10)
+            if thread.is_alive():
+                _GAVE_UP.add(thread)
+                warnings.warn(f"поток {thread.name} не кончился за 10 с после {request.node.nodeid}",
+                              RuntimeWarning, stacklevel=2)
