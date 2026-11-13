@@ -79,23 +79,11 @@ DOUBTFUL = "doubtful"        # ответ поиска «есть, но угад
 ROWS_LIMIT = 40              # строк сетей одного товара, по которым судим
 SLEEP_DAYS = 14              # сколько спящий номер держит привязку без перепоиска
 
-# Слова, которыми названия одного товара в разных сетях расходятся, НЕ делая его
-# другим: способ обработки молока и обязательные надписи. «Молоко Простоквашино 2,5 %
-# 930 мл» и «Молоко пастеризованное ПРОСТОКВАШИНО 2,5 %, без змж, 930 мл» — одна
-# покупка. Вкус, сорт и добавки сюда не входят никогда: «Йогурт Активиа 2,9 %» и
-# «Йогурт Активиа клубника 2,9 %» — разные (критика проекта 17.10.2026).
-# «Ультрапастеризованное» — нет: это другой товар с другим сроком и в другой таре, и
-# «Молоко 930 мл» с «ультрапастеризованным 950 г» сильно связываться не должно.
-# Тара и надписи (ПЭТ, БЗМЖ) убираются ещё в match.prepare (match.NOISE).
-DESCRIPTORS = frozenset(matching.fold(w) for w in (
-    "пастеризованное", "пастеризованный", "пастеризованная",
-    "питьевое", "питьевой", "питьевая",
-    "отборное", "отборный", "отборная", "охлажденное", "охлажденный", "охлажденная"))
-# Сорт, о котором чек обычно молчит. Сокращение чека, не покрывшее такое слово, —
-# связь, но слабая: полное название с тем же лишним словом тоже даёт только слабую.
-SORT_WORDS = frozenset(matching.fold(w) for w in (
-    "натуральное", "натуральный", "натуральная", "классическое", "классический",
-    "классическая", "традиционное", "традиционный", "традиционная"))
+# Слова, которыми названия одного товара расходятся, не делая его другим (способ обработки,
+# родовое слово, сорт), определены в match: их же знает вложение по своду письма в same_product.
+DESCRIPTORS = matching.DESCRIPTORS
+GENERIC_HEADS = matching.GENERIC_HEADS
+SORT_WORDS = matching.SORT_WORDS
 # Двухбуквенные слова, которые сокращением не считаются: единицы («мл», «шт») и шум.
 _ABBREV_SKIP = frozenset(matching.fold(w) for w in matching._UNIT_TOKENS) | matching.NOISE
 # Точка между буквами в строке чека — сокращение, а не конец предложения.
@@ -256,8 +244,13 @@ def _prep(row: dict, receipt: bool = False) -> matching.Row:
 
 
 def _same_negation(a: str, b: str) -> bool:
-    """Слова не спорят словами: равны или одно — начало другого с учётом отрицания."""
-    if a == b:
+    """Слова не спорят словами: равны или одно — начало другого с учётом отрицания.
+
+    Слова здесь от трёх букв (_significant), поэтому «газ» — начало «газированный»: после склейки
+    «С/ГАЗ» стало «газированный», а строка «ГАЗ» того же display_name осталась «газ», и товар
+    терял все строки (ревью 13.11.2026). Отрицание начало не считается: «негаз» не начинается с «газ».
+    """
+    if a == b or a.startswith(b) or b.startswith(a):
         return True
     na, nb = _negation(a), _negation(b)
     return bool(na and nb and (na.startswith(nb) or nb.startswith(na)))
@@ -456,7 +449,7 @@ def _judge(mine: matching.Row, cand: matching.Row, vocab: frozenset[str]
         # Вложение, где лишние слова — только описание обработки: тот же товар, если
         # фасовка та же. Всё прочее вложение — слабая связь.
         small, big = sorted((mine.fwords, cand.fwords), key=len)
-        if close and small < big and (big - small) <= DESCRIPTORS:
+        if close and small < big and (big - small) <= (DESCRIPTORS | GENERIC_HEADS):
             return True, 0.9, "words"
         return False, score, "translit" if mine.fwords == cand.fwords else "inclusion"
     if matching.compatible(mine, cand):
@@ -482,7 +475,7 @@ def _numbers_disagree(mine: matching.Row, cand: matching.Row) -> bool:
     if mine.pct is None or cand.pct is not None:
         return False
     ours, theirs = x5.numbers(mine.name), x5.numbers(cand.name)
-    return bool(ours and theirs) and ours != theirs
+    return bool(ours and theirs) and not matching.numbers_agree(ours, theirs)
 
 
 def _agrees(person: list[matching.Row], cand: matching.Row) -> bool:

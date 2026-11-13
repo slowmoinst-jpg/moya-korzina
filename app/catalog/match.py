@@ -17,6 +17,8 @@
      обе фасовки известны и сходятся И среди общих слов есть марка. Без марки короткое
      название — это более широкий товар, а не тот же самый: «Персики» против «Персики
      консервированные 500 г» спотыкается и об это, и об единицу (весовой против штучного).
+  Во втором заходе, по своду письма, лишними могут быть только слова-описания
+  (DESCRIPTORS, SORT_WORDS, GENERIC_HEADS): вкус и начинку свод не прощает.
   Марка узнаётся по полю brand, по словарю марок всего каталога (поля brand других
   сетей) и по СЛОВАМ ЗАГЛАВНЫМИ в названии — так пишет марки Лента.
 
@@ -31,11 +33,11 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 from app import config
-from app.matcher.normalize import (gtin, gtin_trusted, normalize_name, parse_weight,
+from app.matcher.normalize import (NOISE_WORDS, gtin, gtin_trusted, normalize_name, parse_weight,
                                    sold_by_weight)
 
 UNITS = {"г", "гр", "кг", "мл", "л", "шт", "мг", "уп", "пач", "бут"}
@@ -87,6 +89,11 @@ _MULTI_TAIL = re.compile(r"[xх×*]\s*(\d{1,3})\s*шт")
 _PIECE_WORDS = (r"шт|пак(?:етик(?:ов|а|и)?|ет(?:ов|а|ы)?)?|капсул|саше|стик(?:ов|а|и)?"
                 r"|пирамид(?:ок|ки|ка)?|таблет(?:ок|ки|ка)?")
 _PIECES = re.compile(r"(?<![\d.,])(\d{1,3})\s*(?:" + _PIECE_WORDS + r")\.?(?![а-яё])")
+# «8 рулонов» — те же восемь штук, что «8шт» (замер 12.11.2026: туалетная бумага Zewa из чека не
+# склеивалась с «…3-слоя, 8шт»: у чека штук выходила одна, у сети восемь). Правило ПОСЛЕДНЕЕ:
+# в «Пакеты 60 л, 1 рулон, 20 шт» и «4 рулона х 2 уп» штуки называет другое число, а рулон —
+# мера внутри упаковки (ревью 13.11.2026).
+_ROLLS = re.compile(r"(?<![\d.,])(\d{1,3})\s*(?:рулон(?:ов|а)?|рул)\.?(?![а-яё])")
 # Названия латиницей из адреса карточки (Дикси, Монетка, Перекрёсток, Впрок) пишут
 # штуки как «2sht» или «10st», а «х» множителя — как «kh» или «h»: «4kh125g». Без
 # этого у них всегда одна штука. Только для названий без кириллицы: в русском
@@ -99,6 +106,7 @@ _MULTI_LAT = re.compile(r"(?<![\d.,])(\d{1,2})" + _LAT_X + r"\d+(?:[.,]\d+)?" + 
 _MULTI_TAIL_LAT = re.compile(r"(?:[x*]|kh|h)\s*(\d{1,3})\s*(?:sht|st(?!\s*b\b))(?![a-z])")
 _PIECES_LAT = re.compile(r"(?<![\d.,])(\d{1,3})\s*(?:sht|st(?!\s*b\b)|paketikov|paketika|pak"
                          r"|kapsul|sashe|sase|stikov|piramidok|tabletok)(?![a-z])")
+_ROLLS_LAT = re.compile(r"(?<![\d.,])(\d{1,3})\s*(?:rulonov|rulona|rulon|rul)(?![a-z])")
 
 # ЗАЧЕМ (18.10.2026, находка №5). «УП.12», «КОР. 27», «УПАКОВКА 12 БУТ», «ПАК 6»,
 # «0,5Л Х 12» читались одной штукой: слова тары выбрасывает normalize.NOISE_WORDS, а
@@ -145,11 +153,11 @@ def pack_count(name: str | None) -> int:
     """Сколько штук в упаковке по названию. Не сказано — одна."""
     text = (name or "").lower()
     if _CYRILLIC.search(text):
-        rules = (_MULTI_UNIT, _MULTI_TAIL, _PIECES, _N_WORD, _WORD_N, _TAIL_BARE, _MULTI)
+        rules = (_MULTI_UNIT, _MULTI_TAIL, _PIECES, _N_WORD, _WORD_N, _TAIL_BARE, _MULTI, _ROLLS)
         pieces = _PIECES
     else:
         rules = (_MULTI_UNIT_LAT, _MULTI_TAIL_LAT, _PIECES_LAT, _N_WORD_LAT, _WORD_N_LAT,
-                 _TAIL_BARE_LAT, _MULTI_LAT)
+                 _TAIL_BARE_LAT, _MULTI_LAT, _ROLLS_LAT)
         pieces = _PIECES_LAT
     for rx in rules:
         probe = _IN_ONE.sub(" ", text) if rx is pieces else text
@@ -207,13 +215,37 @@ VARIANT_MARKS = {
 _WITHOUT = re.compile(r"\b(?:без|bez)\s+(\w+)", re.I)
 
 
+# Диапазон жирности пишут по-разному: «3,4-4,0 %», «3.4%-4%», «3,4–4,5 %». Прежний
+# разбор брал первое число с «%» после него: из первой записи выходило 4,0, из второй 3,4,
+# и один и тот же товар расходился сам с собой (замер 12.11.2026: «Молоко Простоквашино
+# отборное 3,4-4,0 %» из чека не склеивалось с «…3.4%-4%, 930мл»). Для диапазона берём
+# верхнюю границу во всех записях, а нижнюю сверяет compatible, когда названа у обеих:
+# «3,5%-4,5%» и «3,7%-4,5%» — разные линейки (ревью 13.11.2026). «(?:%\s*)?» вместо
+# «\s*%?\s*»: два соседних «\s*» откатывались квадратично на длинной строке пробелов. Взгляд
+# назад не берёт середину числа («13.4»), но пропускает точку сокращения: в чеке «ОТБ.3.4%-4.5%»
+# перед диапазоном стоит именно она (ревью 13.11.2026).
+_PCT_NUM = r"(\d{1,2}(?:[.,]\d)?)"
+_PCT_RANGE = re.compile(rf"(?<!\d)(?<!\d[.,]){_PCT_NUM}\s*(?:%\s*)?[-–—]\s*{_PCT_NUM}\s*%")
+
+
 def parse_percent(name: str | None) -> float | None:
-    """Процент из названия: жирность, крепость. «Сметана 15 %» -> 15.0."""
-    found = _PCT.search(name or "")
+    """Процент из названия: жирность, крепость. «Сметана 15 %» -> 15.0, «3,4-4,5 %» -> 4.5."""
+    text = name or ""
+    ranged = _PCT_RANGE.search(text)
+    found = ranged or _PCT.search(text)
     if not found:
         return None
     try:
-        return float(found.group(1).replace(",", "."))
+        return max(float(g.replace(",", ".")) for g in found.groups())
+    except ValueError:
+        return None
+
+
+def parse_percent_low(name: str | None) -> float | None:
+    """Нижняя граница диапазона: «3,4-4,5 %» -> 3.4. Не диапазон — None."""
+    ranged = _PCT_RANGE.search(name or "")
+    try:
+        return float(ranged.group(1).replace(",", ".")) if ranged else None
     except ValueError:
         return None
 
@@ -306,12 +338,23 @@ def fold(text: str | None) -> str:
     # «й» часть адресов пишет удвоенным «jj» (Монетка, часть Перекрёстка:
     # «dobryjj» — это «добрый»). Замер 17.10.2026 по разбору каталога: без этого
     # такие строки не встречали кириллицу ни одной сети.
-    return s.replace("jj", "i")
+    # ЗАЧЕМ ОДИНОЧНАЯ «j» (замер 12.11.2026). Перекрёсток пишет «й» одной «j»:
+    # «gazirovannyj», «bolsoj», «majonez». Свод оставлял её, и «газированный»
+    # (gazirovannii) не равнялся gazirovannij — а это 55 тысяч слов на «yj», 26 тысяч на
+    # «oj», 24 тысячи на «ij» у самой большой сети каталога (160 тысяч строк из 343).
+    return s.replace("jj", "i").replace("j", "i")
 
 
 def fold_words(words) -> frozenset[str]:
     """Свод набора слов. Пустые после свода отбрасываем: они ничего не различают."""
     return frozenset(w for w in (fold(x) for x in words) if len(w) >= 2)
+
+
+# normalize_name роняет служебные слова («сыр», «уп», «мягкий») только по-русски: «Сыр Ламбер» даёт
+# «ламбер», а адрес карточки «syr lambert» хранит и «syr». В своде они должны уйти так же, иначе при
+# вложении «лишним» оказывается слово, которого с кириллической стороны нет по построению: «up.12» не
+# встречало «уп.12», «syr galbani …» — «Сыр Galbani …» (прогон 13.11.2026, потерянные склейки).
+_SCRIPT_NOISE = frozenset(w for w in (fold(x) for x in NOISE_WORDS) if len(w) >= 2)
 
 
 # --- ТАРА, НАДПИСИ И ОТРИЦАНИЯ: одни правила для базы и для товаров людей ------
@@ -331,6 +374,10 @@ def fold_words(words) -> frozenset[str]:
 NOISE = frozenset(fold(w) for w in (
     "пэт", "pet", "тп", "тба", "бзмж", "беззмж", "безгмо", "без",
     "весов", "весовой", "весовая", "весовое", "весовые", "жб", "стб", "плб",
+    # «со вкусом» — связка перед названием вкуса, сама товар не отличает: «Чипсы Lay's
+    # со вкусом сметана и лук» и «Чипсы Lay's сметана и лук» — один товар (замер 12.11.2026).
+    # Сам вкус («сметана», «лук») остаётся словом.
+    "вкусом",
     # СЛУЖЕБНЫЕ СЛОВА — ЭТО НЕ ТОВАР (замер 20.10.2026). Головой корзины берутся два
     # первых смысловых слова названия, и предлог «для», стоящий вторым («Смесь для…»,
     # «Корм для…»), делал корзину из 16 076 строк: перебор 129,2 млн пар — 27,7 % всей
@@ -338,6 +385,35 @@ NOISE = frozenset(fold(w) for w in (
     # от другого: у него нет смысла в названии. Тот же довод у остальных предлогов.
     "для", "из", "на", "по", "от", "до", "со", "во", "об", "при", "под", "над", "за",
 ))
+# Слова, которыми названия одного товара в разных сетях расходятся, НЕ делая его
+# другим: способ обработки молока и обязательные надписи. «Молоко Простоквашино 2,5 %
+# 930 мл» и «Молоко пастеризованное ПРОСТОКВАШИНО 2,5 %, без змж, 930 мл» — одна
+# покупка. Вкус, сорт и добавки сюда не входят никогда: «Йогурт Активиа 2,9 %» и
+# «Йогурт Активиа клубника 2,9 %» — разные (критика проекта 17.10.2026).
+# «Ультрапастеризованное» — нет: это другой товар с другим сроком и в другой таре, и
+# «Молоко 930 мл» с «ультрапастеризованным 950 г» сильно связываться не должно.
+# Тара и надписи (ПЭТ, БЗМЖ) убираются ещё в prepare (NOISE). Ими же ограничено вложение
+# по своду письма в same_product: лишнее слово там не должно быть вкусом или начинкой.
+# «Цельное» молоко и «фильтрованное» пиво — так названа обычная разновидность, о которой другая сеть
+# молчит; «нефильтрованное» — отдельное слово, и вложения с ним нет. Страна изготовителя — обязательная
+# надпись: Монетка дописывает «Россия» в конец названия, и из-за одного слова терялось ~160 пар двойников.
+DESCRIPTORS = frozenset(fold(w) for w in (
+    "пастеризованное", "пастеризованный", "пастеризованная",
+    "питьевое", "питьевой", "питьевая",
+    "отборное", "отборный", "отборная", "охлажденное", "охлажденный", "охлажденная",
+    "цельное", "фильтрованное", "россия", "беларусь"))
+# Родовое слово перед названием: «Напиток Evervess Кола» и «Evervess Кола» — один товар (замер
+# 12.11.2026). Только для ветки вложения (link._judge, same_product): в DESCRIPTORS оно выпадало
+# из слов кандидата в link._abbrev, и «Кофе Жокей» сильно связывался с «Напиток кофейный Жокей»,
+# «Сок Добрый» — с «Напиток сокосодержащий Добрый»; попав в link._NEUTRAL, оно же пропускало такие
+# пары через x5.judge (ревью 13.11.2026).
+GENERIC_HEADS = frozenset(fold(w) for w in ("напиток",))
+# Сорт, о котором чек обычно молчит. Сокращение чека, не покрывшее такое слово, —
+# связь, но слабая: полное название с тем же лишним словом тоже даёт только слабую.
+SORT_WORDS = frozenset(fold(w) for w in (
+    "натуральное", "натуральный", "натуральная", "классическое", "классический",
+    "классическая", "традиционное", "традиционный", "традиционная"))
+_INCLUSION_EXTRAS = DESCRIPTORS | SORT_WORDS | GENERIC_HEADS
 _LETTER = "А-Яа-яЁёA-Za-z"
 # Тара пишется и через косую, и через точки: «СТ/Б», «Ж/Б», «ПЛ.Б.», «СТ.Б.ГАЗ».
 # ЗАЧЕМ ЗДЕСЬ ТОЧКА (18.10.2026, находка №8 ревью). Пока правило знало только «/»,
@@ -385,10 +461,34 @@ def _slash_neg(m: re.Match) -> str:
     return word.upper() if head.isupper() else word
 
 
+# «с газом», «С/ГАЗ» и «газированная/-ое/-ые» — одно слово «газированный». Чек и Самокат пишут
+# «Кола Evervess, с газом, 1,5 л», сети — «Напиток газированный Evervess Кола 1,5л» или «…Кола
+# газированная»; слова разные, и один товар расходился сам с собой (замер 12.11.2026; род и
+# «С/ГАЗ» — ревью 13.11.2026). Приводим к одному слову, а не выбрасываем: «без газа» (безгаза),
+# «негазированная» и «сильногазированная» остаются другими словами (перед «газ» стоит буква,
+# и взгляд назад их не берёт), газированная вода негазированной не равна.
+_WITH_GAS = re.compile(
+    rf"(?<![{_LETTER}])(?:[сc]\s*/\s*газ(?![{_LETTER}])|(?:[сc]\s+)?газом(?![{_LETTER}])"
+    r"|газированн[а-яё]*|gazirovann[a-z]*)", re.I)
+# «8 рулонов» — число штук, его держит pack_count; словом названия оно не должно быть, а «8шт» той
+# же бумаги у другой сети слова «рулонов» не содержит (замер 12.11.2026). Поэтому «8 рулонов»
+# склеивается в одно слово «8рулонов»: оно начинается с цифры и из слов выпадает, а _ROLLS его
+# по-прежнему читает. Просто вырезать нельзя: чек считает штуки по склеенной строке и терял восемь
+# (ревью 13.11.2026). Берётся только «<число> рул…»: голое «рул» — начало «РУЛ.БИСК.» (рулет).
+_ROLL_COUNT = re.compile(rf"(?<![\d.,])\d{{1,3}}\s*(?:рулон(?:ов|а)?|рул|rulon(?:ov|a)?|rul)\.?(?![{_LETTER}])",
+                         re.I)
+
+
+def _gas(m: re.Match) -> str:
+    return "ГАЗИРОВАННЫЙ" if m.group(0).isupper() else "газированный"
+
+
 def glue(text: str | None) -> str:
     """Тару убрать, отрицания склеить в одно слово. Регистр сохраняется: по нему
     узнаётся марка, и чек целиком заглавными не должен стать «со строчными»."""
-    text = _TARE.sub(" ", text or "")
+    text = _WITH_GAS.sub(_gas, text or "")
+    text = _ROLL_COUNT.sub(lambda m: " " + "".join(m.group(0).split()) + " ", text)
+    text = _TARE.sub(" ", text)
     text = _ZMZH.sub(_zmzh, text)
     text = _SLASH_NEG.sub(_slash_neg, text)
     text = _NEG_BA.sub(_slash_neg, text)
@@ -433,6 +533,7 @@ class Row:
     forder: tuple[str, ...] = ()
     fbrand: frozenset[str] = frozenset()
     pct: float | None = None       # жирность, крепость: «Сметана 15 %» -> 15.0
+    pct_lo: float | None = None    # нижняя граница диапазона «3,4-4,5 %» -> 3.4 (pct у него 4.5)
     marks: frozenset[str] = frozenset()   # «без глютена», «zero», «детская»
     # Штрихкод в одном виде (normalize.gtin) — по нему сравнивают и группируют.
     # Сам barcode остаётся как его написала сеть. Замер 17.10.2026: чек отдаёт
@@ -444,6 +545,11 @@ class Row:
     # ключ — «сеть#код»: решает он только внутри своей сети.
     bkey: str | None = None
     packs: int = 1                 # штук в упаковке: «4x125г» — четыре
+    # Числа названия (x5.numbers) считаются лениво и только для пар, где процент назвала одна
+    # сторона: у большинства строк они не понадобятся. В сравнение и вывод не входят.
+    nums: tuple[str, ...] | None = field(default=None, compare=False, repr=False)
+    numkey: str | None = field(default=None, compare=False, repr=False)   # цифры nums по возрастанию (_numkey)
+    cyrillic: bool = field(default=False, compare=False, repr=False)      # в названии есть кириллица
 
 
 def meaningful(text: str | None) -> frozenset[str]:
@@ -503,13 +609,14 @@ def prepare(product: dict) -> Row:
         unit = "kg"
     return Row(id=int(product["id"]), chain=product["chain"], name=name,
                words=words, order=order, brand_words=brand_words,
-               fwords=fold_words(words),
+               fwords=fold_words(words) - _SCRIPT_NOISE,
                forder=tuple(dict.fromkeys(w for w in (fold(x) for x in order) if len(w) >= 2)),
                fbrand=fold_words(brand_words),
-               pct=parse_percent(name), marks=variant_marks(text),
+               pct=parse_percent(name), pct_lo=parse_percent_low(name),
+               marks=variant_marks(text),
                brand=brand, weight_g=weight or None, unit=unit,
                barcode=barcode, bkey=bkey, packs=pack_count(name),
-               category=product.get("category"))
+               category=product.get("category"), cyrillic=bool(_CYRILLIC.search(name.lower())))
 
 
 def trusted_key(bkey: str | None) -> bool:
@@ -564,6 +671,60 @@ def _weighed_vs_packed(a: Row, b: Row) -> bool:
     return a.unit == "kg" and not a.weight_g and b.unit != "kg" and bool(b.weight_g)
 
 
+def numbers_agree(ours, theirs) -> bool:
+    """Числа названий (x5.numbers) не спорят: те же цифры, а разделители и порядок не важны.
+
+    Монетка и Дикси пишут процент без разделителя: «2,5 %» у них «25» или «2 5», «50,5 %» — «505»
+    (ревью 13.11.2026: «Кефир 2.5% 930г» и «kefir … 25 930ml» были одним товаром, а охрана
+    чисел их разводила). x5.numbers отдаёт числа отсортированными как строки («5», «50»), поэтому
+    сравниваются сами цифры: «67» и «50 5» по-прежнему спорят, «2 5» и «1 5» тоже.
+    """
+    return sorted("".join(ours)) == sorted("".join(theirs))
+
+
+def _nums(row: Row) -> tuple[str, ...]:
+    """Числа названия без фасовки и штук (x5.numbers), один раз на строку."""
+    if row.nums is None:
+        from app.catalog import x5     # x5 сам импортирует match, поэтому импорт здесь
+        row.nums = tuple(x5.numbers(row.name))
+    return row.nums
+
+
+def _numkey(row: Row) -> str:
+    """Цифры чисел названия по возрастанию: «25», «2 5» и «5 2» дают один ключ. Один раз на строку.
+
+    Перестановка цифр («15 %» и «51», «67» и «76») тоже сходится: x5.numbers уже отдаёт числа
+    отсортированными, и порядок групп из него не восстановить. В базе такие пары не склеились
+    (ревью 13.11.2026: 4 211 пар с настоящей перестановкой, склеено 0).
+    """
+    if row.numkey is None:
+        row.numkey = "".join(sorted("".join(_nums(row))))
+    return row.numkey
+
+
+def _numbers_clash(a: Row, b: Row) -> bool:
+    """Числа двух строк спорят там, где процент назван не словами: хотя бы у одной строки его нет,
+    и эта строка не русская (молчащая русская — сокращённый чек, её число — вес без единицы).
+
+    Отдельная функция, потому что _split_chained сверяет по ней и новичка с набранной группой.
+    """
+    if ((a.pct is None or b.pct is None)
+            and not (a.pct is None and a.cyrillic) and not (b.pct is None and b.cyrillic)):
+        ours, theirs = _numkey(a), _numkey(b)
+        return bool(ours and theirs and ours != theirs)
+    return False
+
+
+def _note_clash_rep(reps: dict[tuple[bool, str], Row], row: Row) -> None:
+    """Запомнить строку как представителя своего набора чисел (один на набор) для _numbers_clash.
+
+    Ответ _numbers_clash зависит только от того, назван ли процент, и от цифр: двух строк с одним
+    ключом хватит одной. Русская строка без процента числами не спорит и в представители не идёт.
+    """
+    if not (row.pct is None and row.cyrillic) and _numkey(row):
+        reps.setdefault((row.pct is None, _numkey(row)), row)
+
+
 def compatible(a: Row, b: Row) -> bool:
     """Охраны без слов: ничто, кроме названия, не говорит, что это разные товары.
 
@@ -583,6 +744,20 @@ def compatible(a: Row, b: Row) -> bool:
     # «Сметана Большая кружка 15 %» и она же 20 % склеивались в один товар, потому
     # что числа выброшены как шум и наборы слов у них одинаковые.
     if not percents_agree(a.pct, b.pct):
+        return False
+    # Диапазон против диапазона: сверху границы равны (pct), а снизу — нет («3,5%-4,5%» и «3,7%-4,5%»).
+    # Диапазон против одного числа сходится по верхней границе, как «3,4-4,5 %» сходилось всегда.
+    if a.pct_lo is not None and b.pct_lo is not None and not percents_agree(a.pct_lo, b.pct_lo):
+        return False
+    # Строка ЛАТИНИЦЕЙ процента не называет вовсе: транслит Перекрёстка, Монетки и Дикси пишет «50 5»
+    # вместо «50,5 %», и жирность держат только числа названия. Если числа спорят — разные товары.
+    # Охрана та же, что у привязки человека (link._numbers_disagree). Она нужна и когда процент
+    # назвала одна сторона («Майонез Провансаль 67% 190 г» против «majonez provansal 50 5 190ml»: 187 пар
+    # свела замена «j» на «i» в fold), и когда не назвала ни одна («kefir irbitskijj 1 400g» против
+    # «kefir irbitskij 2 5 500g»: «jj» и «j» стали одним словом, 1 % сошёлся с 2,5 %) — ревью 13.11.2026.
+    # Молчащая строка по-русски — это сокращённый чек («Сырок твор гл ван 45»): его число — вес
+    # без единицы, а не процент, и со словами чека сверяет _abbrev, а не числа.
+    if _numbers_clash(a, b):
         return False
     # Метка разновидности на одной стороне и её отсутствие на другой — довод
     # против. «Спагетти Barilla 450 г» и «Спагетти Barilla без глютена 400 г» —
@@ -630,7 +805,11 @@ def same_product(a: Row, b: Row, brand_vocab: frozenset[str] = frozenset()
                         else (b.fwords, a.fwords))
         if fsmall < fbig and a.weight_g and b.weight_g:
             fmarks = _folded_vocab(brand_vocab) | a.fbrand | b.fbrand
-            if fsmall & fmarks:
+            # Лишнее слово здесь — только описание (DESCRIPTORS, SORT_WORDS, GENERIC_HEADS): вкус,
+            # начинка, серия и другой изготовитель делают другой товар. Замена «j» на «i» в fold
+            # впервые свела «sokolad molocnyj alpen gold 90g» с «Шоколад молочный Alpen Gold Oreo 85г»
+            # и сотни таких пар (ревью 13.11.2026: из 25 новых вложений 9 — разные товары, 9 сомнительны).
+            if fsmall & fmarks and (fbig - fsmall) <= _INCLUSION_EXTRAS:
                 return True, "translit", 0.8
     return False, "", 0.0
 
@@ -729,8 +908,44 @@ def cluster(products: list[dict]) -> list[list[tuple[Row, str, float]]]:
 
     out: list[list[tuple[Row, str, float]]] = []
     for group in groups.values():
-        out.extend(_split_chained(group, vocab) if len(group) > 2 else [group])
+        out.extend(_gather_twins(_split_chained(group, vocab)) if len(group) > 2 else [group])
     return out
+
+
+def _gather_twins(parts: list[list[tuple[Row, str, float]]]) -> list[list[tuple[Row, str, float]]]:
+    """Строки с одним настоящим штрихкодом — один товар, даже если цепочка слов их разделила.
+
+    _split_chained сверяет слова с эталоном, а штрихкод — ключ сильнее слов: два двойника по
+    штрихкоду, один из которых прошёл эталон, а другой нет, оказывались в разных единых товарах
+    (замер 12.11.2026: в прежней базе 589 таких штрихкодов, после расширения правил их стало
+    больше). Строка переезжает к той части, где штрихкод встречается чаще (при равенстве — к более
+    ранней). Но только если не спорит с теми, к кому едет (compatible: процент, метки, штуки,
+    фасовка): грязный код на «Сметана 15 %» и «Сметана 20 %» не должен сливать их обратно — их
+    развела та же _split_chained (ревью 13.11.2026).
+    """
+    seen: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    for n, part in enumerate(parts):
+        for item in part:
+            if trusted_key(item[0].bkey):
+                seen[item[0].bkey][n] += 1
+    home = {key: max(where, key=lambda n: (where[n], -n)) for key, where in seen.items() if len(where) > 1}
+    if not home:
+        return parts
+    members = [[item[0] for item in part] for part in parts]    # кто лежит в части сейчас
+    gathered: list[list[tuple[Row, str, float]]] = [[] for _ in parts]
+    for n, part in enumerate(parts):
+        for item in part:
+            row = item[0]
+            to = home.get(row.bkey, n)
+            # Сверка со ВСЕЙ частью, куда переезд, а не только с двойниками по коду: двойник без процента
+            # пропустил бы «15 %», хотя в той же части лежит «20 %» (ревью 13.11.2026).
+            if to != n and all(compatible(row, other) for other in members[to]):
+                members[to].append(row)
+                members[n] = [other for other in members[n] if other is not row]
+            else:
+                to = n
+            gathered[to].append(item)
+    return [part for part in gathered if part]
 
 
 def _split_chained(group: list[tuple[Row, str, float]], vocab: frozenset[str]
@@ -769,15 +984,24 @@ def _split_chained(group: list[tuple[Row, str, float]], vocab: frozenset[str]
         # внутри, — иначе честная группа из восьмидесяти одинаковых строк стоила
         # бы трёх тысяч сравнений вместо восьмидесяти.
         pct = seed[0].pct
+        pct_lo = seed[0].pct_lo       # нижняя граница диапазона копится так же («3,5-4,5 %» и «3,7-4,5 %»)
         marks = seed[0].marks
         # Число штук копится так же: молчащий эталон «Сосиски 300 г» не должен держать
         # при себе и «6 шт 300 г», и «10 шт 300 г».
         packs = seed[0].packs if seed[0].packs > 1 else None
+        # Охрана чисел (_numbers_clash) молчит, пока эталон русский и без процента: две латинские
+        # строки «kefir … 25 …» и «kefir … 15 …» тогда проходят каждая сама по себе, а друг мимо
+        # друга не проходят. Копим по одному представителю каждого набора чисел и сверяем с ними.
+        clash_reps: dict[tuple[bool, str], Row] = {}
+        _note_clash_rep(clash_reps, seed[0])
         for item in rest:
             row = item[0]
             if item is seed:
                 continue
             if pct is not None and row.pct is not None and not percents_agree(pct, row.pct):
+                dropped.append(item)
+                continue
+            if pct_lo is not None and row.pct_lo is not None and not percents_agree(pct_lo, row.pct_lo):
                 dropped.append(item)
                 continue
             if marks and row.marks and marks != row.marks:
@@ -786,16 +1010,22 @@ def _split_chained(group: list[tuple[Row, str, float]], vocab: frozenset[str]
             if packs is not None and row.packs > 1 and row.packs != packs:
                 dropped.append(item)
                 continue
+            if any(_numbers_clash(rep, row) for rep in clash_reps.values()):
+                dropped.append(item)
+                continue
             if not same_product(seed[0], row, vocab)[0]:
                 dropped.append(item)
                 continue
             kept.append(item)
             if pct is None:
                 pct = row.pct
+            if pct_lo is None:
+                pct_lo = row.pct_lo
             if not marks:
                 marks = row.marks
             if packs is None and row.packs > 1:
                 packs = row.packs
+            _note_clash_rep(clash_reps, row)
         out.append(kept)
         rest = dropped
     return out
