@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ru" data-device="<%= device_phone ? 'phone' : 'web' %>">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#FFFFFF">
+  <title><%= typeof title !== 'undefined' ? title : 'Моя корзина' %></title>
+  <meta name="description" content="Сравнение цен на продукты в сетях с доставкой, учёт карт кэшбэка и разбиение корзины.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Unbounded:wght@500;600;700&display=swap">
+  <link rel="stylesheet" href="<%= staticV('korzina.css') %>">
+  <script src="<%= staticV('korzina-device.js') %>" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="top-row">
+    <a class="brand" href="/"><span class="mark">🛒</span> Моя корзина</a>
+    <% if (phone) { %>
+      <a class="addr" href="/#address" title="Адрес определяет цены и наличие во всех сетях">
+        <%= address || 'Укажите адрес' %>
+      </a>
+      <span class="spacer"></span>
+      <a class="btn" href="/phone/basket" style="margin-right:8px">Табло телефона</a>
+      <span class="dim"><%= is_demo ? 'Демо' : phone_label %></span>
+      <form method="post" action="/logout" style="display:inline">
+        <button class="btn" type="submit">Выйти</button>
+      </form>
+    <% } %>
+  </div>
+
+  <% if (phone) { %>
+    <nav class="sections">
+      <% SECTIONS.forEach((name) => {
+        const first = screensOf(name)[0];
+      %>
+        <a href="<%= first.path %>" class="<%= screen && screen.section === name ? 'on' : '' %>"><%= name %></a>
+      <% }) %>
+    </nav>
+    <% if (screen) { %>
+      <nav class="tabs">
+        <% screensOf(screen.section).forEach((s) => { %>
+          <a href="<%= s.path %>" class="<%= s.key === screen.key ? 'on' : '' %>"><%= s.title %></a>
+        <% }) %>
+      </nav>
+    <% } %>
+  <% } %>
+</header>
+
+<main>
+  <% if (screen) { %>
+    <div class="eyebrow"><%= screen.eyebrow %></div>
+    <h1><%= screen.title %></h1>
+  <% } %>

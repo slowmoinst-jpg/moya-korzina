@@ -1,0 +1,32 @@
+<% if (!top) { %>
+  <a class="live wait" href="/phone/cheaper" data-live="/phone/basket/top" aria-busy="true" aria-label="Где дешевле: считаем">
+    <span class="lv"><span class="spin" aria-hidden="true"></span></span>
+    <span class="lv"><span class="spin" aria-hidden="true"></span></span>
+    <span class="lv"><span class="spin" aria-hidden="true"></span></span>
+    <span class="live-fallback">Где дешевле<span class="sub num"> · <%= items.length %></span></span>
+  </a>
+<% } else if (top.places && top.places.length) {
+  const descs = top.places.map((p) =>
+    p.full ? `${p.title} ${whole(p.total)}` : `${p.title} ${whole(p.total)}, нашлось ${p.of - p.lack} из ${p.of}`
+  );
+%>
+  <a class="live" href="/phone/cheaper" aria-label="Где дешевле: <%= descs.join('; ') %>">
+    <% top.places.forEach((p) => { %>
+      <span class="lv<%= p.best ? ' win' : '' %>">
+        <% if (p.codes.length > 1) { %>
+          <span class="lgs"><% p.codes.forEach((code) => { %><%- mark(code) %><% }) %></span>
+        <% } else { %>
+          <%- mark(p.codes[0]) %>
+        <% } %>
+        <span class="num"><%= whole(p.total) %></span>
+        <% if (!p.full) { %>
+          <%- icon('alert', 'i s wr') %>
+        <% } %>
+      </span>
+    <% }) %>
+  </a>
+<% } else { %>
+  <div class="actions">
+    <a class="cta" href="/phone/cheaper">Где дешевле<span class="sub num"> · <%= items.length %></span></a>
+  </div>
+<% } %>

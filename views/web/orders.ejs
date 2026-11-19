@@ -1,0 +1,33 @@
+<%- include('_head', { title: 'Заказы — Моя корзина' }) %>
+<% if (!orders.length) { %>
+  <div class="card">
+    <p class="muted">Заказов пока нет — загрузите чеки на экране «Мои чеки».</p>
+    <a class="btn main" href="/receipts">К моим чекам</a>
+  </div>
+<% } else { %>
+  <% orders.forEach((o) => { %>
+    <div class="card">
+      <div class="row">
+        <span class="dot s-<%= o.store_code %>"></span>
+        <strong><%= o.store_name %></strong>
+        <span class="dim">· <%= o.day %> · <%= o.source %></span>
+        <span class="spacer"></span>
+        <span class="sum" style="font-size:1.15rem"><%= rub(o.total) %></span>
+      </div>
+      <details style="margin-top:10px">
+        <summary class="dim" style="cursor:pointer"><%= goods(o.lines.length) %></summary>
+        <% o.lines.forEach((ln) => { %>
+          <div class="row" style="justify-content:space-between;padding:5px 0;border-top:1px solid var(--line)">
+            <span><%= ln.name %> <span class="dim">× <%= num(ln.qty) %></span></span>
+            <span><%= rub(ln.total) %></span>
+          </div>
+        <% }) %>
+      </details>
+      <form method="post" action="/orders" style="margin-top:10px">
+        <input type="hidden" name="key" value="<%= o.key %>">
+        <button class="btn main" type="submit">Повторить в новой корзине</button>
+      </form>
+    </div>
+  <% }) %>
+<% } %>
+<%- include('_foot') %>

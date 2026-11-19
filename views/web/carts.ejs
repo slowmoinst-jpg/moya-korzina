@@ -1,0 +1,27 @@
+<%- include('_head', { title: 'Сборка корзин — Моя корзина' }) %>
+<% if (sentAll) { %><div class="note ok">Сборка запущена для подключённых сетей.</div><% } %>
+
+<div class="card">
+  <div class="row">
+    <strong><%= basket ? basket.name : 'Корзина не выбрана' %></strong>
+    <span class="spacer"></span>
+    <form method="post" action="/carts">
+      <% if (basket) { %><input type="hidden" name="basket" value="<%= basket.id %>"><% } %>
+      <button class="btn main" type="submit" name="do" value="all">Собрать во всех подключённых</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <% chains.forEach((c) => { %>
+    <div class="row" style="justify-content:space-between;padding:8px 0;border-top:1px solid var(--line)">
+      <div>
+        <span class="dot s-<%= c.code %>"></span>
+        <strong><%= c.name %></strong>
+        <span class="dim">· <%= c.connected ? 'вход есть' : 'без входа' %> · позиций: <%= c.have %><% if (c.missing) { %> (нет <%= c.missing %>)<% } %></span>
+      </div>
+      <span class="sum"><%= c.total !== null ? rub(c.total) : '—' %></span>
+    </div>
+  <% }) %>
+</div>
+<%- include('_foot') %>

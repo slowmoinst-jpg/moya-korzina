@@ -1,0 +1,168 @@
+<%- include('_head', { title: 'Результат — Моя корзина' }) %>
+
+<% if (!basket) { %>
+  <div class="card">
+    <div class="eyebrow">Считать пока нечего</div>
+    <h2>Сначала корзина</h2>
+    <p class="muted">Соберите корзину, и ответ появится здесь: мы сравним сети, учтём доставку, минимальный заказ и скидки ваших карт.</p>
+    <a class="btn main" href="/basket">К корзине</a>
+  </div>
+<% } else if (!variants || !variants.length) { %>
+  <div class="card">
+    <div class="row"><strong><%= basket.name %></strong><span class="dim">#<%= basket.id %></span></div>
+    <div class="note warn" style="margin-top:12px">Ни одного варианта не вышло — у позиций в корзине нет цен.</div>
+    <a class="btn main" href="/basket?id=<%= basket.id %>">К корзине</a>
+  </div>
+<% } else { %>
+
+<div class="card">
+  <div class="row">
+    <strong><%= basket.name %></strong>
+    <span class="dim">#<%= basket.id %> · <%= pluralItems(bundle.positions) %> · базовая сумма <%= rub(bundle.baseline) %></span>
+    <span class="spacer"></span>
+    <span class="dim">посчитано в <%= bundle.when %></span>
+    <form method="post" action="/result" style="display:inline">
+      <input type="hidden" name="basket" value="<%= basket.id %>">
+      <input type="hidden" name="mode" value="<%= mode || '' %>">
+      <button class="btn" type="submit" name="do" value="again">Пересчитать</button>
+    </form>
+  </div>
+</div>
+
+<% if (switchInfo) { %>
+  <div class="row" style="margin-bottom:12px">
+    <a class="btn <%= switchInfo.split.on ? 'main' : '' %>" href="/result?basket=<%= basket.id %>&mode=split"><%= switchInfo.split.label %></a>
+    <a class="btn <%= switchInfo.single.on ? 'main' : '' %>" href="/result?basket=<%= basket.id %>&mode=single"><%= switchInfo.single.label %></a>
+  </div>
+  <% if (switchInfo.gain > 0 && !switchInfo.worth) { %>
+    <p class="dim" style="margin:-4px 0 12px">Разделить выгоднее всего на <%= rub(switchInfo.gain) %>, это меньше порога <%= rub(switchInfo.threshold) %> — две доставки того не стоят.</p>
+  <% } else if (switchInfo.worth) { %>
+    <p class="dim" style="margin:-4px 0 12px">Разделить на два магазина выгоднее на <%= rub(switchInfo.gain) %> — с учётом обеих доставок.</p>
+  <% } %>
+<% } %>
+
+<div class="card">
+  <div class="eyebrow" style="color:var(--green)">Лучший вариант</div>
+  <div class="row" style="margin:6px 0 2px">
+    <% best.stores.forEach((s, idx) => { %>
+      <span class="chip" style="font-size:1.15rem;font-weight:600"><span class="dot s-<%= s.code %>"></span><%= s.name %></span>
+      <% if (idx < best.stores.length - 1) { %><span class="dim">+</span><% } %>
+    <% }) %>
+  </div>
+  <p class="dim" style="margin:0 0 14px">
+    <% if (best.stores.length > 1) { %>
+      <%= best.stores.length %> заказа<% if (best.penalty) { %> · штраф <%= rub(best.penalty) %> за второй заказ учтён только в выборе варианта<% } %>
+    <% } else { %>Один заказ, без штрафа<% } %>
+    · <%= best.complete.have %> из <%= best.complete.of %> в наличии
+  </p>
+
+  <div class="row" style="gap:28px;align-items:flex-end">
+    <div>
+      <div class="eyebrow">К оплате</div>
+      <div class="sum" style="font-size:2.1rem;line-height:1.05"><%= rub(best.figures.total) %></div>
+    </div>
+    <div>
+      <div class="eyebrow" style="color:var(--green)">Экономия</div>
+      <div class="sum" style="font-size:2.1rem;line-height:1.05;color:var(--green)"><%= rub(best.figures.saved) %></div>
+      <div class="gain"><%= pct(best.figures.pct) %></div>
+    </div>
+  </div>
+
+  <div style="display:flex;height:14px;border-radius:7px;overflow:hidden;background:var(--tint);margin-top:16px">
+    <div style="width:<%= best.figures.paid_width %>%;background:var(--ink)"></div>
+    <div style="width:<%= best.figures.saved_width %>%;background:var(--green)"></div>
+  </div>
+  <div class="row" style="justify-content:space-between;margin-top:7px">
+    <span class="dim">Заплатим — <%= rub(best.figures.total) %></span>
+    <span class="dim"><%= best.base.label %> — <%= rub(best.figures.base) %></span>
+  </div>
+</div>
+
+<% if (best.missing.length) { %>
+  <div class="note warn">Не нашли цену для: <%= best.missing.join(', ') %>. Экономия посчитана без этих позиций.</div>
+<% } %>
+
+<div class="grid <%= best.stores.length > 1 ? 'two' : '' %>">
+  <% best.stores.forEach((s) => { %>
+    <div class="card" style="border-left:3px solid var(--s-<%= s.code %>)">
+      <div class="row">
+        <span class="chip" style="font-weight:600;font-size:1.05rem"><span class="dot s-<%= s.code %>"></span><%= s.name %></span>
+        <span class="dim"><%= s.lines.length %> поз.</span>
+        <span class="spacer"></span>
+        <span class="pill" style="border-color:var(--line2);color:var(--ink3)"><%= s.card_name || 'без карты' %></span>
+      </div>
+
+      <div style="margin:12px 0 10px">
+        <div class="row" style="justify-content:space-between"><span class="dim">Товары</span><span><%= rub(s.subtotal) %></span></div>
+        <div class="row" style="justify-content:space-between"><span class="dim">Доставка</span><span style="<%= !s.delivery ? 'color:var(--green)' : '' %>"><%= rub(s.delivery) %></span></div>
+        <div class="row" style="justify-content:space-between"><span class="dim">Скидка и кэшбэк</span><span class="gain">−<%= rub(s.discount) %></span></div>
+        <div class="row" style="justify-content:space-between;padding-top:9px;margin-top:6px;border-top:1px solid var(--line)">
+          <strong>Итого по магазину</strong><span class="sum" style="font-size:1.25rem"><%= rub(s.total) %></span>
+        </div>
+      </div>
+
+      <% if (s.below_min) { %>
+        <div class="note warn">Заказ меньше минимальной суммы магазина — его могут не принять.</div>
+      <% } %>
+
+      <details>
+        <summary class="dim" style="cursor:pointer">Что берём здесь</summary>
+        <% s.lines.forEach((ln) => { %>
+          <div class="row" style="justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)">
+            <span style="flex:1;min-width:0"><%= ln.name %> <span class="dim"><%= num(ln.qty) %> <%= ln.unit %></span></span>
+            <span><%= rub(ln.price) %></span>
+          </div>
+        <% }) %>
+      </details>
+
+      <% if (s.asks_link) { %>
+        <form method="post" action="/result" style="margin-top:12px">
+          <input type="hidden" name="basket" value="<%= basket.id %>">
+          <input type="hidden" name="mode" value="<%= mode || '' %>">
+          <button class="btn main wide" type="submit" name="do" value="link:<%= s.code %>">Собрать корзину в <%= s.name %> →</button>
+        </form>
+      <% } else if (s.handover.length) { %>
+        <details style="margin-top:10px">
+          <summary class="dim" style="cursor:pointer">Как собрать этот заказ</summary>
+          <p class="dim" style="margin:8px 0"><%= s.note %></p>
+          <% s.handover.forEach((i) => { %>
+            <div class="row" style="justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)">
+              <span><%= i.name %> <span class="dim"><%= num(i.qty) %> <%= i.unit %></span></span>
+              <a href="<%= i.url %>" target="_blank" rel="noopener"><%= s.open_label %></a>
+            </div>
+          <% }) %>
+          <textarea rows="6" readonly style="margin-top:8px;font-size:0.86rem"><%= s.text %></textarea>
+        </details>
+      <% } %>
+    </div>
+  <% }) %>
+</div>
+
+<% if (others.length) { %>
+  <h2 style="margin-top:22px">Другие варианты</h2>
+  <% others.forEach((o) => { %>
+    <details class="card">
+      <summary>
+        <span class="dim"><%= o.n %></span>
+        <% o.stores.forEach((s) => { %><span class="dot s-<%= s.code %>" style="margin-left:4px"></span><% }) %>
+        <strong style="margin-left:8px"><%= o.variant.title %></strong>
+        <span class="sum" style="margin-left:10px"><%= rub(o.figures.total) %></span>
+        <span class="gain" style="margin-left:8px">−<%= rub(o.figures.saved) %> · <%= pct(o.figures.pct) %></span>
+        <span class="dim" style="margin-left:8px"><%= o.complete.have %> из <%= o.complete.of %></span>
+      </summary>
+      <div class="grid <%= o.stores.length > 1 ? 'two' : '' %>" style="margin-top:12px">
+        <% o.stores.forEach((s) => { %>
+          <div class="card" style="border-left:3px solid var(--s-<%= s.code %>)">
+            <div class="row"><strong><%= s.name %></strong><span class="spacer"></span><span class="sum"><%= rub(s.total) %></span></div>
+            <div class="dim"><%= s.lines.length %> поз. · доставка <%= rub(s.delivery) %> · кэшбэк −<%= rub(s.discount) %></div>
+          </div>
+        <% }) %>
+      </div>
+    </details>
+  <% }) %>
+<% } %>
+
+<div class="row" style="margin-top:18px"><a class="btn" href="/basket?id=<%= basket.id %>">← К корзине</a></div>
+<% } %>
+
+<%- include('_foot') %>

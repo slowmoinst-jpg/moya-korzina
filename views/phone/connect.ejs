@@ -1,0 +1,18 @@
+<%- include('_head', { title: `${name} — Моя корзина` }) %>
+  <a class="back" href="/phone/settings"><%- icon('back') %>Настройки</a>
+
+  <div class="connect-head">
+    <%- mark(code, name) %>
+    <h1 class="title"><%= name %></h1>
+  </div>
+
+  <% if (device_app) { %>
+    <a class="cta" href="/cabinet?store=<%= code %>" data-open-store="<%= code %>" data-login>Войти · <%= name %></a>
+  <% } else { %>
+    <div class="note">Приложение пока только для Android — в веб-версии можно отметить подключение вручную для проверки.</div>
+    <form method="post" action="/phone/connect/<%= code %>">
+      <button class="cta" type="submit">Подключить <%= name %></button>
+    </form>
+    <a class="bt ghost" href="/accounts?store=<%= code %>" style="align-self: center; margin-top: 8px">Открыть в Кабинетах</a>
+  <% } %>
+<%- include('_foot', { tab }) %>

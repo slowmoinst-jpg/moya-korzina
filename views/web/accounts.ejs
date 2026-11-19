@@ -1,0 +1,23 @@
+<%- include('_head', { title: 'Кабинеты — Моя корзина' }) %>
+<% if (sent) { %><div class="note ok">Задание на сборку корзины передано в кабинет магазина.</div><% } %>
+
+<div class="card">
+  <% stores.forEach((s) => { %>
+    <div class="row" style="justify-content:space-between;padding:10px 0;border-top:1px solid var(--line);<%= highlight === s.code ? 'background:var(--tint);padding-inline:8px;border-radius:8px;' : '' %>">
+      <div>
+        <span class="dot s-<%= s.code %>"></span>
+        <strong><%= s.name %></strong>
+        <span class="dim">· <%= s.connected ? 'подключён' : 'не подключён' %></span>
+      </div>
+      <form method="post" action="/accounts">
+        <input type="hidden" name="store" value="<%= s.code %>">
+        <% if (s.connected) { %>
+          <button class="btn" type="submit" name="do" value="disconnect">Отключить</button>
+        <% } else { %>
+          <button class="btn main" type="submit" name="do" value="connect">Подключить</button>
+        <% } %>
+      </form>
+    </div>
+  <% }) %>
+</div>
+<%- include('_foot') %>

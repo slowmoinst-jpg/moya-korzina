@@ -1,0 +1,283 @@
+<%- include('_head', {
+  title: 'Корзина — Моя корзина',
+  headExtra: `<script>try{var v=localStorage.getItem('kz-view')||'grid';document.documentElement.setAttribute('data-view',v);}catch(e){}</script>`
+}) %>
+  <div class="top">
+    <% if (baskets_n > 1) { %>
+      <h1 class="title"><a class="baskets-link" href="/phone/baskets" aria-label="Корзины · <%= baskets_n %> — выбрать корзину">Корзина<%- icon('down', 'i s') %></a></h1>
+    <% } else { %>
+      <h1 class="title">Корзина</h1>
+    <% } %>
+    <% if (items && items.length) { %>
+      <span class="cnt num" aria-label="<%= goods(items.length) %>"><%= items.length %></span>
+    <% } %>
+    <a class="ib hist-btn" href="/phone/orders" aria-label="История заказов"><%- icon('clock') %></a>
+    <div class="seg" role="group" aria-label="Вид корзины">
+      <button class="sg" type="button" data-v="grid" aria-label="Плитками" aria-pressed="true"><%- icon('grid') %></button>
+      <button class="sg" type="button" data-v="list" aria-label="Списком" aria-pressed="false"><%- icon('list') %></button>
+    </div>
+  </div>
+  <% if (baskets_n > 1 && basket) { %>
+    <div class="mut small basket-sub"><%= basket.name %></div>
+  <% } %>
+
+  <% if (!is_demo) { %>
+    <% if (no_address) { %>
+      <div class="note warn act">
+        <span>Укажите адрес доставки — от него зависят цены и наличие</span>
+        <a class="bt" href="/phone/settings#address">Указать адрес</a>
+      </div>
+    <% } %>
+    <form class="find" method="get" action="/phone/basket" role="search">
+      <div class="find-field">
+        <%- icon('search', 'i s find-ico') %>
+        <input type="search" name="q" value="<%= q %>" placeholder="Найти товар" aria-label="Найти товар"
+               autocomplete="off" enterkeyhint="search">
+      </div>
+      <button class="ib find-bt" type="submit" aria-label="Найти"><%- icon('search') %></button>
+    </form>
+    <% if (found && found.length) { %>
+      <form class="card found" method="post" action="/phone/basket">
+        <input type="hidden" name="q" value="<%= q %>">
+        <% found.forEach((h) => { %>
+          <div class="row">
+            <span class="grow">
+              <span class="name"><%= h.name %></span>
+              <span class="mut small sub"><%= h.small %></span>
+            </span>
+            <button class="bt ghost" type="submit" name="do" value="<%= h.do %>"
+                    aria-label="В корзину: <%= h.name %>"><%- icon('plus', 'i s') %>В корзину</button>
+          </div>
+        <% }) %>
+      </form>
+    <% } else if (q) { %>
+      <div class="mut small"><%= q.length < 2 ? 'Введите хотя бы две буквы.' : `По запросу «${q}» ничего не нашлось — попробуйте другое слово.` %></div>
+    <% } %>
+  <% } %>
+
+  <% if (basket && items && items.length) { %>
+    <form method="post" action="/phone/basket">
+      <input type="hidden" name="q" value="<%= q %>">
+      <ul class="items" aria-label="Товары в корзине">
+        <% items.forEach((it) => { %>
+          <li class="it" id="it-<%= it.pid %>">
+            <span class="img">
+              <%- pic(it) %>
+              <% if (!is_demo) { %>
+                <button class="bdg num" type="button" aria-expanded="false" aria-label="Количество: <%= it.name %>"><%= qtyLabel(it.qty, it.unit) %></button>
+              <% } else { %>
+                <span class="bdg num"><%= qtyLabel(it.qty, it.unit) %></span>
+              <% } %>
+            </span>
+            <span class="name"><%= it.name %></span>
+            <span class="step">
+              <% if (!is_demo) { %>
+                <% if (it.last) { %>
+                  <button class="q" type="submit" name="do" value="minus:<%= it.pid %>" aria-label="Убрать: <%= it.name %>"><%- icon('trash', 'i s') %></button>
+                <% } else { %>
+                  <button class="q" type="submit" name="do" value="minus:<%= it.pid %>" aria-label="Меньше: <%= it.name %>"><%- icon('minus', 'i s') %></button>
+                <% } %>
+              <% } %>
+              <span class="qn num"><%= qtyLabel(it.qty, it.unit) %></span>
+              <% if (!is_demo) { %>
+                <button class="q" type="submit" name="do" value="plus:<%= it.pid %>" aria-label="Больше: <%= it.name %>"><%- icon('plus', 'i s') %></button>
+              <% } %>
+            </span>
+            <span class="pr num"><%= it.price || '' %></span>
+          </li>
+        <% }) %>
+      </ul>
+    </form>
+  <% } else { %>
+    <div class="empty">Корзина пуста.<% if (!is_demo) { %> Найдите товар поиском выше — или повторите заказ из «Истории заказов».<% } %></div>
+  <% } %>
+
+  <% if (habits && habits.length) { %>
+    <section id="habits" class="habits" aria-label="Из привычного">
+      <div class="grp">Из привычного</div>
+      <form class="hrow" method="post" action="/phone/basket">
+        <input type="hidden" name="q" value="<%= q %>">
+        <% habits.forEach((h) => { %>
+          <div class="hcard">
+            <%- pic(h) %>
+            <span class="name"><%= h.name %></span>
+            <span class="why"><%= h.why %></span>
+            <% if (!is_demo) { %>
+              <button class="bt ghost" type="submit" name="do" value="add:<%= h.pid %>"
+                      aria-label="Добавить: <%= h.name %>"><%- icon('plus', 'i s') %>В корзину</button>
+            <% } %>
+          </div>
+        <% }) %>
+      </form>
+    </section>
+  <% } %>
+
+  <% if (runs && !is_demo) { %>
+    <section id="kz-runs" data-poll="/phone/basket/runs"
+             data-collect="<%- escapeHtml(JSON.stringify(runs.collect)) %>" data-going="<%= runs.going ? '1' : '' %>">
+      <%- include('_runs', { runs }) %>
+    </section>
+  <% } %>
+
+<%
+let liveHtml = '';
+if (basket && items && items.length) {
+  // Handled right in _foot via actionsExtra
+}
+%>
+<%- include('_foot', {
+  tab,
+  actionsExtra: (basket && items && items.length
+    ? include('_live', { top, items })
+    : `<div class="actions"><button class="cta" type="button" disabled>Где дешевле</button></div>`) + `
+  <script>
+    (function () {
+      var seg = document.querySelector('.seg');
+      function applyView(view) {
+        document.documentElement.setAttribute('data-view', view);
+        try { localStorage.setItem('kz-view', view); } catch (e) {}
+        if (seg) {
+          var gridBtn = seg.querySelector('[data-v="grid"]');
+          var listBtn = seg.querySelector('[data-v="list"]');
+          if (gridBtn) {
+            gridBtn.setAttribute('aria-pressed', view === 'grid' ? 'true' : 'false');
+            gridBtn.classList.toggle('on', view === 'grid');
+          }
+          if (listBtn) {
+            listBtn.setAttribute('aria-pressed', view === 'list' ? 'true' : 'false');
+            listBtn.classList.toggle('on', view === 'list');
+          }
+        }
+      }
+      var currentView = document.documentElement.getAttribute('data-view') || 'grid';
+      applyView(currentView);
+
+      if (seg) {
+        seg.addEventListener('click', function (e) {
+          var b = e.target.closest('button[data-v]');
+          if (b) { applyView(b.getAttribute('data-v')); }
+        });
+      }
+
+      var openTimer = null;
+      function closeAllTiles() {
+        clearTimeout(openTimer);
+        document.querySelectorAll('.it.open').forEach(function (el) {
+          el.classList.remove('open');
+          var b = el.querySelector('.bdg[aria-expanded]');
+          if (b) { b.setAttribute('aria-expanded', 'false'); }
+        });
+      }
+      function openTile(el) {
+        if (!el) { return; }
+        closeAllTiles();
+        el.classList.add('open');
+        var b = el.querySelector('.bdg[aria-expanded]');
+        if (b) { b.setAttribute('aria-expanded', 'true'); }
+        openTimer = setTimeout(closeAllTiles, 3000);
+      }
+
+      var itemsList = document.querySelector('.items');
+      if (itemsList) {
+        itemsList.addEventListener('click', function (e) {
+          if (document.documentElement.getAttribute('data-view') !== 'grid') { return; }
+          var qBtn = e.target.closest('.step button');
+          if (qBtn) {
+            var it = qBtn.closest('.it');
+            if (it && it.id) {
+              var pid = it.id.replace('it-', '');
+              try { sessionStorage.setItem('kz-open', pid); } catch (err) {}
+            }
+            return;
+          }
+          var it = e.target.closest('.it');
+          if (it) { openTile(it); }
+        });
+      }
+
+      document.addEventListener('submit', function (e) {
+        var form = e.target, btn = e.submitter;
+        if (!btn || btn.name !== 'do' || form.method !== 'post' || !window.fetch
+            || !window.KorzinaDevice || !KorzinaDevice.available()) { return; }
+        e.preventDefault();
+        var data = new FormData(form);
+        data.append('do', btn.value);
+        fetch(form.action, { method: 'POST', body: data, credentials: 'same-origin',
+                             headers: { Accept: 'application/json' } })
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            if (j.collect) { KorzinaDevice.collect(j.collect); }
+            history.replaceState(null, '', j.back);
+          })
+          .catch(function () {})
+          .then(function () { location.reload(); });
+      });
+
+      document.addEventListener('click', function (e) {
+        if (document.documentElement.getAttribute('data-view') !== 'grid') { return; }
+        if (!e.target.closest('.it')) { closeAllTiles(); }
+      });
+
+      try {
+        var savedPid = sessionStorage.getItem('kz-open');
+        if (savedPid) {
+          sessionStorage.removeItem('kz-open');
+          if (document.documentElement.getAttribute('data-view') === 'grid') {
+            var targetTile = document.getElementById('it-' + savedPid);
+            if (targetTile) { openTile(targetTile); }
+          }
+        }
+      } catch (e) {}
+    })();
+
+    function kzRuns() {
+      var box = document.getElementById('kz-runs');
+      if (!box) { return; }
+      var doneRows = (box.innerHTML.match(/\\brun done\\b/g) || []).length;
+      var payload = null, answer = null;
+      try { payload = JSON.parse(box.getAttribute('data-collect') || 'null'); } catch (e) { payload = null; }
+      if (payload && window.KorzinaDevice && KorzinaDevice.collect) { answer = KorzinaDevice.collect(payload); }
+      var skip = (answer && answer.skip) || {};
+      function tell() {
+        Object.keys(skip).forEach(function (code) {
+          var row = box.querySelector('.run.wait[data-run="' + code + '"] [data-run-words]');
+          if (row) { row.textContent = skip[code]; }
+        });
+      }
+      tell();
+      var started = answer && answer.starting && answer.starting.length;
+      var until = Date.now() + (started ? 25000 : 0), timer = null;
+      function more(j) {
+        var b = window.KorzinaDevice && KorzinaDevice.busy ? KorzinaDevice.busy() : null;
+        if (b && ((b.going || []).length || (b.soon || []).length)) { return true; }
+        return j.going || (!b && Date.now() < until);
+      }
+      function poll() {
+        clearTimeout(timer);
+        fetch(box.getAttribute('data-poll'), { headers: { Accept: 'application/json' }, credentials: 'same-origin' })
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            box.innerHTML = j.html;
+            tell();
+            var newDone = ((j.html || '').match(/\\brun done\\b/g) || []).length;
+            if (newDone !== doneRows) {
+              doneRows = newDone;
+              if (window.kzLiveAgain) { window.kzLiveAgain(); }
+            }
+            if (more(j)) { timer = setTimeout(poll, 1000); }
+          })
+          .catch(function () { if (more({})) { timer = setTimeout(poll, 2000); } });
+      }
+      window.kzRunsChanged = function () { poll(); };
+      if (started || box.getAttribute('data-going')) { timer = setTimeout(poll, 800); }
+      box.addEventListener('click', function (e) {
+        var link = e.target.closest('[data-open-store]');
+        if (link && window.KorzinaDevice && KorzinaDevice.openStore(link.getAttribute('data-open-store'))) {
+          e.preventDefault();
+        }
+      });
+    }
+    if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', kzRuns); }
+    else { kzRuns(); }
+  </script>`
+}) %>

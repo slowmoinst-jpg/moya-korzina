@@ -1,0 +1,19 @@
+<%- include('_head', { title: 'Магазины — Моя корзина' }) %>
+<div class="grid two">
+  <% stores.forEach((s) => { %>
+    <div class="card" style="border-left:3px solid var(--s-<%= s.code %>)">
+      <div class="row">
+        <span class="dot s-<%= s.code %>"></span>
+        <strong><%= s.name %></strong>
+        <span class="spacer"></span>
+        <span class="dim"><%= s.connected ? 'подключён' : 'публичные цены' %></span>
+      </div>
+      <div class="dim" style="margin-top:8px">
+        Доставка: <%= s.delivery_fee ? rub(s.delivery_fee) : 'бесплатно' %>
+        <% if (s.free_delivery_from) { %> · бесплатно от <%= rub(s.free_delivery_from) %><% } %>
+        <% if (s.min_order) { %><br>Мин. заказ: <%= rub(s.min_order) %><% } %>
+      </div>
+    </div>
+  <% }) %>
+</div>
+<%- include('_foot') %>

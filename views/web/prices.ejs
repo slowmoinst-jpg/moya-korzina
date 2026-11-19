@@ -1,0 +1,11 @@
+<%- include('_head', { title: 'Цены — Моя корзина' }) %>
+<div class="card">
+  <div class="dim" style="margin-bottom:8px">Показано <%= rows.length %> из <%= totalRows %> снимков цен</div>
+  <% rows.forEach((r) => { %>
+    <div class="row" style="justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)">
+      <span><span class="dot s-<%= r.store_code %>"></span><b><%= r.store_name %></b> · <%= r.product %></span>
+      <span class="sum" style="<%= !r.in_stock ? 'text-decoration:line-through;color:var(--ink3)' : '' %>"><%= rub(r.price) %></span>
+    </div>
+  <% }) %>
+</div>
+<%- include('_foot') %>
