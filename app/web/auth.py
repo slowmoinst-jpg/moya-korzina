@@ -60,7 +60,16 @@ KEY_SINCE = "since"
 # приложения (apk.download) открыто, как было открыто и само файлом из static:
 # приложение ставят до того, как входят (app/web/apk.py). Выход открыт, потому что
 # выйти можно всегда.
-OPEN_ENDPOINTS = {"auth.login", "auth.enter", "auth.demo", "auth.logout", "static", "apk.download"}
+OPEN_ENDPOINTS = {
+    "auth.login",
+    "auth.enter",
+    "auth.demo",
+    "auth.logout",
+    "spa.index",
+    "spa.assets",
+    "static",
+    "apk.download",
+}
 
 # У двери API СВОЙ замок, и через этот она проходить не должна.
 #
@@ -79,7 +88,15 @@ API_PREFIX = "api."
 
 # Вошедшему в демо закрыта запись: всё, кроме чтения и входа-выхода. Выход и вход нужны, чтобы
 # из демо можно было уйти к своему рабочему месту (или заново нажать «Посмотреть демо»).
-DEMO_WRITE_OK = {"auth.logout", "auth.demo", "auth.login", "auth.enter"}
+DEMO_WRITE_OK = {
+    "auth.logout",
+    "auth.demo",
+    "auth.login",
+    "auth.enter",
+    "api.spa_auth_login",
+    "api.spa_auth_demo",
+    "api.spa_auth_logout",
+}
 DEMO_READ_ONLY = "Это демо — изменения не сохраняются"
 
 
@@ -135,10 +152,11 @@ def _guard_signed_in(endpoint: str):
 
 
 def install(flask_app: Flask) -> None:
-    """Повесить на приложение вход, выбор базы и снятие её после запроса."""
-    from app.web.login import bp as login_bp
+    """Повесить на приложение выбор базы по сессии и снятие её после каждого запроса.
 
-    flask_app.register_blueprint(login_bp)
+    Старый Jinja-экран входа (login_bp) снят: `/login` и все экраны отдаёт единый React SPA,
+    а вход/демо/выход работают через `/api/auth/*` (app/web/spa_api.py).
+    """
 
     @flask_app.before_request
     def _pick_workspace():
@@ -174,13 +192,17 @@ def install(flask_app: Flask) -> None:
             users.deactivate()
             log.info("вход по ссылке: секрет не подошёл (%s)", request.path)
 
-        if endpoint in OPEN_ENDPOINTS or endpoint.startswith(API_PREFIX):
+        if (
+            endpoint in OPEN_ENDPOINTS
+            or endpoint.startswith(API_PREFIX)
+            or request.path.startswith("/api/")
+        ):
             return None
         # На запрос данных отвечаем отказом, на обычную страницу — переводом ко
         # входу: перевод в ответ на запрос из скрипта выглядел бы как успех.
         if request.accept_mimetypes.best == "application/json":
             return {"ok": False, "error": "нужно войти"}, 401
-        return redirect(url_for("auth.login", next=request.path))
+        return redirect("/login")
 
     @flask_app.teardown_request
     def _drop_workspace(exc):                   # noqa: ARG001 — исключение нас не касается
@@ -223,7 +245,7 @@ def needs_phone(view):
     @functools.wraps(view)
     def guard(*args, **kwargs):
         if not getattr(g, "phone", None):
-            return redirect(url_for("auth.login", next=request.path))
+            return redirect("/login")
         return view(*args, **kwargs)
     return guard
 

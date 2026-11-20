@@ -25,14 +25,9 @@ import logging
 import threading
 import time
 
-from flask import Blueprint, redirect, render_template, request, url_for
-
-from app import users
-from app.web import auth
+from flask import request
 
 log = logging.getLogger(__name__)
-
-bp = Blueprint("auth", __name__)
 
 # Предел попыток входа: 5 отказов за 15 минут с ОДНОГО АДРЕСА — на все номера
 # сразу, и 20 отказов за те же 15 минут на всю установку. Адресный предел — жёсткий
@@ -216,106 +211,8 @@ def _pause_before_check() -> None:
         time.sleep(INSTALL_PAUSE_SEC)
 
 
-def _login_page(next_path: str, typed: str, error: str | None, status: int = 400):
-    """Страница входа."""
-    return render_template("login.html", next=next_path, error=error, typed=typed,
-                           pin_required=users.pin_is_set()), status
-
-
-# ---------- вход ----------
-
-@bp.get("/login")
-def login():
-    if auth.current_phone():
-        return redirect(_safe_next(request.args.get("next")))
-    return render_template("login.html", next=_safe_next(request.args.get("next")),
-                           error=None, typed="", pin_required=users.pin_is_set())
-
-
-def _signed_in(phone: str, next_path: str):
-    """Верный номер: рабочее место заводится, сессия открывается.
-
-    Счёт неверных попыток адреса здесь НЕ обнуляется: иначе перебор PIN установки обходил бы
-    предел, входя между пачками догадок. Окно в 15 минут истекает само (_recent).
-    """
-    users.open_workspace(phone)
-    auth.sign_in(phone)
-    users.deactivate()                 # базу на этот запрос снимаем: её выберет before_request
-    log.info("вход: %s", users.display(phone))
-    # Товары из чеков, ещё не привязанные к единой базе, находят себя в ней фоном
-    # (app/catalog/link.py): привязанные не трогаются, вход не ждёт.
-    try:
-        from app.catalog import link
-
-        link.link_soon(phone)
-    except Exception:  # noqa: BLE001 — сопоставление не повод не пустить человека
-        log.exception("единая база: не удалось запустить сопоставление при входе")
-    return redirect(next_path)
-
-
-@bp.post("/login")
-def enter():
-    typed = request.form.get("phone", "")
-    next_path = _safe_next(request.form.get("next"))
-    address_fails = failure_counts()[0]
-
-    # Адресный предел — жёсткий отказ: с одного места перебор не продолжается.
-    if address_fails >= FAIL_LIMIT:
-        log.warning("вход: предел попыток с адреса %s (%d отказов за 15 минут), "
-                    "отказ без проверки", _address(), address_fails)
-        return _login_page(next_path, typed, TOO_MANY, 429)
-
-    # PIN установки проверяется ДО номера: посторонний, не знающий PIN, не должен узнавать
-    # по разнице ответов, есть ли такой номер в установке и разрешён ли он. Общий счёт
-    # установки владельца не запирает, а только замедляет сверку (_pause_before_check):
-    # иначе четыре чужих адреса держали бы владельца снаружи его же установки.
-    if users.pin_is_set():
-        attempt = reserve_attempt()
-        if attempt is None:
-            log.warning("вход: предел попыток с адреса %s, отказ перед сверкой PIN установки",
-                        _address())
-            return _login_page(next_path, typed, TOO_MANY, 429)
-        _pause_before_check()
-        if not users.check_pin(request.form.get("pin", "")):
-            log.info("вход отклонён: неверный PIN")
-            return _login_page(next_path, typed, BAD_PIN, 400)
-        release_attempt(attempt)
-
-    phone, complaint = users.resolve_login(typed)
-    if not phone:
-        note_failure()
-        return _login_page(next_path, typed, complaint, 400)
-
-    return _signed_in(phone, next_path)
-
-
-@bp.post("/demo")
-def demo():
-    """Витрина. Заводится и наливается при первом открытии (и при смене версии витрины).
-
-    Входят в неё только отсюда и только для чтения: запись закрыта на двери (auth.py).
-    """
-    users.open_workspace(users.DEMO)
-    _fill_demo()
-    users.deactivate()
-    auth.sign_in(users.DEMO)
-    return redirect("/")
-
-
-@bp.post("/logout")
-def logout():
-    auth.sign_out()
-    return redirect(url_for("auth.login"))
-
-
 def _fill_demo() -> None:
-    """Налить демо, если оно не налито этой версией (app/demo.py). Тихо: пустая витрина не повод падать.
-
-    Зовётся при открытом рабочем месте demo, на каждое «Посмотреть демо»: налитая витрина
-    узнаётся двумя лёгкими запросами, и ничего не происходит. Вымышленный набор на случай
-    пустой единой базы уже внутри ensure. Модуль подключается внутри функции: имя demo
-    здесь занято обработчиком выше.
-    """
+    """Налить демо, если оно не налито этой версией (app/demo.py). Тихо: пустая витрина не повод падать."""
     try:
         from app import demo as showcase
 
@@ -324,4 +221,18 @@ def _fill_demo() -> None:
         log.warning("демо-данные не налились (%s)", exc)
 
 
-__all__ = ["bp"]
+__all__ = [
+    "FAIL_LIMIT",
+    "INSTALL_FAIL_LIMIT",
+    "FAIL_WINDOW_SEC",
+    "INSTALL_PAUSE_SEC",
+    "TOO_MANY",
+    "BAD_PIN",
+    "_safe_next",
+    "failure_counts",
+    "reserve_attempt",
+    "release_attempt",
+    "note_failure",
+    "_pause_before_check",
+    "_fill_demo",
+]

@@ -1,4 +1,4 @@
-﻿# Выкладка «Моей корзины» на сервер одной командой.
+# Выкладка «Моей корзины» на сервер одной командой.
 # Использование:  .\deploy.ps1            — упаковать рабочее дерево, собрать образ на сервере, перезапустить
 #                 .\deploy.ps1 -Test      — сначала прогнать тесты, выкладывать только если зелёные
 #                 .\deploy.ps1 -Force     — выложить, даже если идёт обход каталога
@@ -41,13 +41,17 @@ if ($Test) {
     if ($LASTEXITCODE -ne 0) { Write-Host 'Тесты красные, выкладка отменена' -ForegroundColor Red; exit 1 }
 }
 
-# Ровно то, что нужно образу: см. COPY в Dockerfile. Без .git, .venv, тестов, базы и кэша.
+# Ровно то, что нужно образу: см. COPY в Dockerfile. Без .git, .venv, node_modules, dist, тестов, базы и кэша.
 $files = @('Dockerfile', '.dockerignore', 'requirements.txt', 'config.yaml', 'README.md', 'DEPLOY.md',
+           'package.json', 'vite.config.ts', 'tsconfig.json', 'index.html', 'client', 'src',
            'app', 'tools', 'docs/grab.min.txt', 'docs/grab-prices.min.txt', 'docs/hand.min.txt',
            'data/fallback_prices.csv', 'data/seed_products.csv', 'data/seed_offers.csv', 'data/seed_receipt.csv')
+if (Test-Path 'package-lock.json') {
+    $files += 'package-lock.json'
+}
 $archive = Join-Path $env:TEMP 'korzina-src.tgz'
 Write-Host 'Упаковываю рабочее дерево...' -ForegroundColor Cyan
-& $tar -czf $archive --exclude='__pycache__' --exclude='*.pyc' @files
+& $tar -czf $archive --exclude='__pycache__' --exclude='*.pyc' --exclude='node_modules' --exclude='dist' @files
 if ($LASTEXITCODE -ne 0) { throw 'tar не собрал архив' }
 
 # Две выкладки могут идти одновременно (несколько сессий работают в одном репозитории

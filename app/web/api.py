@@ -20,10 +20,14 @@ bp = Blueprint("api", __name__, url_prefix="/api")
 
 
 def _cors_response(resp):
-    origin = request.headers.get("Origin") or "*"
-    resp.headers["Access-Control-Allow-Origin"] = origin
+    origin = request.headers.get("Origin")
+    if origin:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+    else:
+        resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, Accept"
     resp.headers["Access-Control-Max-Age"] = "600"
     resp.headers["Vary"] = "Origin"
     return resp
@@ -37,11 +41,15 @@ def api_options(_subpath=""):
 
 
 def _workplace(body: dict) -> str:
-    """Определить рабочее место: из сессии Flask или по замку (workplace + secret)."""
+    """Определить рабочее место: замок (workplace + secret), сессия Flask или Bearer-токен SPA."""
     if body.get("workplace") and body.get("secret"):
         return api._unlock(body)
 
     phone = auth.current_phone()
+    if not phone:
+        from app.web import spa_api
+
+        phone = spa_api.phone_from_bearer()
     if phone:
         users.activate(phone)
         return phone
@@ -144,20 +152,44 @@ def store_sync():
             jsonify({"ok": False, "error": str(exc)}), 500))
 
 
+def _accept_handoff(chain: str, text: str) -> dict:
+    """Принять вход, снятый на телефоне/закладкой, и сохранить его в хранилище сети."""
+    from app import handoff
+    from app.shopbrowser import store as shopstore
+
+    try:
+        state = handoff.parse(chain, text)
+    except handoff.Rejected as why:
+        return {"ok": False, "error": str(why)}
+
+    entered = handoff.looks_logged_in(chain, state)
+    if entered is False:
+        return {
+            "ok": False,
+            "error": (
+                "В переданном нет куки входа этой сети — похоже, на телефоне вы "
+                "ещё не вошли. Войдите в магазине на телефоне и повторите."
+            ),
+        }
+
+    shopstore.save(chain, state)
+    store_accounts.mark_connected(chain)
+    note = "Вход принят с телефона. " + handoff.summary(state)
+    if entered is None:
+        note += (
+            " Проверить, что это именно вход, приложение не смогло: имя куки входа у "
+            "этой сети нам достоверно неизвестно."
+        )
+    return {"ok": True, "saved": True, "note": note, "store": chain}
+
+
 @bp.route("/handoff", methods=["POST"])
 def handoff_login():
     """Вход в магазин, снятый приложением на телефоне: {store, cookies: [{name, value}]}.
 
-    Раньше телефон слал куки входа в АДРЕСЕ (/cabinet?vhod=…&phone=…): адрес оседает
-    в журналах сервера и прокси, то есть сессия магазина хранилась бы там открытым
-    текстом, а номер из адреса переключал базу — чужой вход можно было положить в
-    чужое рабочее место. Теперь куки едут телом, а рабочее место — только то, чья
-    сессия (приложение на телефоне входит в «Мою корзину» тем же номером) или чей
-    секрет пришёл.
+    Куки едут телом, а рабочее место — только то, чья сессия/Bearer или чей секрет пришёл.
     """
     import json as _json
-
-    from app.web.screens import cabinet
 
     body = request.get_json(silent=True) if request.is_json else None
     if not isinstance(body, dict):
@@ -170,7 +202,7 @@ def handoff_login():
     try:
         _authenticate(body)
         payload = {k: v for k, v in body.items() if k not in api.AUTH_FIELDS}
-        res = cabinet._paste(chain, _json.dumps(payload, ensure_ascii=False))
+        res = _accept_handoff(chain, _json.dumps(payload, ensure_ascii=False))
         return _cors_response(make_response(jsonify(res), 200 if res.get("ok") else 400))
     except api.Refused as err:
         log.warning("отказ API /api/handoff: %s (%s)", err.reason, request.remote_addr)
@@ -486,6 +518,12 @@ def device_board():
     Форма запроса: {workplace, secret}.
     """
     return _device_call("board", _board_for_device)
+
+
+# Подключаем маршруты единого React SPA один раз на уровне модуля (повторные create_app в тестах безопасны).
+from app.web import spa_api as _spa_api  # noqa: E402
+
+_spa_api.register_routes(bp)
 
 
 def install(flask_app):

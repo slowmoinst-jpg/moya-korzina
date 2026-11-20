@@ -115,35 +115,3 @@ def web(tmp_path, monkeypatch):
     users.deactivate()
 
 
-def test_a_move_starts_refreshing_the_basket_prices(web, monkeypatch):
-    """Сменил адрес — цены последней корзины обновляются сами, ход на «Корзине»."""
-    from app.web.screens import basket as basket_screen
-
-    from conftest import sign_in
-
-    sign_in(web, PHONE)
-    users.open_workspace(PHONE)
-    milk = repo.upsert_product(Product(id=None, name="Молоко", unit="pcs"))
-    basket = repo.create_basket("Неделя 40")
-    repo.set_basket_item(basket, milk, 2)
-
-    started = threading.Event()
-    calls: list[tuple[int, str]] = []
-
-    def fake_start(basket_id, kind, items):
-        calls.append((basket_id, kind))
-        started.set()
-
-    monkeypatch.setattr(basket_screen, "_start_job", fake_start)
-
-    answer = web.post("/address", data={"address": "Екатеринбург, улица Малышева 51"})
-    assert answer.status_code == 302
-    assert f"fresh={basket}" in answer.headers["Location"]
-    assert calls == [(basket, "fresh")]
-
-    page = web.get(answer.headers["Location"]).data.decode("utf-8")
-    assert "уже обновляются по новому адресу" in page and "Неделя 40" in page
-
-    # Тот же адрес ещё раз — не переезд, и лишнего обновления нет.
-    web.post("/address", data={"address": "Екатеринбург, улица Малышева 51"})
-    assert calls == [(basket, "fresh")]

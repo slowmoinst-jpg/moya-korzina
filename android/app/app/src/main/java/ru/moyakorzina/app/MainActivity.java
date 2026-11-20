@@ -1169,8 +1169,13 @@ public class MainActivity extends Activity {
      * Обычная проверка строки: ни WebView, ни его потоков не трогает, поэтому её
      * можно звать откуда угодно, в том числе с потока моста (JavaBridge).
      */
+    private static final String LOCAL_UI_PREFIX = "file:///android_asset/ui/";
+
     private static boolean isOurs(String url) {
-        return url != null && (url.equals(SERVER) || url.startsWith(SERVER + "/"));
+        if (url == null) return false;
+        return url.equals(SERVER)
+            || url.startsWith(SERVER + "/")
+            || url.startsWith(LOCAL_UI_PREFIX);
     }
 
     /**
@@ -1420,6 +1425,20 @@ public class MainActivity extends Activity {
         jar.setAcceptThirdPartyCookies(web, true);
 
         web.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
+                if (req == null || req.getUrl() == null) return false;
+                String scheme = req.getUrl().getScheme();
+                if ("http".equalsIgnoreCase(scheme)
+                        || "https".equalsIgnoreCase(scheme)
+                        || "file".equalsIgnoreCase(scheme)) {
+                    // Все веб-переходы (включая Магнит и редиректы входа) остаются строго внутри приложения.
+                    return false;
+                }
+                // Блокируем intent://, magnit:// и прочие диплинки, чтобы сеть не выкидывала из приложения.
+                return true;
+            }
+
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);

@@ -99,6 +99,11 @@ export interface StoreBreakdown {
   store_name: string;
   subtotal: number;
   delivery: number;
+  service_fee: number;
+  promo_discount: number;
+  promo_label: string | null;
+  bonus_applied: number;
+  bonus_available: number;
   discount: number;
   total: number;
   card_id: number | null;
@@ -106,6 +111,8 @@ export interface StoreBreakdown {
   offer_id: number | null;
   lines: VariantLine[];
   below_min_order: boolean;
+  address_checked: string | null;
+  live_verified: boolean;
 }
 
 export interface Variant {
@@ -150,6 +157,36 @@ export interface StoreConnection {
   connected: boolean;
   again: boolean;
   last: string | null;
+  mode?: 'session' | 'manual';
+}
+
+export interface StorePerk {
+  store_code: string;
+  promo_label: string | null;
+  promo_percent: number;
+  promo_rub: number;
+  bonus_balance: number;
+  bonus_max_pct: number;
+}
+
+export interface StoreCartQuote {
+  store_code: string;
+  status: 'idle' | 'collecting' | 'ready' | 'error';
+  stamp: string | null;
+  updated_at: string | null;
+  address: string | null;
+  available_count: number;
+  total_count: number;
+  missing_names: string[];
+  goods_total: number | null;
+  delivery_fee: number | null;
+  service_fee: number;
+  promo_discount: number;
+  promo_label: string | null;
+  bonus_balance: number;
+  bonus_max_use: number;
+  store_total: number | null;
+  note: string | null;
 }
 
 export interface Workspace {
@@ -169,6 +206,9 @@ export interface Workspace {
   history: PurchaseRow[];
   receipts: ReceiptRecord[];
   connections: Map<string, StoreConnection>;
+  storeQuotes: Map<string, StoreCartQuote>;
+  storePerks: Map<string, StorePerk>;
+  applyBonuses: boolean;
   lastBasketId: number | null;
   repeated: { key: string; basket: number } | null;
   fnsConnected: boolean;

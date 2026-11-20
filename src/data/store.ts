@@ -37,6 +37,8 @@ export const PHONE_CHAINS = [
   'metro',
   'perekrestok',
   'fixprice',
+  'vprok',
+  'monetka',
 ];
 
 export const ORDERABLE_STORES = new Set([
@@ -47,6 +49,10 @@ export const ORDERABLE_STORES = new Set([
   'dixy',
   'samokat',
   'metro',
+  'perekrestok',
+  'fixprice',
+  'vprok',
+  'monetka',
 ]);
 
 export const SEED_STORES: Store[] = [
@@ -57,10 +63,10 @@ export const SEED_STORES: Store[] = [
   { id: 5, code: 'dixy', name: 'Дикси', delivery_fee: 149, free_delivery_from: 2000, min_order: 500, connector_type: 'dixy' },
   { id: 6, code: 'samokat', name: 'Самокат', delivery_fee: 0, free_delivery_from: 0, min_order: 0, connector_type: 'samokat' },
   { id: 7, code: 'metro', name: 'METRO', delivery_fee: 0, free_delivery_from: 5000, min_order: 1500, connector_type: 'metro' },
-  { id: 8, code: 'perekrestok', name: 'Перекрёсток', delivery_fee: 199, free_delivery_from: 3000, min_order: 800, connector_type: 'stub' },
-  { id: 9, code: 'fixprice', name: 'FixPrice', delivery_fee: 199, free_delivery_from: 2500, min_order: 500, connector_type: 'stub' },
-  { id: 10, code: 'vprok', name: 'Впрок', delivery_fee: 199, free_delivery_from: 3000, min_order: 800, connector_type: 'stub' },
-  { id: 11, code: 'monetka', name: 'Монетка', delivery_fee: 199, free_delivery_from: 2500, min_order: 500, connector_type: 'stub' },
+  { id: 8, code: 'perekrestok', name: 'Перекрёсток', delivery_fee: 199, free_delivery_from: 3000, min_order: 800, connector_type: 'perekrestok' },
+  { id: 9, code: 'fixprice', name: 'FixPrice', delivery_fee: 199, free_delivery_from: 2500, min_order: 500, connector_type: 'fixprice' },
+  { id: 10, code: 'vprok', name: 'Впрок', delivery_fee: 199, free_delivery_from: 3000, min_order: 800, connector_type: 'vprok' },
+  { id: 11, code: 'monetka', name: 'Монетка', delivery_fee: 199, free_delivery_from: 2500, min_order: 500, connector_type: 'monetka' },
 ];
 
 export const SEARCH_URL_TEMPLATES: Record<string, string> = {
@@ -71,6 +77,10 @@ export const SEARCH_URL_TEMPLATES: Record<string, string> = {
   metro: 'https://online.metro-cc.ru/search?q={q}',
   vkusvill: 'https://vkusvill.ru/search/?q={q}',
   lenta: 'https://lenta.com/search/?searchText={q}',
+  perekrestok: 'https://www.perekrestok.ru/cat/search?search={q}',
+  fixprice: 'https://fix-price.com/catalog?q={q}',
+  vprok: 'https://www.vprok.ru/catalog/search?text={q}',
+  monetka: 'https://monetka.ru/catalog?search={q}',
 };
 
 const STORE_BY_CODE = new Map(SEED_STORES.map((s) => [s.code, s]));
@@ -464,6 +474,45 @@ function buildWorkspace(phone: string): Workspace {
     history,
     receipts,
     connections,
+    storeQuotes: new Map(),
+    storePerks: isDemo
+      ? new Map([
+          [
+            'vkusvill',
+            {
+              store_code: 'vkusvill',
+              promo_label: 'Разнообразное питание',
+              promo_percent: 5,
+              promo_rub: 0,
+              bonus_balance: 85,
+              bonus_max_pct: 100,
+            },
+          ],
+          [
+            'magnit',
+            {
+              store_code: 'magnit',
+              promo_label: 'Купон Магнит Плюс',
+              promo_percent: 0,
+              promo_rub: 50,
+              bonus_balance: 140,
+              bonus_max_pct: 50,
+            },
+          ],
+          [
+            'lenta',
+            {
+              store_code: 'lenta',
+              promo_label: 'Карта №1',
+              promo_percent: 5,
+              promo_rub: 0,
+              bonus_balance: 90,
+              bonus_max_pct: 50,
+            },
+          ],
+        ])
+      : new Map(),
+    applyBonuses: true,
     lastBasketId: baskets[0]?.id ?? null,
     repeated: null,
     fnsConnected: isDemo,

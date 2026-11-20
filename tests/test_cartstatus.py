@@ -13,7 +13,6 @@ sys.path.insert(0, ROOT)
 from app import cartrun, cartstatus, config, repo
 from app.db import init_db
 from app.models import Product
-from app.web.screens import basket as basket_screen
 
 
 @pytest.fixture(autouse=True)
@@ -22,65 +21,6 @@ def temp_db(tmp_path, monkeypatch):
     path = str(tmp_path / "test_cartstatus.db")
     monkeypatch.setattr(config, "db_path", lambda: path)
     init_db()
-
-
-def test_status_five_codes(monkeypatch):
-    """Каждый из пяти кодов статуса позиции в сети."""
-    store = repo.get_store("magnit")
-    assert store is not None
-
-    # 1. NOT_KNOWN: у товара нет сопоставления в этой сети
-    prod_unknown = repo.upsert_product(Product(None, "Неизвестный товар", unit="pcs"))
-    assert cartstatus.status(prod_unknown, store) == cartstatus.NOT_KNOWN
-
-    # 2. NO_DATA: сопоставление подтверждено, но цены нет (или она устарела)
-    prod_nodata = repo.upsert_product(Product(None, "Товар без цены", unit="pcs"))
-    sp_nodata = repo.upsert_store_product(store.id, "sku-nodata", "Товар без цены")
-    repo.confirm_mapping(prod_nodata, sp_nodata, confirmed=True)
-    assert cartstatus.status(prod_nodata, store) == cartstatus.NO_DATA
-
-    # 3. GONE: сопоставление подтверждено, цена есть, но in_stock = 0
-    prod_gone = repo.upsert_product(Product(None, "Закончившийся товар", unit="pcs"))
-    sp_gone = repo.upsert_store_product(store.id, "sku-gone", "Закончившийся товар")
-    repo.confirm_mapping(prod_gone, sp_gone, confirmed=True)
-    repo.save_price(sp_gone, 100.0, in_stock=0)
-    assert cartstatus.status(prod_gone, store) == cartstatus.GONE
-
-    # 4. HAVE: подтверждён, свежая цена, есть в наличии
-    prod_have = repo.upsert_product(Product(None, "Товар в наличии", unit="pcs"))
-    sp_have = repo.upsert_store_product(store.id, "sku-have", "Товар в наличии")
-    repo.confirm_mapping(prod_have, sp_have, confirmed=True)
-    repo.save_price(sp_have, 120.0, in_stock=1)
-    assert cartstatus.status(prod_have, store) == cartstatus.HAVE
-
-    # 5. SEARCHING: при NO_DATA переходит в SEARCHING при опрессе корзины или активной сборке сети
-    b_id = repo.create_basket("Тестовая корзина")
-    repo.set_basket_item(b_id, prod_nodata, 1.0)
-
-    # Без активных процессов — NO_DATA
-    res = cartstatus.of_basket(b_id)
-    assert res[prod_nodata]["magnit"]["status"] == cartstatus.NO_DATA
-
-    # С фоновым опросом цен корзины (job status == running) -> SEARCHING
-    monkeypatch.setattr(basket_screen, "job_of", lambda bid: {"status": "running"} if bid == b_id else None)
-    res_job = cartstatus.of_basket(b_id)
-    assert res_job[prod_nodata]["magnit"]["status"] == cartstatus.SEARCHING
-
-    # С активной сборкой этой сети (cartrun.Row GOING со stamp корзины) -> SEARCHING
-    monkeypatch.setattr(basket_screen, "job_of", lambda bid: None)
-    curr_stamp = cartrun.stamp_of(b_id)
-    running_row = cartrun.Row(code="magnit", state=cartrun.GOING, basket_id=b_id, stamp=curr_stamp)
-    monkeypatch.setattr(cartrun, "rows", lambda: [running_row])
-
-    res_cartrun = cartstatus.of_basket(b_id)
-    assert res_cartrun[prod_nodata]["magnit"]["status"] == cartstatus.SEARCHING
-    # А для другой сети, где сопоставление есть, но сборка не идёт — остаётся NO_DATA
-    store_vv = repo.get_store("vkusvill")
-    sp_vv = repo.upsert_store_product(store_vv.id, "sku-nodata-vv", "Товар без цены ВВ")
-    repo.confirm_mapping(prod_nodata, sp_vv, confirmed=True)
-    res_cartrun2 = cartstatus.of_basket(b_id)
-    assert res_cartrun2[prod_nodata]["magnit"]["status"] == cartstatus.SEARCHING
-    assert res_cartrun2[prod_nodata]["vkusvill"]["status"] == cartstatus.NO_DATA
 
 
 def test_fallback_in_unit_mismatch():

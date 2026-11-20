@@ -37,9 +37,6 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JAVA = os.path.join(ROOT, "android", "app", "app", "src", "main", "java",
                     "ru", "moyakorzina", "app", "MainActivity.java")
 GRAB = os.path.join(ROOT, "app", "web", "static", "fns-grab.js")
-DEVICE = os.path.join(ROOT, "app", "web", "static", "korzina-device.js")
-TEMPLATE = os.path.join(ROOT, "app", "web", "templates", "phone", "receipts.html")
-PHONE = os.path.join(ROOT, "app", "web", "phone", "receipts.py")
 
 # Первое действие метода моста: проверка адреса и пустой ответ по типу метода.
 GUARD = re.compile(r'\s*if\s*\(\s*!bridgeAllowed\(\)\s*\)\s*return\b([^;]*);')
@@ -153,7 +150,7 @@ def annotated_methods(src: str) -> list[tuple[str, str]]:
 
 # ---------- файлы на месте ----------
 def test_the_window_has_all_its_parts():
-    for path in (JAVA, GRAB, DEVICE, TEMPLATE, PHONE):
+    for path in (JAVA, GRAB):
         assert os.path.exists(path), f"нет файла: {path}"
 
 
@@ -392,29 +389,3 @@ def test_the_grab_script_takes_the_session_and_returns_with_the_key():
         assert piece in js, f"в сборщике нет «{piece}»"
     assert "document." not in js, \
         "сборщик трогает document: это не закладка, а обычный файл на странице"
-
-
-def test_the_device_wrapper_opens_the_cabinet_only_through_the_bridge():
-    js = source(DEVICE)
-    assert "function openFns()" in js, "в обёртке моста нет openFns"
-    assert "typeof k.openFns !== 'function'" in js, \
-        "обёртка не проверяет, умеет ли сборка открывать кабинет"
-    assert "return false;" in js
-    assert "openFns: openFns" in js, "openFns не отдан странице"
-
-
-# ---------- телефонный экран ----------
-def test_the_phone_page_has_the_button_and_the_honest_hint():
-    page = source(TEMPLATE)
-    assert "data-open-fns" in page, "на экране чеков нет кнопки входа в кабинет"
-    assert "Войти в кабинет ФНС" in page, "у кнопки нет подписи"
-    assert "Откройте приложение" in page, \
-        "вне приложения нет честной подсказки «откройте приложение»"
-    assert "KorzinaDevice.openFns()" in page, "клик не зовёт мост"
-    assert 'id="keys"' in page, "рядом с подсказкой нет поля ключа"
-
-
-def test_the_phone_screen_passes_on_phone_to_the_template():
-    py = source(PHONE)
-    assert re.search(r"on_phone\s*=\s*device\.on_phone\(\)", py), \
-        "receipts.py не передаёт on_phone — подпись не узнает приложение"

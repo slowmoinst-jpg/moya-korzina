@@ -334,34 +334,6 @@ def test_bookmarklet_carries_a_slot_for_the_app_address():
     assert "__APP_URL__" in built, "закладку пересобрать: python tools/build_bookmarklet.py"
 
 
-def test_app_address_is_put_into_the_bookmarklet_encoded(tmp_path, monkeypatch):
-    """Адрес уезжает в закладку ЗАКОДИРОВАННЫМ: она сама — javascript:-ссылка.
-
-    Незакодированный адрес разорвал бы её на первом же двоеточии, и закладка
-    молча перестала бы работать: браузер не жалуется, он просто ничего не делает.
-    Проверка переехала с app/ui/screens/fns.py на app/web/screens/receipts.py
-    вместе с интерфейсом (17.09.2026).
-    """
-    from app.web.screens import receipts
-
-    # BOOKMARKLET считается на импорте от config.ROOT, поэтому подменяем его сам,
-    # а не корень: подмена корня до него уже не доходит.
-    fake = tmp_path / "grab.min.txt"
-    fake.write_text('javascript:var%20APP%20%3D%20%22__APP_URL__%22%3B', encoding="utf-8")
-    monkeypatch.setattr(receipts, "BOOKMARKLET", str(fake))
-
-    from app.web import create_app
-    with create_app().test_request_context("/receipts", base_url="http://203.0.113.7/"):
-        out = receipts._bookmarklet()
-
-    assert out.startswith("javascript:")
-    assert "__APP_URL__" not in out, "заглушка обязана быть заменена"
-    assert "%3A%2F%2F" in out, "адрес обязан уехать закодированным, иначе ссылка порвётся"
-    # Закладка ходит кукой, а не адресом с номером: секрет ссылки (t, app/users.py)
-    # ей не нужен вовсе — его нет в адресе ни с человеком, ни без него.
-    assert "%3Ft%3D" not in out, "секрет ссылки снова подставлен в закладку"
-
-
 # ---------- чеки, состав которых ФНС уже не хранит ----------
 def test_receipt_without_fiscal_data_is_marked_and_never_asked_again(cabinet_server, db):
     """Живой кабинет на чеки 2018 года отвечает 422 receipt.fiscal.data.unavailable.

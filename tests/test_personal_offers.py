@@ -140,9 +140,9 @@ def test_cabinet_ignores_a_phone_in_the_address(web, tmp_path):
     """
     from app import users
 
-    web.post("/logout")            # проверяем адрес, а не куку вошедшего
-    web.get("/cabinet?store=magnit&phone=79990000999&vhod=e30")
+    web.post("/api/auth/logout")            # проверяем адрес, а не куку вошедшего
+    web.get("/?store=magnit&phone=79990000999&vhod=e30")
     assert not users.exists("79990000999"), "номер из адреса не заводит и не открывает чужую базу"
 
-    web.get("/cabinet?store=magnit&phone=79990000999&vhod=e30&t=poddelka")
+    web.get("/?store=magnit&phone=79990000999&vhod=e30&t=poddelka")
     assert not users.exists("79990000999"), "выдуманный секрет завёл чужое рабочее место"

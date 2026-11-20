@@ -64,15 +64,3 @@ def test_stores_directory_is_seeded_in_every_workspace(workspaces):
     assert {s.code for s in repo.list_stores()} >= {"magnit", "lenta", "vkusvill"}
 
 
-def test_login_is_not_a_menu_screen():
-    """Вход — не пункт меню, а дверь: в навигации его быть не должно.
-
-    Проверка переехала со старого app/ui/main.SCREENS на app/web/views.SCREENS
-    вместе с интерфейсом (17.09.2026). Смысл прежний: человек, уже вошедший,
-    не должен видеть «Вход» среди экранов, а первым в меню стоит «Главная».
-    """
-    from app.web.views import SCREENS
-
-    titles = [s.title for s in SCREENS]
-    assert "Вход" not in titles
-    assert titles and titles[0] == "Главная"

@@ -4,6 +4,8 @@ import type {
   Offer,
   Store,
   StoreBreakdown,
+  StoreCartQuote,
+  StorePerk,
   Variant,
   VariantLine,
 } from './types.js';
@@ -23,8 +25,10 @@ export const KIND_BY_STORE: Record<string, 'link' | 'items' | 'search' | 'list'>
   dixy: 'items',
   samokat: 'search',
   metro: 'items',
-  perekrestok: 'list',
-  fixprice: 'list',
+  perekrestok: 'items',
+  fixprice: 'items',
+  vprok: 'items',
+  monetka: 'items',
 };
 
 export const HANDOVER_PENALTY_RUB: Record<string, number> = {
@@ -101,7 +105,79 @@ function isAvailable(line: BasketLine, store: Store): boolean {
   return line.in_stock[store.code] !== false;
 }
 
-function makeCostFn(store: Store, offers: Offer[], handover = 0): (subtotalCents: number) => number {
+interface StorePricingExtras {
+  quote?: StoreCartQuote | null;
+  perk?: StorePerk | null;
+  applyBonuses?: boolean;
+}
+
+function computeStorePromoAndBonus(
+  subtotal: number,
+  extras?: StorePricingExtras
+): {
+  promoDiscount: number;
+  promoLabel: string | null;
+  bonusApplied: number;
+  bonusAvailable: number;
+  serviceFee: number;
+  deliveryOverride: number | null;
+} {
+  const quote = extras?.quote ?? null;
+  const perk = extras?.perk ?? null;
+  const applyBonuses = extras?.applyBonuses !== false;
+
+  const serviceFee = quote && quote.service_fee > 0 ? round2(quote.service_fee) : 0;
+  const deliveryOverride =
+    quote && quote.status === 'ready' && quote.delivery_fee !== null
+      ? round2(Math.max(0, quote.delivery_fee))
+      : null;
+
+  let promoDiscount = 0;
+  let promoLabel: string | null = null;
+  if (quote && quote.status === 'ready' && quote.promo_discount > 0) {
+    promoDiscount = Math.min(subtotal, round2(quote.promo_discount));
+    promoLabel = quote.promo_label || 'Скидка магазина';
+  } else if (perk) {
+    const pctDisc = perk.promo_percent > 0 ? (subtotal * perk.promo_percent) / 100 : 0;
+    const rubDisc = perk.promo_rub > 0 ? perk.promo_rub : 0;
+    promoDiscount = Math.min(subtotal, round2(pctDisc + rubDisc));
+    if (promoDiscount > 0) {
+      promoLabel =
+        perk.promo_label ||
+        (perk.promo_percent > 0 ? `Спецпредложение −${perk.promo_percent}%` : 'Скидка сети');
+    }
+  }
+
+  const afterPromo = Math.max(0, round2(subtotal - promoDiscount));
+  const quoteBonus = quote && quote.bonus_balance > 0 ? quote.bonus_balance : 0;
+  const perkBonus = perk && perk.bonus_balance > 0 ? perk.bonus_balance : 0;
+  const bonusAvailable = round2(Math.max(quoteBonus, perkBonus));
+
+  let bonusApplied = 0;
+  if (applyBonuses && bonusAvailable > 0 && afterPromo > 0) {
+    const maxPct = perk && perk.bonus_max_pct > 0 ? perk.bonus_max_pct : 50;
+    const maxByPct = round2((afterPromo * Math.min(100, maxPct)) / 100);
+    const maxByQuote =
+      quote && quote.bonus_max_use > 0 ? round2(quote.bonus_max_use) : Number.POSITIVE_INFINITY;
+    bonusApplied = round2(Math.min(bonusAvailable, maxByPct, maxByQuote, afterPromo));
+  }
+
+  return {
+    promoDiscount,
+    promoLabel,
+    bonusApplied,
+    bonusAvailable,
+    serviceFee,
+    deliveryOverride,
+  };
+}
+
+function makeCostFn(
+  store: Store,
+  offers: Offer[],
+  handover = 0,
+  extras?: StorePricingExtras
+): (subtotalCents: number) => number {
   const freeFrom = cents(store.free_delivery_from);
   const fee = cents(store.delivery_fee);
   const minOrder = cents(store.min_order);
@@ -114,19 +190,36 @@ function makeCostFn(store: Store, offers: Offer[], handover = 0): (subtotalCents
       minCheck: cents(o.min_check_rub),
     }));
 
-  return (subtotal: number): number => {
-    let val = subtotal + (subtotal >= freeFrom ? 0 : fee);
-    if (subtotal > 0 && subtotal < minOrder) {
+  return (subtotalCents: number): number => {
+    const subtotalRub = subtotalCents / 100;
+    const ex = computeStorePromoAndBonus(subtotalRub, extras);
+    const deliveryCents =
+      ex.deliveryOverride !== null
+        ? cents(ex.deliveryOverride)
+        : subtotalCents >= freeFrom
+          ? 0
+          : fee;
+    let val =
+      subtotalCents +
+      deliveryCents +
+      cents(ex.serviceFee) -
+      cents(ex.promoDiscount) -
+      cents(ex.bonusApplied);
+    if (subtotalCents > 0 && subtotalCents < minOrder) {
       val += MIN_ORDER_FINE;
     }
+    const payableCents = Math.max(
+      0,
+      subtotalCents - cents(ex.promoDiscount) - cents(ex.bonusApplied)
+    );
     let discount = 0;
     for (const a of active) {
-      if (subtotal >= a.minCheck) {
-        const d = Math.min(subtotal * a.rate, a.capLeft);
+      if (payableCents >= a.minCheck) {
+        const d = Math.min(payableCents * a.rate, a.capLeft);
         if (d > discount) discount = d;
       }
     }
-    return val - discount + handoverCents;
+    return Math.max(0, val - discount) + handoverCents;
   };
 }
 
@@ -419,7 +512,10 @@ function buildVariant(
   baseline: number,
   penalty: number,
   handoverMap: Record<string, number>,
-  baselineLines: Record<number, number> | null
+  baselineLines: Record<number, number> | null,
+  storeQuotes?: Record<string, StoreCartQuote> | null,
+  storePerks?: Record<string, StorePerk> | null,
+  applyBonuses = true
 ): Variant | null {
   const groups = new Map<number, number[]>();
   for (let i = 0; i < assign.length; i++) {
@@ -437,8 +533,17 @@ function buildVariant(
     const store = combo[j];
     const idxs = groups.get(j)!;
     const subtotal = round2(idxs.reduce((acc, i) => acc + lines[i].prices[store.code], 0));
-    const [offer] = bestOffer(subtotal, offers.get(store.id) || []);
-    const [delivery, discount, total] = storeTotal(subtotal, store, offer);
+    const quote = storeQuotes ? storeQuotes[store.code] ?? null : null;
+    const perk = storePerks ? storePerks[store.code] ?? null : null;
+    const ex = computeStorePromoAndBonus(subtotal, { quote, perk, applyBonuses });
+
+    const payableBeforeCashback = Math.max(0, round2(subtotal - ex.promoDiscount - ex.bonusApplied));
+    const [offer] = bestOffer(payableBeforeCashback, offers.get(store.id) || []);
+    const [defaultDelivery, discount] = storeTotal(payableBeforeCashback, store, offer);
+    const delivery = ex.deliveryOverride !== null ? ex.deliveryOverride : defaultDelivery;
+    const total = round2(
+      Math.max(0, subtotal + delivery + ex.serviceFee - ex.promoDiscount - ex.bonusApplied - discount)
+    );
     const cardName = offer ? (() => {
       const card = cardsById.get(offer.card_id);
       return card ? `${card.bank} · ${card.name} (−${Math.round(offer.percent)}%)` : null;
@@ -473,6 +578,11 @@ function buildVariant(
       store_name: store.name,
       subtotal,
       delivery,
+      service_fee: ex.serviceFee,
+      promo_discount: ex.promoDiscount,
+      promo_label: ex.promoLabel,
+      bonus_applied: ex.bonusApplied,
+      bonus_available: ex.bonusAvailable,
       discount,
       total,
       card_id: offer ? offer.card_id : null,
@@ -480,6 +590,8 @@ function buildVariant(
       offer_id: offer ? offer.id : null,
       lines: vlines,
       below_min_order: store.min_order > 0 && subtotal < store.min_order,
+      address_checked: quote?.address ?? null,
+      live_verified: quote?.status === 'ready',
     });
   }
 
@@ -561,6 +673,9 @@ export function optimize(params: {
   maxStores?: number;
   handover?: Record<string, number>;
   baselineLines?: Record<number, number> | null;
+  storeQuotes?: Record<string, StoreCartQuote> | null;
+  storePerks?: Record<string, StorePerk> | null;
+  applyBonuses?: boolean;
 }): Variant[] {
   const {
     lines,
@@ -573,13 +688,23 @@ export function optimize(params: {
     maxStores = 2,
     handover = handoverByStore(),
     baselineLines = null,
+    storeQuotes = null,
+    storePerks = null,
+    applyBonuses = true,
   } = params;
   if (!lines.length || !stores.length) return [];
 
   const cardsById = new Map(cards.map((c) => [c.id, c]));
   const costsByStore = new Map<string, (s: number) => number>();
   for (const s of stores) {
-    costsByStore.set(s.code, makeCostFn(s, offers.get(s.id) || [], handover[s.code] ?? 0));
+    costsByStore.set(
+      s.code,
+      makeCostFn(s, offers.get(s.id) || [], handover[s.code] ?? 0, {
+        quote: storeQuotes ? storeQuotes[s.code] ?? null : null,
+        perk: storePerks ? storePerks[s.code] ?? null : null,
+        applyBonuses,
+      })
+    );
   }
   const penaltyCents = cents(penalty);
   const limit = Math.max(1, Math.min(maxStores, stores.length));
@@ -600,7 +725,10 @@ export function optimize(params: {
         baseline,
         penalty,
         handover,
-        baselineLines
+        baselineLines,
+        storeQuotes,
+        storePerks,
+        applyBonuses
       );
       if (!variant) continue;
       const key = [...variant.stores.map((b) => b.store_code)].sort().join('+');

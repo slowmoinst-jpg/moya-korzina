@@ -54,11 +54,11 @@ def no_network():
 
 def sign_in(client, phone: str, pin: str = "482915", next: str = "/",
             install_pin: str | None = None, **kwargs):
-    """Войти одним POST /login; вернуть ответ (302 — вошли)."""
-    data = {"phone": phone, "next": next}
+    """Войти через POST /api/auth/login; вернуть ответ (200 — вошли)."""
+    payload = {"phone": phone}
     if install_pin is not None:
-        data["pin"] = install_pin
-    return client.post("/login", data=data, **kwargs)
+        payload["pin"] = install_pin
+    return client.post("/api/auth/login", json=payload, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -73,14 +73,6 @@ def no_background_linking(monkeypatch):
     from app.catalog import link
 
     monkeypatch.setattr(link, "link_soon", lambda phone, sync=False: False)
-
-
-@pytest.fixture(autouse=True)
-def no_warm_delay(monkeypatch):
-    """Прогрев «Где дешевле» в тестах не ждёт затишья: иначе его поток просыпался бы в чужом тесте."""
-    from app.web.phone import cheaper
-
-    monkeypatch.setattr(cheaper, "WARM_DELAY_SEC", 0)
 
 
 # Фоновые работы, которые кончаются сами и открывают рабочее место человека в своём потоке:

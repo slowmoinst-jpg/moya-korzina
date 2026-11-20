@@ -131,7 +131,7 @@ def create_app() -> Flask:
     одного протекали бы в другой: одна забытая правка конфигурации — и тест зелен
     на том, чего в бою нет.
     """
-    flask_app = Flask(__name__, static_folder="static", template_folder="templates")
+    flask_app = Flask(__name__, static_folder="static")
     flask_app.secret_key = secret_key()
     flask_app.session_interface = _Session()
     flask_app.config.update(
@@ -141,17 +141,12 @@ def create_app() -> Flask:
         JSON_AS_ASCII=False,
     )
 
-    from app.web import api as web_api, apk, auth, device, phone, views
+    from app.web import api as web_api, apk, auth, spa
     auth.install(flask_app)
     apk.install(flask_app)
-    device.install(flask_app)
-    views.install(flask_app)
-    # Телефон — после входа: его главная ведёт приложение на четыре своих экрана,
-    # а решать это можно, только зная, кто пришёл (app/web/phone/).
-    phone.install(flask_app)
     web_api.install(flask_app)
+    spa.install(flask_app)
     _install_page_headers(flask_app)
-    _install_static_version(flask_app)
     _install_https_for_names(flask_app)
     _install_same_origin_posts(flask_app)
     return flask_app
@@ -177,29 +172,6 @@ def _install_https_for_names(flask_app: Flask) -> None:
         return redirect(urlsplit(request.url)._replace(scheme="https").geturl(), code=307)
 
 
-def _install_static_version(flask_app: Flask) -> None:
-    """static_v(файл) в шаблонах — адрес статики с отпечатком содержимого (?v=…).
-
-    Статику телефон держит в кэше, страницы — нет (см. ниже). Новые шаблоны после
-    выкладки встречали бы старый phone.css, и экран разваливался, пока кэш не протух
-    (смена вида 22.10.2026). Отпечаток меняется вместе с файлом: новый файл — новый
-    адрес. Считается раз на процесс: выкладка перезапускает сервер.
-    """
-    import hashlib
-    from functools import cache
-
-    from flask import url_for
-
-    @cache
-    def stamp(filename: str) -> str:
-        with open(os.path.join(flask_app.static_folder, filename), "rb") as fh:
-            return hashlib.sha256(fh.read()).hexdigest()[:10]
-
-    @flask_app.template_global()
-    def static_v(filename: str) -> str:
-        return url_for("static", filename=filename, v=stamp(filename))
-
-
 def _install_page_headers(flask_app: Flask) -> None:
     """Страницы не кэшировать: телефон иначе показывает вчерашнюю.
 
@@ -218,6 +190,8 @@ def _install_page_headers(flask_app: Flask) -> None:
             answer.headers["Cache-Control"] = "no-store, max-age=0"
             answer.headers["Pragma"] = "no-cache"
             answer.headers["Expires"] = "0"
+        elif request.endpoint == "spa.assets" and answer.status_code == 200:
+            answer.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         elif request.endpoint == "static" and request.args.get("v") and answer.status_code == 200:
             answer.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return answer

@@ -374,66 +374,22 @@ def test_saved_address_reaches_the_connector(db, monkeypatch):
 
 
 # ---------- проверка адреса ----------
-def test_check_names_the_nearest_shop():
-    """Проверка адреса должна назвать БЛИЖАЙШИЙ магазин, а не первый попавшийся.
-
-    Лента отдаёт магазины не по расстоянию: ответ по Екатеринбургу начинался
-    с 9110 м, а 394 м лежали третьими.
-    """
-    from app.web.screens.home import _distance
-
-    hubs = [{"id": "1", "distance": 9110}, {"id": "2", "distance": 394}, {"id": "3"}]
-
-    assert min(hubs, key=_distance)["id"] == "2"
-    assert [h["id"] for h in sorted(hubs, key=_distance)] == ["2", "1", "3"],         "магазин без расстояния должен уйти в конец, а не в начало"
-
-
-def test_distance_reads_like_a_person_wrote_it():
-    from app.web.screens.home import _distance_text
-
-    # Разделитель « · » теперь ставит шаблон, а не помощник: одно и то же
-    # расстояние показывается в разных местах с разной обвязкой.
-    assert _distance_text({"distance": 394}) == "394 м"
-    assert _distance_text({"distance": 9110}) == "9,1 км"
-    assert _distance_text({}) == ""
-
-
-def test_topbar_button_says_what_is_set(db):
-    """Надпись на кнопке адреса обязана работать, а не молчать.
-
-    main.py рисует шапку в общем try и на любой ошибке показывает пустоту — то есть
-    сломанная надпись выглядит как «адреса нет». Ровно так и вышло, когда из
-    location убрали выбор точки, а обращение к нему в сводке осталось.
-    """
-    from app.web import create_app
-
-    client = create_app().test_client()
-    from conftest import sign_in
-
-    sign_in(client, "79990000001")
-
-    assert "Укажите адрес" in client.get("/").data.decode("utf-8")
-    client.post("/address", data={"address": "Екатеринбург, улица Щербакова 4"})
-    assert "Екатеринбург, улица Щербакова 4" in client.get("/").data.decode("utf-8")
 
 
 def test_long_address_does_not_stretch_the_header(db):
-    """Шапка одна на все экраны — длинный адрес не должен её распирать.
-
-    Обрезка переехала из кода в стиль: раньше подпись кнопки резалась в Python и
-    кончалась многоточием, теперь адрес выводится целиком, а обрезает его
-    таблица стилей. Так лучше — на широком экране адрес виден весь, — но правило
-    осталось правилом, и сторожить его надо там, где оно теперь живёт.
-    """
+    """Длинный адрес в шапке единого SPA обрезается стилями и не ломает шапку."""
     import os
 
     from app import config
 
-    css = os.path.join(config.ROOT, "app", "web", "static", "korzina.css")
+    css = os.path.join(config.ROOT, "client", "spa.css")
     with open(css, encoding="utf-8") as fh:
         rules = fh.read()
 
-    block = rules[rules.index(".addr{"):rules.index("}", rules.index(".addr{"))]
-    assert "max-width" in block, "без потолка ширины длинный адрес распирает шапку"
-    assert "text-overflow:ellipsis" in block
-    assert "white-space:nowrap" in block
+    chip_start = rules.index(".spa-addr-chip {")
+    chip_block = rules[chip_start:rules.index("}", chip_start)]
+    span_start = rules.index(".spa-addr-chip span")
+    span_block = rules[span_start:rules.index("}", span_start)]
+    assert "max-width" in chip_block, "без потолка ширины длинный адрес распирает шапку"
+    assert "text-overflow" in span_block and "ellipsis" in span_block
+    assert "white-space" in span_block and "nowrap" in span_block

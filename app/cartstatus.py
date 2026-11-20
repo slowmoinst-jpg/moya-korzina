@@ -120,16 +120,13 @@ def of_basket(basket_id: int) -> dict[int, dict[str, dict]]:
     -> {"status": код, "fallback": id запасного или None}
     """
     from app import cartrun
-    from app.web.screens import basket as basket_screen
 
     b_id = int(basket_id)
     items = repo.basket_items(b_id)
     stores = repo.list_stores()
     pkey = location.point_key()
 
-    # Идёт ли опрос цен корзины
-    job = basket_screen.job_of(b_id)
-    job_running = bool(job and job.get("status") == "running")
+    job_running = False
 
     # Идёт ли сборка этой корзины в конкретной сети
     current_stamp = cartrun.stamp_of(b_id)

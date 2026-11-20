@@ -7,7 +7,6 @@ from datetime import datetime
 from app import cartrun, db, netprice, phonecart, repo
 from app.carttotal import NETWORK, Total
 from app.models import Product, StoreBreakdown, Variant, VariantLine
-from app.web.phone import cheaper
 
 
 NOW = datetime(2026, 10, 24, 12, 0, 0)
@@ -136,21 +135,3 @@ def test_split_variant_not_priced_if_one_share_has_missing_items():
     assert got.variant.total == 100.0
 
 
-def test_cheaper_part_includes_serialized_lines_json():
-    """_part(store) готовит lines_json для передачи в JavaScript-мост при заказе доли сплита."""
-    ln = [
-        VariantLine(store_code="magnit", store_name="Магнит", card_id=None, card_name=None,
-                    product_id=42, product_name="Молоко Домик в деревне 3.2%", qty=2.0, price=89.9),
-    ]
-    st = StoreBreakdown(store_code="magnit", store_name="Магнит", subtotal=179.8, delivery=0.0,
-                        discount=0.0, total=179.8, lines=ln)
-    part = cheaper._part(st)
-
-    assert part["code"] == "magnit"
-    assert part["count"] == 1
-    assert "lines_json" in part
-    parsed = json.loads(part["lines_json"])
-    assert len(parsed) == 1
-    assert parsed[0]["name"] == "Молоко Домик в деревне 3.2%"
-    assert parsed[0]["qty"] == 2.0
-    assert parsed[0]["product_id"] == 42

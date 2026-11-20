@@ -2,123 +2,164 @@ import fs from 'node:fs';
 import path from 'node:path';
 import cookieParser from 'cookie-parser';
 import express from 'express';
-import {
-  cheques,
-  escapeHtml,
-  goods,
-  humanDay,
-  icon,
-  mark,
-  num,
-  pct,
-  pic,
-  pluralItems,
-  qtyLabel,
-  rub,
-  staticV,
-  unitLabel,
-  where,
-  whole,
-  whom,
-} from './helpers.js';
 import { attachAuth } from './middleware/auth.js';
-import { phoneRouter } from './routes/phone.js';
-import { SCREENS, screensOf, SECTIONS, webRouter } from './routes/web.js';
+import { apiRouter } from './routes/api.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT = process.cwd();
+const IS_PROD = process.env.NODE_ENV === 'production';
 
-const app = express();
-app.disable('x-powered-by');
-app.set('trust proxy', true);
-app.set('view engine', 'ejs');
-app.set('views', path.resolve(ROOT, 'views'));
+async function startServer() {
+  const app = express();
+  app.disable('x-powered-by');
+  app.set('trust proxy', true);
 
-// Expose helpers to all EJS templates
-Object.assign(app.locals, {
-  icon,
-  mark,
-  pic,
-  whole,
-  rub,
-  num,
-  pct,
-  unitLabel,
-  qtyLabel,
-  goods,
-  pluralItems,
-  cheques,
-  where,
-  whom,
-  humanDay,
-  staticV,
-  escapeHtml,
-  SECTIONS,
-  SCREENS,
-  screensOf,
-});
+  app.use(cookieParser());
+  app.use(express.urlencoded({ extended: true }));
+  app.use(express.json({ limit: '2mb' }));
+  app.use((req, _res, next) => {
+    if (!req.body) req.body = {};
+    next();
+  });
 
-app.use(cookieParser());
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
-app.use((req, _res, next) => {
-  if (!req.body) req.body = {};
-  next();
-});
+  // Static files under /static (served from /public/static)
+  const staticDir = path.resolve(ROOT, 'public', 'static');
+  if (fs.existsSync(staticDir)) {
+    app.use(
+      '/static',
+      express.static(staticDir, {
+        setHeaders: (res) => {
+          if (res.req && typeof res.req.query?.v === 'string') {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          }
+        },
+      })
+    );
+  }
 
-// Static files under /static (served from /public/static)
-const staticDir = path.resolve(ROOT, 'public', 'static');
-if (fs.existsSync(staticDir)) {
-  app.use(
-    '/static',
-    express.static(staticDir, {
-      setHeaders: (res, _filePath, _stat) => {
-        if (res.req && typeof res.req.query?.v === 'string') {
-          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        }
-      },
-    })
-  );
-}
-
-// Same-origin safety check on mutating requests
-app.use((req, res, next) => {
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+  // Proxy-aware Origin & CORS handling (supports AI Studio / Cloud Run x-forwarded-host and Android APK WebView)
+  app.use((req, res, next) => {
     const origin = req.get('origin');
-    const host = req.get('host');
-    if (origin && host) {
-      try {
-        const u = new URL(origin);
-        if (u.host !== host) {
-          res.status(403).send('Forbidden cross-origin request');
-          return;
-        }
-      } catch {
-        res.status(403).send('Forbidden');
+    const isApi = req.path.startsWith('/api/') || req.path === '/api';
+
+    if (origin && isApi) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.status(204).end();
         return;
       }
     }
+
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !isApi) {
+      const allowedHosts = new Set(
+        [
+          req.get('host'),
+          req.get('x-forwarded-host')?.split(',')[0]?.trim(),
+          req.hostname,
+        ].filter(Boolean) as string[]
+      );
+      if (origin && origin !== 'null' && !origin.startsWith('file://') && allowedHosts.size > 0) {
+        try {
+          const u = new URL(origin);
+          const sameHost =
+            allowedHosts.has(u.host) ||
+            allowedHosts.has(u.hostname) ||
+            u.hostname.endsWith('.run.app') ||
+            u.hostname === 'localhost' ||
+            u.hostname === '127.0.0.1';
+          if (!sameHost) {
+            res.status(403).json({ ok: false, error: 'Forbidden cross-origin request' });
+            return;
+          }
+        } catch {
+          res.status(403).json({ ok: false, error: 'Forbidden' });
+          return;
+        }
+      }
+    }
+    next();
+  });
+
+  // Catch body-parser JSON syntax errors on /api/* as JSON instead of Express HTML
+  app.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.path.startsWith('/api')) {
+      const msg = err instanceof Error ? err.message : 'Некорректный формат запроса';
+      res.status(400).json({ ok: false, error: msg });
+      return;
+    }
+    next(err);
+  });
+
+  app.use(attachAuth);
+
+  // Unified SPA JSON API
+  app.use('/api', apiRouter);
+
+  // Mount Vite middleware in dev, or serve pre-built SPA assets in prod
+  let viteServer: {
+    middlewares: express.RequestHandler;
+    transformIndexHtml: (url: string, html: string) => Promise<string>;
+  } | null = null;
+
+  const clientDistDir = path.resolve(ROOT, 'dist', 'client');
+  if (!IS_PROD) {
+    const { createServer: createViteServer } = await import('vite');
+    viteServer = await createViteServer({
+      server: { middlewareMode: true, hmr: false },
+      appType: 'custom',
+    });
+    app.use(viteServer.middlewares);
+  } else if (fs.existsSync(clientDistDir)) {
+    app.use(express.static(clientDistDir, { index: false }));
   }
-  next();
-});
 
-app.use(attachAuth);
+  // No-store on dynamic HTML/API responses
+  app.use((req, res, next) => {
+    if (!req.path.startsWith('/static/') && !req.path.startsWith('/assets/')) {
+      res.setHeader('Cache-Control', 'no-store');
+    }
+    next();
+  });
 
-// No-store on dynamic HTML pages so basket/auth state never serves stale cache
-app.use((req, res, next) => {
-  if (!req.path.startsWith('/static/')) {
-    res.setHeader('Cache-Control', 'no-store');
-  }
-  next();
-});
+  const serveSpaHtml = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      if (viteServer) {
+        const rawHtml = fs.readFileSync(path.resolve(ROOT, 'index.html'), 'utf-8');
+        const html = await viteServer.transformIndexHtml(req.originalUrl, rawHtml);
+        res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8').end(html);
+        return;
+      }
+      const distIndex = path.resolve(clientDistDir, 'index.html');
+      if (fs.existsSync(distIndex)) {
+        res.sendFile(distIndex);
+        return;
+      }
+      res.status(503).send('SPA bundle not built. Run npm run build.');
+    } catch (err) {
+      next(err);
+    }
+  };
 
-app.use('/phone', phoneRouter);
-app.use('/', webRouter);
+  // Serve the single unified React SPA on all non-API GET routes (Express 5 safe)
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/') || req.path === '/api') {
+      res.status(404).json({ ok: false, error: 'Not found' });
+      return;
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      res.status(404).json({ ok: false, error: 'Not found' });
+      return;
+    }
+    void serveSpaHtml(req, res, next);
+  });
 
-app.use((_req, res) => {
-  res.status(404).render('web/lost', { screen: null });
-});
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Моя корзина SPA + API server listening on http://0.0.0.0:${PORT}`);
+  });
+}
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Моя корзина server listening on http://0.0.0.0:${PORT}`);
-});
+void startServer();

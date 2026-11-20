@@ -47,18 +47,37 @@ function verify(token: string | undefined): string | null {
   return null;
 }
 
-export function signInCookie(res: Response, phone: string): void {
-  const token = sign(JSON.stringify({ phone, since: Date.now() }));
+function isHttpsRequest(req?: Request): boolean {
+  if (!req) return false;
+  if (req.secure) return true;
+  const proto = String(req.get('x-forwarded-proto') || '').split(',')[0].trim().toLowerCase();
+  return proto === 'https';
+}
+
+export function createSessionToken(phone: string): string {
+  return sign(JSON.stringify({ phone, since: Date.now() }));
+}
+
+export function signInCookie(res: Response, phone: string, req?: Request): string {
+  const token = createSessionToken(phone);
+  const secure = isHttpsRequest(req);
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite: secure ? 'none' : 'lax',
+    secure,
     path: '/',
     maxAge: 30 * 24 * 3600 * 1000,
   });
+  return token;
 }
 
-export function signOutCookie(res: Response): void {
-  res.clearCookie(COOKIE_NAME, { path: '/' });
+export function signOutCookie(res: Response, req?: Request): void {
+  const secure = isHttpsRequest(req);
+  res.clearCookie(COOKIE_NAME, {
+    path: '/',
+    sameSite: secure ? 'none' : 'lax',
+    secure,
+  });
 }
 
 export function isPhoneDevice(req: Request): boolean {
@@ -112,8 +131,10 @@ export function checkPin(raw: string): boolean {
 }
 
 export function attachAuth(req: Request, res: Response, next: NextFunction): void {
-  const token = req.cookies?.[COOKIE_NAME];
-  const phone = verify(token);
+  const authHeader = req.get('authorization') || '';
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : undefined;
+  const cookieToken = req.cookies?.[COOKIE_NAME];
+  const phone = verify(bearerToken) || verify(cookieToken);
   const ws = phone ? getWorkspace(phone) : null;
   const locals: AuthLocals = {
     phone,

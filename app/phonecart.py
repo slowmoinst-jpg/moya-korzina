@@ -1147,16 +1147,6 @@ def accept_report(body: dict) -> dict:
     except Exception:  # noqa: BLE001
         log.warning("%s: цены корзины не записались в рабочее место", store, exc_info=True)
     _to_row(report)
-    if report.get("basket"):
-        try:
-            from app import users
-            from app.web.phone import cheaper
-
-            phone = users.current()
-            if phone and phone != users.DEMO:
-                cheaper.warm(int(report["basket"]), phone)
-        except Exception:  # noqa: BLE001
-            log.warning("прогрев «Где дешевле» после отчёта не запустился", exc_info=True)
     # Отметка «телефон принёс отчёт о корзине» — это и есть доказательство, что фоновая
     # сборка работает. Проверка базы показывает её и ругается, если телефон молчит
     # больше недели (store.mark_device, app/catalog/checkup.py).

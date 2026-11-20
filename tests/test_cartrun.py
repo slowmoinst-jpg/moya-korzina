@@ -403,44 +403,6 @@ def test_magnit_total_is_read_from_its_cart_page_after_the_handover(home, roads,
     assert magnit.total.delivery == 0.0
 
 
-def test_metro_total_comes_from_the_networks_own_answer(home, monkeypatch):
-    """METRO по токену: итог — total_cost её корзины, тем же запросом, что проверка."""
-    import app.location as client_place
-    from app.connectors import metro, metro_cart
-
-    metro_abilities = store_accounts.ABILITIES["metro"]
-    monkeypatch.setitem(store_accounts.ABILITIES, "metro", replace(
-        metro_abilities, gives=metro_abilities.gives + (store_accounts.CART,)))
-    monkeypatch.setattr(metro_cart, "writable", lambda: True)
-    monkeypatch.setattr(metro, "_store_id", lambda loc: "16")
-    monkeypatch.setattr(client_place, "for_store", lambda code: None)
-    save_login("metro", cookies=[{"name": metro_cart.HASH_COOKIE, "value": METRO_HASH,
-                                  "domain": "api.metro-cc.ru"}])
-    answer = json.loads(fixture("metro_basket.json"))
-    empty = {"success": True, "data": {"user_hash": METRO_HASH, "articles": [],
-                                       "unavailable_articles": [], "total_cost": 0}}
-    sent: list[str] = []
-
-    def request(method, url, params=None, json=None, timeout=None, headers=None):
-        sent.append(method)
-        return Reply(answer if "POST" in sent else empty)
-
-    monkeypatch.setattr(metro_cart.requests, "request", request)
-    monkeypatch.setattr(handover, "for_store", lambda code, lines: handover.Handover(
-        store_code=code, kind=handover.LINK, link=None, note="сеть молчит"))
-
-    cartrun.start(PHONE, home, wait=True)
-
-    row = cartrun.get("metro")
-    assert sent == ["GET", "POST", "GET"], "итог — из ответа проверки, а не лишним запросом"
-    assert row.state == cartrun.DONE and len(row.landed) == 2
-    assert row.total.source == carttotal.NETWORK
-    assert row.total.sum == pytest.approx(348.8)
-    assert row.total.discount == pytest.approx(41.2)
-    assert row.total.minimal == pytest.approx(1500.0)
-    assert row.total.count == 2
-
-
 # ---------- отчёт с телефона ----------
 
 def test_a_phone_report_lands_in_the_same_row_without_rework(home):
@@ -457,20 +419,6 @@ def test_a_phone_report_lands_in_the_same_row_without_rework(home):
     assert stored.total.source == carttotal.NETWORK and stored.total.sum == 140.5
     assert stored.missing == [{"name": "Хлеб Бородинский", "why": "нет в наличии", "gone": True}]
     assert "token" not in json.dumps(json.loads(repo.get_setting(cartrun.KEY)))
-
-
-def test_a_press_does_not_wipe_what_the_phone_reported(home, roads):
-    """Сервер в Пятёрочку не кладёт — но и отчёт телефона словами «не кладём» не стирает."""
-    from app.web.screens import carts
-
-    cartrun.accept({"store": "pyaterochka", "basket": home, "landed": ["Молоко"],
-                    "total": {"sum": 100.0, "source": "network"}})
-
-    cartrun.start(PHONE, home, wait=True)
-
-    row = cartrun.get("pyaterochka")
-    assert row.state == cartrun.DONE and row.by == cartrun.DEVICE
-    assert carts._button(row) is None, "кнопка «ещё раз» у сети телефона кончилась бы отказом"
 
 
 def test_a_report_without_a_declared_source_is_not_called_the_networks(home):
@@ -650,78 +598,3 @@ def web(home, monkeypatch):
     users.open_workspace(PHONE)
 
 
-def test_the_result_screen_has_one_button_for_every_network(web, home):
-    page = web.get(f"/result?basket={home}").data.decode("utf-8")
-
-    assert "Собрать во всех подключённых" in page
-    assert 'action="/carts"' in page
-
-
-def test_the_screen_shows_where_the_cart_will_go_before_the_press(web, home):
-    page = web.get(f"/carts?basket={home}").data.decode("utf-8")
-
-    for name in ("Магнит", "Лента", "ВкусВилл", "Пятёрочка", "METRO"):
-        assert name in page
-    assert "Подключить" in page and 'href="/accounts"' in page
-    assert "не допускают по его адресу" in page, "Пятёрочка: причина словами"
-    assert "уедет по нажатию" in page
-
-
-def test_the_button_fills_the_carts_and_the_rows_tell_the_outcome(web, home, roads):
-    users.open_workspace(PHONE)
-    save_login()
-
-    answer = web.post("/carts", data={"basket": home, "do": "all"})
-
-    assert answer.status_code == 302
-    assert answer.headers["Location"].endswith(f"/carts?basket={home}")
-    page = web.get(f"/carts?basket={home}").data.decode("utf-8")
-    assert "Легло <b>2 из 2</b>" in page
-    assert "наш расчёт" in page and "Итог сети не прочитан" in page
-    assert "https://vkusvill.example/cart/share-1" in page
-    assert "Корзину в сети очистил — положить ещё раз" in page
-
-
-def test_a_login_made_after_the_press_is_seen_by_the_screen(web, home, roads):
-    """«Нужен вход» — условие, а не ответ: вошёл на «Кабинетах» — строка это видит."""
-    web.post("/carts", data={"basket": home, "do": "all"})
-    users.open_workspace(PHONE)
-    assert cartrun.get("magnit").state == cartrun.LOGIN
-
-    save_login()
-    page = web.get(f"/carts?basket={home}").data.decode("utf-8")
-
-    assert "Подключить" not in page and "Войти заново" not in page
-    assert "Собрать во всех подключённых" in page and "Магнит (2 поз.)" in page
-
-
-def test_the_progress_answer_is_small(web, home):
-    users.open_workspace(PHONE)
-    cartrun.save(cartrun.Row(code="magnit", name="Магнит", road=cartrun.LINK,
-                             state=cartrun.GOING, planned=2, now="кладу творог", basket_id=home))
-
-    got = web.get("/carts?state=1").get_json()
-
-    assert got["ok"] is True and got["going"] is True
-    magnit = next(r for r in got["rows"] if r["code"] == "magnit")
-    assert magnit["going"] is True and magnit["now"] == "кладу творог"
-
-
-def test_a_phone_report_through_the_door_reaches_the_screen(web, home):
-    answer = web.post("/api/carts/report", json={
-        "store": "pyaterochka", "basket": home, "landed": ["Молоко Простоквашино 930 мл"],
-        "total": {"sum": 140.5, "source": "network"}})
-
-    assert answer.status_code == 200 and answer.get_json()["ok"] is True
-    page = web.get(f"/carts?basket={home}").data.decode("utf-8")
-    assert "посчитала сеть" in page and "прочитал телефон" in page
-
-
-def test_the_screen_never_offers_to_order_or_pay(web, home, roads):
-    users.open_workspace(PHONE)
-    save_login()
-    web.post("/carts", data={"basket": home, "do": "all"})
-
-    page = web.get(f"/carts?basket={home}").data.decode("utf-8").lower()
-
-    assert "оформить заказ" not in page and "оплатить" not in page

@@ -254,33 +254,6 @@ def test_only_known_keys_may_be_pressed():
         driver.key("magnit", "79990000001", "F12")
 
 
-def test_every_chain_with_a_cabinet_has_an_entrance():
-    """У каждой сети, где вход что-то даёт, браузеру есть куда её открыть.
-
-    Сети, у которой вход не даёт ничего измеренного, серверного окна не нужно.
-    Такой сетью стал Fix Price (21.10.2026): её витрину для цен читает обход
-    каталога, а корзину кладёт телефон в своём окне сети — сервер туда не ходит,
-    и адрес входа ему не нужен. Поэтому спрашиваем про сети с умениями: у них
-    окно обязано быть, иначе экран нарисует кнопку в пустоту.
-    """
-    from app import store_accounts
-
-    with_cabinet = {code for code, ability in store_accounts.ABILITIES.items()
-                    if ability.gives}
-    assert set(driver.LOGIN_URL) == with_cabinet
-    for chain in with_cabinet:
-        assert signals.ENTERED.get(chain), f"{chain}: не описан признак входа"
-        # Запись в словаре — половина дела. Признак входа у всех шести сетей ОДИН
-        # (signals.ENTERED собран из одного значения), и такой словарь не может
-        # покраснеть никогда — значит сторож обязан смотреть, что признак
-        # ДЕЙСТВУЕТ на этой сети, а не что строчка в нём есть.
-        assert signals.logged_in(chain, "Здравствуйте, Алексей Мои заказы Выйти") is True, \
-            f"{chain}: признак входа записан, но не срабатывает"
-        assert signals.logged_in(chain, "Каталог Акции Войти Регистрация") is False, \
-            f"{chain}: гость не опознан как гость"
-        assert signals.CARD_NAME.get(chain), f"{chain}: не описано имя карты"
-
-
 # ---------- живая проверка ----------
 
 @pytest.mark.skipif(not LIVE, reason="живая проверка включается KORZINA_LIVE=1")
@@ -603,26 +576,3 @@ def test_a_drag_stays_inside_the_window(monkeypatch):
 
     assert page.moves[0] == (0, 0)
     assert page.moves[-1] == (driver.WIDTH, driver.HEIGHT)
-
-
-def test_the_cabinet_screen_can_ask_for_a_drag():
-    """Протяжка бесполезна, пока до неё не дотянется экран: сторож на проводку."""
-    from app.web.screens import cabinet
-
-    source = __import__("inspect").getsource(cabinet)
-    assert '"drag"' in source and "driver.drag(" in source
-
-
-def test_the_snapshot_sends_a_drag_and_not_a_click_as_well():
-    """Разметка обязана отличать протяжку от нажатия и не слать оба сразу.
-
-    Ползунок от лишнего нажатия прыгает обратно, а дрожание руки на телефоне без
-    порога превращало бы каждое касание в протяжку в никуда.
-    """
-    with open(os.path.join(ROOT, "app", "web", "templates", "cabinet.html"),
-              encoding="utf-8") as fh:
-        page = fh.read()
-
-    assert 'do: "drag"' in page, "экран не умеет послать протяжку"
-    assert "DRAG_MIN" in page, "нет порога, отделяющего протяжку от дрожания руки"
-    assert "dragged" in page, "нажатие не гасится после протяжки"

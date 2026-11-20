@@ -1,6 +1,18 @@
 # «Моя корзина» — образ для своего сервера. Выбор площадки закрыт решением
 # владельца 17.09.2026: приложение живёт на выделенном сервере в Timeweb,
 # сравнивать хостинги больше не нужно (DEPLOY.md, «Где живёт приложение»).
+#
+# Этап 1: сборка единого React SPA (телефон + ПК) через Vite.
+FROM node:22-slim AS spa-build
+
+WORKDIR /build
+COPY package.json package-lock.json* vite.config.ts tsconfig.json index.html ./
+RUN npm install --no-audit --no-fund
+COPY client ./client
+COPY src ./src
+RUN npx vite build
+
+# Этап 2: боевой Python-бэкенд (Flask + waitress + SQLite + Playwright).
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -30,6 +42,7 @@ RUN playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 
 COPY app ./app
+COPY --from=spa-build /build/dist/client ./app/web/static/spa
 COPY tools ./tools
 COPY data/fallback_prices.csv data/seed_products.csv data/seed_offers.csv data/seed_receipt.csv ./data/
 COPY config.yaml README.md ./

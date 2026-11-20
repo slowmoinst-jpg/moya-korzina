@@ -316,17 +316,6 @@ def test_background_pass_applies_a_new_choice_in_the_same_generation(catalog, us
 
 
 # ---------- отказ и «добавить из каталога» ----------
-def test_dropped_chain_is_not_brought_back_by_price_asking(catalog, user_db):
-    from app.web.screens.basket import _agrees_with_mapping
-
-    store.upsert_products("lenta", [P("80424", "Сыр Ламбер 50% 230г")])
-    refresh.match_all()
-    pid = product("Сыр Ламбер 50% 230г", weight_g=230)
-    link.link_products()
-    repo.drop_mapping(pid, ids()["lenta"])
-    offer = Candidate(store_code="lenta", sku="80424", name="Сыр Ламбер 50% 230г")
-
-    assert _agrees_with_mapping(pid, offer) is False
 
 
 def test_catalog_pick_confirms_only_the_picked_variant(catalog, user_db):

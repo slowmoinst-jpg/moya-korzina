@@ -40,19 +40,34 @@ def mask(phone: str) -> str:
     return phone if len(phone) < 7 else f"{phone[:2]}***{phone[-4:]}"
 
 
-def preferred_variant(basket_id: int):
-    """Вариант, который «Результат» показывает первым. Нечего считать — None.
+def _pick_preferred(variants):
+    """Выбрать основной вариант: сплит или один магазин с учётом порога выгоды."""
+    from app import config
 
-    Цены в сеть не спрашиваем (refresh=False), ровно как экран: пачка кладёт то,
-    что человек видел посчитанным, а не то, что насчитала бы за его спиной.
-    """
+    split = next((v for v in variants if len(getattr(v, "stores", ()) or ()) > 1), None)
+    single = next((v for v in variants if len(getattr(v, "stores", ()) or ()) == 1), None)
+    if not split or not single:
+        return variants[0]
+    mode = "split" if variants.index(split) < variants.index(single) else "single"
+    threshold = float(config.get("split_threshold_rub", 250) or 250)
+    gain = round(single.total - split.total, 2)
+    if (
+        mode == "split"
+        and gain < threshold
+        and len(getattr(single, "missing_products", ()) or ()) <= len(getattr(split, "missing_products", ()) or ())
+    ):
+        mode = "single"
+    return split if mode == "split" else single
+
+
+def preferred_variant(basket_id: int):
+    """Вариант, который расчёт ставит первым. Нечего считать — None."""
     from app import service
-    from app.web.screens.result import _chosen
 
     variants, _baseline = service.calculate(basket_id, False)
     if not variants:
         return None
-    return _chosen(variants, None)[0]
+    return _pick_preferred(variants)
 
 
 def fill_store(phone: str, store, *, dry_run: bool = False, again: bool = False) -> str:

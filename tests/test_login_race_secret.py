@@ -12,7 +12,6 @@ sys.path.insert(0, ROOT)
 
 from app import api, repo, users  # noqa: E402
 from app.web import login as web_login  # noqa: E402
-from app.web.screens import accounts  # noqa: E402
 
 
 @pytest.fixture
@@ -69,18 +68,3 @@ def test_twenty_threads_reserve_attempt_with_barrier(monkeypatch):
         sys.setswitchinterval(old_switch)
 
 
-def test_grab_demo_gives_no_secret(web):
-    """Демо на экране: secret None, и в базе демо секрета нет."""
-    users.open_workspace(users.DEMO)
-    try:
-        assert repo.get_setting(api.SECRET_KEY) is None
-        with web.application.test_request_context("/accounts"):
-            from flask import session
-
-            session["phone"] = users.DEMO
-
-            res = accounts._grab()
-            assert res["secret"] is None
-            assert repo.get_setting(api.SECRET_KEY) is None
-    finally:
-        users.deactivate()

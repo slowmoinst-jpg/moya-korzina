@@ -3,20 +3,25 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "build": "tsc",
-    "start": "node dist/server.js",
-    "lint": "tsc --noEmit"
+    "dev": "tsx src/server.ts",
+    "build": "vite build && tsc -p tsconfig.server.json",
+    "build:apk": "vite build --base=./ --outDir=android/app/app/src/main/assets/ui",
+    "start": "node dist/server/server.js",
+    "lint": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit"
   },
   "dependencies": {
     "@types/cookie-parser": "^1.4.10",
-    "@types/ejs": "^3.1.5",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
     "cookie-parser": "^1.4.7",
-    "ejs": "^7.0.2",
     "express": "^5.3.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
   }
 }

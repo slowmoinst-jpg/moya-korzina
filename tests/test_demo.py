@@ -539,19 +539,3 @@ def test_the_shipped_list_is_well_formed():
     assert os.path.dirname(os.path.abspath(demo.LIST_FILE)) == os.path.dirname(os.path.abspath(demo.__file__))
 
 
-def test_demo_receipt_is_recorded(showcase):
-    from app import receipts
-    from app.web import create_app
-
-    demo.ensure()
-    loaded = receipts.summary()["loaded"]
-    assert loaded["receipts"] == 1
-    assert loaded["rows_without_receipt"] == 0
-
-    app = create_app()
-    app.config.update(TESTING=True)
-    with app.test_client() as client:
-        client.post("/demo")
-        resp = client.get("/phone/receipts")
-        assert resp.status_code == 200
-        assert "до того, как появился учёт чеков" not in resp.text
