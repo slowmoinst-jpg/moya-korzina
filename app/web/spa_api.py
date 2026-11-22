@@ -1128,6 +1128,60 @@ def _start_fns_sync(phone: str) -> bool:
     return True
 
 
+def _active_basket_id_and_stamp() -> tuple[int | None, str]:
+    """Текущая активная корзина и её отпечаток состава."""
+    baskets = repo.list_baskets()
+    if not baskets:
+        return None, ""
+    raw_last = repo.get_setting(SETTING_LAST_BASKET)
+    active_id = None
+    if raw_last:
+        try:
+            cand = int(raw_last)
+            if any(int(b["id"]) == cand for b in baskets):
+                active_id = cand
+        except (TypeError, ValueError):
+            pass
+    if active_id is None:
+        active_id = int(baskets[0]["id"])
+    items = repo.basket_items(active_id)
+    if not items:
+        return active_id, ""
+    return active_id, cartrun.stamp_of(active_id)
+
+
+def _auto_start_server_carts(phone: str, basket_id: int | None, stamp: str) -> list[str]:
+    """Параллельно запустить серверные сети (дорога LINK: Лента, ВкусВилл) при правке корзины.
+
+    Не трогает сети телефона (Пятёрочка, Самокат, Дикси, Перекрёсток, Магнит) и не мешает
+    Android-сборке: по одному daemon-потоку на сеть, только если для этого stamp ещё не собрано.
+    """
+    if not phone or phone == users.DEMO or basket_id is None or not stamp:
+        return []
+    started: list[str] = []
+    for code in cartrun.networks():
+        if cartrun.road(code) != cartrun.LINK:
+            continue
+        cur = cartrun.get(code)
+        if cartrun.alive(cur):
+            started.append(code)
+            continue
+        if (
+            cur is not None
+            and cur.state == cartrun.DONE
+            and cur.basket_id == int(basket_id)
+            and cur.stamp == stamp
+        ):
+            continue
+        try:
+            rows = cartrun.start(phone, int(basket_id), only=code)
+            if any(r.code == code and r.state == cartrun.GOING for r in rows):
+                started.append(code)
+        except Exception as exc:  # noqa: BLE001 — фоновый старт не должен ломать /api/sync
+            log.warning("автосборка %s после sync не стартовала: %s", code, exc)
+    return started
+
+
 # ---------- регистрация маршрутов на Blueprint api ----------
 
 def register_routes(bp: Blueprint) -> None:
@@ -1204,8 +1258,20 @@ def register_routes(bp: Blueprint) -> None:
         if not isinstance(body, dict):
             return _json({"ok": False, "error": "Ожидается JSON-объект"}, 400)
 
+        prev_bid, prev_stamp = _active_basket_id_and_stamp()
         _apply_sync(body)
-        return _json({"ok": True, "syncedAt": _now_iso()})
+        next_bid, next_stamp = _active_basket_id_and_stamp()
+        server_started: list[str] = []
+        if next_bid is not None and next_stamp and (
+            next_bid != prev_bid or next_stamp != prev_stamp
+        ):
+            server_started = _auto_start_server_carts(phone, next_bid, next_stamp)
+        return _json({
+            "ok": True,
+            "syncedAt": _now_iso(),
+            "basketStamp": next_stamp,
+            "serverStarted": server_started,
+        })
 
     @bp.route("/runs", methods=["GET"])
     def spa_runs():

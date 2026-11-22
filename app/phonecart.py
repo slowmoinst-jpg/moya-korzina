@@ -66,6 +66,11 @@ RETRY_SECONDS = 6 * 3600
 LINK_BUDGET_SECONDS = 2.5
 _TRIED: dict[tuple[str, str, str, int], float] = {}
 _TRIED_LOCK = threading.Lock()
+_QUERY_CACHE_TTL = 600.0
+_QUERY_CACHE: dict[tuple[str, int, str], tuple[float, str]] = {}
+_QUERY_CACHE_LOCK = threading.Lock()
+DIXY_NIDS_KEY = "phonecart.dixy_nids"
+DIXY_NIDS_LIMIT = 4000
 
 
 def _tried_mark(kind: str, db_path: str, store: str, product_id: int) -> None:
@@ -142,21 +147,22 @@ API_TOTALS: dict[str, list[dict]] = {
 # телефон знает, что на самом деле лежит в корзине сети, а не только что он клал сам.
 FULL_CART: dict[str, tuple[str, ...]] = {
     "magnit": ("/webgate/v1/carts/lite", "/webgate/v1/checkout/preview"),
+    "metro": ("/graphql",),
+    "vprok": ("/web/api/v1/checkout/positionV2", "/web/api/v1/checkout/dropDownV2"),
 }
 
 # Сети, чей запрос записи корзины СТАВИТ количество, а не прибавляет: повтор с тем же
 # числом ничего не удваивает, и прибавка к лежащей позиции — тот же запрос с итоговым
 # числом. Магнит, замер на эмуляторе 18.10.2026: «В корзину» шлёт PUT carts/lite с одной
 # позицией и qnty 1, а «+» на карточке, где Алёнки лежало 2, — ВСЮ корзину с qnty 3 у
-# Алёнки и прежними числами у остальных; в ответе Алёнки 3, прочие на месте. Значит,
-# перечисленным позициям запрос ставит число, неперечисленные не трогает. Остальным
-# сетям, пока не замерено, прибавку телефон делает касаниями «+», по одной упаковке.
-QTY_SETS: tuple[str, ...] = ("magnit",)
+# Алёнки и прежними числами у остальных; в ответе Алёнки 3, прочие на месте. METRO
+# (GraphQL saveOrderDraft) и Впрок (PUT /web/api/v1/checkout/positionV2) проверены живьём:
+# ставят количество пачкой и не трогают неперечисленные позиции.
+QTY_SETS: tuple[str, ...] = ("magnit", "metro", "vprok")
 
-# Телефон кладёт эти сети запросами из cartapi.js (APK 1.24, Магнит — с 1.26: старые
-# версии адреса его окна не знают и кладут касаниями); убрать сеть из кортежа — вернуть
-# её на касания без выпуска APK.
-API_CARTS: tuple[str, ...] = ("perekrestok", "pyaterochka", "dixy", "magnit")
+# Телефон кладёт эти сети запросами из cartapi.js (APK 1.24, Магнит — с 1.26, METRO и
+# Впрок — живые batch-протоколы); убрать сеть из кортежа — вернуть её на касания без APK.
+API_CARTS: tuple[str, ...] = ("perekrestok", "pyaterochka", "dixy", "magnit", "metro", "vprok")
 
 # Корзина сети пуста — так пишут её страницы. Если приложение помнит, что клало сюда,
 # а сеть показывает пустую корзину, человек оформил заказ или очистил её сам.
@@ -207,8 +213,8 @@ def rules(store: str) -> dict:
         "pause_ms": int(round(cart._step_pause() * 1000)),
         "click_pause_ms": int(round(cart.CLICK_PAUSE * 1000)),
         # Темп повтора запроса сети «положить в корзину» (приложение 1.8): не чаще
-        # connectors.rate_limit_rps — единственное настоящее ограничение (CLAUDE.md).
-        "request_pause_ms": _request_pause_ms(),
+        # connectors.rate_limit_rps (или индивидуального лимита сети в config.yaml).
+        "request_pause_ms": _request_pause_ms(store),
         "cart_pages": list(CART_PAGES.get(store, ())),
         "hosts": list(cartrecord.CHAIN_HOSTS[store]),
         # Сеть, у которой замерено: нажатие обязано уйти запросом к корзине. Нет
@@ -219,9 +225,9 @@ def rules(store: str) -> dict:
         "auth_cookies": list(signals.AUTH_COOKIE.get(store) or ()),
         "full_cart": list(FULL_CART.get(store, ())),
         "qty_sets": store in QTY_SETS,
-        # Телефон кладёт эти сети запросами из cartapi.js (APK 1.24): Перекрёсток, Пятёрочка, Дикси.
+        # Телефон кладёт эти сети запросами из cartapi.js (APK 1.24): Перекрёсток, Пятёрочка, Дикси, Магнит.
         "api": store in API_CARTS,
-        "api_burst": 3,
+        "api_burst": _api_burst(store),
         "empty_cart": EMPTY_CART,
         # Сигнал бот-проверки (Пятёрочка, Этап 1): паттерн на странице означает «сеть
         # встретила проверкой». При обнаружении приложение делает паузу check_pause_ms
@@ -253,15 +259,95 @@ def _api_total(store: str) -> dict | None:
     return None
 
 
-def _request_pause_ms() -> int:
-    """Пауза между запросами к корзине сети, мс: 1 / connectors.rate_limit_rps, не меньше 300."""
+def _request_pause_ms(store: str | None = None) -> int:
+    """Пауза между запросами к корзине сети, мс: 1 / rps, не меньше 300.
+
+    Сначала ищется индивидуальный лимит сети `connectors.chain_rate_limit_rps.<store>`,
+    затем общий `connectors.rate_limit_rps`. Это позволяет не душить быстрые
+    авторизованные API (Магнит, Перекрёсток) и держать строгий темп там, где жёсткий антибот.
+    """
     from app import config
 
+    rps_raw = None
+    if store:
+        rps_raw = config.get(f"connectors.chain_rate_limit_rps.{store}")
+    if rps_raw is None:
+        rps_raw = config.get("connectors.rate_limit_rps", 1.0)
     try:
-        rps = float(config.get("connectors.rate_limit_rps", 1.0) or 1.0)
+        rps = float(rps_raw or 1.0)
     except (TypeError, ValueError):
         rps = 1.0
     return max(300, int(round(1000.0 / rps))) if rps > 0 else 1000
+
+
+def _api_burst(store: str | None = None) -> int:
+    """Сколько быстрых запросов подряд допускает ведро токенов cartapi.js (по умолчанию 3)."""
+    from app import config
+
+    raw = config.get(f"connectors.chain_api_burst.{store}") if store else None
+    if raw is None:
+        raw = config.get("connectors.api_burst", 3)
+    try:
+        val = int(raw or 3)
+    except (TypeError, ValueError):
+        val = 3
+    return max(1, min(10, val))
+
+
+def _dixy_nids() -> dict[str, dict]:
+    """Кэш числовых id Дикси (xml_id → {id, ratio}), накопленный отчётами телефона."""
+    raw = repo.get_setting(DIXY_NIDS_KEY)
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for sku, val in parsed.items():
+        if not isinstance(val, dict):
+            continue
+        nid = str(val.get("id") or "").strip()
+        if not nid.isdigit():
+            continue
+        try:
+            ratio = float(val.get("ratio") or 1)
+        except (TypeError, ValueError):
+            ratio = 1.0
+        out[str(sku)] = {"id": nid, "ratio": ratio if ratio > 0 else 1.0}
+    return out
+
+
+def _save_dixy_nids(incoming: Any) -> int:
+    """Сохранить новые пары xml_id → {id, ratio} Дикси, чтобы не тянуть HTML карточек повторно."""
+    if not isinstance(incoming, dict) or not incoming:
+        return 0
+    current = _dixy_nids()
+    added = 0
+    for raw_sku, raw_val in list(incoming.items())[:ITEMS_LIMIT]:
+        sku = _text(raw_sku, 40)
+        if not sku or not isinstance(raw_val, dict):
+            continue
+        nid = str(raw_val.get("id") or "").strip()
+        if not nid.isdigit():
+            continue
+        try:
+            ratio = float(raw_val.get("ratio") or 1)
+        except (TypeError, ValueError):
+            ratio = 1.0
+        entry = {"id": nid, "ratio": ratio if ratio > 0 else 1.0}
+        if current.get(sku) != entry:
+            current[sku] = entry
+            added += 1
+    if not added:
+        return 0
+    if len(current) > DIXY_NIDS_LIMIT:
+        keys = list(current.keys())[-DIXY_NIDS_LIMIT:]
+        current = {k: current[k] for k in keys}
+    repo.set_setting(DIXY_NIDS_KEY, json.dumps(current, ensure_ascii=False))
+    return added
 
 
 def _check_pause_ms() -> int:
@@ -409,6 +495,23 @@ def plan(body: dict) -> dict:
            # Флаг добора: сколько позиций уже лежит и пропущено в этом наряде.
            "top_up": top_up,
            "already_landed": len(already)}
+    if store == "dixy":
+        cached_nids = _dixy_nids()
+        if cached_nids:
+            relevant_nids: dict[str, dict] = {}
+            for row in rows:
+                sku_key = str(row.get("sku") or "")
+                entry = cached_nids.get(sku_key)
+                if entry:
+                    row["nid"] = entry["id"]
+                    row["ratio"] = entry["ratio"]
+                    relevant_nids[sku_key] = entry
+            for drop_sku in (body.get("drop") or [])[:DROP_LIMIT]:
+                ds = str(drop_sku).strip()
+                if ds in cached_nids:
+                    relevant_nids[ds] = cached_nids[ds]
+            if relevant_nids:
+                res["dixy_nids"] = relevant_nids
     if "drop" in body:
         # Своё, что телефон снимет из корзины сети (1.19): карточка и название по артикулу.
         st = repo.get_store(store)
@@ -420,6 +523,65 @@ def plan(body: dict) -> dict:
                 item["url"] = sp["url"]
             res["drop"].append(item)
     return res
+
+
+def plans(body: dict) -> dict:
+    """Пакетный наряд сразу для нескольких сетей за один HTTP-запрос телефона.
+
+    Вместо 4–11 последовательных POST /api/device/cartplan при каждой правке корзины
+    телефон забирает все нужные наряды одним раундтрипом.
+    """
+    raw_stores = body.get("stores")
+    if not isinstance(raw_stores, list) or not raw_stores:
+        raise ValueError("нужен непустой список сетей (stores)")
+
+    stores_clean: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_stores[:len(CHAINS)]:
+        code = str(raw or "").strip().lower()
+        if code in CHAINS and code not in seen:
+            seen.add(code)
+            stores_clean.append(code)
+    if not stores_clean:
+        raise ValueError("в списке stores нет известных приложению сетей")
+
+    drops_map = body.get("drops") if isinstance(body.get("drops"), dict) else {}
+    lines_map = body.get("lines_by_store") if isinstance(body.get("lines_by_store"), dict) else {}
+    background = bool(body.get("background", True))
+    top_up = bool(body.get("top_up"))
+
+    out_plans: dict[str, dict] = {}
+    basket_id = None
+    stamp = ""
+    for code in stores_clean:
+        sub: dict[str, Any] = {"store": code, "background": background}
+        if top_up:
+            sub["top_up"] = True
+        if body.get("basket") is not None:
+            sub["basket"] = body.get("basket")
+        if code in lines_map and lines_map[code] is not None:
+            sub["lines"] = lines_map[code]
+        elif body.get("lines") is not None:
+            sub["lines"] = body.get("lines")
+        if code in drops_map and isinstance(drops_map[code], list):
+            sub["drop"] = drops_map[code]
+        try:
+            p = plan(sub)
+            out_plans[code] = p
+            if basket_id is None and p.get("basket") is not None:
+                basket_id = p.get("basket")
+            if not stamp and p.get("stamp"):
+                stamp = str(p.get("stamp") or "")
+        except Exception as exc:  # noqa: BLE001 — одна сеть не роняет пакет
+            log.warning("пакетный наряд для %s не собрался: %s", code, exc)
+            out_plans[code] = {"ok": False, "store": code, "error": str(exc)}
+
+    return {
+        "ok": True,
+        "basket": basket_id,
+        "stamp": stamp,
+        "plans": out_plans,
+    }
 
 
 def _search_lines(unresolved: list[dict], store: str) -> list[dict]:
@@ -593,6 +755,14 @@ def _query_name(product_id: int, fallback: str) -> str:
     """
     from app.catalog import store
 
+    cache_key = (str(config.db_path()), int(product_id), str(fallback or ""))
+    now_mono = time.monotonic()
+    with _QUERY_CACHE_LOCK:
+        hit = _QUERY_CACHE.get(cache_key)
+        if hit and (now_mono - hit[0]) < _QUERY_CACHE_TTL:
+            return hit[1]
+
+    resolved: str | None = None
     try:
         master = repo.master_of(int(product_id))
         if master and master.get("master_id"):
@@ -600,16 +770,26 @@ def _query_name(product_id: int, fallback: str) -> str:
             full = str(item.get("name") or "").strip()
             if full and len(full) > len(fallback):
                 if _has_cyrillic(full) or not _has_cyrillic(fallback):
-                    return full
-                return _clean_query(fallback)
+                    resolved = full
+                else:
+                    resolved = _clean_query(fallback)
     except Exception:  # noqa: BLE001 — каталог не открылся: ищем как написан товар
         log.info("имя для поиска не подобралось у товара %s", product_id, exc_info=True)
-    found = _catalog_name(fallback)
-    if found:
-        if _has_cyrillic(found) or not _has_cyrillic(fallback):
-            return found
-        return _clean_query(fallback)
-    return _clean_query(fallback)
+    if resolved is None:
+        found = _catalog_name(fallback)
+        if found:
+            if _has_cyrillic(found) or not _has_cyrillic(fallback):
+                resolved = found
+            else:
+                resolved = _clean_query(fallback)
+        else:
+            resolved = _clean_query(fallback)
+
+    with _QUERY_CACHE_LOCK:
+        if len(_QUERY_CACHE) > 2000:
+            _QUERY_CACHE.clear()
+        _QUERY_CACHE[cache_key] = (now_mono, resolved)
+    return resolved
 
 
 # Сколько слов имени берём, когда полного имени не нашлось. Три — это обычно
@@ -1137,6 +1317,11 @@ def accept_report(body: dict) -> dict:
         "seconds": _count(body.get("seconds")),
     }
     repo.set_setting(REPORT_KEY + store, json.dumps(report, ensure_ascii=False))
+    if store == "dixy" and body.get("dixy_nids"):
+        try:
+            _save_dixy_nids(body.get("dixy_nids"))
+        except Exception:  # noqa: BLE001
+            log.warning("dixy: не удалось сохранить кэш числовых id", exc_info=True)
     log.info("корзина с телефона, %s: легло %d из %d за %s с, итог сети %s, полей из ответов %d",
              store, report["landed"], report["planned"], report["seconds"], total_of(report),
              sum(len(v) for v in found.values()))
@@ -1642,5 +1827,5 @@ def last(store: str) -> dict | None:
 
 
 __all__ = ["CHAINS", "CART_PAGES", "KINDS", "API_TOTALS", "FULL_CART", "QTY_SETS", "API_CARTS",
-           "EMPTY_CART", "rules", "plan", "accept_report", "accept_cards", "progress",
+           "EMPTY_CART", "rules", "plan", "plans", "accept_report", "accept_cards", "progress",
            "network_total", "total_of", "last"]

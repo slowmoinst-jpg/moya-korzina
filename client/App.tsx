@@ -113,6 +113,7 @@ export const App: React.FC = () => {
   );
 
   const syncTimerRef = useRef<number | null>(null);
+  const syncInFlightRef = useRef<Promise<void> | null>(null);
   const collectTimerRef = useRef<number | null>(null);
   const lastCollectedKeyRef = useRef<string>('');
   const toastTimerRef = useRef<number | null>(null);
@@ -224,7 +225,28 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('online', onOnline);
   }, [ws, notify]);
 
-  // Persist locally immediately (0ms) and schedule debounced background server sync
+  const flushSync = useCallback((snapshot: WorkspaceSnapshot): Promise<void> => {
+    if (snapshot.isDemo) return Promise.resolve();
+    const p = pushSyncSnapshot(snapshot)
+      .then((res) => {
+        setSyncDirty(snapshot.phone, false);
+        if (res.serverStarted && res.serverStarted.length > 0) {
+          setActiveCollecting((prev) => [...new Set([...prev, ...res.serverStarted!])]);
+        }
+      })
+      .catch(() => {
+        // Keep dirty flag for next online sync
+      })
+      .finally(() => {
+        if (syncInFlightRef.current === p) {
+          syncInFlightRef.current = null;
+        }
+      });
+    syncInFlightRef.current = p;
+    return p;
+  }, []);
+
+  // Persist locally immediately (0ms) and schedule fast debounced background server sync
   const commitWorkspace = useCallback(
     (updater: (prev: WorkspaceSnapshot) => WorkspaceSnapshot) => {
       setWs((prev) => {
@@ -236,17 +258,14 @@ export const App: React.FC = () => {
           setSyncDirty(next.phone, true);
           if (syncTimerRef.current) window.clearTimeout(syncTimerRef.current);
           syncTimerRef.current = window.setTimeout(() => {
-            void pushSyncSnapshot(next)
-              .then(() => setSyncDirty(next.phone, false))
-              .catch(() => {
-                // Keep dirty flag for next online sync
-              });
-          }, 450);
+            syncTimerRef.current = null;
+            void flushSync(next);
+          }, 220);
         }
         return next;
       });
     },
-    []
+    [flushSync]
   );
 
   // Derived data calculated locally in <3ms
@@ -347,6 +366,17 @@ export const App: React.FC = () => {
     };
   }, [auth?.authenticated, refreshLiveRuns]);
 
+  // Adaptive live polling while any chain (server LINK or Android WebView) is actively collecting
+  useEffect(() => {
+    if (!auth?.authenticated || activeCollecting.length === 0) return;
+    const id = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refreshLiveRuns();
+      }
+    }, 2500);
+    return () => window.clearInterval(id);
+  }, [auth?.authenticated, activeCollecting.length, refreshLiveRuns]);
+
   // Trigger Android background cart assembly automatically after any basket or address change across all 11 chains
   const triggerBackgroundCollect = useCallback(
     async (force = false) => {
@@ -358,11 +388,15 @@ export const App: React.FC = () => {
       lastCollectedKeyRef.current = collectKey;
 
       if (!ws.isDemo) {
-        try {
-          await pushSyncSnapshot(ws);
-          setSyncDirty(ws.phone, false);
-        } catch {
-          // continue even if sync is momentarily unavailable
+        if (syncTimerRef.current) {
+          window.clearTimeout(syncTimerRef.current);
+          syncTimerRef.current = null;
+        }
+        if (syncInFlightRef.current) {
+          await syncInFlightRef.current;
+        }
+        if (isSyncDirty(ws.phone)) {
+          await flushSync(ws);
         }
       }
 
@@ -382,9 +416,9 @@ export const App: React.FC = () => {
       });
 
       const busy = KorzinaBridge.busy();
-      setActiveCollecting([...new Set([...busy.going, ...busy.soon])]);
+      setActiveCollecting((prev) => [...new Set([...prev, ...busy.going, ...busy.soon])]);
     },
-    [ws, activeBasketId, items.length, basketStamp, connectedSig]
+    [ws, activeBasketId, items.length, basketStamp, connectedSig, flushSync]
   );
 
   useEffect(() => {
@@ -393,7 +427,7 @@ export const App: React.FC = () => {
     if (collectTimerRef.current) window.clearTimeout(collectTimerRef.current);
     collectTimerRef.current = window.setTimeout(() => {
       void triggerBackgroundCollect(false);
-    }, 550);
+    }, 250);
     return () => {
       if (collectTimerRef.current) window.clearTimeout(collectTimerRef.current);
     };

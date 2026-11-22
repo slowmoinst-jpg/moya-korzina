@@ -201,7 +201,9 @@ export async function fetchSyncSnapshot(): Promise<WorkspaceSnapshot> {
   return data.snapshot;
 }
 
-export async function pushSyncSnapshot(snapshot: WorkspaceSnapshot): Promise<{ ok: boolean; syncedAt: string }> {
+export async function pushSyncSnapshot(
+  snapshot: WorkspaceSnapshot
+): Promise<{ ok: boolean; syncedAt: string; basketStamp?: string; serverStarted?: string[] }> {
   return requestJson('/api/sync', {
     method: 'POST',
     body: JSON.stringify({

@@ -802,8 +802,8 @@ public class MainActivity extends Activity {
     private static final int READ_RETRY_MS = 700;
 
     // ── Фоновая сборка (1.13) ──
-    /** Через сколько после последней правки корзины начинать: 300 мс (правки подряд не теряются, устаревшую сборку сменяет новая). */
-    private static final int DEBOUNCE_MS = 300;
+    /** Через сколько после последней правки корзины начинать: 120 мс (SPA уже держит свой debounce). */
+    private static final int DEBOUNCE_MS = 120;
     /** Хвост (поиск незнакомых) начинается, когда корзину столько не правили. */
     private static final int TAIL_QUIET_MS = 10000;
     /** Сколько окна сетей с касаниями ждут, пока сети с запросами (cartapi.js) положат своё. */
@@ -828,12 +828,19 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE = 1001;
     private static final String TAG = "Korzina";
 
-    /** Ожидание ответа cartapi.js (APK 1.24): Перекрёсток, Пятёрочка, Дикси. */
+    /** Ожидание ответа cartapi.js (APK 1.24): Перекрёсток, Пятёрочка, Дикси, Магнит. */
     private static final long CARTAPI_WAIT_MS = 45000;
     private static final String CARTAPI_START =
         "(function(inp){window.__kzApi=window.__kzApi||{};window.__kzApi[inp.key]=null;KZ_CARTAPI.run(inp).then(function(r){window.__kzApi[inp.key]=r;},function(e){window.__kzApi[inp.key]={ok:false,stage:'js',why:String(e&&e.message||e).slice(0,200)};});return 'started';})(%s)";
     private static final String CARTAPI_POLL =
         "(function(k){var a=window.__kzApi;return a&&a[k]?JSON.stringify(a[k]):'';})(%s)";
+    private static final String CARTAPI_ABORT =
+        "(function(k){try{if(window.KZ_CARTAPI&&KZ_CARTAPI.abort)KZ_CARTAPI.abort(k);}catch(e){}})(%s)";
+
+    /** Кэш пакетных нарядов (/api/device/cartplans): один HTTP-запрос вместо 4–11 при правке корзины. */
+    private static final long PLAN_PREFETCH_TTL_MS = 30_000L;
+    private final Map<String, JSONObject> prefetchedPlans = new HashMap<>();
+    private final Map<String, Long> prefetchedPlanAt = new HashMap<>();
 
     private String cartApiJsCached = null;
 
@@ -842,6 +849,8 @@ public class MainActivity extends Activity {
         if ("pyaterochka".equals(chain)) return "https://5ka.ru";
         if ("dixy".equals(chain)) return "https://dixy.ru";
         if ("magnit".equals(chain)) return "https://magnit.ru";
+        if ("metro".equals(chain)) return "https://online.metro-cc.ru";
+        if ("vprok".equals(chain)) return "https://www.vprok.ru";
         return null;
     }
 
@@ -1932,6 +1941,8 @@ public class MainActivity extends Activity {
         boolean cartRead = false; // страницу корзины в этой сборке читали
         boolean cartApiDone = false;      // путь запросами cartapi.js уже пробовали в этой сборке (APK 1.24)
         boolean cartApiRefreshed = false; // вход Перекрёстка уже обновляли (APK 1.24)
+        String apiKey = "";               // активный ключ KZ_CARTAPI.run для мгновенного abort при правке
+        JSONObject dixyNids = null;       // кэш числовых id Дикси (из наряда и для сохранения на сервере)
         String how = "tap";          // чем легла текущая позиция: касанием или запросом
         final long startedAt = SystemClock.uptimeMillis();
         long planAt = 0, apiAt = 0;  // когда пришёл наряд и пошли запросы сети: для замера в журнале
@@ -2006,6 +2017,11 @@ public class MainActivity extends Activity {
      */
     private void supersede(CartRun r) {
         Slot s = r.slot;
+        if (!r.apiKey.isEmpty() && r.view != null) {
+            final String abortCode = CARTAPI_ABORT.replace("%s", JSONObject.quote(r.apiKey));
+            r.apiKey = "";
+            try { r.view.evaluateJavascript(abortCode, null); } catch (Exception ignored) { }
+        }
         r.stopped = true;
         if (s.run == r) s.run = null;
         Log.i(TAG, r.name + ": корзина поменялась — собираю заново");
@@ -2139,9 +2155,63 @@ public class MainActivity extends Activity {
         });
     }
 
+    private static String planCacheKey(int basket, String stamp, String code) {
+        return basket + ":" + (stamp == null ? "" : stamp) + ":" + (code == null ? "" : code);
+    }
+
+    /** Забрать наряды сразу для всех стартующих сетей одним POST /api/device/cartplans. */
+    private void prefetchBatchPlans(final int basket, final String stamp, final List<String> codes) {
+        if (basket < 0 || stamp == null || stamp.isEmpty() || codes == null || codes.size() < 2) return;
+        JSONObject body = new JSONObject();
+        try {
+            JSONArray storesArr = new JSONArray();
+            for (String c : codes) storesArr.put(c);
+            body.put("stores", storesArr);
+            body.put("background", true);
+            body.put("basket", basket);
+        } catch (Exception ignored) { return; }
+        call("/api/device/cartplans", body, (status, text) -> {
+            if (status != 200) return;
+            try {
+                JSONObject resp = new JSONObject(text);
+                JSONObject plans = resp.optJSONObject("plans");
+                if (plans == null) return;
+                long now = SystemClock.uptimeMillis();
+                Iterator<String> keys = plans.keys();
+                while (keys.hasNext()) {
+                    String code = keys.next();
+                    JSONObject p = plans.optJSONObject(code);
+                    if (p != null && p.optBoolean("ok", false)) {
+                        String ck = planCacheKey(basket, stamp, code);
+                        prefetchedPlans.put(ck, p);
+                        prefetchedPlanAt.put(ck, now);
+                    }
+                }
+            } catch (Exception ignored) { }
+        });
+    }
+
     /** Взять у сервера наряд: позиции этой сети, правила кнопок, корзину и её отпечаток. */
     private void askPlan(final CartRun r, final Runnable then) {
         loadLedger(r);
+        // Быстрый путь: если наряд уже предзагружен пакетом /api/device/cartplans и не нужен drop/override — 0 мс!
+        if (r.slot != null && r.linesOverride == null && r.basket >= 0 && !r.stamp.isEmpty()) {
+            boolean needsDropLookup = false;
+            Iterator<String> itCheck = r.cart.keys();
+            while (itCheck.hasNext()) {
+                if (r.urls.optString(itCheck.next(), "").isEmpty()) { needsDropLookup = true; break; }
+            }
+            if (!needsDropLookup) {
+                String ck = planCacheKey(r.basket, r.stamp, r.code);
+                JSONObject cached = prefetchedPlans.remove(ck);
+                Long at = prefetchedPlanAt.remove(ck);
+                if (cached != null && at != null && (SystemClock.uptimeMillis() - at) < PLAN_PREFETCH_TTL_MS) {
+                    r.planAt = SystemClock.uptimeMillis();
+                    applyPlanJson(r, cached, then);
+                    return;
+                }
+            }
+        }
         JSONObject body = new JSONObject();
         try {
             body.put("store", r.code);
@@ -2166,81 +2236,85 @@ public class MainActivity extends Activity {
                 return;
             }
             try {
-                JSONObject plan = new JSONObject(text);
-                JSONObject rules = plan.optJSONObject("rules");
-                JSONArray lines = plan.optJSONArray("lines");
-                r.rules = rules != null ? rules : new JSONObject();
-                r.rules.put("_note", plan.optString("note", ""));
-                r.lines = lines != null ? lines : new JSONArray();
-                JSONArray dropArr = plan.optJSONArray("drop");
-                for (int i = 0; dropArr != null && i < dropArr.length(); i++) {
-                    JSONObject d = dropArr.optJSONObject(i);
-                    if (d == null) continue;
-                    String sku = d.optString("sku", "");
-                    String u = d.optString("url", "");
-                    String n = d.optString("name", "");
-                    if (!sku.isEmpty()) {
-                        if (!u.isEmpty()) r.urls.put(sku, u);
-                        if (!n.isEmpty() && !r.names.has(sku)) r.names.put(sku, n);
-                    }
+                applyPlanJson(r, new JSONObject(text), then);
+            } catch (Exception e) {
+                failRun(r, "Сервер ответил непонятно: " + e.getMessage());
+            }
+        });
+    }
+
+    private void applyPlanJson(final CartRun r, final JSONObject plan, final Runnable then) {
+        if (!alive(r)) return;
+        try {
+            JSONObject rules = plan.optJSONObject("rules");
+            JSONArray lines = plan.optJSONArray("lines");
+            r.rules = rules != null ? rules : new JSONObject();
+            r.rules.put("_note", plan.optString("note", ""));
+            r.lines = lines != null ? lines : new JSONArray();
+            JSONObject serverNids = plan.optJSONObject("dixy_nids");
+            if (serverNids != null && serverNids.length() > 0) r.dixyNids = serverNids;
+            JSONArray dropArr = plan.optJSONArray("drop");
+            for (int i = 0; dropArr != null && i < dropArr.length(); i++) {
+                JSONObject d = dropArr.optJSONObject(i);
+                if (d == null) continue;
+                String sku = d.optString("sku", "");
+                String u = d.optString("url", "");
+                String n = d.optString("name", "");
+                if (!sku.isEmpty()) {
+                    if (!u.isEmpty()) r.urls.put(sku, u);
+                    if (!n.isEmpty() && !r.names.has(sku)) r.names.put(sku, n);
                 }
-                // Позиции, которых сеть не знает: сервер просит найти их поиском самой сети.
-                // Там, где сервер к витрине не пробивается (Пятёрочка, Самокат — замер
-                // 18.10.2026), это единственная дорога к настоящему артикулу. Строка ложится
-                // в тот же список, но с пометкой search: первый шаг у неё — страница поиска.
-                // Рядом — второй, короткий адрес поиска (search_alt), если сервер его дал:
-                // когда первый запрос принесёт не тот товар, телефон попробует этот.
-                JSONArray search = plan.optJSONArray("search");
-                for (int i = 0; search != null && i < search.length(); i++) {
-                    JSONObject s = search.optJSONObject(i);
-                    String sUrl = s == null ? "" : s.optString("url", "");
-                    String sName = s == null ? "" : s.optString("name", "");
-                    if (sUrl.isEmpty() || sName.isEmpty()) continue;
-                    (r.slot != null ? r.later : r.lines).put(new JSONObject()
+            }
+            JSONArray search = plan.optJSONArray("search");
+            for (int i = 0; search != null && i < search.length(); i++) {
+                JSONObject s = search.optJSONObject(i);
+                String sUrl = s == null ? "" : s.optString("url", "");
+                String sName = s == null ? "" : s.optString("name", "");
+                if (sUrl.isEmpty() || sName.isEmpty()) continue;
+                (r.slot != null ? r.later : r.lines).put(new JSONObject()
+                    .put("name", sName).put("url", "").put("search", sUrl)
+                    .put("search_alt", s.optString("search_alt", ""))
+                    .put("clicks", 1).put("sku", "")
+                    .put("product_id", s.optInt("product_id", 0)));
+            }
+            JSONArray searchRecent = plan.optJSONArray("search_recent");
+            for (int i = 0; searchRecent != null && i < searchRecent.length(); i++) {
+                JSONObject s = searchRecent.optJSONObject(i);
+                if (s == null) continue;
+                String sName = s.optString("name", "");
+                if (sName.isEmpty()) continue;
+                if (r.slot != null) {
+                    r.items.put(new JSONObject()
+                        .put("name", sName).put("sku", "").put("url", "")
+                        .put("ok", false)
+                        .put("why", "поиском сети не нашлась недавно — поищу позже")
+                        .put("put", 0).put("times", 0)
+                        .put("how", "tap").put("calls", new JSONArray()));
+                } else {
+                    String sUrl = s.optString("url", "");
+                    if (sUrl.isEmpty()) continue;
+                    r.lines.put(new JSONObject()
                         .put("name", sName).put("url", "").put("search", sUrl)
                         .put("search_alt", s.optString("search_alt", ""))
                         .put("clicks", 1).put("sku", "")
                         .put("product_id", s.optInt("product_id", 0)));
                 }
-                JSONArray searchRecent = plan.optJSONArray("search_recent");
-                for (int i = 0; searchRecent != null && i < searchRecent.length(); i++) {
-                    JSONObject s = searchRecent.optJSONObject(i);
-                    if (s == null) continue;
-                    String sName = s.optString("name", "");
-                    if (sName.isEmpty()) continue;
-                    if (r.slot != null) {
-                        r.items.put(new JSONObject()
-                            .put("name", sName).put("sku", "").put("url", "")
-                            .put("ok", false)
-                            .put("why", "поиском сети не нашлась недавно — поищу позже")
-                            .put("put", 0).put("times", 0)
-                            .put("how", "tap").put("calls", new JSONArray()));
-                    } else {
-                        String sUrl = s.optString("url", "");
-                        if (sUrl.isEmpty()) continue;
-                        r.lines.put(new JSONObject()
-                            .put("name", sName).put("url", "").put("search", sUrl)
-                            .put("search_alt", s.optString("search_alt", ""))
-                            .put("clicks", 1).put("sku", "")
-                            .put("product_id", s.optInt("product_id", 0)));
-                    }
-                }
-                r.ourTotal = plan.optDouble("total", 0);
-                if (plan.has("basket") && !plan.isNull("basket")) r.basket = plan.optInt("basket", r.basket);
-                if (!plan.optString("stamp", "").isEmpty()) r.stamp = plan.optString("stamp", "");
-                for (int i = 0; i < r.lines.length(); i++) {
-                    JSONObject line = r.lines.optJSONObject(i);
-                    String sku = line == null ? "" : line.optString("sku", "");
-                    if (sku.isEmpty()) continue;
-                    r.want.put(sku, r.want.optInt(sku, 0) + Math.max(1, line.optInt("clicks", 1)));
-                    r.names.put(sku, line.optString("name", ""));
-                    if (line.optInt("product_id", 0) > 0) r.pids.put(sku, line.optInt("product_id", 0));
-                }
-                then.run();
-            } catch (Exception e) {
-                failRun(r, "Сервер ответил непонятно: " + e.getMessage());
             }
-        });
+            r.ourTotal = plan.optDouble("total", 0);
+            if (plan.has("basket") && !plan.isNull("basket")) r.basket = plan.optInt("basket", r.basket);
+            if (!plan.optString("stamp", "").isEmpty()) r.stamp = plan.optString("stamp", "");
+            for (int i = 0; i < r.lines.length(); i++) {
+                JSONObject line = r.lines.optJSONObject(i);
+                String sku = line == null ? "" : line.optString("sku", "");
+                if (sku.isEmpty()) continue;
+                r.want.put(sku, r.want.optInt(sku, 0) + Math.max(1, line.optInt("clicks", 1)));
+                r.names.put(sku, line.optString("name", ""));
+                if (line.optInt("product_id", 0) > 0) r.pids.put(sku, line.optInt("product_id", 0));
+            }
+            then.run();
+        } catch (Exception e) {
+            failRun(r, "Сервер ответил непонятно: " + e.getMessage());
+        }
     }
 
     /** Нашей корзины в этой сети нет — проверить сборку на открытой карточке. */
@@ -4699,6 +4773,9 @@ public class MainActivity extends Activity {
             if (r.basket >= 0) body.put("basket", r.basket);
             if (!r.stamp.isEmpty()) body.put("stamp", r.stamp);
             if (cart.has("count") && !cart.isNull("count")) body.put("cart_count", cart.optInt("count"));
+            if ("dixy".equals(r.code) && r.dixyNids != null && r.dixyNids.length() > 0) {
+                body.put("dixy_nids", r.dixyNids);
+            }
             final String name = r.name;
             call("/api/device/cartreport", body, (status, text) -> {
                 if (background) {
@@ -4812,6 +4889,7 @@ public class MainActivity extends Activity {
             }
         }
         JSONArray chains = payload.optJSONArray("chains");
+        List<String> batchCodes = new ArrayList<>();
         for (int i = 0; chains != null && i < chains.length(); i++) {
             JSONObject c = chains.optJSONObject(i);
             if (c == null) continue;
@@ -4849,10 +4927,12 @@ public class MainActivity extends Activity {
                 if (s.run != null) {
                     if (!stamp.equals(s.run.stamp)) {
                         s.pending = stamp;   // доберём после этой сборки
-                        // Хвост правку не держит, бросаем его сразу.
-                        // shortcut: касание хвоста в полёте может лечь мимо памяти телефона, и такую
-                        // позицию никто не снимет; увидим лишнее в корзинах сетей — ждать конца шага.
-                        if (s.run.tail) supersede(s.run);
+                        // Хвост и активный прогон cartapi.js правку не держат: обрываем сразу,
+                        // чтобы не докручивать устаревшую корзину (экономим секунды и лимит сети).
+                        if (s.run.tail || (!s.run.apiKey.isEmpty() && !s.run.apiOver)) {
+                            supersede(s.run);
+                            if (order == null) batchCodes.add(code);
+                        }
                     }
                     starting.put(code);
                     continue;
@@ -4898,7 +4978,11 @@ public class MainActivity extends Activity {
                 s.pending = stamp;
                 soon(s);
                 starting.put(code);
+                if (order == null) batchCodes.add(code);
             } catch (Exception ignored) { }
+        }
+        if (batchCodes.size() >= 2) {
+            prefetchBatchPlans(basket, stamp, batchCodes);
         }
         try {
             answer.put("starting", starting).put("skip", skip);
@@ -5075,6 +5159,10 @@ public class MainActivity extends Activity {
                 itemIn.put("sku", sku);
                 itemIn.put("target", Math.max(1, line.optInt("clicks", 1)));
                 itemIn.put("url", line.optString("url", ""));
+                if (!line.optString("nid", "").isEmpty()) {
+                    itemIn.put("nid", line.optString("nid", ""));
+                    itemIn.put("ratio", line.optDouble("ratio", 1.0));
+                }
             } catch (Exception ignored) { }
             linesInput.put(itemIn);
             inputLinesBySku.put(sku, line);
@@ -5139,6 +5227,9 @@ public class MainActivity extends Activity {
             input.put("pause_ms", pauseMs);
             int burst = r.rules.optInt("api_burst", 3);
             input.put("burst", burst);
+            if (r.dixyNids != null && r.dixyNids.length() > 0) {
+                input.put("dixy_nids", r.dixyNids);
+            }
             // Заголовки сайта Магнита cartapi.js берёт из образца, выученного касанием; в окне и остаются.
             JSONObject tpl = storedTpl(r.code);
             if (tpl != null && tpl.optJSONObject("tpl") != null) input.put("tpl", tpl.getJSONObject("tpl"));
@@ -5154,11 +5245,13 @@ public class MainActivity extends Activity {
         }
 
         String execCode = script + ";" + CARTAPI_START.replace("%s", input.toString());
+        r.apiKey = key;
         r.apiAt = SystemClock.uptimeMillis();
         r.view.evaluateJavascript(execCode, startedVal -> {
             if (!alive(r)) return;
             String st = unquote(startedVal);
             if (!"started".equals(st)) {
+                r.apiKey = "";
                 begin(r);
                 return;
             }
@@ -5198,7 +5291,12 @@ public class MainActivity extends Activity {
                                      final JSONArray linesInput,
                                      final Map<String, JSONObject> inputLinesBySku) {
         if (!alive(r)) return;
+        r.apiKey = "";
         r.apiOver = true;
+        JSONObject resNids = res.optJSONObject("dixy_nids");
+        if (resNids != null && resNids.length() > 0) {
+            r.dixyNids = resNids;
+        }
 
         JSONObject resCart = res.optJSONObject("cart");
         if (resCart != null) {
@@ -5236,6 +5334,10 @@ public class MainActivity extends Activity {
         if (!ok) {
             String stage = res.optString("stage", "");
             String why = res.optString("why", "");
+            if ("aborted".equals(stage) || superseded(r)) {
+                supersede(r);
+                return;
+            }
 
             // Пятёрочка: «обрыв» — это 403 защиты сети, спрятанный CORS «*». Её куки обновляет
             // только скрипт своей страницы, robots.txt этого не умеет (эмулятор, 09.11.2026).

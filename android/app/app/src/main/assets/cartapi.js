@@ -1,5 +1,5 @@
-// cartapi.js — корзина сетей (Перекрёсток, Пятёрочка, Дикси, Магнит) собственными запросами сети.
-// Встроен в APK «Моей корзины» 1.24 (09.11.2026), Магнит — с 1.26.
+// cartapi.js — корзина сетей (Перекрёсток, Пятёрочка, Дикси, Магнит, METRO, Впрок) собственными запросами сети.
+// Встроен в APK «Моей корзины» 1.24 (09.11.2026), Магнит — с 1.26, METRO и Впрок — живые batch-протоколы.
 // Вызывается из MainActivity.java в скрытом WebView-окне фоновой сборки.
 
 var KZ_CARTAPI = (function () {
@@ -74,10 +74,69 @@ var KZ_CARTAPI = (function () {
     return { set: set, kept: kept, drops: drops };
   }
 
-  /** Ожидание паузы между запросами в миллисекундах. */
+  /** Активные прогоны по ключу: позволяет мгновенно оборвать устаревшую сборку при правке корзины. */
+  var activeRuns = {};
+  var currentRun = null;
+
+  function makeAbortError() {
+    var e = new Error('aborted');
+    e.aborted = true;
+    return e;
+  }
+
+  function checkAborted() {
+    if (currentRun && currentRun.aborted) {
+      throw makeAbortError();
+    }
+  }
+
+  /**
+   * Мгновенно прервать сборку по ключу (вызывается из MainActivity при новой правке корзины).
+   * Обрывает текущий XHR и снимает ожидание ведра токенов.
+   */
+  function abort(key) {
+    var k = String(key || '');
+    var st = activeRuns[k];
+    if (!st) return false;
+    st.aborted = true;
+    if (st.timer != null) {
+      clearTimeout(st.timer);
+      st.timer = null;
+    }
+    if (typeof st.cancelTimer === 'function') {
+      var fn = st.cancelTimer;
+      st.cancelTimer = null;
+      fn();
+    }
+    if (st.xhr) {
+      try { st.xhr.abort(); } catch (e) {}
+      st.xhr = null;
+    }
+    return true;
+  }
+
+  /** Ожидание паузы между запросами в миллисекундах (отменяется при abort). */
   function waitMs(ms) {
-    return new Promise(function (resolve) {
-      setTimeout(resolve, ms);
+    checkAborted();
+    var st = currentRun;
+    return new Promise(function (resolve, reject) {
+      var t = setTimeout(function () {
+        if (st) {
+          st.timer = null;
+          st.cancelTimer = null;
+          if (st.aborted) {
+            reject(makeAbortError());
+            return;
+          }
+        }
+        resolve();
+      }, ms);
+      if (st) {
+        st.timer = t;
+        st.cancelTimer = function () {
+          reject(makeAbortError());
+        };
+      }
     });
   }
 
@@ -91,6 +150,7 @@ var KZ_CARTAPI = (function () {
    * и по Date.now() ведро уходило в минус на миллионы токенов.
    */
   function pace(pauseMs, burst) {
+    checkAborted();
     if (typeof window === 'undefined') return Promise.resolve();
     var now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     var p = window.__kzPace;
@@ -116,14 +176,55 @@ var KZ_CARTAPI = (function () {
   }
 
   /**
+   * Короткий кэш последней корзины в окне (15 с): при быстрой правке корзины человеком
+   * сети с полным ответом на запись (Перекрёсток, Пятёрочка, Магнит, METRO, Впрок)
+   * пропускают лишний стартовый GET и сразу шлют дельту — ответ записи всё равно вернёт
+   * настоящую корзину и итог целиком.
+   */
+  var FRESH_CART_MS = 15000;
+
+  function monoNow() {
+    return typeof performance !== 'undefined' ? performance.now() : Date.now();
+  }
+
+  function getFreshCart(chain, input) {
+    if (input && input.fast_delta === false) return null;
+    if (typeof window === 'undefined' || !window.__kzLastCart) return null;
+    var entry = window.__kzLastCart[chain];
+    if (!entry) return null;
+    var age = monoNow() - entry.at;
+    if (age < 0 || age > FRESH_CART_MS) {
+      delete window.__kzLastCart[chain];
+      return null;
+    }
+    return entry;
+  }
+
+  function setFreshCart(chain, entry) {
+    if (typeof window === 'undefined') return;
+    window.__kzLastCart = window.__kzLastCart || {};
+    entry.at = monoNow();
+    window.__kzLastCart[chain] = entry;
+  }
+
+  function clearFreshCart(chain) {
+    if (typeof window === 'undefined' || !window.__kzLastCart) return;
+    delete window.__kzLastCart[chain];
+  }
+
+  /**
    * Запрос через XMLHttpRequest (сайты сетей оборачивают window.fetch).
-   * Таймаут 15 с; при ошибке или обрыве статус 0.
+   * Таймаут 15 с; при ошибке или обрыве статус 0; при abort() — немедленный выход.
    */
   function httpReq(method, url, headers, body, withCredentials) {
+    checkAborted();
     stats.requests++;
-    return new Promise(function (resolve) {
+    var st = currentRun;
+    return new Promise(function (resolve, reject) {
       var t0 = Date.now();
       var xhr = new XMLHttpRequest();
+      var settled = false;
+      if (st) st.xhr = xhr;
       xhr.timeout = 15000;
       if (withCredentials) {
         xhr.withCredentials = true;
@@ -136,7 +237,14 @@ var KZ_CARTAPI = (function () {
           }
         }
       }
-      function done(status, text) {
+      function finish(status, text, wasAbort) {
+        if (settled) return;
+        settled = true;
+        if (st && st.xhr === xhr) st.xhr = null;
+        if (wasAbort || (st && st.aborted)) {
+          reject(makeAbortError());
+          return;
+        }
         var ms = Date.now() - t0;
         var json = null;
         try {
@@ -145,21 +253,21 @@ var KZ_CARTAPI = (function () {
         resolve({ status: status, ms: ms, json: json, text: text || '' });
       }
       xhr.onload = function () {
-        done(xhr.status, xhr.responseText);
+        finish(xhr.status, xhr.responseText, false);
       };
       xhr.onerror = function () {
-        done(0, '');
+        finish(0, '', false);
       };
       xhr.ontimeout = function () {
-        done(0, '');
+        finish(0, '', false);
       };
       xhr.onabort = function () {
-        done(0, '');
+        finish(0, '', true);
       };
       try {
         xhr.send(body != null ? body : null);
       } catch (e) {
-        done(0, '');
+        finish(0, '', false);
       }
     });
   }
@@ -376,18 +484,39 @@ var KZ_CARTAPI = (function () {
       return out;
     }
 
-    var runners = { perekrestok: runPerekrestok, pyaterochka: runPyaterochka, dixy: runDixy, magnit: runMagnit };
+    var runners = {
+      perekrestok: runPerekrestok,
+      pyaterochka: runPyaterochka,
+      dixy: runDixy,
+      magnit: runMagnit,
+      metro: runMetro,
+      vprok: runVprok
+    };
     if (!Object.prototype.hasOwnProperty.call(runners, chain)) {
       return makeFail('chain', 0, 'неизвестная сеть ' + chain);
     }
 
     stats = { requests: 0, paced: 0 };
+    var runKey = input && input.key != null ? String(input.key) : '';
+    var runState = { aborted: false, xhr: null, timer: null, cancelTimer: null };
+    if (runKey) activeRuns[runKey] = runState;
+    var prevRun = currentRun;
+    currentRun = runState;
     var res;
     try {
       res = await runners[chain](input, linesIn, pauseMs, burst, tStart, makeFail);
     } catch (err) {
-      res = makeFail('js', 0, 'cartapi.js: ' + (err && err.message ? err.message : String(err)));
+      clearFreshCart(chain);
+      if (err && err.aborted) {
+        res = makeFail('aborted', 0, 'корзина поменялась');
+      } else {
+        res = makeFail('js', 0, 'cartapi.js: ' + (err && err.message ? err.message : String(err)));
+      }
+    } finally {
+      if (runKey && activeRuns[runKey] === runState) delete activeRuns[runKey];
+      currentRun = prevRun;
     }
+    if (!res || !res.ok) clearFreshCart(chain);
     res.requests = stats.requests;
     res.paced_ms = Math.round(stats.paced);
     return res;
@@ -421,30 +550,6 @@ var KZ_CARTAPI = (function () {
       return h;
     }
 
-    await pace(pauseMs, burst);
-    var initRes = await httpReq('GET', '/api/customer/1.4.1.0/basket', headers(false));
-    if (initRes.status === 401) {
-      return makeFail('auth', 401, 'Перекрёсток: 401');
-    }
-    if (initRes.status === 0) {
-      return makeFail('net', 0, 'Перекрёсток: обрыв сети');
-    }
-    if (initRes.status >= 400 || !initRes.json) {
-      return makeFail('read', initRes.status, 'Перекрёсток: корзина не читается');
-    }
-
-    var parsed = perekParse(initRes.json);
-    if (!parsed) {
-      return makeFail('read', initRes.status, 'Перекрёсток: ответ корзины не распознан');
-    }
-
-    var lastCart = parsed.cart;
-    var lastTotal = parsed.total;
-    var quanta = {};
-    for (var k in parsed.items) {
-      quanta[k] = parsed.items[k].quantum;
-    }
-
     var linesRes = {};
     var opsLines = [];
     for (var i = 0; i < linesIn.length; i++) {
@@ -455,6 +560,43 @@ var KZ_CARTAPI = (function () {
       } else {
         opsLines.push(l);
       }
+    }
+
+    // Быстрая дельта: если корзина читалась < 15 с назад и есть что менять, пропускаем стартовый GET.
+    var parsed = null;
+    var fresh = getFreshCart('perekrestok', input);
+    if (fresh && fresh.parsed) {
+      var fastPlan = ops(fresh.parsed.cart, opsLines, input.mine, input.want, input.drop);
+      if (fastPlan.set.length || fastPlan.drops.length) {
+        parsed = fresh.parsed;
+      }
+    }
+
+    if (!parsed) {
+      await pace(pauseMs, burst);
+      var initRes = await httpReq('GET', '/api/customer/1.4.1.0/basket', headers(false));
+      if (initRes.status === 401) {
+        clearFreshCart('perekrestok');
+        return makeFail('auth', 401, 'Перекрёсток: 401');
+      }
+      if (initRes.status === 0) {
+        return makeFail('net', 0, 'Перекрёсток: обрыв сети');
+      }
+      if (initRes.status >= 400 || !initRes.json) {
+        return makeFail('read', initRes.status, 'Перекрёсток: корзина не читается');
+      }
+
+      parsed = perekParse(initRes.json);
+      if (!parsed) {
+        return makeFail('read', initRes.status, 'Перекрёсток: ответ корзины не распознан');
+      }
+    }
+
+    var lastCart = parsed.cart;
+    var lastTotal = parsed.total;
+    var quanta = {};
+    for (var k in parsed.items) {
+      quanta[k] = parsed.items[k].quantum;
     }
 
     var plan = ops(lastCart, opsLines, input.mine, input.want, input.drop);
@@ -628,6 +770,7 @@ var KZ_CARTAPI = (function () {
       }
     }
 
+    setFreshCart('perekrestok', { parsed: parsed });
     return {
       ok: true,
       ms: Date.now() - tStart,
@@ -683,22 +826,41 @@ var KZ_CARTAPI = (function () {
       return makeFail('address', 0, 'Пятёрочка: в приложении сети не выбран адрес доставки');
     }
 
-    await pace(pauseMs, burst);
-    var initUrl = 'https://5d.5ka.ru/api/orders/v10/orders/' + encodeURIComponent(oid) + '/';
-    var initRes = await httpReq('GET', initUrl, headers(false), null, true);
-    if (initRes.status === 401) {
-      return makeFail('auth', 401, 'Пятёрочка: 401');
-    }
-    if (initRes.status === 0) {
-      return makeFail('net', 0, 'Пятёрочка: обрыв сети');
-    }
-    if (initRes.status >= 400 || !initRes.json) {
-      return makeFail('read', initRes.status, 'Пятёрочка: корзина не читается');
+    var parsed = null;
+    var fresh = getFreshCart('pyaterochka', input);
+    if (fresh && fresh.parsed && fresh.oid === oid) {
+      var prelimOps = [];
+      for (var fi = 0; fi < linesIn.length; fi++) {
+        var fs = String(linesIn[fi].sku || '');
+        if (/^\d+$/.test(fs) && !(fresh.parsed.items && fresh.parsed.items[fs] && fresh.parsed.items[fs].weighted)) {
+          prelimOps.push(linesIn[fi]);
+        }
+      }
+      var fastPlan = ops(fresh.parsed.cart, prelimOps, input.mine, input.want, input.drop);
+      if (fastPlan.set.length || fastPlan.drops.length) {
+        parsed = fresh.parsed;
+      }
     }
 
-    var parsed = pyatParse(initRes.json);
     if (!parsed) {
-      return makeFail('read', initRes.status, 'Пятёрочка: ответ корзины не распознан');
+      await pace(pauseMs, burst);
+      var initUrl = 'https://5d.5ka.ru/api/orders/v10/orders/' + encodeURIComponent(oid) + '/';
+      var initRes = await httpReq('GET', initUrl, headers(false), null, true);
+      if (initRes.status === 401) {
+        clearFreshCart('pyaterochka');
+        return makeFail('auth', 401, 'Пятёрочка: 401');
+      }
+      if (initRes.status === 0) {
+        return makeFail('net', 0, 'Пятёрочка: обрыв сети');
+      }
+      if (initRes.status >= 400 || !initRes.json) {
+        return makeFail('read', initRes.status, 'Пятёрочка: корзина не читается');
+      }
+
+      parsed = pyatParse(initRes.json);
+      if (!parsed) {
+        return makeFail('read', initRes.status, 'Пятёрочка: ответ корзины не распознан');
+      }
     }
 
     var lastCart = parsed.cart;
@@ -870,6 +1032,7 @@ var KZ_CARTAPI = (function () {
       }
     }
 
+    setFreshCart('pyaterochka', { parsed: parsed, oid: oid });
     return {
       ok: true,
       ms: Date.now() - tStart,
@@ -930,7 +1093,7 @@ var KZ_CARTAPI = (function () {
     var lastCart = parsed.cart;
     var lastTotal = parsed.total;
 
-    // Кэш числовых id Дикси (localStorage['kz.dixy.ids'])
+    // Кэш числовых id Дикси: объединяем localStorage, серверный кэш из наряда и текущую корзину
     var dixyIds = {};
     try {
       if (typeof localStorage !== 'undefined' && localStorage['kz.dixy.ids']) {
@@ -940,8 +1103,28 @@ var KZ_CARTAPI = (function () {
       dixyIds = {};
     }
 
+    var resolvedNids = {};
+    if (input.dixy_nids && typeof input.dixy_nids === 'object') {
+      for (var sk in input.dixy_nids) {
+        if (!Object.prototype.hasOwnProperty.call(input.dixy_nids, sk)) continue;
+        var sv = input.dixy_nids[sk];
+        if (sv && sv.id && !dixyIds[sk]) {
+          dixyIds[sk] = { id: String(sv.id), ratio: parseFloat(sv.ratio) || 1 };
+        }
+      }
+    }
+    for (var li = 0; li < linesIn.length; li++) {
+      var ln = linesIn[li];
+      var lSku = String(ln.sku || '');
+      if (lSku && ln.nid && !dixyIds[lSku]) {
+        dixyIds[lSku] = { id: String(ln.nid), ratio: parseFloat(ln.ratio) || 1 };
+      }
+    }
+
     for (var k in parsed.items) {
-      dixyIds[k] = { id: parsed.items[k].id, ratio: parsed.items[k].ratio };
+      var pEntry = { id: String(parsed.items[k].id), ratio: parsed.items[k].ratio || 1 };
+      dixyIds[k] = pEntry;
+      resolvedNids[k] = pEntry;
     }
 
     var linesRes = {};
@@ -952,6 +1135,7 @@ var KZ_CARTAPI = (function () {
       var l = linesIn[i];
       var sku = String(l.sku || '');
       if (dixyIds[sku]) {
+        resolvedNids[sku] = dixyIds[sku];
         opsLines.push(l);
         continue;
       }
@@ -1004,6 +1188,7 @@ var KZ_CARTAPI = (function () {
         };
       } else {
         dixyIds[sku] = { id: numId, ratio: numRatio };
+        resolvedNids[sku] = { id: numId, ratio: numRatio };
         changedCache = true;
         opsLines.push(l);
       }
@@ -1203,7 +1388,7 @@ var KZ_CARTAPI = (function () {
       }
     }
 
-    return {
+    var dixyOut = {
       ok: true,
       ms: Date.now() - tStart,
       lines: linesRes,
@@ -1211,6 +1396,10 @@ var KZ_CARTAPI = (function () {
       dropped: dropped,
       total: lastTotal
     };
+    if (Object.keys(resolvedNids).length > 0) {
+      dixyOut.dixy_nids = resolvedNids;
+    }
+    return dixyOut;
   }
 
   // --- Адаптер Магнита (APK 1.26) ---
@@ -1339,11 +1528,32 @@ var KZ_CARTAPI = (function () {
       return res;
     }
 
-    var initRes = await call('GET', MAGNIT_CART);
-    if (initRes.status === 401) return makeFail('auth', 401, 'Магнит: нет входа на сайте сети');
-    if (initRes.status === 0) return makeFail('net', 0, 'Магнит: обрыв сети');
-    var parsed = initRes.status < 400 ? magnitParse(initRes.json) : null;
-    if (!parsed) return makeFail('read', initRes.status, 'Магнит: корзина не читается');
+    var parsed = null;
+    var fresh = getFreshCart('magnit', input);
+    if (fresh && fresh.parsed && fresh.shop === (base['x-store-code'] || '')) {
+      var mPrelim = [];
+      for (var mi = 0; mi < linesIn.length; mi++) {
+        var ms = String(linesIn[mi].sku || '');
+        if (/^\d+$/.test(ms) && !(fresh.parsed.frac && fresh.parsed.frac[ms])) {
+          mPrelim.push(linesIn[mi]);
+        }
+      }
+      var mFast = ops(fresh.parsed.cart, mPrelim, input.mine, input.want, input.drop);
+      if (mFast.set.length || mFast.drops.length) {
+        parsed = fresh.parsed;
+      }
+    }
+
+    if (!parsed) {
+      var initRes = await call('GET', MAGNIT_CART);
+      if (initRes.status === 401) {
+        clearFreshCart('magnit');
+        return makeFail('auth', 401, 'Магнит: нет входа на сайте сети');
+      }
+      if (initRes.status === 0) return makeFail('net', 0, 'Магнит: обрыв сети');
+      parsed = initRes.status < 400 ? magnitParse(initRes.json) : null;
+      if (!parsed) return makeFail('read', initRes.status, 'Магнит: корзина не читается');
+    }
     var lastCart = parsed.cart;
 
     var linesRes = {};
@@ -1396,6 +1606,7 @@ var KZ_CARTAPI = (function () {
     if (setOps.length) {
       var setRes = await put(setOps);
       if (setRes.why) {
+        clearFreshCart('magnit');
         var stage = setRes.status === 401 ? 'auth' : (setRes.status ? 'write' : 'net');
         return makeFail(stage, setRes.status, 'Магнит: ' + setRes.why, lastCart);
       }
@@ -1435,6 +1646,7 @@ var KZ_CARTAPI = (function () {
       }
     }
 
+    setFreshCart('magnit', { parsed: { cart: lastCart, frac: parsed.frac }, shop: base['x-store-code'] || '' });
     return {
       ok: true,
       ms: Date.now() - tStart,
@@ -1446,15 +1658,511 @@ var KZ_CARTAPI = (function () {
     };
   }
 
+  // --- Адаптер METRO (GraphQL supergraph.metro-cc.ru/graphql) ---
+  // Протокол проверен живьём на online.metro-cc.ru и supergraph.metro-cc.ru/graphql:
+  // - CORS: Access-Control-Allow-Origin: https://online.metro-cc.ru, Credentials: true.
+  // - query { orderDraft { ... } } — читает текущую корзину, цены и итоги в копейках.
+  // - mutation saveOrderDraft(input: { products: [{ article: Int, quantity: Int }] })
+  //   ставит количество перечисленным артикулам пачкой (1 запрос на всю корзину),
+  //   неперечисленные позиции не трогает, quantity: 0 убирает позицию.
+  var METRO_GQL = 'https://supergraph.metro-cc.ru/graphql';
+  var METRO_FIELDS = 'metro_order_id store_id order_type '
+    + 'totals { total_amount products_price products_count discount products_discount delivery_price } '
+    + 'basket { products { id article name price cost quantity eshop_availability unit_type } } '
+    + 'out_of_stock { article }';
+  var METRO_READ_Q = 'query { orderDraft { ' + METRO_FIELDS + ' } }';
+  var METRO_SAVE_M = 'mutation($input: OrderDraftInput!) { saveOrderDraft(input: $input) { ' + METRO_FIELDS + ' } }';
+
+  /**
+   * Разбор ответа корзины METRO (GraphQL orderDraft / saveOrderDraft).
+   * Цены и суммы в ответе — в копейках (проверено живьём: 6290 = 62.90 ₽).
+   */
+  function metroParse(json) {
+    if (!json || typeof json !== 'object') return null;
+    if (Array.isArray(json.errors) && json.errors.length && (!json.data || (!json.data.orderDraft && !json.data.saveOrderDraft))) {
+      return null;
+    }
+    var draft = null;
+    if (json.data && Object.prototype.hasOwnProperty.call(json.data, 'saveOrderDraft')) {
+      draft = json.data.saveOrderDraft;
+    } else if (json.data && Object.prototype.hasOwnProperty.call(json.data, 'orderDraft')) {
+      draft = json.data.orderDraft;
+    } else if (json.basket || json.totals || json.metro_order_id) {
+      draft = json;
+    } else {
+      return null;
+    }
+    if (!draft) {
+      return { empty: true, storeId: null, orderType: null, cart: {}, items: {}, oos: {}, total: null };
+    }
+    var oos = {};
+    var oosList = Array.isArray(draft.out_of_stock) ? draft.out_of_stock : [];
+    for (var oi = 0; oi < oosList.length; oi++) {
+      if (oosList[oi] && oosList[oi].article != null) oos[String(oosList[oi].article)] = true;
+    }
+    var products = (draft.basket && Array.isArray(draft.basket.products)) ? draft.basket.products : [];
+    var cart = {};
+    var items = {};
+    for (var i = 0; i < products.length; i++) {
+      var it = products[i];
+      if (!it || it.article == null) continue;
+      var sku = String(it.article);
+      var q = Math.round(parseFloat(it.quantity) || 0);
+      var costRub = (parseFloat(it.cost) || 0) / 100;
+      var unitRub = (parseFloat(it.price) || 0) / 100;
+      var price = q > 0 && costRub > 0 ? Math.round((costRub / q) * 100) / 100 : unitRub;
+      var gone = (it.eshop_availability === false) || !!oos[sku];
+      cart[sku] = q;
+      items[sku] = {
+        sku: sku,
+        q: q,
+        price: price,
+        gone: gone,
+        unitType: String(it.unit_type || '')
+      };
+    }
+    var t = draft.totals || null;
+    var count = t ? (parseInt(t.products_count, 10) || Object.keys(cart).length) : Object.keys(cart).length;
+    var total = null;
+    if (count > 0 && t) {
+      var goods = (parseFloat(t.products_price) || 0) / 100;
+      var prodDisc = (parseFloat(t.products_discount) || 0) / 100;
+      var disc = (parseFloat(t.discount) || 0) / 100;
+      if (disc <= 0 && prodDisc > 0) disc = prodDisc;
+      var base = Math.round((goods + Math.max(prodDisc, disc)) * 100) / 100;
+      total = {
+        amount: (parseFloat(t.total_amount) || 0) / 100,
+        goods: goods,
+        base: base,
+        discount: Math.round(disc * 100) / 100,
+        delivery: (parseFloat(t.delivery_price) || 0) / 100,
+        count: count,
+        path: '/graphql saveOrderDraft'
+      };
+    }
+    return {
+      empty: false,
+      storeId: draft.store_id != null ? String(draft.store_id) : null,
+      orderType: draft.order_type ? String(draft.order_type) : null,
+      cart: cart,
+      items: items,
+      oos: oos,
+      total: total
+    };
+  }
+
+  function metroGqlErr(res) {
+    var j = res && res.json;
+    if (j && Array.isArray(j.errors) && j.errors.length) {
+      var first = j.errors[0] || {};
+      var extErrs = first.extensions && Array.isArray(first.extensions.errors) ? first.extensions.errors : null;
+      if (extErrs && extErrs[0]) {
+        return { code: (extErrs[0].extensions && extErrs[0].extensions.code) || '', msg: extErrs[0].message || first.message || '' };
+      }
+      return { code: (first.extensions && first.extensions.code) || '', msg: first.message || '' };
+    }
+    return null;
+  }
+
+  async function runMetro(input, linesIn, pauseMs, burst, tStart, makeFail) {
+    var hdrs = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json'
+    };
+
+    var linesRes = {};
+    var opsLines = [];
+    for (var i = 0; i < linesIn.length; i++) {
+      var l = linesIn[i];
+      var s = String(l.sku || '');
+      if (!/^\d+$/.test(s)) linesRes[s] = { retry: true };
+      else opsLines.push(l);
+    }
+
+    var parsed = null;
+    var fresh = getFreshCart('metro', input);
+    if (fresh && fresh.parsed) {
+      var fastPlan = ops(fresh.parsed.cart, opsLines, input.mine, input.want, input.drop);
+      if (fastPlan.set.length || fastPlan.drops.length) {
+        parsed = fresh.parsed;
+      }
+    }
+
+    if (!parsed) {
+      await pace(pauseMs, burst);
+      var initRes = await httpReq('POST', METRO_GQL, hdrs, JSON.stringify({ query: METRO_READ_Q }), true);
+      if (initRes.status === 401) {
+        clearFreshCart('metro');
+        return makeFail('auth', 401, 'METRO: 401');
+      }
+      if (initRes.status === 0) return makeFail('net', 0, 'METRO: обрыв сети');
+      if (initRes.status >= 400 || !initRes.json) {
+        return makeFail('read', initRes.status, 'METRO: корзина не читается');
+      }
+      parsed = metroParse(initRes.json);
+      if (!parsed) {
+        var gErr = metroGqlErr(initRes);
+        return makeFail('read', initRes.status, 'METRO: ' + (gErr ? gErr.msg : 'ответ корзины не распознан'));
+      }
+    }
+
+    var lastCart = parsed.cart;
+    var lastTotal = parsed.total;
+    var plan = ops(lastCart, opsLines, input.mine, input.want, input.drop);
+
+    for (var ki = 0; ki < plan.kept.length; ki++) {
+      var kSku = plan.kept[ki];
+      var pIt = parsed.items && parsed.items[kSku];
+      var isGone = pIt ? pIt.gone : false;
+      linesRes[kSku] = {
+        ok: !isGone,
+        how: 'kept',
+        put: 0,
+        q: lastCart[kSku] || 0,
+        price: pIt ? pIt.price : 0,
+        gone: isGone,
+        retry: false,
+        why: isGone ? 'нет в наличии у сети' : '',
+        calls: []
+      };
+    }
+
+    // Собираем все set и drops в один пакетный saveOrderDraft.
+    var inSet = {};
+    var batch = [];
+    for (var si = 0; si < plan.set.length; si++) {
+      var sOp = plan.set[si];
+      inSet[sOp.sku] = true;
+      batch.push({ article: Number(sOp.sku), quantity: sOp.to });
+    }
+    var activeDrops = [];
+    for (var di = 0; di < plan.drops.length; di++) {
+      var dOp = plan.drops[di];
+      if (!inSet[dOp.sku]) {
+        activeDrops.push(dOp);
+        batch.push({ article: Number(dOp.sku), quantity: dOp.to });
+      }
+    }
+
+    if (batch.length) {
+      async function sendBatch(needInit) {
+        var draftIn = { products: batch };
+        if (needInit) {
+          var tc = getCookie('metroStoreId');
+          draftIn.store_id = String((tc && /^\d+$/.test(tc)) ? tc : (parsed.storeId || '10'));
+          draftIn.order_type = parsed.orderType || 'PICKUP';
+        }
+        await pace(pauseMs, burst);
+        return httpReq('POST', METRO_GQL, hdrs, JSON.stringify({
+          query: METRO_SAVE_M,
+          variables: { input: draftIn }
+        }), true);
+      }
+
+      var saveRes = await sendBatch(parsed.empty);
+      var saveErr = metroGqlErr(saveRes);
+      if (saveErr && saveErr.code === 'order_type_empty' && !parsed.empty) {
+        saveRes = await sendBatch(true);
+        saveErr = metroGqlErr(saveRes);
+      }
+      var calls = [formatCall('POST', METRO_GQL, saveRes)];
+      if (saveRes.status === 401) {
+        clearFreshCart('metro');
+        return makeFail('auth', 401, 'METRO: 401', lastCart);
+      }
+      if (saveRes.status === 0) {
+        clearFreshCart('metro');
+        return makeFail('net', 0, 'METRO: обрыв сети', lastCart);
+      }
+      var saved = (saveRes.status >= 200 && saveRes.status < 300) ? metroParse(saveRes.json) : null;
+      if (!saved || saveErr) {
+        clearFreshCart('metro');
+        return makeFail('write', saveRes.status, 'METRO: ' + (saveErr ? saveErr.msg : errText(saveRes)), lastCart);
+      }
+      parsed = saved;
+      lastCart = parsed.cart;
+      lastTotal = parsed.total;
+
+      for (var oi = 0; oi < plan.set.length; oi++) {
+        var op = plan.set[oi];
+        var it = parsed.items && parsed.items[op.sku];
+        var q = lastCart[op.sku] || 0;
+        var outStock = (it && it.gone) || (parsed.oos && !!parsed.oos[op.sku]);
+        var landed = !outStock && q >= op.to;
+        linesRes[op.sku] = {
+          ok: landed,
+          how: 'request',
+          put: Math.max(0, q - op.from),
+          q: q,
+          price: it ? it.price : 0,
+          gone: outStock,
+          retry: false,
+          why: outStock ? 'нет в наличии у сети' : (landed ? '' : (q > op.from ? 'сеть положила ' + q + ' из ' + op.to : 'сеть не положила')),
+          calls: calls
+        };
+      }
+    }
+
+    var dropped = 0;
+    for (var dj = 0; dj < activeDrops.length; dj++) {
+      dropped += Math.max(0, activeDrops[dj].from - Math.max(activeDrops[dj].to, lastCart[activeDrops[dj].sku] || 0));
+    }
+
+    setFreshCart('metro', { parsed: parsed });
+    return {
+      ok: true,
+      ms: Date.now() - tStart,
+      lines: linesRes,
+      cart: lastCart,
+      dropped: dropped,
+      total: lastTotal
+    };
+  }
+
+  // --- Адаптер Впрока (www.vprok.ru BFF batch API) ---
+  // Протокол проверен живьём на www.vprok.ru:
+  // - GET /web/api/v1/checkout/dropDownV2 — текущая корзина (positions[], totalRub, totalDime).
+  // - PUT /web/api/v1/checkout/positionV2 — пакетная запись { items: [{ productId, count }], lastMileTypeId }
+  //   с заголовками x-api-context-bff-request: true, x-api-context-delivery-type-id, x-api-context-is-cart: false.
+  //   Неперечисленные позиции не трогает, count: 0 убирает позицию, ответ возвращает всю корзину и totalRub.
+  // - Живой замер показал 429 на частых сериях — держим паузу >= 1200 мс и burst = 1.
+  var VPROK_GET = '/web/api/v1/checkout/dropDownV2';
+  var VPROK_PUT = '/web/api/v1/checkout/positionV2';
+
+  /**
+   * Разбор ответа корзины Впрока: принимает и dropDownV2 (positions[]), и positionV2 (items[]).
+   */
+  function vprokParse(json) {
+    if (!json || typeof json !== 'object') return null;
+    if (json.error) return null;
+    var list = Array.isArray(json.items) ? json.items : (Array.isArray(json.positions) ? json.positions : []);
+    var cart = {};
+    var items = {};
+    var frac = {};
+    var goodsSum = 0;
+    var baseSum = 0;
+
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i];
+      if (!it) continue;
+      var pid = it.productId != null ? it.productId : (it.product && it.product.id);
+      if (pid == null) continue;
+      var sku = String(pid);
+      var rawCount = parseFloat(it.count != null ? it.count : it.amount) || 0;
+      if (Math.abs(rawCount - Math.round(rawCount)) > 0.001) {
+        frac[sku] = true;
+      }
+      var q = rawCount > 0 ? Math.max(1, Math.round(rawCount)) : 0;
+      var price = parseFloat(it.price) || 0;
+      var priceFull = parseFloat(it.priceFull != null ? it.priceFull : (it.priceOld != null ? it.priceOld : price)) || price;
+      var gone = (it.isInStock === false) || (it.isNotAvailable === true);
+      goodsSum += price * rawCount;
+      baseSum += Math.max(priceFull, price) * rawCount;
+      cart[sku] = q;
+      items[sku] = {
+        sku: sku,
+        q: q,
+        price: price,
+        gone: gone
+      };
+    }
+
+    var count = parseInt(json.count, 10) || Object.keys(cart).length;
+    var total = null;
+    if (count > 0) {
+      var rub = parseFloat(json.totalRub) || 0;
+      var dime = parseInt(String(json.totalDime || '0'), 10) || 0;
+      var amount = Math.round((rub + dime / 100) * 100) / 100;
+      var goods = goodsSum > 0 ? Math.round(goodsSum * 100) / 100 : amount;
+      var base = baseSum > 0 ? Math.round(baseSum * 100) / 100 : goods;
+      var discount = Math.max(0, Math.round((base - goods) * 100) / 100);
+      total = {
+        amount: amount > 0 ? amount : goods,
+        goods: goods,
+        base: base,
+        discount: discount,
+        delivery: 0,
+        count: count,
+        path: VPROK_PUT
+      };
+    }
+
+    return { cart: cart, items: items, frac: frac, total: total };
+  }
+
+  async function runVprok(input, linesIn, pauseMs, burst, tStart, makeFail) {
+    var vPause = Math.max(pauseMs, 1200);
+    var vBurst = 1;
+    var rawDeliv = getCookie('deliveryTypeId');
+    var delivId = (rawDeliv && /^\d+$/.test(rawDeliv)) ? parseInt(rawDeliv, 10) : 1;
+
+    function headers(hasBody) {
+      var h = {
+        'Accept': 'application/json, text/plain, */*',
+        'X-Requested-With': 'XMLHttpRequest',
+        'x-api-context-bff-request': 'true',
+        'x-api-context-delivery-type-id': String(delivId),
+        'x-api-context-is-cart': 'false'
+      };
+      if (hasBody) h['Content-Type'] = 'application/json';
+      return h;
+    }
+
+    var parsed = null;
+    var fresh = getFreshCart('vprok', input);
+    if (fresh && fresh.parsed) {
+      var vPrelim = [];
+      for (var vi = 0; vi < linesIn.length; vi++) {
+        var vs = String(linesIn[vi].sku || '');
+        if (/^\d+$/.test(vs) && !(fresh.parsed.frac && fresh.parsed.frac[vs])) {
+          vPrelim.push(linesIn[vi]);
+        }
+      }
+      var vFast = ops(fresh.parsed.cart, vPrelim, input.mine, input.want, input.drop);
+      if (vFast.set.length || vFast.drops.length) {
+        parsed = fresh.parsed;
+      }
+    }
+
+    if (!parsed) {
+      await pace(vPause, vBurst);
+      var initRes = await httpReq('GET', VPROK_GET, headers(false));
+      if (initRes.status === 401) {
+        clearFreshCart('vprok');
+        return makeFail('auth', 401, 'Впрок: 401');
+      }
+      if (initRes.status === 429) {
+        return makeFail('rate', 429, 'Впрок: 429 (пауза)');
+      }
+      if (initRes.status === 0) return makeFail('net', 0, 'Впрок: обрыв сети');
+      if (initRes.status >= 400 || !initRes.json) {
+        return makeFail('read', initRes.status, 'Впрок: корзина не читается');
+      }
+      parsed = vprokParse(initRes.json);
+      if (!parsed) {
+        return makeFail('read', initRes.status, 'Впрок: ответ корзины не распознан');
+      }
+    }
+
+    var lastCart = parsed.cart;
+    var lastTotal = parsed.total;
+    var linesRes = {};
+    var opsLines = [];
+    for (var i = 0; i < linesIn.length; i++) {
+      var s = String(linesIn[i].sku || '');
+      if (!/^\d+$/.test(s) || (parsed.frac && parsed.frac[s])) linesRes[s] = { retry: true };
+      else opsLines.push(linesIn[i]);
+    }
+
+    var plan = ops(lastCart, opsLines, input.mine, input.want, input.drop);
+
+    for (var ki = 0; ki < plan.kept.length; ki++) {
+      var kSku = plan.kept[ki];
+      var pIt = parsed.items && parsed.items[kSku];
+      var isGone = pIt ? pIt.gone : false;
+      linesRes[kSku] = {
+        ok: !isGone,
+        how: 'kept',
+        put: 0,
+        q: lastCart[kSku] || 0,
+        price: pIt ? pIt.price : 0,
+        gone: isGone,
+        retry: false,
+        why: isGone ? 'нет в наличии у сети' : '',
+        calls: []
+      };
+    }
+
+    var inSet = {};
+    var batch = [];
+    for (var si = 0; si < plan.set.length; si++) {
+      var sOp = plan.set[si];
+      inSet[sOp.sku] = true;
+      batch.push({ productId: Number(sOp.sku), count: sOp.to });
+    }
+    var activeDrops = [];
+    for (var di = 0; di < plan.drops.length; di++) {
+      var dOp = plan.drops[di];
+      if (!inSet[dOp.sku] && !(parsed.frac && parsed.frac[dOp.sku] && dOp.to > 0)) {
+        activeDrops.push(dOp);
+        batch.push({ productId: Number(dOp.sku), count: dOp.to });
+      }
+    }
+
+    if (batch.length) {
+      await pace(vPause, vBurst);
+      var putBody = JSON.stringify({ items: batch, lastMileTypeId: delivId });
+      var putRes = await httpReq('PUT', VPROK_PUT, headers(true), putBody);
+      var calls = [formatCall('PUT', VPROK_PUT, putRes)];
+      if (putRes.status === 401) {
+        clearFreshCart('vprok');
+        return makeFail('auth', 401, 'Впрок: 401', lastCart);
+      }
+      if (putRes.status === 429) {
+        clearFreshCart('vprok');
+        return makeFail('rate', 429, 'Впрок: 429 (пауза)', lastCart);
+      }
+      if (putRes.status === 0) {
+        clearFreshCart('vprok');
+        return makeFail('net', 0, 'Впрок: обрыв сети', lastCart);
+      }
+      var saved = (putRes.status >= 200 && putRes.status < 300) ? vprokParse(putRes.json) : null;
+      if (!saved) {
+        clearFreshCart('vprok');
+        return makeFail('write', putRes.status, 'Впрок: сеть ответила ' + putRes.status + ': ' + errText(putRes), lastCart);
+      }
+      parsed = saved;
+      lastCart = parsed.cart;
+      lastTotal = parsed.total;
+
+      for (var oi = 0; oi < plan.set.length; oi++) {
+        var op = plan.set[oi];
+        var it = parsed.items && parsed.items[op.sku];
+        var q = lastCart[op.sku] || 0;
+        var outStock = it ? it.gone : false;
+        var landed = !outStock && q >= op.to;
+        linesRes[op.sku] = {
+          ok: landed,
+          how: 'request',
+          put: Math.max(0, q - op.from),
+          q: q,
+          price: it ? it.price : 0,
+          gone: outStock,
+          retry: false,
+          why: outStock ? 'нет в наличии у сети' : (landed ? '' : (q > op.from ? 'сеть положила ' + q + ' из ' + op.to : 'сеть не положила')),
+          calls: calls
+        };
+      }
+    }
+
+    var dropped = 0;
+    for (var dj = 0; dj < activeDrops.length; dj++) {
+      dropped += Math.max(0, activeDrops[dj].from - Math.max(activeDrops[dj].to, lastCart[activeDrops[dj].sku] || 0));
+    }
+
+    setFreshCart('vprok', { parsed: parsed });
+    return {
+      ok: true,
+      ms: Date.now() - tStart,
+      lines: linesRes,
+      cart: lastCart,
+      dropped: dropped,
+      total: lastTotal
+    };
+  }
+
   return {
     ops: ops,
     run: run,
+    abort: abort,
     parse: {
       perekrestok: perekParse,
       pyaterochka: pyatParse,
       dixy: dixyParse,
       magnit: magnitParse,
-      magnitPreview: magnitPreview
+      magnitPreview: magnitPreview,
+      metro: metroParse,
+      vprok: vprokParse
     }
   };
 })();

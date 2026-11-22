@@ -24,10 +24,12 @@ CARTAPI_JS = os.path.join(ROOT, "android", "app", "app", "src", "main", "assets"
 
 
 def test_rules_api_flags():
-    """Правила api для телефона: Перекрёсток, Дикси, Магнит — включены, Лента — выключена."""
+    """Правила api для телефона: Перекрёсток, Дикси, Магнит, METRO, Впрок — включены, Лента — выключена."""
     assert rules("perekrestok")["api"] is True
     assert rules("dixy")["api"] is True
     assert rules("magnit")["api"] is True
+    assert rules("metro")["api"] is True
+    assert rules("vprok")["api"] is True
     assert rules("lenta")["api"] is False
     assert rules("perekrestok")["api_burst"] == 3
 
@@ -458,3 +460,210 @@ api.run({chain: 'magnit', tpl: tpl, lines: [{sku: '1001', target: 2}], mine: {},
     assert out["seen"][:3] == ["GET /webgate/v1/carts/lite", "PUT /webgate/v1/carts/lite",
                                "GET /webgate/v1/carts/lite"]
     assert (out["line"]["ok"], out["line"]["q"]) == (True, 2)
+
+
+@pytest.mark.skipif(NODE is None, reason="node не установлен")
+def test_abort_cancels_inflight_cartapi_run_immediately():
+    """Правка корзины во время сборки обрывает текущий XHR и возвращает stage='aborted'."""
+    out = _run_node_script("""
+global.window = {};
+global.document = {cookie: 'shopCode=%22992301%22'};
+let abortedCount = 0;
+global.XMLHttpRequest = function () {
+  const x = this;
+  x.open = function () {};
+  x.setRequestHeader = function () {};
+  x.abort = function () { abortedCount++; if (x.onabort) x.onabort(); };
+  x.send = function () {
+    setTimeout(function () { api.abort('run-42'); }, 5);
+  };
+};
+api.run({
+  key: 'run-42',
+  chain: 'magnit',
+  tpl: {h: {'x-store-code': '992301'}},
+  lines: [{sku: '1001', target: 1}],
+  mine: {}, want: {}, drop: false, burst: 10
+}).then(function (r) { console.log(JSON.stringify({abortedCount: abortedCount, r: r})); });
+""")
+    assert out["abortedCount"] == 1
+    assert out["r"]["ok"] is False
+    assert out["r"]["stage"] == "aborted"
+
+
+@pytest.mark.skipif(NODE is None, reason="node не установлен")
+def test_dixy_uses_server_dixy_nids_without_fetching_html_cards():
+    """Дикси с кэшем dixy_nids от сервера не скачивает HTML карточки товара и возвращает nids обратно."""
+    out = _run_node_script(FAKE_XHR + """
+global.sessionStorage = {'kz.dixy.store': '1'};
+global.localStorage = {};
+global.FormData = function () {
+  const m = {};
+  this.append = function (k, v) { m[k] = String(v); };
+  this.get = function (k) { return m[k]; };
+};
+let cart = {};
+fakeXhr(function (u, b) {
+  const act = b && b.get ? b.get('action') : '';
+  if (act === 'calculateDiscounts') {
+    const items = Object.keys(cart).map(function (sku) {
+      return {xml_id: sku, id: 777001, quantity: cart[sku], ratio: 1, priceSimple: 99.5, canBuy: true};
+    });
+    return {template_data: {items: items, toPay: items.length ? '99.50' : '0', baseBskSumm: items.length ? '99.50' : '0', count: items.length}};
+  }
+  if (act === 'add') {
+    cart['3001'] = 1;
+    return {changedProducts: [{quantity: 1, amount: 10}]};
+  }
+  return null;
+});
+api.run({
+  key: 'd1',
+  chain: 'dixy',
+  lines: [{sku: '3001', target: 1, url: 'https://dixy.ru/catalog/3001/', nid: '777001', ratio: 1}],
+  dixy_nids: {'3001': {id: '777001', ratio: 1}},
+  mine: {}, want: {'3001': 1}, drop: false, burst: 10
+}).then(function (r) { console.log(JSON.stringify({seen: seen, r: r})); });
+""")
+    assert out["r"]["ok"] is True
+    assert not any(call.startswith("GET ") for call in out["seen"])
+    assert out["r"]["dixy_nids"]["3001"]["id"] == "777001"
+
+
+@pytest.mark.skipif(NODE is None, reason="node не установлен")
+def test_parse_metro_live_kopeks():
+    """Разбор живого ответа METRO GraphQL: копейки, весовые (cost/qty), out_of_stock."""
+    fixture = {
+        "data": {
+            "saveOrderDraft": {
+                "metro_order_id": "P10-261122-064160",
+                "store_id": "10",
+                "order_type": "PICKUP",
+                "totals": {
+                    "total_amount": 17905,
+                    "products_price": 17905,
+                    "products_count": 2,
+                    "discount": 500,
+                    "products_discount": 500,
+                    "delivery_price": 0,
+                },
+                "basket": {
+                    "products": [
+                        {"id": 180789, "article": 470347, "name": "Лимоны весовые", "price": 21300, "cost": 5325, "quantity": 1, "eshop_availability": True, "unit_type": "кг"},
+                        {"id": 597274, "article": 117189, "name": "Сахар 1кг", "price": 6290, "cost": 12580, "quantity": 2, "eshop_availability": True, "unit_type": "шт"},
+                    ]
+                },
+                "out_of_stock": [{"article": 999999}],
+            }
+        }
+    }
+    res = _run_node_script(
+        f"const fix = {json.dumps(fixture)};\n"
+        "process.stdout.write(JSON.stringify(api.parse.metro(fix)));"
+    )
+    assert res["cart"] == {"470347": 1, "117189": 2}
+    assert res["items"]["470347"]["price"] == 53.25
+    assert res["items"]["117189"]["price"] == 62.9
+    assert res["total"]["amount"] == 179.05
+    assert res["total"]["goods"] == 179.05
+    assert res["total"]["discount"] == 5.0
+    assert res["oos"]["999999"] is True
+
+
+@pytest.mark.skipif(NODE is None, reason="node не установлен")
+def test_metro_batch_and_fast_delta_skips_initial_read():
+    """METRO: 1 пакетный saveOrderDraft, а повторная правка за <15с пропускает стартовый orderDraft."""
+    out = _run_node_script(FAKE_XHR + """
+global.document = {cookie: 'metroStoreId=10'};
+let cart = {};
+fakeXhr(function (u, b) {
+  const req = JSON.parse(b);
+  if (req.query.indexOf('orderDraft') >= 0 && req.query.indexOf('saveOrderDraft') < 0) {
+    if (!Object.keys(cart).length) return {data: {orderDraft: null}};
+  } else if (req.variables && req.variables.input && req.variables.input.products) {
+    req.variables.input.products.forEach(function (p) {
+      if (p.quantity > 0) cart[String(p.article)] = p.quantity;
+      else delete cart[String(p.article)];
+    });
+  }
+  const products = Object.keys(cart).map(function (a) {
+    return {id: Number(a), article: Number(a), price: 10000, cost: 10000 * cart[a], quantity: cart[a], eshop_availability: true, unit_type: 'шт'};
+  });
+  const sum = products.reduce(function (acc, it) { return acc + it.cost; }, 0);
+  const draft = {
+    metro_order_id: 'P10-1', store_id: '10', order_type: 'PICKUP',
+    totals: {total_amount: sum, products_price: sum, products_count: products.length, discount: 0, products_discount: 0, delivery_price: 0},
+    basket: {products: products}, out_of_stock: []
+  };
+  return req.query.indexOf('saveOrderDraft') >= 0 ? {data: {saveOrderDraft: draft}} : {data: {orderDraft: draft}};
+});
+(async function () {
+  const r1 = await api.run({chain: 'metro', lines: [{sku: '117189', target: 2}, {sku: '470347', target: 1}], mine: {}, want: {'117189': 2, '470347': 1}, drop: false, burst: 10});
+  const calls1 = seen.splice(0);
+  const body1 = JSON.parse(sent[1].b).variables.input;
+  const r2 = await api.run({chain: 'metro', lines: [{sku: '117189', target: 3}], mine: {'117189': 2, '470347': 1}, want: {'117189': 3}, drop: true, burst: 10});
+  const calls2 = seen.splice(0);
+  console.log(JSON.stringify({calls1: calls1, body1: body1, calls2: calls2, r1: r1, r2: r2}));
+})();
+""")
+    assert len(out["calls1"]) == 2
+    assert out["body1"]["store_id"] == "10"
+    assert out["body1"]["order_type"] == "PICKUP"
+    assert out["r1"]["ok"] is True
+    assert out["r1"]["total"]["amount"] == 300.0
+    # Повторная правка за <15 с пропустила стартовый orderDraft — 1 запрос saveOrderDraft!
+    assert len(out["calls2"]) == 1
+    assert out["r2"]["ok"] is True
+    assert out["r2"]["cart"] == {"117189": 3}
+    assert out["r2"]["dropped"] == 1
+
+
+@pytest.mark.skipif(NODE is None, reason="node не установлен")
+def test_vprok_batch_and_fast_delta_skips_dropdown_read():
+    """Впрок: пакетный PUT positionV2 с x-api-context-* и быстрая дельта без лишнего dropDownV2."""
+    out = _run_node_script(FAKE_XHR + """
+global.document = {cookie: 'deliveryTypeId=1'};
+let cart = {};
+fakeXhr(function (u, b, m) {
+  if (u === '/web/api/v1/checkout/dropDownV2') {
+    const positions = Object.keys(cart).map(function (id) {
+      return {product: {id: Number(id)}, count: cart[id], amount: cart[id], price: 349.99, priceFull: 399.99, isNotAvailable: false};
+    });
+    return positions.length ? {totalRub: 699, totalDime: '98', positions: positions} : {};
+  }
+  if (u === '/web/api/v1/checkout/positionV2' && m === 'PUT') {
+    JSON.parse(b).items.forEach(function (it) {
+      if (it.count > 0) cart[String(it.productId)] = it.count;
+      else delete cart[String(it.productId)];
+    });
+    const items = Object.keys(cart).map(function (id) {
+      return {productId: Number(id), count: cart[id], price: 349.99, priceFull: 399.99, isInStock: true};
+    });
+    const sum = items.reduce(function (a, it) { return a + it.price * it.count; }, 0);
+    const rub = Math.floor(sum);
+    const dime = String(Math.round((sum - rub) * 100)).padStart(2, '0');
+    return {count: items.length, totalRub: rub, totalDime: dime, items: items};
+  }
+  return null;
+});
+(async function () {
+  const r1 = await api.run({chain: 'vprok', lines: [{sku: '1391970', target: 2}, {sku: '697349', target: 1}], mine: {}, want: {'1391970': 2, '697349': 1}, drop: false, pause_ms: 300});
+  const calls1 = seen.splice(0);
+  const putHdrs = sent[1].h;
+  const r2 = await api.run({chain: 'vprok', lines: [{sku: '1391970', target: 1}], mine: {'1391970': 2, '697349': 1}, want: {'1391970': 1}, drop: true, pause_ms: 300});
+  const calls2 = seen.splice(0);
+  console.log(JSON.stringify({calls1: calls1, putHdrs: putHdrs, calls2: calls2, r1: r1, r2: r2}));
+})();
+""")
+    assert out["calls1"] == ["GET /web/api/v1/checkout/dropDownV2", "PUT /web/api/v1/checkout/positionV2"]
+    assert out["putHdrs"]["x-api-context-bff-request"] == "true"
+    assert out["putHdrs"]["x-api-context-delivery-type-id"] == "1"
+    assert out["r1"]["ok"] is True
+    assert out["r1"]["cart"] == {"1391970": 2, "697349": 1}
+    # Быстрая дельта пропустила GET dropDownV2 — 1 запрос PUT positionV2!
+    assert out["calls2"] == ["PUT /web/api/v1/checkout/positionV2"]
+    assert out["r2"]["ok"] is True
+    assert out["r2"]["cart"] == {"1391970": 1}
+    assert out["r2"]["dropped"] == 2
+
+

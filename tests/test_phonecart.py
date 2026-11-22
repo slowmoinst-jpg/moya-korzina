@@ -1156,3 +1156,54 @@ def test_cartplan_background_preserves_search_lines(web, monkeypatch):
     assert len(r2.get("search_recent", [])) == 1
     assert r2["search_recent"][0]["name"] == "ВОДА МИНЕРАЛЬНАЯ 1Л"
 
+
+def test_device_cartplans_batch_returns_all_requested_stores(web):
+    """Пакетный POST /api/device/cartplans возвращает наряды сразу для нескольких сетей за один запрос."""
+    client = logged_in(web)
+    resp = client.post(
+        "/api/device/cartplans",
+        json={"stores": ["magnit", "dixy", "perekrestok"], "background": True},
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert set(data["plans"].keys()) == {"magnit", "dixy", "perekrestok"}
+    assert all(p["ok"] is True for p in data["plans"].values())
+    assert data["stamp"] == data["plans"]["magnit"]["stamp"]
+
+
+def test_dixy_nids_persisted_from_report_and_attached_to_plan(web):
+    """Отчёт Дикси сохраняет dixy_nids на сервере, и следующий наряд отдаёт их в строках и корне."""
+    users.open_workspace(PHONE)
+    dixy = repo.get_store("dixy")
+    prod = repo.upsert_product(Product(id=None, name="Молоко Дикси 1л", unit="pcs"))
+    sp_id = repo.upsert_store_product(
+        int(dixy.id), "2000123456", "Молоко Дикси 1л", url="https://dixy.ru/catalog/2000123456/"
+    )
+    repo.confirm_mapping(prod, sp_id, confirmed=True, method="manual")
+    bid = repo.create_basket("Тест Дикси")
+    repo.set_basket_item(bid, prod, 1.0)
+    users.deactivate()
+
+    client = logged_in(web)
+    rep = client.post(
+        "/api/device/cartreport",
+        json={
+            "store": "dixy",
+            "background": True,
+            "items": [{"name": "Молоко Дикси 1л", "sku": "2000123456", "ok": True, "put": 1, "times": 1, "how": "request"}],
+            "dixy_nids": {"2000123456": {"id": "987654", "ratio": 1}},
+        },
+    )
+    assert rep.status_code == 200
+
+    plan_resp = client.post(
+        "/api/device/cartplan",
+        json={"store": "dixy", "basket": bid, "background": True},
+    )
+    assert plan_resp.status_code == 200
+    pdata = plan_resp.get_json()
+    assert pdata["dixy_nids"]["2000123456"]["id"] == "987654"
+    assert pdata["lines"][0]["nid"] == "987654"
+
+
