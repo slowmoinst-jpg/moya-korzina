@@ -4,7 +4,9 @@ import {
   goods,
   qtyLabel,
   rub,
+  wholeText,
 } from '../../src/shared/format';
+import type { StoreBreakdown } from '../../src/types';
 import { ChainMark, Icon, MoneyExact, MoneyWhole, ProductPic } from '../components/Icons';
 import { MobileTabs } from '../components/MobileTabs';
 import { KorzinaBridge } from '../device';
@@ -26,6 +28,10 @@ interface CheaperScreenProps {
   onRefreshLive?: () => void;
   onConnectStore: (code: string) => void;
   onNotify: (msg: string) => void;
+}
+
+function formatOrderAmount(amount: number) {
+  return Number.isInteger(amount) ? wholeText(amount) : rub(amount);
 }
 
 export const CheaperScreen: React.FC<CheaperScreenProps> = ({
@@ -53,7 +59,22 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
     ? chosen.stores.map((sb) => buildStorePartMeta(ws, sb))
     : [];
   const bestTotal = board.places.length > 0 ? board.places[0].total : null;
-  const storeNameByCode = new Map(ws.stores.map((s) => [s.code, s.name]));
+  const storesByCode = new Map(ws.stores.map((s) => [s.code, s]));
+
+  const renderMinimumOrder = (part: StoreBreakdown, showStoreName = false) => {
+    const minimum = storesByCode.get(part.store_code)?.min_order;
+    if (!part.below_min_order || !minimum) return null;
+    const shortfall = Math.round((minimum - part.subtotal) * 100) / 100;
+    if (shortfall <= 0) return null;
+    return (
+      <div key={part.store_code} className="note warn spa-order-minimum">
+        {showStoreName && <strong>{part.store_name} · </strong>}
+        <span>Заказ от {formatOrderAmount(minimum)}</span>
+        {' · '}
+        <span>добавьте товаров на {formatOrderAmount(shortfall)}</span>
+      </div>
+    );
+  };
 
   const hasAnyBonuses =
     Object.values(ws.storePerks || {}).some((p) => (p.bonus_balance || 0) > 0) ||
@@ -106,6 +127,7 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
   const renderPlaceRow = (p: BoardPlace) => {
     const isBest = p.best;
     const isOn = p.on;
+    const stores = board.allVariants[p.n]?.stores ?? [];
     return (
       <li key={p.n} className={`pl${isBest ? ' best' : ''}${isOn ? ' on' : ''}`}>
         <button
@@ -157,6 +179,7 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
             </div>
           </div>
         </button>
+        {stores.map((part) => renderMinimumOrder(part, stores.length > 1))}
       </li>
     );
   };
@@ -202,7 +225,7 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
                   Собираем корзины в фоне:{' '}
                   {activeCollecting
                     .slice(0, 3)
-                    .map((c) => storeNameByCode.get(c) || c)
+                    .map((c) => storesByCode.get(c)?.name || c)
                     .join(', ')}
                   {activeCollecting.length > 3 ? ` +${activeCollecting.length - 3}` : ''}
                 </span>
@@ -295,6 +318,8 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
                         <Icon name="down" className={`i chev${expanded ? ' rot' : ''}`} />
                       </button>
 
+                      {renderMinimumOrder(sb)}
+
                       <div className="thumbs">
                         {part.thumbs.map((t, i) => (
                           <ProductPic key={i} photo={t.photo} title={t.name} />
@@ -376,11 +401,6 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
                             </div>
                           )}
 
-                          {sb.below_min_order && (
-                            <div className="note warn">
-                              Сумма ниже минимального заказа для доставки в {part.name}.
-                            </div>
-                          )}
                         </div>
                       )}
                     </div>

@@ -356,6 +356,18 @@ h1, h2, h3, p {
   border-color: #FDE68A;
 }
 
+.note.spa-order-minimum {
+  margin: 0 14px 6px;
+  padding: 4px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.spa-order-minimum span {
+  display: inline-block;
+}
+
 /* ==========================================================================
    Boot & Login Screen
    ========================================================================== */
