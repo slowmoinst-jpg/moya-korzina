@@ -1,9 +1,10 @@
+import { ApkUpdateBanner } from './components/ApkUpdateBanner';
+import { MobileTabs } from './components/MobileTabs';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { humanDay, PHONE_CHAINS } from '../src/shared/format';
 import type { StorePerk } from '../src/types';
 import {
   ApiUnavailableError,
-  disconnectFnsServer,
   fetchAuthMe,
   fetchLiveRuns,
   fetchSyncSnapshot,
@@ -11,12 +12,10 @@ import {
   loginDemo,
   logoutSession,
   pushSyncSnapshot,
-  submitManualReceipt,
-  syncFnsServer,
+  snapshotSyncBody,
 } from './api';
 import { KorzinaBridge } from './device';
 import {
-  applyManualReceiptLocal,
   buildLocalWorkspace,
   DEMO_PHONE,
   formatPhoneDisplayLocal,
@@ -51,6 +50,7 @@ import {
   setSyncDirty,
 } from './storage';
 import type {
+  ApkUpdate,
   AuthState,
   HabitItem,
   OrderEntry,
@@ -69,7 +69,7 @@ function readScreenFromLocation(): SpaScreen {
   if (raw.includes('/orders')) return 'orders';
   if (raw.includes('/baskets')) return 'baskets';
   if (raw.includes('/prices')) return 'prices';
-  if (raw.includes('/settings')) return 'settings';
+  if (raw.includes('/settings') || raw === '/phone/receipts') return 'settings';
   return 'basket';
 }
 
@@ -95,7 +95,20 @@ function pushScreenToHistory(screen: SpaScreen): void {
   }
 }
 
+const COLLECTION_BUDGET_MS = 5000;
+
+interface CollectionWindow {
+  deadline: number;
+  starting: string[];
+  pending: string[];
+  failed: string[];
+  stamp: string;
+  expired: boolean;
+  syncing: boolean;
+}
+
 export const App: React.FC = () => {
+  const [apkUpdate, setApkUpdate] = useState<ApkUpdate | null>(null);
   const [auth, setAuth] = useState<AuthState | null>(() => loadCachedAuth());
   const [ws, setWs] = useState<WorkspaceSnapshot | null>(() => {
     const cached = loadCachedAuth();
@@ -103,11 +116,12 @@ export const App: React.FC = () => {
   });
   const [booting, setBooting] = useState<boolean>(() => !loadCachedAuth());
   const [screen, setScreen] = useState<SpaScreen>(() => readScreenFromLocation());
+  const [basketMode, setBasketMode] = useState<'best' | 'single' | null>(null);
   const [pickedPlace, setPickedPlace] = useState<number | null>(null);
   const [pendingAuthStore, setPendingAuthStore] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>(() => loadBasketViewMode());
   const [toast, setToast] = useState<string | null>(null);
-  const [activeCollecting, setActiveCollecting] = useState<string[]>([]);
+  const [collection, setCollection] = useState<CollectionWindow | null>(null);
   const [isDesktop, setIsDesktop] = useState<boolean>(() =>
     typeof window !== 'undefined' ? window.innerWidth >= 960 : false
   );
@@ -115,6 +129,34 @@ export const App: React.FC = () => {
   const syncTimerRef = useRef<number | null>(null);
   const collectTimerRef = useRef<number | null>(null);
   const lastCollectedKeyRef = useRef<string>('');
+  const collectionRef = useRef<CollectionWindow | null>(null);
+  const editedAtRef = useRef(0);
+  const syncRef = useRef<{
+    phone: string;
+    body: string;
+    request: ReturnType<typeof pushSyncSnapshot>;
+  } | null>(null);
+
+  const syncWorkspace = useCallback((snapshot: WorkspaceSnapshot) => {
+    const body = snapshotSyncBody(snapshot);
+    const current = syncRef.current;
+    if (current?.phone === snapshot.phone && current.body === body) return current.request;
+    // Serialize writes so a slower response cannot roll back a later edit.
+    const request = Promise.resolve(current?.request)
+      .catch(() => undefined)
+      .then(() => pushSyncSnapshot(snapshot, body));
+    const entry = { phone: snapshot.phone, body, request };
+    syncRef.current = entry;
+    void request.catch(() => {
+      if (syncRef.current === entry) syncRef.current = null;
+    });
+    return request;
+  }, []);
+
+  const updateCollection = useCallback((windowState: CollectionWindow | null) => {
+    collectionRef.current = windowState;
+    setCollection(windowState ? { ...windowState } : null);
+  }, []);
   const toastTimerRef = useRef<number | null>(null);
 
   const notify = useCallback((msg: string) => {
@@ -153,8 +195,9 @@ export const App: React.FC = () => {
     let active = true;
     (async () => {
       try {
-        const me = await fetchAuthMe();
+        const { apkUpdate: update, ...me } = await fetchAuthMe();
         if (!active) return;
+        setApkUpdate(update ?? null);
         if (me.authenticated && me.phone) {
           setAuth(me);
           saveCachedAuth(me);
@@ -203,8 +246,17 @@ export const App: React.FC = () => {
         if (active) setBooting(false);
       }
     })();
+
+    const checkUpdateOnReturn = () => {
+      if (document.visibilityState !== 'visible') return;
+      void fetchAuthMe().then(({ apkUpdate: update }) => {
+        if (active) setApkUpdate(update ?? null);
+      }).catch(() => {});
+    };
+    document.addEventListener('visibilitychange', checkUpdateOnReturn);
     return () => {
       active = false;
+      document.removeEventListener('visibilitychange', checkUpdateOnReturn);
     };
   }, []);
 
@@ -212,7 +264,7 @@ export const App: React.FC = () => {
   useEffect(() => {
     const onOnline = () => {
       if (ws && !ws.isDemo && isSyncDirty(ws.phone)) {
-        void pushSyncSnapshot(ws)
+        void syncWorkspace(ws)
           .then(() => {
             setSyncDirty(ws.phone, false);
             notify('Изменения синхронизированы с сервером');
@@ -222,11 +274,12 @@ export const App: React.FC = () => {
     };
     window.addEventListener('online', onOnline);
     return () => window.removeEventListener('online', onOnline);
-  }, [ws, notify]);
+  }, [ws, notify, syncWorkspace]);
 
   // Persist locally immediately (0ms) and schedule debounced background server sync
   const commitWorkspace = useCallback(
     (updater: (prev: WorkspaceSnapshot) => WorkspaceSnapshot) => {
+      editedAtRef.current = performance.now();
       setWs((prev) => {
         if (!prev) return prev;
         const next = updater(prev);
@@ -236,7 +289,7 @@ export const App: React.FC = () => {
           setSyncDirty(next.phone, true);
           if (syncTimerRef.current) window.clearTimeout(syncTimerRef.current);
           syncTimerRef.current = window.setTimeout(() => {
-            void pushSyncSnapshot(next)
+            void syncWorkspace(next)
               .then(() => setSyncDirty(next.phone, false))
               .catch(() => {
                 // Keep dirty flag for next online sync
@@ -246,7 +299,7 @@ export const App: React.FC = () => {
         return next;
       });
     },
-    []
+    [syncWorkspace]
   );
 
   // Derived data calculated locally in <3ms
@@ -301,8 +354,7 @@ export const App: React.FC = () => {
 
   // Pull live collection quotes, prices, connections, and detected bonuses from server
   const refreshLiveRuns = useCallback(async () => {
-    const busy = KorzinaBridge.busy();
-    setActiveCollecting([...new Set([...busy.going, ...busy.soon])]);
+    const checking = collectionRef.current;
     try {
       const live = await fetchLiveRuns();
       setWs((prev) => {
@@ -318,14 +370,48 @@ export const App: React.FC = () => {
         saveCachedSnapshot(next);
         return next;
       });
-      const collectingFromQuotes = Object.values(live.storeQuotes || {})
-        .filter((q) => q.status === 'collecting')
-        .map((q) => q.store_code);
-      setActiveCollecting([...new Set([...busy.going, ...busy.soon, ...collectingFromQuotes])]);
+      if (checking && checking === collectionRef.current && checking.stamp) {
+        checking.pending = checking.starting.filter((code) => {
+          const quote = live.storeQuotes?.[code];
+          return quote?.stamp !== checking.stamp || quote.status === 'collecting';
+        });
+        checking.failed = checking.starting.filter((code) => {
+          const quote = live.storeQuotes?.[code];
+          return quote?.stamp === checking.stamp && quote.status === 'error';
+        });
+        updateCollection(checking);
+      }
     } catch {
-      // ignore transient offline errors
+      // The five-second deadline still applies when the API is unreachable.
     }
-  }, []);
+  }, [updateCollection]);
+
+  useEffect(() => {
+    if (!collection || collection.expired || (!collection.syncing && !collection.pending.length)) return;
+    const checking = collectionRef.current;
+    if (!checking) return;
+    const alarm = window.setTimeout(() => {
+      if (checking !== collectionRef.current) return;
+      checking.expired = true;
+      updateCollection(checking);
+    }, Math.max(0, checking.deadline - performance.now()));
+    const poll = collection.syncing ? undefined : window.setInterval(() => void refreshLiveRuns(), 700);
+    return () => {
+      window.clearTimeout(alarm);
+      if (poll !== undefined) window.clearInterval(poll);
+    };
+  }, [collection, refreshLiveRuns, updateCollection]);
+
+  const returnStore = new URLSearchParams(window.location.search).get('store');
+  const loginVisible = !!(returnStore && ws?.connections[returnStore]?.connected);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!auth?.authenticated || screen !== 'settings' || params.get('saved') !== 'connected') return;
+    if (!returnStore || loginVisible) return;
+    // Android confirms the login asynchronously, sometimes after opening Settings.
+    const timers = [0, 700, 2000, 5000].map(delay => window.setTimeout(refreshLiveRuns, delay));
+    return () => timers.forEach(window.clearTimeout);
+  }, [auth?.authenticated, screen, returnStore, loginVisible, refreshLiveRuns]);
 
   // Listen for Android MainActivity.java tellPage() -> window.kzRunsChanged() and visibility return from WebView login
   useEffect(() => {
@@ -350,54 +436,82 @@ export const App: React.FC = () => {
   // Trigger Android background cart assembly automatically after any basket or address change across all 11 chains
   const triggerBackgroundCollect = useCallback(
     async (force = false) => {
-      if (!ws || activeBasketId === null || !items.length || !basketStamp) return;
+      if (!ws || ws.isDemo || activeBasketId === null || !items.length || !basketStamp) return;
       if (!KorzinaBridge.available()) return;
 
       const collectKey = `${basketStamp}::${connectedSig}`;
       if (!force && lastCollectedKeyRef.current === collectKey) return;
       lastCollectedKeyRef.current = collectKey;
 
-      if (!ws.isDemo) {
-        try {
-          await pushSyncSnapshot(ws);
-          setSyncDirty(ws.phone, false);
-        } catch {
-          // continue even if sync is momentarily unavailable
+      const started = force ? 0 : editedAtRef.current;
+      editedAtRef.current = 0;
+      const checking: CollectionWindow = {
+        deadline: (started || performance.now()) + COLLECTION_BUDGET_MS,
+        starting: [],
+        pending: [],
+        failed: [],
+        stamp: '',
+        expired: false,
+        syncing: true,
+      };
+      updateCollection(checking);
+
+      try {
+        const synced = await syncWorkspace(ws);
+        if (checking !== collectionRef.current) return;
+        setSyncDirty(ws.phone, false);
+        const remaining = Math.floor(checking.deadline - performance.now());
+        if (remaining <= 0) {
+          checking.expired = true;
+          updateCollection(checking);
+          return;
         }
+        const chains = PHONE_CHAINS.map((code) => ({
+          code,
+          login: ws.connections[code]?.connected ? 'in' : 'connect',
+          cookies: code === 'magnit' ? ['mg_at'] : [],
+          sent: false,
+        }));
+
+        checking.stamp = synced.basketStamp;
+        const result = KorzinaBridge.collect({
+          basket: activeBasketId,
+          stamp: checking.stamp,
+          address: ws.address || '',
+          point: ws.point,
+          budget_ms: remaining,
+          chains,
+        }) as { starting?: string[] } | null;
+        const busy = KorzinaBridge.busy();
+        checking.starting = result?.starting || [...new Set([...busy.going, ...busy.soon])];
+        checking.pending = checking.starting;
+        checking.syncing = false;
+        updateCollection(checking);
+        if (checking.pending.length) void refreshLiveRuns();
+      } catch {
+        if (checking !== collectionRef.current) return;
+        checking.expired = true;
+        updateCollection(checking);
       }
-
-      const chains = PHONE_CHAINS.map((code) => ({
-        code,
-        login: ws.connections[code]?.connected ? 'in' : 'connect',
-        cookies: code === 'magnit' ? ['mg_at'] : [],
-        sent: false,
-      }));
-
-      KorzinaBridge.collect({
-        basket: activeBasketId,
-        stamp: basketStamp,
-        address: ws.address || '',
-        point: ws.point,
-        chains,
-      });
-
-      const busy = KorzinaBridge.busy();
-      setActiveCollecting([...new Set([...busy.going, ...busy.soon])]);
     },
-    [ws, activeBasketId, items.length, basketStamp, connectedSig]
+    [ws, activeBasketId, items.length, basketStamp, connectedSig, refreshLiveRuns, syncWorkspace, updateCollection]
   );
 
   useEffect(() => {
     if (!KorzinaBridge.available()) return;
-    if (!ws || activeBasketId === null || !items.length || !basketStamp) return;
+    if (!ws || activeBasketId === null || !items.length || !basketStamp) {
+      lastCollectedKeyRef.current = '';
+      updateCollection(null);
+      return;
+    }
     if (collectTimerRef.current) window.clearTimeout(collectTimerRef.current);
     collectTimerRef.current = window.setTimeout(() => {
       void triggerBackgroundCollect(false);
-    }, 550);
+    }, 150);
     return () => {
       if (collectTimerRef.current) window.clearTimeout(collectTimerRef.current);
     };
-  }, [ws, activeBasketId, items.length, basketStamp, connectedSig, triggerBackgroundCollect]);
+  }, [ws, activeBasketId, items.length, basketStamp, connectedSig, triggerBackgroundCollect, updateCollection]);
 
   // Auth handlers (server-first with seamless Local-First fallback if offline or proxy-redirected)
   const handleLogin = async (phone: string, pin: string) => {
@@ -413,6 +527,7 @@ export const App: React.FC = () => {
       setWs(res.snapshot);
       saveCachedSnapshot(res.snapshot);
       setPickedPlace(null);
+      setBasketMode(null);
       navigate('basket');
       return;
     } catch (err) {
@@ -434,6 +549,7 @@ export const App: React.FC = () => {
       saveCachedSnapshot(localWs);
       setSyncDirty(normalized, true);
       setPickedPlace(null);
+      setBasketMode(null);
       navigate('basket');
       notify('Работаем локально на устройстве — синхронизация выполнится при подключении к серверу');
     }
@@ -447,6 +563,7 @@ export const App: React.FC = () => {
       setWs(res.snapshot);
       saveCachedSnapshot(res.snapshot);
       setPickedPlace(null);
+      setBasketMode(null);
       navigate('basket');
       return;
     } catch (err) {
@@ -466,11 +583,13 @@ export const App: React.FC = () => {
       setWs(localWs);
       saveCachedSnapshot(localWs);
       setPickedPlace(null);
+      setBasketMode(null);
       navigate('basket');
     }
   };
 
   const handleLogout = async () => {
+    KorzinaBridge.leaveReceiptProfile();
     try {
       await logoutSession();
     } catch {
@@ -480,6 +599,7 @@ export const App: React.FC = () => {
     setAuth({ authenticated: false, phone: null, phoneLabel: '', isDemo: false, pinRequired: Boolean(auth?.pinRequired) });
     setWs(null);
     setPickedPlace(null);
+      setBasketMode(null);
     navigate('basket');
   };
 
@@ -531,7 +651,7 @@ export const App: React.FC = () => {
   );
 
   const handleAddFromSearch = useCallback(
-    (res: SearchResultItem) => {
+    (res: SearchResultItem, store?: string, replaceId?: number) => {
       commitWorkspace((prev) => {
         const { next, basketId } = ensureBasket(prev);
         const exists = next.products.some((p) => p.id === res.product.id);
@@ -544,12 +664,17 @@ export const App: React.FC = () => {
           },
         };
         const key = String(basketId);
-        const list = [...(next.basketItems[key] || [])];
+        const oldList = next.basketItems[key] || [];
+        const replaced = replaceId === undefined ? undefined : oldList.find(row => row.product_id === replaceId);
+        if (replaceId !== undefined && !replaced) return prev;
+        const qty = replaced?.qty ?? 1;
+        const list = oldList.filter(row => row.product_id !== replaceId);
         const idx = list.findIndex((i) => i.product_id === res.product.id);
         if (idx !== -1) {
-          list[idx] = { ...list[idx], qty: Math.round((list[idx].qty + 1) * 1000) / 1000 };
+          list[idx] = { ...list[idx], qty: Math.round((list[idx].qty + qty) * 1000) / 1000,
+            preferred_store: replaced && store ? store : list[idx].preferred_store };
         } else {
-          list.push({ basket_id: basketId, product_id: res.product.id, qty: 1 });
+          list.push({ basket_id: basketId, product_id: res.product.id, preferred_store: store, qty });
         }
         return {
           ...next,
@@ -571,28 +696,6 @@ export const App: React.FC = () => {
     [handleUpdateQty, notify]
   );
 
-  const handleAddAllHabits = useCallback(() => {
-    if (!habits.length) return;
-    commitWorkspace((prev) => {
-      const { next, basketId } = ensureBasket(prev);
-      const key = String(basketId);
-      const list = [...(next.basketItems[key] || [])];
-      const existing = new Set(list.map((i) => i.product_id));
-      for (const h of habits) {
-        if (!existing.has(h.pid)) {
-          list.push({ basket_id: basketId, product_id: h.pid, qty: h.qty || 1 });
-          existing.add(h.pid);
-        }
-      }
-      return {
-        ...next,
-        basketItems: { ...next.basketItems, [key]: list },
-        lastBasketId: basketId,
-      };
-    });
-    notify(`Добавлено ${habits.length} привычных товаров`);
-  }, [habits, commitWorkspace, notify]);
-
   const handleClearBasket = useCallback(() => {
     if (activeBasketId === null) return;
     commitWorkspace((prev) => ({
@@ -600,6 +703,7 @@ export const App: React.FC = () => {
       basketItems: { ...prev.basketItems, [String(activeBasketId)]: [] },
     }));
     setPickedPlace(null);
+      setBasketMode(null);
     notify('Корзина очищена');
   }, [activeBasketId, commitWorkspace, notify]);
 
@@ -615,6 +719,8 @@ export const App: React.FC = () => {
 
   const handleRepeatOrder = useCallback(
     (order: OrderEntry) => {
+      const lines = order.lines.filter((line) => line.repeatable && line.product_id !== null);
+      if (!lines.length) return;
       commitWorkspace((prev) => {
         const id = prev.nextBasketId;
         const basket = {
@@ -623,13 +729,11 @@ export const App: React.FC = () => {
           created_at: new Date().toISOString().slice(0, 10),
           source: 'history' as const,
         };
-        const newItems = order.lines
-          .filter((ln) => ln.product_id !== null)
-          .map((ln) => ({
-            basket_id: id,
-            product_id: ln.product_id!,
-            qty: ln.qty,
-          }));
+        const newItems = lines.map((ln) => ({
+          basket_id: id,
+          product_id: ln.product_id!,
+          qty: ln.qty,
+        }));
         return {
           ...prev,
           baskets: [basket, ...prev.baskets],
@@ -640,6 +744,7 @@ export const App: React.FC = () => {
         };
       });
       setPickedPlace(null);
+      setBasketMode(null);
       notify(`Заказ из ${order.store_name} добавлен как новая корзина`);
       navigate('basket');
     },
@@ -650,6 +755,7 @@ export const App: React.FC = () => {
     (id: number) => {
       commitWorkspace((prev) => ({ ...prev, lastBasketId: id }));
       setPickedPlace(null);
+      setBasketMode(null);
       navigate('basket');
     },
     [commitWorkspace, navigate]
@@ -674,6 +780,7 @@ export const App: React.FC = () => {
         };
       });
       setPickedPlace(null);
+      setBasketMode(null);
       navigate('basket');
     },
     [commitWorkspace, navigate]
@@ -693,6 +800,7 @@ export const App: React.FC = () => {
         };
       });
       setPickedPlace(null);
+      setBasketMode(null);
     },
     [commitWorkspace]
   );
@@ -706,6 +814,7 @@ export const App: React.FC = () => {
           [code]: {
             store_code: code,
             connected: connect,
+            disconnectSeen: connect ? null : prev.connections[code]?.connectedAt,
             again: false,
             last: connect ? new Date().toISOString().slice(0, 16).replace('T', ' ') : null,
             mode: connect ? mode || 'manual' : undefined,
@@ -828,89 +937,40 @@ export const App: React.FC = () => {
     [commitWorkspace, notify]
   );
 
-  const handleSyncFns = useCallback(
-    async (phone: string, keys?: string) => {
-      if (ws?.isDemo) {
-        notify('В демо-режиме чеки уже загружены');
-        return;
-      }
+  const refreshReceipts = useCallback(async () => {
+    const fresh = await fetchSyncSnapshot();
+    setWs(prev => {
+      if (!prev || prev.phone !== fresh.phone) return prev;
+      const ids = new Set(prev.products.map(p => p.id));
+      const next = { ...prev, history: fresh.history, receipts: fresh.receipts, otherReceipts: fresh.otherReceipts,
+        products: [...prev.products, ...fresh.products.filter(p => !ids.has(p.id))],
+        fnsConnected: fresh.fnsConnected, fnsPhone: fresh.fnsPhone, fnsSyncedAt: fresh.fnsSyncedAt };
+      saveCachedSnapshot(next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (screen !== 'orders' || !ws?.phone || ws.isDemo) return;
+    let updated: string | undefined, checked = 0, pending = false;
+    const refresh = async () => {
+      if (document.hidden || pending) return;
+      const device = KorzinaBridge.receiptStatus(ws.phone);
+      const revision = device.updated;
+      if (Date.now() - checked < 60000 && !(device.phase === 'done' && revision !== updated)) return;
+      pending = true;
       try {
-        const res = await syncFnsServer(phone, keys);
-        setWs(res.snapshot);
-        saveCachedSnapshot(res.snapshot);
-        notify(keys ? 'Кабинет ФНС подключён' : 'Чеки ФНС обновлены');
-      } catch (err) {
-        if (err instanceof ApiUnavailableError) {
-          commitWorkspace((prev) => ({
-            ...prev,
-            fnsConnected: true,
-            fnsPhone: phone || prev.phoneLabel,
-            fnsSyncedAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
-          }));
-          notify('Подключение ФНС сохранено локально');
-          return;
-        }
-        throw err;
-      }
-    },
-    [ws, commitWorkspace, notify]
-  );
-
-  const handleDisconnectFns = useCallback(async () => {
-    if (ws?.isDemo) return;
-    try {
-      const res = await disconnectFnsServer();
-      setWs(res.snapshot);
-      saveCachedSnapshot(res.snapshot);
-      notify('Кабинет ФНС отключён');
-    } catch (err) {
-      if (err instanceof ApiUnavailableError) {
-        commitWorkspace((prev) => ({
-          ...prev,
-          fnsConnected: false,
-          fnsSyncedAt: null,
-        }));
-        notify('Кабинет ФНС отключён локально');
-        return;
-      }
-      throw err;
-    }
-  }, [ws, commitWorkspace, notify]);
-
-  const handlePasteReceipt = useCallback(
-    async (storeCode: string, text: string) => {
-      if (ws?.isDemo) {
-        let importedCount = 0;
-        commitWorkspace((prev) => {
-          const res = applyManualReceiptLocal(prev, storeCode, text);
-          importedCount = res.imported;
-          return res.next;
-        });
-        notify(`Добавлено ${importedCount} поз. из чека (демо)`);
-        return;
-      }
-
-      try {
-        const res = await submitManualReceipt(storeCode, text);
-        setWs(res.snapshot);
-        saveCachedSnapshot(res.snapshot);
-        notify(`Добавлено ${res.imported} поз. из чека`);
-      } catch (err) {
-        if (err instanceof ApiUnavailableError) {
-          let importedCount = 0;
-          commitWorkspace((prev) => {
-            const res = applyManualReceiptLocal(prev, storeCode, text);
-            importedCount = res.imported;
-            return res.next;
-          });
-          notify(`Чек сохранён локально (${importedCount} поз.)`);
-          return;
-        }
-        throw err;
-      }
-    },
-    [ws, commitWorkspace, notify]
-  );
+        await refreshReceipts();
+        updated = revision;
+        checked = Date.now();
+      } catch { checked = Date.now(); }
+      finally { pending = false; }
+    };
+    void refresh();
+    const timer = window.setInterval(refresh, 4000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', refresh); };
+  }, [screen, ws?.phone, ws?.isDemo, refreshReceipts]);
 
   const handleChangeView = useCallback((mode: 'grid' | 'list') => {
     setViewMode(mode);
@@ -932,6 +992,7 @@ export const App: React.FC = () => {
     return (
       <LoginScreen
         pinRequired={Boolean(auth?.pinRequired)}
+        apkUpdate={apkUpdate}
         onLogin={handleLogin}
         onDemo={handleDemo}
       />
@@ -941,15 +1002,21 @@ export const App: React.FC = () => {
   const bestTotal = board.places.length > 0 ? board.places[0].total : null;
 
   const applyBonuses = ws.applyBonuses !== false;
-  const collectingChains = useMemo(() => {
-    const fromQuotes = Object.values(ws.storeQuotes || {})
-      .filter((q) => q.status === 'collecting')
-      .map((q) => q.store_code);
-    return [...new Set([...activeCollecting, ...fromQuotes])];
-  }, [activeCollecting, ws.storeQuotes]);
+  const collectingChains = collection?.expired ? [] : collection?.pending || [];
+  const collectionNotice = collection?.expired
+    ? collection.syncing
+      ? 'Корзина пока не синхронизирована с сервером'
+      : collection.pending.length
+        ? 'Часть сетей не ответила за 5 секунд'
+        : collection.failed.length
+          ? 'Часть сетей не подтвердила корзину'
+          : ''
+    : collection?.failed.length && !collection.pending.length
+      ? 'Часть сетей не подтвердила корзину'
+      : '';
 
   const leftScreenContent = (() => {
-    if (screen === 'cheaper' && !isDesktop) {
+    if (screen === 'cheaper') {
       return (
         <CheaperScreen
           ws={ws}
@@ -981,6 +1048,7 @@ export const App: React.FC = () => {
       return (
         <OrdersScreen
           groupedOrders={groupedOrders}
+          otherReceipts={ws.otherReceipts}
           repeatedKey={ws.repeated?.key ?? null}
           onRepeatOrder={handleRepeatOrder}
           onBack={() => navigate('basket')}
@@ -1007,11 +1075,9 @@ export const App: React.FC = () => {
         <PricesScreen
           ws={ws}
           items={items}
-          bestTotal={bestTotal}
           isDesktop={isDesktop}
           onUpdateQty={handleUpdateQty}
           onOpenBasket={() => navigate('basket')}
-          onOpenCheaper={() => navigate('cheaper')}
           onOpenSettings={() => navigate('settings')}
         />
       );
@@ -1022,9 +1088,6 @@ export const App: React.FC = () => {
         <SettingsScreen
           ws={ws}
           storeTotals={storeTotals}
-          itemsCount={items.length}
-          bestTotal={bestTotal}
-          isDesktop={isDesktop}
           activeCollecting={collectingChains}
           onToggleStore={handleToggleStore}
           onUpdateStorePerk={handleUpdateStorePerk}
@@ -1032,11 +1095,7 @@ export const App: React.FC = () => {
           onToggleOffer={handleToggleOffer}
           onAddOffer={handleAddOffer}
           onDeleteOffer={handleDeleteOffer}
-          onSyncFns={handleSyncFns}
-          onDisconnectFns={handleDisconnectFns}
-          onPasteReceipt={handlePasteReceipt}
-          onOpenBasket={() => navigate('basket')}
-          onOpenCheaper={() => navigate('cheaper')}
+          onRefreshReceipts={refreshReceipts}
           onOpenPrices={() => navigate('prices')}
           onLogout={handleLogout}
           initialAuthStore={pendingAuthStore}
@@ -1048,23 +1107,24 @@ export const App: React.FC = () => {
     return (
       <BasketScreen
         ws={ws}
+        mode={basketMode}
+        onMode={setBasketMode}
         basketName={activeBasket?.name || 'Корзина'}
-        basketsCount={ws.baskets.length}
         items={items}
         habits={habits}
         board={board}
         viewMode={viewMode}
         isDesktop={isDesktop}
         activeCollecting={collectingChains}
+        collectionNotice={collectionNotice}
         onChangeView={handleChangeView}
         onUpdateQty={handleUpdateQty}
         onAddFromSearch={handleAddFromSearch}
         onAddHabit={handleAddHabit}
-        onAddAllHabits={handleAddAllHabits}
         onClearBasket={handleClearBasket}
         onOpenCheaper={(placeIdx) => {
           setPickedPlace(placeIdx);
-          if (!isDesktop) navigate('cheaper');
+          navigate('cheaper');
         }}
         onOpenOrders={() => navigate('orders')}
         onOpenBaskets={() => navigate('baskets')}
@@ -1075,9 +1135,10 @@ export const App: React.FC = () => {
   })();
 
   if (isDesktop) {
-    const fullWidthScreen = screen === 'prices';
+    const fullWidthScreen = ['basket', 'cheaper', 'prices'].includes(screen);
     return (
       <div className="spa-desk-shell">
+        {apkUpdate && <ApkUpdateBanner update={apkUpdate} />}
         <header className="spa-desk-nav">
           <div className="spa-desk-nav-in">
             <button
@@ -1173,7 +1234,13 @@ export const App: React.FC = () => {
 
   return (
     <div className="ph spa-mobile-shell">
+      {apkUpdate && <ApkUpdateBanner update={apkUpdate} />}
       {leftScreenContent}
+      <MobileTabs
+        active={screen === 'orders' || screen === 'settings' ? screen : 'basket'}
+        itemsCount={items.length}
+        onSelect={navigate}
+      />
       {toast && (
         <div className="spa-toast" role="status">
           {toast}

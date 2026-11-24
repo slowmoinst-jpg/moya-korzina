@@ -11,24 +11,28 @@
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import logging
 import os
 import re
+import sqlite3
 import tempfile
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import requests
-from flask import Blueprint, Response, current_app, jsonify, make_response, request
+from flask import Blueprint, Response, abort, current_app, has_request_context, jsonify, make_response, request, send_file, url_for
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from app import cartrun, config, db, geo, location, repo, store_accounts, users
-from app.models import Card, Offer, Product
-from app.web import auth, login as web_login
+from app import address_search, cartrun, chains, config, db, geo, location, repo, store_accounts, users
+from app.catalog import nonfood
+from app.models import Product
+from app.web import apk, auth, device, login as web_login
 
 log = logging.getLogger(__name__)
 
@@ -51,12 +55,6 @@ TILE_WINDOW_SEC = 3600
 PNG_MAGIC = b"\x89PNG"
 _tile_lock = threading.Lock()
 _tile_hits: dict[str, tuple[float, int]] = {}
-
-PHOTON_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
-)
-
 
 # ---------- подписанный Bearer-токен ----------
 
@@ -94,22 +92,10 @@ def current_spa_phone() -> str | None:
     return auth.current_phone() or phone_from_bearer()
 
 
-def _cors(resp):
-    origin = request.headers.get("Origin")
-    if origin:
-        resp.headers["Access-Control-Allow-Origin"] = origin
-        resp.headers["Access-Control-Allow-Credentials"] = "true"
-    else:
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, Accept"
-    resp.headers["Access-Control-Max-Age"] = "600"
-    resp.headers["Vary"] = "Origin"
-    return resp
-
-
 def _json(payload: dict, status: int = 200):
-    return _cors(make_response(jsonify(payload), status))
+    from app.web.api import _cors_response
+
+    return _cors_response(make_response(jsonify(payload), status))
 
 
 def _auth_payload(phone: str | None) -> dict:
@@ -139,7 +125,15 @@ def _load_json_setting(key: str, default: Any) -> Any:
         return default
 
 
-def _product_photos(pids: list[int]) -> dict[int, str]:
+def _thumbnail_url(digest: str | None) -> str | None:
+    if not digest:
+        return None
+    if has_request_context():
+        return url_for("api.spa_thumbnail", digest=digest, _external=True)
+    return f"/api/catalog/images/{digest}.webp"
+
+
+def _product_photos(pids: list[int], titles: dict[int, str] | None = None) -> dict[int, str]:
     """Фото товаров из единой базы сетей data/catalog.db (мягкий отказ, если базы нет)."""
     pids = sorted({int(p) for p in pids if p})
     if not pids:
@@ -152,7 +146,9 @@ def _product_photos(pids: list[int]) -> dict[int, str]:
             for pid in pids
         }
         all_skus = [p for ps in pairs.values() for p in ps]
-        if not all_skus:
+        masters = {int(r["id"]): int(r["master_id"]) for r in
+                   db.query("SELECT id,master_id FROM products WHERE master_id IS NOT NULL")}
+        if not all_skus and not any(pid in masters for pid in pids):
             return {}
         conn = catalog_store.connect()
         try:
@@ -164,16 +160,24 @@ def _product_photos(pids: list[int]) -> dict[int, str]:
 
             def _img(rows) -> str | None:
                 for r in rows:
-                    url = str(r.get("image") or "")
-                    if url.startswith(("https://", "http://")):
-                        return url
+                    if r.get("photo_digest"):
+                        return _thumbnail_url(r["photo_digest"])
                 return None
 
             for pid, ps in pairs.items():
                 own = [found[p] for p in ps if p in found]
+                if titles is not None:
+                    # Some feeds supply transliterated URL slugs as names.
+                    title = next((r["name"] for r in own
+                                  if re.search(r"[А-Яа-яЁё]", r.get("name") or "")), None)
+                    if title:
+                        titles[pid] = title
                 url = _img(own)
                 if not url:
-                    for item_id in dict.fromkeys(r["item_id"] for r in own if r.get("item_id")):
+                    ids = [r["item_id"] for r in own if r.get("item_id")]
+                    if pid in masters:
+                        ids.append(masters[pid])
+                    for item_id in dict.fromkeys(ids):
                         url = _img(catalog_store.item_rows(item_id, conn=conn))
                         if url:
                             break
@@ -188,6 +192,9 @@ def _product_photos(pids: list[int]) -> dict[int, str]:
 
 def _bulk_latest_prices() -> dict[str, dict[str, dict]]:
     """Все свежие цены по подтверждённым связям одним SQL-запросом."""
+    from app import freshness
+    cutoff = (datetime.now() - timedelta(hours=freshness.max_age_hours())).isoformat(timespec="seconds")
+    point = location.point_key()
     rows = db.query(
         """
         SELECT
@@ -206,14 +213,17 @@ def _bulk_latest_prices() -> dict[str, dict[str, dict]]:
         JOIN store_products sp ON sp.id = m.store_product_id
         JOIN stores s ON s.id = sp.store_id
         JOIN (
-            SELECT store_product_id, MAX(id) AS max_id
-            FROM store_prices
-            GROUP BY store_product_id
-        ) latest ON latest.store_product_id = sp.id
-        JOIN store_prices p ON p.id = latest.max_id
+            SELECT v.*, ROW_NUMBER() OVER (PARTITION BY v.store_product_id ORDER BY
+                (v.source IS 'cart' AND v.fetched_at>=?) DESC,
+                (v.point_key IS NOT NULL AND v.fetched_at>=?) DESC, v.fetched_at DESC, v.id DESC) AS rn
+            FROM store_prices v WHERE v.point_key IS NULL OR v.point_key=?
+        ) p ON p.store_product_id=sp.id AND p.rn=1
         WHERE m.confirmed = 1
-        ORDER BY p.fetched_at DESC
-        """
+        ORDER BY (p.in_stock=1 AND p.price>0 AND p.fetched_at>=? AND COALESCE(p.source,'')!='fallback') DESC,
+                 (p.source IS 'cart' AND p.fetched_at>=?) DESC,
+                 (p.point_key IS NOT NULL AND p.fetched_at>=?) DESC,
+                 CASE WHEN p.in_stock=1 AND p.fetched_at>=? THEN p.price END, p.fetched_at DESC, p.id DESC
+        """, (cutoff, cutoff, point, cutoff, cutoff, cutoff, cutoff)
     )
     prices: dict[str, dict[str, dict]] = {}
     for r in rows:
@@ -254,6 +264,7 @@ def _serialize_connections(stores: list) -> dict[str, dict]:
         out[st.code] = {
             "store_code": st.code,
             "connected": bool(c and c.connected and not again),
+            "connectedAt": c.connected_at if c else None,
             "again": again,
             "last": str(last_ts)[:16].replace("T", " ") if last_ts else None,
             "mode": "session" if (c and c.device) else ("manual" if (c and c.connected) else None),
@@ -328,24 +339,7 @@ def serialize_workspace(phone: str) -> dict:
     """Собрать полный WorkspaceSnapshot из реальной базы рабочего места."""
     stores = repo.list_stores()
     products_raw = repo.list_products(active_only=False)
-    photos = _product_photos([int(p.id) for p in products_raw if p.id is not None])
-    products = [
-        {
-            "id": int(p.id),
-            "name": p.name,
-            "brand": p.brand,
-            "weight_g": p.weight_g,
-            "unit": "kg" if p.unit == "kg" else "pcs",
-            "category": p.category,
-            "active": bool(p.active),
-            "photo": photos.get(int(p.id)) if p.id is not None else None,
-        }
-        for p in products_raw
-        if p.id is not None
-    ]
-    next_product_id = max((p["id"] for p in products), default=0) + 1
-
-    prices = _bulk_latest_prices()
+    next_product_id = max((p.id for p in products_raw if p.id is not None), default=0) + 1
 
     cards = [{"id": int(c.id), "bank": c.bank, "name": c.name} for c in repo.list_cards() if c.id is not None]
     offers = [
@@ -387,12 +381,28 @@ def serialize_workspace(phone: str) -> dict:
                 "basket_id": bid,
                 "product_id": int(r["product_id"]),
                 "qty": float(r["qty"]),
+                "preferred_store": r.get("preferred_store"),
                 "fallback_product_id": (
                     int(r["fallback_product_id"]) if r.get("fallback_product_id") is not None else None
                 ),
             }
             for r in rows
         ]
+
+    basket_product_ids = {pid for items in basket_items.values() for item in items
+                          for pid in (item["product_id"], item["fallback_product_id"]) if pid is not None}
+    visible = [p for p in products_raw if p.id is not None and (p.active or p.id in basket_product_ids)]
+    titles = repo.human_titles({p.id: p.name for p in visible if p.id in basket_product_ids})
+    photos = _product_photos([p.id for p in visible], titles)
+    bought_ids, _ = _bought_ids()
+    products = [
+        {"id": p.id, "name": p.name, "title": titles.get(p.id), "brand": p.brand, "weight_g": p.weight_g,
+         "unit": "kg" if p.unit == "kg" else "pcs", "category": p.category,
+         "active": bool(p.active), "photo": photos.get(p.id), "previouslyBought": p.id in bought_ids}
+        for p in visible
+    ]
+    visible_ids = {str(p.id) for p in visible}
+    prices = {pid: values for pid, values in _bulk_latest_prices().items() if pid in visible_ids}
 
     last_raw = repo.get_setting(SETTING_LAST_BASKET)
     last_basket_id: int | None = None
@@ -408,19 +418,25 @@ def serialize_workspace(phone: str) -> dict:
 
     store_by_id = {int(s.id): s for s in stores if s.id is not None}
     history_raw = repo.list_history(limit=600)
+    habit_stores = chains.orderable()
     history = []
     for h in history_raw:
         sid = int(h["store_id"]) if h.get("store_id") is not None else 0
         st = store_by_id.get(sid)
+        store_code = str(h.get("store_code") or (st.code if st else "unknown"))
+        is_service = nonfood.is_service_name(h["raw_name"] or h.get("product_name"))
+        is_product = nonfood.is_receipt_product(h["raw_name"], h.get("product_key"))
         history.append(
             {
                 "id": int(h["id"]),
                 "date": str(h["date"] or "")[:10],
                 "store_id": sid,
-                "store_code": str(h.get("store_code") or (st.code if st else "unknown")),
+                "store_code": store_code,
                 "store_name": str(h.get("store_name") or (st.name if st else "Магазин")),
                 "product_id": int(h["product_id"]) if h.get("product_id") is not None else None,
                 "raw_name": str(h["raw_name"] or ""),
+                "is_service": is_service,
+                "recommendable": bool(h["product_id"] and store_code in habit_stores and is_product),
                 "qty": float(h["qty"] or 1),
                 "unit_price": float(h["unit_price"] or 0),
                 "total": float(h["total"] or 0),
@@ -429,6 +445,7 @@ def serialize_workspace(phone: str) -> dict:
         )
 
     receipts_raw = repo.imported_receipts()
+    other_receipts = repo.other_store_receipts(limit=5)
     receipts = [
         {
             "key": str(r["key"]),
@@ -482,6 +499,8 @@ def serialize_workspace(phone: str) -> dict:
         "basketItems": basket_items,
         "history": history,
         "receipts": receipts,
+        "otherReceipts": {"count": repo.saved_receipt_count() - len(receipts), "recent": [
+            {k: r[k] for k in ("key", "date", "store", "total")} for r in other_receipts]},
         "connections": connections,
         "storeQuotes": store_quotes,
         "storePerks": store_perks,
@@ -526,10 +545,16 @@ def _import_catalog_product(catalog_item_id: int, fallback_data: dict | None = N
 
     existing = repo.find_product_by_name(name)
     if existing and existing.id is not None:
+        if not existing.active:
+            if not rows:
+                return None
+            existing.active = True
+            repo.upsert_product(existing)
         pid = int(existing.id)
     else:
         pid = repo.upsert_product(
             Product(
+                id=None,
                 name=name,
                 brand=brand,
                 weight_g=float(weight_g) if weight_g is not None else None,
@@ -567,7 +592,8 @@ def _import_catalog_product(catalog_item_id: int, fallback_data: dict | None = N
                     repo.save_price(
                         sp_id,
                         p_num,
-                        in_stock=bool(r.get("in_stock", True)),
+                        in_stock=bool(r.get("in_stock")),
+                        fetched_at=r.get("price_seen") or r.get("first_seen"),
                         source="live",
                     )
             except (TypeError, ValueError):
@@ -601,6 +627,7 @@ def _apply_sync(body: dict) -> None:
             elif pid_int not in existing_pids and p.get("name"):
                 new_id = repo.upsert_product(
                     Product(
+                        id=None,
                         name=str(p["name"]).strip(),
                         brand=p.get("brand"),
                         weight_g=float(p["weight_g"]) if p.get("weight_g") is not None else None,
@@ -659,8 +686,8 @@ def _apply_sync(body: dict) -> None:
                 conn.execute("DELETE FROM baskets WHERE id=?", (obsolete,))
 
             if isinstance(raw_items, dict):
-                valid_pids = {
-                    int(r["id"]) for r in conn.execute("SELECT id FROM products").fetchall()
+                active_pids = {
+                    int(r["id"]) for r in conn.execute("SELECT id FROM products WHERE active=1")
                 }
                 for key, item_list in raw_items.items():
                     try:
@@ -670,6 +697,13 @@ def _apply_sync(body: dict) -> None:
                     real_bid = basket_id_map.get(orig_bid)
                     if not real_bid or real_bid not in kept_ids:
                         continue
+                    previous_stores = dict(conn.execute(
+                        "SELECT product_id, preferred_store FROM basket_items WHERE basket_id=?", (real_bid,)
+                    ))
+                    previous_ids = {pid for line in conn.execute(
+                        "SELECT product_id, fallback_product_id FROM basket_items WHERE basket_id=?", (real_bid,)
+                    ) for pid in line if pid is not None}
+                    valid_pids = active_pids | previous_ids
                     conn.execute("DELETE FROM basket_items WHERE basket_id=?", (real_bid,))
                     if not isinstance(item_list, list):
                         continue
@@ -686,10 +720,13 @@ def _apply_sync(body: dict) -> None:
                             continue
                         fb = item.get("fallback_product_id")
                         fb_id = int(fb) if (fb is not None and int(fb) in valid_pids) else None
+                        preferred_store = item.get("preferred_store", previous_stores.get(real_pid))
+                        if not isinstance(preferred_store, str) or preferred_store not in chains.orderable():
+                            preferred_store = None
                         conn.execute(
-                            "INSERT OR REPLACE INTO basket_items (basket_id, product_id, qty, fallback_product_id)"
-                            " VALUES (?,?,?,?)",
-                            (real_bid, real_pid, qty, fb_id),
+                            "INSERT OR REPLACE INTO basket_items (basket_id, product_id, qty, fallback_product_id, preferred_store)"
+                            " VALUES (?,?,?,?,?)",
+                            (real_bid, real_pid, qty, fb_id, preferred_store),
                         )
             conn.commit()
 
@@ -735,7 +772,9 @@ def _apply_sync(body: dict) -> None:
                     code,
                     device=(st.get("mode") == "session"),
                 )
-            elif not want and cur.connected:
+            elif not want and cur.connected and (not cur.device or (
+                st.get("disconnectSeen") and st["disconnectSeen"] == cur.connected_at
+            )):
                 store_accounts.forget(code)
 
     # 5. Перки/скидки/бонусы сетей и флаг списания бонусов
@@ -808,77 +847,111 @@ def _apply_sync(body: dict) -> None:
 
 # ---------- поиск по личной базе и единому каталогу data/catalog.db ----------
 
-def _search_products(query: str, limit: int = 30) -> list[dict]:
+def _bought_ids() -> tuple[set[int], set[int]]:
+    rows = db.query("SELECT DISTINCT h.product_id, p.master_id FROM purchase_history h"
+                    " JOIN products p ON p.id=h.product_id WHERE h.qty>0 AND h.total>=0")
+    return ({int(r["product_id"]) for r in rows},
+            {int(r["master_id"]) for r in rows if r["master_id"]})
+
+
+def _search_order(item: dict, chain: str | None) -> tuple:
+    prices = [p for code, p in item["prices"].items() if not chain or code == chain]
+    minimum = min((p["price"] for p in prices if p["price"] > 0
+                   and (not item["available"] or p["in_stock"])), default=float("inf"))
+    return not item["product"]["previouslyBought"], not item["available"], minimum
+
+
+def _search_products(query: str, limit: int = 30, chain: str | None = None) -> list[dict]:
     q = " ".join((query or "").split())
     if len(q) < 2:
         return []
-    low = q.lower()
-    stores = repo.list_stores()
+    def normalized(s: str) -> str:
+        s = re.sub(r"\bяйцо\b", "яйца", s.casefold())
+        return re.sub(r"\bc([012])\b", r"с\1", s)
+
+    words = normalized(q).split()
+    bought_ids, bought_masters = _bought_ids()
     prices_map = _bulk_latest_prices()
     all_prods = repo.list_products(active_only=True)
     own_hits = [
         p for p in all_prods
-        if low in (p.name or "").lower()
-        or (p.brand and low in p.brand.lower())
-        or (p.category and low in p.category.lower())
+        if all(word in normalized(f"{p.name} {p.brand or ''}") for word in words)
+        or normalized(p.category or "") == normalized(q)
     ]
-    photos = _product_photos([int(p.id) for p in own_hits[:limit] if p.id is not None])
-
+    if chain:
+        own_hits = [p for p in own_hits if prices_map.get(str(p.id), {}).get(chain, {}).get("in_stock")]
+    titles: dict[int, str] = {}
     results: list[dict] = []
-    seen_names: set[str] = set()
+    pending_details: dict[int, list[tuple[str,str]]] = {}
 
-    for p in own_hits[: limit // 2 or 15]:
+    for p in own_hits:
         if p.id is None:
             continue
-        p_prices = prices_map.get(str(int(p.id)), {})
-        chains_n = len(p_prices)
+        p_prices = {code: price for code, price in prices_map.get(str(int(p.id)), {}).items()
+                    if price.get("source") != "fallback"}
+        chains_n = sum(bool(s["in_stock"] and s["price"] > 0) for s in p_prices.values())
         small_parts = [x for x in ("кг" if p.unit == "kg" else "шт", p.brand or "") if x]
+        if chain and not (p_prices.get(chain, {}).get("in_stock") and p_prices[chain]["price"] > 0):
+            continue
         if chains_n:
             small_parts.append(f"в {chains_n} сет.")
+        else:
+            small_parts.append("нет подтверждённого предложения")
         results.append(
             {
                 "product": {
                     "id": int(p.id),
                     "name": p.name,
+                    "title": titles.get(int(p.id)),
                     "brand": p.brand,
                     "weight_g": p.weight_g,
                     "unit": "kg" if p.unit == "kg" else "pcs",
                     "category": p.category,
                     "active": True,
-                    "photo": photos.get(int(p.id)),
+                    "photo": None,
+                    "previouslyBought": p.id in bought_ids,
                 },
                 "prices": p_prices,
                 "chainsCount": chains_n,
+                "available": any(v["in_stock"] for k, v in p_prices.items() if not chain or k == chain),
                 "small": " · ".join(small_parts),
             }
         )
-        seen_names.add(p.name.strip().lower())
 
     # Добираем из единого каталога data/catalog.db
-    remaining = max(0, limit - len(results))
-    if remaining > 0:
+    if limit > 0:
         try:
             from app.catalog import store as catalog_store
 
             conn = catalog_store.connect()
             try:
-                hits = catalog_store.search_items(q, limit=remaining * 2, conn=conn) or []
+                linked = db.query("SELECT id,master_id FROM products WHERE active=1 AND master_id IS NOT NULL"
+                                  " ORDER BY id")
+                aliases = dict(conn.execute("SELECT old_id,new_id FROM item_aliases"))
+                def canonical(mid: int) -> int:
+                    return (catalog_store.resolve_alias(mid, conn) or mid) if mid in aliases else mid
+                personal_ids = {}
+                for record in linked:
+                    mid, pid = canonical(int(record["master_id"])), int(record["id"])
+                    if mid not in personal_ids or pid in bought_ids:
+                        personal_ids[mid] = pid
+                bought_masters = {canonical(mid) for mid in bought_masters}
+                hits = catalog_store.search_items(q, limit=limit * 2, conn=conn, by_name=True,
+                                                  chain=chain, purchased=bought_masters)
                 for h in hits:
                     item_id = int(h.get("id") or 0)
                     name = str(h.get("name") or "").strip()
-                    if not item_id or not name or name.lower() in seen_names:
+                    if not item_id or not name:
                         continue
                     rows = catalog_store.item_rows(item_id, conn=conn) or []
                     cat_prices: dict[str, dict] = {}
                     photo_url: str | None = None
                     for r in rows:
                         if not photo_url:
-                            img = str(r.get("image") or "")
-                            if img.startswith(("https://", "http://")):
-                                photo_url = img
-                        chain = str(r.get("chain") or "").strip().lower()
+                            photo_url = _thumbnail_url(r.get("photo_digest"))
+                        store_code = str(r.get("chain") or "").strip().lower()
                         price_val = r.get("price")
-                        if not chain or price_val is None or chain in cat_prices:
+                        if not store_code or price_val is None:
                             continue
                         try:
                             pv = float(price_val)
@@ -886,29 +959,47 @@ def _search_products(query: str, limit: int = 30) -> list[dict]:
                             continue
                         if pv <= 0:
                             continue
-                        cat_prices[chain] = {
-                            "store_code": chain,
+                        stock = bool(r.get("in_stock"))
+                        prior = cat_prices.get(store_code)
+                        if prior and (not prior["in_stock"], prior["price"]) <= (not stock, pv):
+                            continue
+                        cat_prices[store_code] = {
+                            "store_code": store_code,
                             "sku": str(r.get("sku") or ""),
                             "raw_name": str(r.get("name") or name),
                             "price": pv,
                             "unit": "kg" if r.get("unit") == "kg" else "pcs",
                             "weight_g": float(r["weight_g"]) if r.get("weight_g") is not None else None,
                             "price_per_kg": None,
-                            "in_stock": bool(r.get("in_stock", True)),
-                            "fetched_at": str(r.get("fetched_at") or _now_iso()),
+                            "in_stock": stock,
+                            "fetched_at": str(r.get("price_seen") or r.get("first_seen") or ""),
                             "source": "live",
                         }
-                    chains_n = len(cat_prices) or int(h.get("chains") or 0)
+                    if chain and not cat_prices.get(chain, {}).get("in_stock"):
+                        continue
+                    chains_n = sum(bool(s["in_stock"]) for s in cat_prices.values())
                     unit = "kg" if h.get("unit") == "kg" else "pcs"
                     small_parts = [x for x in ("кг" if unit == "kg" else "шт", h.get("brand") or "") if x]
                     if chains_n:
                         small_parts.append(f"каталог · {chains_n} сет.")
                     else:
-                        small_parts.append("каталог сетей")
+                        small_parts.append("цена не подтверждена")
+                    pid = personal_ids.get(item_id, -item_id)
+                    scoped = [r for r in rows if not chain or r["chain"] == chain]
+                    pending_details[pid] = [(r["chain"], r["sku"]) for r in scoped
+                        if r["chain"] in ("lenta", "vkusvill") and not r.get("detail_requested_at")
+                        and (not r.get("price") or (r["chain"] == "lenta" and r.get("in_stock") is None))]
+                    if not chains_n:
+                        if any(r.get("in_stock") for r in scoped):
+                            small_parts[-1] = "есть в наличии · цена не указана"
+                        elif all(r.get("in_stock") == 0 for r in scoped):
+                            small_parts[-1] = "нет в наличии"
+                        else:
+                            small_parts[-1] = "наличие неизвестно" if cat_prices else "цена и наличие неизвестны"
                     results.append(
                         {
                             "product": {
-                                "id": -item_id,
+                                "id": pid,
                                 "name": name,
                                 "brand": h.get("brand"),
                                 "weight_g": float(h["weight_g"]) if h.get("weight_g") is not None else None,
@@ -916,21 +1007,45 @@ def _search_products(query: str, limit: int = 30) -> list[dict]:
                                 "category": h.get("category"),
                                 "active": True,
                                 "photo": photo_url,
+                                "previouslyBought": item_id in bought_masters,
                             },
                             "prices": cat_prices,
                             "chainsCount": chains_n,
+                            "available": any(r.get("in_stock") and (not chain or r["chain"] == chain)
+                                             for r in rows),
                             "small": " · ".join(small_parts),
                         }
                     )
-                    seen_names.add(name.lower())
-                    if len(results) >= limit:
-                        break
             finally:
                 conn.close()
         except Exception:  # noqa: BLE001 — отсутствие catalog.db не ломает поиск
             pass
 
-    return results[:limit]
+    results.sort(key=lambda item: _search_order(item, chain))
+    visible: list[dict] = []
+    names: set[str] = set()
+    ids: set[int] = set()
+    for row in results:
+        key = row["product"]["name"].strip().casefold()
+        pid = row["product"]["id"]
+        if key not in names and pid not in ids:
+            visible.append(row)
+            names.add(key)
+            ids.add(pid)
+            if len(visible) == limit:
+                break
+    photos = _product_photos([row["product"]["id"] for row in visible if row["product"]["id"] > 0], titles)
+    for row in visible:
+        p = row["product"]
+        if p["id"] > 0:
+            p.update(photo=photos.get(p["id"]) or p.get("photo"), title=titles.get(p["id"]))
+    cards = [card for row in visible[:5] for card in pending_details.get(row["product"]["id"], [])]
+    if cards:
+        try:
+            catalog_store.request_details(cards)
+        except sqlite3.OperationalError:
+            pass  # A busy catalogue still serves its results. The nightly scan also finds these gaps.
+    return visible
 
 
 # ---------- ручной импорт чека текстом ----------
@@ -972,69 +1087,6 @@ def _parse_receipt_lines(text: str) -> list[tuple[str, float, float]]:
 
 
 # ---------- подсказки адреса и тайлы карты ----------
-
-def _suggest_address_rich(query: str, limit: int = 6) -> list[dict]:
-    q = " ".join((query or "").split())
-    if len(q) < 2:
-        return []
-    out: list[dict] = []
-    seen: set[str] = set()
-
-    def _add(label: str, full: str, lat: float, lon: float) -> None:
-        key = " ".join(label.lower().split())
-        if not key or key in seen:
-            return
-        seen.add(key)
-        out.append({"label": label, "full": full or label, "lat": lat, "lon": lon})
-
-    # 1. Photon (быстрый префиксный автокомплит без троттлинга)
-    try:
-        r = requests.get(
-            geo.PHOTON_URL,
-            params={"q": q, "limit": limit},
-            headers={"User-Agent": PHOTON_UA, "Accept": "application/json"},
-            timeout=3.5,
-        )
-        if r.status_code == 200:
-            for feat in (r.json().get("features") or []):
-                props = feat.get("properties") or {}
-                cc = str(props.get("countrycode") or "").upper()
-                if cc and cc != "RU":
-                    continue
-                coords = (feat.get("geometry") or {}).get("coordinates") or []
-                if len(coords) != 2:
-                    continue
-                city = props.get("city") or props.get("town") or props.get("village") or props.get("state") or ""
-                street = props.get("street") or (props.get("name") if props.get("name") != city else "") or ""
-                house = props.get("housenumber") or ""
-                label = ", ".join(x for x in (city, street, house) if x) or str(props.get("name") or q)
-                full = ", ".join(x for x in (props.get("state"), city, props.get("district"), street, house) if x)
-                _add(label, full, float(coords[1]), float(coords[0]))
-    except Exception:  # noqa: BLE001
-        pass
-
-    # 2. Nominatim (точный поиск номеров домов)
-    if len(out) < limit:
-        try:
-            r = requests.get(
-                geo.NOMINATIM_URL,
-                params={"format": "json", "addressdetails": "1", "countrycodes": "ru", "limit": limit, "q": q},
-                headers={"User-Agent": geo.USER_AGENT, "Accept-Language": "ru"},
-                timeout=4.0,
-            )
-            if r.status_code == 200:
-                for item in (r.json() or []):
-                    addr = item.get("address") or {}
-                    city = addr.get("city") or addr.get("town") or addr.get("village") or addr.get("state") or ""
-                    road = addr.get("road") or addr.get("pedestrian") or addr.get("residential") or ""
-                    house = addr.get("house_number") or ""
-                    label = ", ".join(x for x in (city, road, house) if x) or str(item.get("display_name") or q)
-                    _add(label, str(item.get("display_name") or label), float(item["lat"]), float(item["lon"]))
-        except Exception:  # noqa: BLE001
-            pass
-
-    return out[:limit]
-
 
 def _tile_path(z: int, x: int, y: int) -> str:
     return os.path.join(config.ROOT, "data", "tiles", str(z), str(x), f"{y}.png")
@@ -1098,36 +1150,6 @@ def _serve_tile(z: int, x: int, y: int):
     return resp
 
 
-_fns_lock = threading.Lock()
-_fns_running: set[str] = set()
-
-
-def _start_fns_sync(phone: str) -> bool:
-    """Запустить загрузку чеков из кабинета ФНС в отдельном потоке (не чаще одного на номер)."""
-    with _fns_lock:
-        if phone in _fns_running:
-            return False
-        _fns_running.add(phone)
-
-    def _worker() -> None:
-        from app.fns import sync as cabinet
-
-        try:
-            users.open_workspace(phone)
-            cabinet.sync()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("фоновая загрузка чеков ФНС для %s: %s", phone, exc)
-        finally:
-            try:
-                users.deactivate()
-            finally:
-                with _fns_lock:
-                    _fns_running.discard(phone)
-
-    threading.Thread(target=_worker, daemon=True, name="fns-sync").start()
-    return True
-
-
 # ---------- регистрация маршрутов на Blueprint api ----------
 
 def register_routes(bp: Blueprint) -> None:
@@ -1136,7 +1158,17 @@ def register_routes(bp: Blueprint) -> None:
     @bp.route("/auth/me", methods=["GET"])
     def spa_auth_me():
         phone = current_spa_phone()
-        return _json({"ok": True, **_auth_payload(phone)})
+        payload = {"ok": True, **_auth_payload(phone)}
+        update = apk.update_for(device.app_version())
+        if update and apk.fresh_path():
+            payload["apkUpdate"] = {
+                "version": update["version"],
+                "canDownload": update["can_download"],
+                "url": url_for("apk.download", _external=True),
+            }
+        response = _json(payload)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @bp.route("/auth/login", methods=["POST"])
     def spa_auth_login():
@@ -1205,7 +1237,12 @@ def register_routes(bp: Blueprint) -> None:
             return _json({"ok": False, "error": "Ожидается JSON-объект"}, 400)
 
         _apply_sync(body)
-        return _json({"ok": True, "syncedAt": _now_iso()})
+        basket = repo.get_setting(SETTING_LAST_BASKET)
+        return _json({
+            "ok": True,
+            "syncedAt": _now_iso(),
+            "basketStamp": cartrun.stamp_of(int(basket)) if basket and basket.isdecimal() else "",
+        })
 
     @bp.route("/runs", methods=["GET"])
     def spa_runs():
@@ -1235,12 +1272,72 @@ def register_routes(bp: Blueprint) -> None:
             return _json({"ok": False, "error": "Требуется вход"}, 401)
         users.open_workspace(phone)
         q = (request.args.get("q") or "").strip()
-        return _json({"ok": True, "results": _search_products(q, limit=30)})
+        return _json({"ok": True, "results": _search_products(q, limit=30, chain=request.args.get("store") or None)})
+
+    @bp.get("/catalog/images/<digest>.webp")
+    def spa_thumbnail(digest: str):
+        from app.catalog.photos import path_for
+        if not re.fullmatch("[0-9a-f]{64}", digest):
+            abort(404)
+        path = path_for(digest)
+        if not path.is_file():
+            abort(404)
+        response = send_file(path, mimetype="image/webp", max_age=31536000, etag=digest)
+        response.cache_control.immutable = True
+        return response
+
+    @bp.get("/catalog/photo/<chain>/<sku>")
+    def spa_catalog_photo(chain: str, sku: str):
+        if not current_spa_phone():
+            return _json({"ok": False, "error": "Требуется вход"}, 401)
+        from app.catalog import store
+        rows = store.rows_by_skus([(chain, sku)])
+        return _json({"ok": True, "photo": _thumbnail_url(rows[0].get("photo_digest")) if rows else None})
+
+    @bp.route("/replacements", methods=["GET", "POST"])
+    def spa_replacements():
+        from app.web import replacements
+
+        phone = current_spa_phone()
+        if not phone:
+            return _json({"ok": False, "error": "Требуется вход"}, 401)
+        users.open_workspace(phone)
+        args = request.args
+        codes = list(dict.fromkeys(args.getlist("store")))
+        unit, original = args.get("unit"), args.get("exclude", type=int)
+        if (not 1 <= len(codes) <= 2 or any(code not in chains.orderable() for code in codes)
+                or unit not in ("pcs", "kg") or not original):
+            return _json({"ok": False, "error": "Выберите вариант корзины заново"}, 400)
+        q = (args.get("q") or "").strip()[:200]
+        choosing = request.method == "POST"
+        sku, pid = args.get("sku"), args.get("product", type=int)
+        if choosing and (len(codes) != 1 or not sku or not pid):
+            return _json({"ok": False, "error": "Выберите товар из списка"}, 400)
+        if not choosing and len(q) < 2:
+            return _json({"ok": True, "results": []})
+        observed_stores = set()
+        rows = replacements.search(q, codes, unit, original, *_bought_ids(),
+                                   sku=sku if choosing else None, selected=pid if choosing else None, observed_stores=observed_stores)
+        for row in rows:
+            row["product"]["photo"] = _thumbnail_url(row["product"]["photo"])
+        if choosing:
+            row = rows[0] if rows else None
+            if row and replacements.materialize(row, codes[0]):
+                return _json({"ok": True, "item": row})
+            return _json({"ok": False, "error": "Магазин больше не подтверждает эту замену"}, 409)
+        photos = _product_photos([r["product"]["id"] for r in rows if r["product"]["id"] > 0])
+        for row in rows:
+            product = row["product"]
+            product["photo"] = product.get("photo") or photos.get(product["id"])
+        return _json({"ok": True, "results": rows, "observedStores": sorted(observed_stores)})
 
     @bp.route("/address/suggest", methods=["GET"])
     def spa_address_suggest():
         q = (request.args.get("q") or "").strip()
-        return _json({"ok": True, "items": _suggest_address_rich(q, limit=6)})
+        try:
+            return _json({"ok": True, "items": address_search.suggest(q, limit=6)})
+        except address_search.SearchUnavailable:
+            return _json({"ok": False, "error": "Поиск адресов временно недоступен"}, 503)
 
     @bp.route("/address/reverse", methods=["GET"])
     def spa_address_reverse():
@@ -1268,7 +1365,7 @@ def register_routes(bp: Blueprint) -> None:
             return _json({"ok": False, "error": auth.DEMO_READ_ONLY}, 403)
         users.open_workspace(phone)
         body = request.get_json(silent=True) or {}
-        store_code = str(body.get("store_code") or "pyaterochka").strip().lower()
+        store_code = str(body.get("store_code") or "").strip().lower()
         text = str(body.get("text") or "").strip()
         lines = _parse_receipt_lines(text)
         if not lines:
@@ -1280,38 +1377,119 @@ def register_routes(bp: Blueprint) -> None:
                 400,
             )
 
-        store = repo.get_store(store_code) or repo.list_stores()[0]
+        store = repo.get_store(store_code)
+        if not store or not chains.accepts(store_code=store_code):
+            return _json({"ok": False, "error": "Выберите сеть из списка"}, 400)
+
+        from app.importers.bundle import store_receipts
+        from app.importers.ofd_pdf import Receipt, ReceiptRow
+
         today = datetime.now().strftime("%Y-%m-%d")
         digest = hashlib.sha256(f"{store.code}:{today}:{text}".encode("utf-8")).hexdigest()[:16]
-        rkey = f"paste-{digest}"
-        total = 0.0
-        for name, qty, price in lines:
-            existing = repo.find_product_by_name(name)
-            if existing and existing.id is not None:
-                pid = int(existing.id)
-            else:
-                pid = repo.upsert_product(Product(name=name, unit="pcs", active=True))
-            line_total = round(qty * price, 2)
-            total = round(total + line_total, 2)
-            repo.add_history_row(
-                date=today,
-                store_id=int(store.id),
-                product_id=pid,
-                raw_name=name,
-                qty=qty,
-                unit_price=price,
-                total=line_total,
-                receipt_key=rkey,
-            )
-        repo.mark_receipt_imported(rkey, today, store.name, total, len(lines), source="paste")
+        rows = [ReceiptRow(name, qty, price, round(qty * price, 2)) for name, qty, price in lines]
+        receipt = Receipt(today, store.name, rows, round(sum(row.total for row in rows), 2))
+        result = store_receipts([{"key": f"paste-{digest}", "receipt": receipt}],
+                                store_code=store.code, source="paste")
         return _json(
             {
                 "ok": True,
-                "imported": len(lines),
-                "total": total,
+                "imported": result["rows"],
+                "total": result["total"],
                 "snapshot": serialize_workspace(phone),
             }
         )
+
+    @bp.post("/fns/device-progress")
+    def spa_fns_device_progress():
+        phone = current_spa_phone()
+        if not phone or phone == users.DEMO:
+            return _json({"ok": False}, 403 if phone else 401)
+        body = request.get_json(silent=True)
+        phases = ("running", "resuming", "waiting", "partial", "retry", "denied", "account", "upload", "cabinet", "done")
+        if not isinstance(body, dict) or body.get("phase") not in phases or not all(
+            type(body.get(k)) is int and 0 <= body[k] <= 2**31 - 1 for k in ("position", "total")
+        ):
+            return _json({"ok": False}, 400)
+        users.open_workspace(phone)
+        state = {k: body[k] for k in ("phase", "position", "total")}
+        state["receivedAt"] = datetime.now().isoformat(timespec="seconds")
+        repo.set_setting("fns.device_progress", json.dumps(state))
+        return _json({"ok": True})
+
+    @bp.get("/fns/status")
+    def spa_fns_status():
+        phone = current_spa_phone()
+        if not phone:
+            return _json({"ok": False, "error": "Требуется вход"}, 401)
+        users.open_workspace(phone)
+        from app.fns import sync as cabinet
+        from app.fns import background
+        running = background.running(phone)
+        state = cabinet.status()
+        error = repo.get_setting("fns.sync_error") or ""
+        last = state.get("last_result") or {}
+        return _json({"ok": True, "running": running, "message": error or (cabinet.headline(last) if last else ""),
+                      "failed": bool(error), "needsConnection": bool(repo.get_setting(background.PAUSED)),
+                      "lastSync": state.get("last_sync_at"),
+                      "device": json.loads(repo.get_setting("fns.device_progress") or "null")})
+
+    @bp.get("/receipts/other")
+    def spa_other_receipts():
+        phone = current_spa_phone()
+        if not phone:
+            return _json({"ok": False, "error": "Требуется вход"}, 401)
+        users.open_workspace(phone)
+        if key := request.args.get("key"):
+            return _json({"ok": True, "lines": repo.other_receipt_lines(key)})
+        offset = max(0, request.args.get("offset", default=0, type=int))
+        page = repo.other_store_receipts(limit=25, offset=offset)
+        return _json({"ok": True, "receipts": [
+            {k: r[k] for k in ("key", "date", "store", "total")} for r in page]})
+
+    @bp.post("/receipts/needed")
+    def spa_receipts_needed():
+        phone = current_spa_phone()
+        if not phone or phone == users.DEMO:
+            return _json({"ok": False, "error": "Войдите в свой профиль"}, 403 if phone else 401)
+        users.open_workspace(phone)
+        body = request.get_json(silent=True) or {}
+        keys = body.get("keys") if isinstance(body, dict) else None
+        if not isinstance(keys, list) or len(keys) > 50 or not all(isinstance(k, str) and 0 < len(k) <= 256 for k in keys):
+            return _json({"ok": False, "error": "Неверный список чеков"}, 400)
+        known = repo.imported_receipt_keys() | repo.other_receipts_with_contents()
+        return _json({"ok": True, "needed": [key for key in dict.fromkeys(keys) if key not in known]})
+
+    @bp.post("/receipts/file")
+    def spa_receipts_file():
+        phone = current_spa_phone()
+        if not phone:
+            return _json({"ok": False, "error": "Требуется вход"}, 401)
+        if phone == users.DEMO:
+            return _json({"ok": False, "error": auth.DEMO_READ_ONLY}, 403)
+        users.open_workspace(phone)
+        body = request.get_json(silent=True) or {}
+        encoded = body.get("content") if isinstance(body, dict) else None
+        if not isinstance(encoded, str) or not encoded or len(encoded) > 24 * 1024 * 1024:
+            return _json({"ok": False, "error": "Выберите файл чека до 18 МБ"}, 400)
+        try:
+            data = base64.b64decode(encoded, validate=True)
+            from app.importers.bundle import import_bundle
+            if data.startswith(b"%PDF-"):
+                from app.importers.ofd_pdf import import_receipt
+                with tempfile.TemporaryDirectory() as directory:
+                    path = os.path.join(directory, "receipt.pdf")
+                    with open(path, "wb") as output:
+                        output.write(data)
+                    result = import_receipt(path)
+            else:
+                result = import_bundle(data.decode("utf-8-sig"))
+        except (ValueError, TypeError, KeyError, AttributeError, OSError, RuntimeError, binascii.Error):
+            return _json({"ok": False, "error": "Не удалось прочитать чек. Выберите фискальный JSON или PDF с позициями."}, 400)
+        counts = {k: int(result[k]) for k in ("receipts", "rows", "skipped")}
+        counts.update(other=len(result.get("other") or []), failed=len(result.get("failed") or []))
+        if not (counts["receipts"] or counts["skipped"] or counts["other"]):
+            return _json({"ok": False, "error": "В файле не найдены чеки с позициями"}, 400)
+        return _json({"ok": True, **counts, "storedCount": repo.saved_receipt_count()})
 
     @bp.route("/fns/sync", methods=["POST"])
     def spa_fns_sync():
@@ -1325,29 +1503,32 @@ def register_routes(bp: Blueprint) -> None:
         fns_phone = str(body.get("phone") or "").strip() or phone
         keys = str(body.get("keys") or "").strip()
         try:
+            from app.fns import background
             from app.fns import sync as cabinet
             from app.fns.client import CabinetError
 
             if keys:
-                unpacked = cabinet.unpack_keys(keys) if not keys.startswith("{") else json.loads(keys)
-                cabinet.connect_with_keys(unpacked, phone=fns_phone)
+                unpacked = keys if keys.startswith("{") else cabinet.unpack_keys(keys)
+                background.connect(phone, unpacked, fns_phone)
             elif not cabinet.is_connected():
                 return _json(
                     {
                         "ok": False,
-                        "error": "Кабинет ФНС не подключён — вставьте ключ из lkdr.nalog.ru или войдите через приложение.",
+                        "error": "Автоимпорт не подключён. Откройте «Мои чеки» в настройках.",
                     },
                     400,
                 )
             # Запускаем обновление чеков в фоне (один поток на номер)
-            _start_fns_sync(phone)
+            if repo.get_setting(background.PAUSED):
+                return _json({"ok": False, "error": "Подтвердите подключение автоимпорта."}, 409)
+            background.start(phone)
         except CabinetError as exc:
             return _json({"ok": False, "error": str(exc)}, 400)
         except ValueError as exc:
             return _json({"ok": False, "error": f"Некорректный ключ ФНС: {exc}"}, 400)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("ошибка /api/fns/sync: %s", exc, exc_info=True)
-            return _json({"ok": False, "error": str(exc)}, 400)
+        except Exception:
+            log.warning("Не удалось подключить автоимпорт чеков")
+            return _json({"ok": False, "error": "Не удалось подключить автоимпорт. Попробуйте позже."}, 400)
 
         return _json({"ok": True, "snapshot": serialize_workspace(phone)})
 
@@ -1359,10 +1540,6 @@ def register_routes(bp: Blueprint) -> None:
         if phone == users.DEMO:
             return _json({"ok": False, "error": auth.DEMO_READ_ONLY}, 403)
         users.open_workspace(phone)
-        try:
-            from app.fns import sync as cabinet
-
-            cabinet.disconnect()
-        except Exception:  # noqa: BLE001
-            pass
+        from app.fns import background
+        background.disconnect(phone)
         return _json({"ok": True, "snapshot": serialize_workspace(phone)})

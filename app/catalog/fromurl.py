@@ -79,7 +79,9 @@ def sku_of(chain: str, url: str | None) -> str | None:
         return None
     # У правила может быть несколько ветвей (например, у Дикси два вида адреса):
     # берём первую НЕПУСТУЮ группу, а не всегда первую.
-    return next((group for group in match.groups() if group), None)
+    sku = next((group for group in match.groups() if group), None)
+    # Дикси пишет артикул в адресе строчным, а знает его заглавным (app/catalog/crawlers/dixy.py).
+    return sku.upper() if sku and chain == "dixy" else sku
 
 
 def _own(chain: str, url: str) -> bool:

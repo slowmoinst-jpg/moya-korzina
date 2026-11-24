@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import time
 from datetime import datetime
 
 from flask import Flask, g, redirect, request, session, url_for
@@ -52,6 +53,8 @@ from app import users
 
 log = logging.getLogger(__name__)
 
+# Открытие рабочего места дольше этого — в журнал: обычно базу держит чужая запись (busy_timeout — до 15 с).
+SLOW_OPEN_SEC = 1.0
 KEY_PHONE = "phone"
 KEY_SINCE = "since"
 
@@ -164,7 +167,12 @@ def install(flask_app: Flask) -> None:
         endpoint = request.endpoint or ""
         g.phone = current_phone()
         if g.phone:
+            began = time.monotonic()
             users.open_workspace(g.phone)       # заводит папку и схему, если их нет
+            took = time.monotonic() - began
+            if took > SLOW_OPEN_SEC:
+                # Открытие пишет в базу (db.init_db): долгая чужая запись задержит здесь любой запрос человека.
+                log.warning("рабочее место открывалось %.1f с (%.80r)", took, request.path)
             return _guard_signed_in(endpoint)
 
         # Вход, переданный ссылкой: номер и груз входа приезжают в самом адресе.

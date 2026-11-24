@@ -8,6 +8,7 @@ import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Build;
@@ -15,7 +16,10 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.util.Log;
+import android.provider.Settings;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.StyleSpan;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.MotionEvent;
@@ -43,6 +47,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 
+import ru.moyakorzina.app.SignDrawable.Sign;
+
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -50,7 +56,10 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -58,6 +67,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TimeZone;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -109,6 +119,138 @@ import java.util.regex.Pattern;
  * KORZINA_SERVER), в коде его нет.
  */
 public class MainActivity extends Activity {
+
+    /**
+     * Журнал приложения с хроникой (1.54). Всё, что приложение пишет в logcat, остаётся ещё и в кольце последних
+     * строк; кольцо переживает смерть процесса (отдельный файл памяти телефона) и уходит на сервер с отчётом
+     * Пятёрочки. Телефон владельца отладчиком не посмотреть: 14.11.2026 Пятёрочка пропустила пять нажатий подряд
+     * (три другие сети уложились в 3,2 с), а журнал сервера не показал, что делало окно сети. Класс назван так же,
+     * как android.util.Log, поэтому вызовы Log.i(TAG, …) по всему файлу остались как были.
+     */
+    private static final class Log {
+        private static final int RING = 600;
+        private static final int LINE = 200;
+        private static final int SAVED_LINES = 200;
+        private static final long SAVE_EVERY_MS = 4000;
+        private static final String SAVED = "ring";
+        private static final ArrayDeque<String> ring = new ArrayDeque<>();
+        private static final SimpleDateFormat clock = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
+        private static SharedPreferences saved;
+        private static long savedAt = 0;
+        private static boolean attached = false;
+
+        static int i(String tag, String msg) {
+            keep(msg);
+            return android.util.Log.i(tag, msg);
+        }
+
+        static int w(String tag, String msg) {
+            keep(msg);
+            return android.util.Log.w(tag, msg);
+        }
+
+        static int w(String tag, String msg, Throwable e) {
+            keep(msg + " [" + e + "]");
+            return android.util.Log.w(tag, msg, e);
+        }
+
+        static int e(String tag, String msg) {
+            keep(msg);
+            return android.util.Log.e(tag, msg);
+        }
+
+        /** Строка в кольцо — со временем телефона до миллисекунд. */
+        static synchronized void keep(String msg) {
+            try {
+                long now = System.currentTimeMillis();
+                String text = msg == null ? "" : msg.replace('\n', ' ');
+                if (text.length() > LINE) text = text.substring(0, LINE);
+                ring.addLast(clock.format(new Date(now)) + " " + text);
+                while (ring.size() > RING) ring.removeFirst();
+                if (saved != null && now - savedAt >= SAVE_EVERY_MS) save(now, false);
+            } catch (RuntimeException ignored) {
+                // хроника не должна ронять приложение
+            }
+        }
+
+        /** Кольцо — в память: процесс могли убить посреди сборки, и хроника нужна именно тогда. */
+        private static void save(long now, boolean sync) {
+            savedAt = now;
+            StringBuilder all = new StringBuilder();
+            int skip = Math.max(0, ring.size() - SAVED_LINES), k = 0;
+            for (String line : ring) {
+                if (k++ >= skip) all.append(line).append('\n');
+            }
+            SharedPreferences.Editor edit = saved.edit().putString(SAVED, all.toString());
+            if (sync) edit.commit();
+            else edit.apply();
+        }
+
+        /**
+         * При запуске: хроника прошлого запуска (если процесс убили — это то, что он успел) встаёт в начало кольца,
+         * а вылет приложения пишется в него же перед тем, как система его закроет.
+         */
+        static synchronized void attach(SharedPreferences prefs) {
+            if (attached) return;
+            attached = true;
+            saved = prefs;
+            String old = prefs.getString(SAVED, "");
+            if (!old.isEmpty()) {
+                for (String line : old.split("\n")) {
+                    if (!line.isEmpty()) ring.addLast(line);
+                }
+                ring.addLast(clock.format(new Date()) + " — приложение запущено заново, хроника выше от прошлого запуска —");
+                while (ring.size() > RING) ring.removeFirst();
+            }
+            final Thread.UncaughtExceptionHandler was = Thread.getDefaultUncaughtExceptionHandler();
+            Thread.setDefaultUncaughtExceptionHandler((thread, ex) -> {
+                try {
+                    StackTraceElement[] st = ex.getStackTrace();
+                    StringBuilder top = new StringBuilder();
+                    for (int n = 0; n < Math.min(4, st.length); n++) {
+                        top.append(" <- ").append(st[n].getClassName().replaceAll("^.*\\.", "")).append('.')
+                           .append(st[n].getMethodName()).append(':').append(st[n].getLineNumber());
+                    }
+                    keep("ВЫЛЕТ в потоке " + thread.getName() + ": " + ex + top);
+                    synchronized (Log.class) {
+                        save(System.currentTimeMillis(), true);
+                    }
+                } catch (Throwable ignored) { }
+                if (was != null) was.uncaughtException(thread, ex);
+            });
+        }
+
+        /**
+         * Хроника для отчёта сети (1.54): первая строка — часы телефона и пояс, дальше до own последних строк про
+         * эту сеть (её имя или код в строке) и до any последних любых, по порядку времени.
+         */
+        static synchronized JSONArray tail(String name, String code, int own, int any) {
+            JSONArray out = new JSONArray();
+            try {
+                String[] lines = ring.toArray(new String[0]);
+                boolean[] pick = new boolean[lines.length];
+                int mine = 0;
+                for (int k = lines.length - 1; k >= 0 && mine < own; k--) {
+                    if (lines[k].contains(name) || lines[k].contains(code)) {
+                        pick[k] = true;
+                        mine++;
+                    }
+                }
+                for (int k = lines.length - 1, n = 0; k >= 0 && n < any; k--, n++) pick[k] = true;
+                long now = System.currentTimeMillis();
+                int offset = TimeZone.getDefault().getOffset(now) / 60000;
+                out.put(clock.format(new Date(now)) + " отчёт; часы телефона UTC" + (offset < 0 ? "-" : "+")
+                        + String.format(Locale.US, "%02d:%02d", Math.abs(offset) / 60, Math.abs(offset) % 60)
+                        + ", строк в кольце " + lines.length);
+                for (int k = 0; k < lines.length; k++) {
+                    if (pick[k]) out.put(lines[k]);
+                }
+            } catch (RuntimeException e) {
+                out.put("хроника не собралась: " + e);       // отчёт без хроники лучше, чем без отчёта
+            }
+            return out;
+        }
+    }
 
     /**
      * Название, код сети на сервере, стартовая страница, свои адреса сети. Последнее —
@@ -224,20 +366,8 @@ public class MainActivity extends Activity {
         "(function(){window.__kzRecStop=true;var a='[]';"
       + "try{a=sessionStorage.getItem('__kzRec')||'[]';sessionStorage.removeItem('__kzRec');}catch(e){}return a;})()";
 
-    private static final String SERVER = BuildConfig.KORZINA_SERVER.replaceAll("/+$", "");
-
-    /**
-     * Окно кабинета ФНС (Z5b плана 21.10.2026).
-     *
-     * Вход в кабинет закрыт капчей для программ, поэтому его проходит человек — здесь
-     * же, в этом WebView. Приложение только забирает ключ его сессии: страница кабинета
-     * исполняет /static/fns-grab.js, тот берёт ключ из хранилища и возвращает окно на
-     * /phone/receipts?keys=…, где ключ принимает сервер (app/fns/sync.py).
-     */
-    private static final String FNS_URL = "https://lkdr.nalog.ru/";
-    private static final String FNS_GRAB = "/static/fns-grab.js";
-    private static final String FNS_LOG = "korzina:";
-    private static final String FNS_ERR = "korzina!";
+    static final String SERVER = BuildConfig.KORZINA_SERVER.replaceAll("/+$", "");
+    private final ApkUpdater apkUpdater = new ApkUpdater(this);
 
     /**
      * Сборщик карточек акций со страницы магазина. Разметка у сетей своя и меняется,
@@ -804,22 +934,115 @@ public class MainActivity extends Activity {
     // ── Фоновая сборка (1.13) ──
     /** Через сколько после последней правки корзины начинать: 300 мс (правки подряд не теряются, устаревшую сборку сменяет новая). */
     private static final int DEBOUNCE_MS = 300;
-    /** Хвост (поиск незнакомых) начинается, когда корзину столько не правили. */
+    /** Хвост (поиск незнакомых) начинается, когда корзину столько не правили и экрана не касались (tailLater). */
     private static final int TAIL_QUIET_MS = 10000;
-    /** Сколько окна сетей с касаниями ждут, пока сети с запросами (cartapi.js) положат своё. */
-    private static final int API_HEAD_MS = 5000;
+    /**
+     * Сколько окна сетей с касаниями ждут, пока сети с запросами (cartapi.js) положат своё. Обычно
+     * те кончают за 2–4 с; запас — на холодное окно и обновление входа (замер 10.11.2026: 5 с не
+     * хватило, и витрины в соседних окнах растянули запросы до 30 с).
+     */
+    private static final int API_HEAD_MS = 12000;
     /** Не вышла сборка этой корзины — следующая попытка не раньше: сеть могла отказать. */
     private static final long RETRY_MS = 20L * 60 * 1000;
-    /** Позиция, которая недавно не легла в эту сеть, в фоновой сборке не повторяется 30 минут. */
+    /**
+     * Позиция, которая недавно не легла в эту сеть, в фоновой сборке не повторяется 30 минут.
+     * Поиск незнакомой, который ничего не нашёл, — FRESH_MS: столько же не повторяет его сервер.
+     */
     private static final long FAIL_AGAIN_MS = 30L * 60 * 1000;
+    /**
+     * Узел корзин Пятёрочки не ответил и после обновления входа (403 её защиты, спрятанный CORS) —
+     * столько её сборки идут сразу касаниями. Повтор запроса на каждой правке — 5–9 с впустую
+     * и занятый общий процесс окон: соседние сети выходили к пределу 5 с (замер 11.11.2026: Дикси
+     * 4,8 с вместо 1,9). Защита Пятёрочки обычно отходит за 2–4 мин.
+     */
+    private static final long API_WALL_MS = 3L * 60 * 1000;
+    /**
+     * Кука защиты Пятёрочки (ServicePipe), которую узел корзин перестаёт принимать, когда она протухла (1.50).
+     * Без неё и с мусором в ней он отвечает за 60–350 мс статусом 0 — «обрыв сети» (стенд, 13.11.2026).
+     */
+    private static final String PYAT_COOKIE = "spsc";
+    /**
+     * Новую spsc и догрузившуюся главную после стирания ждём не дольше: на стенде (VPN, программная графика) это
+     * 10–12 с, на телефоне быстрее. Узел принимает новую куку, только когда страница довела до конца запрос
+     * защиты gatekeeper/evaluate: уход с главной, пока он в полёте (net::ERR_ABORTED, ~2,5 с после загрузки),
+     * оставлял узел отказывающим (стенд, 13.11.2026).
+     */
+    private static final long HEAL_WAIT_MS = 20000;
+    /** Запрос защиты завершился (Resource Timing страницы) — главная простояла ещё столько, и можно уходить. */
+    private static final long HEAL_STABLE_MS = 500;
+    /** Запроса защиты не видно (сайт поменялся, идёт из другого окна) — готова главная, простоявшая столько. */
+    private static final long HEAL_LATE_MS = 8000;
+    /**
+     * Узел корзин Пятёрочки после отказавшего запроса (с протухшей или мусорной кукой) отказывает и запросам с
+     * настоящей и с новой кукой около минуты (стенд, 13.11.2026, пять прогонов: отказ при 49–62 с после первого
+     * отказа, приём при 62–83 с; новые отказы внутри паузы её не продлевали). Поэтому после отказа узлу молчим
+     * столько: ни повтора, ни сборок, ни чтения заранее.
+     */
+    private static final long HEAL_QUIET_MS = 65000;
+    /**
+     * Лечить куку не чаще: узел, который и после этого не пускает, не дёргаем. Каждое лечение — стёртая кука и новая
+     * загрузка главной у защиты: на стенде шесть лечений за час кончились закрытым адресом (14.11.2026), а закрытый
+     * адрес телефона закрыл бы Пятёрочку и в браузере владельца. Протухшая кука лечится с первого раза.
+     */
+    private static final long HEAL_GAP_MS = 15L * 60 * 1000;
+    /**
+     * Защита показала вместо главной страницу «Проблемы со связью»: адрес закрыт, и стёртая кука его не откроет (стенд,
+     * 14.11.2026, после шести лечений за час). К узлу корзин столько не ходим — ни лечения, ни запросов, ни чтения
+     * заранее, ни подогрева главной (метка apiblock.<код> в часах телефона: переживает перезапуск и сон): каждый отказ
+     * закрытому адресу копится. Касаний и поиска по сайту тоже нет (1.61, endBlocked): закрыт весь адрес, и фоновая
+     * сборка кончается отказом с причиной — правка не пропадает молча.
+     */
+    private static final long HEAL_BLOCK_MS = 30L * 60 * 1000;
+    /** Чтение корзины Впрока ответило 429 (1.62, стена защиты; на записи 429 значит «товар неизвестен»): адрес закрыт на столько. */
+    private static final long ASK_WAIT_MS = 90L * 1000;
+    /** Что отвечает HEALED_JS, когда окно показывает такую страницу. */
+    private static final String HEAL_BLOCK_PAGE = "#block";
+    /** Начало причины, с которой whenHealed кончает ожидание на такой странице: повтор запроса паузу не ждёт. */
+    private static final String HEAL_BLOCKED = "блок защиты";
+    /**
+     * Кука spsc старше — узел корзин ей уже не верит, и первый же запрос получает отказ, а отказ запирает узел на минуту
+     * (телефон владельца, 15.11.2026: после простоя в 25–45 мин первый запрос отказывал, и правка шла касаниями 58 с).
+     * Такую куку лечим до запроса, пока отказа нет (aheadHeal, 1.57). Сколько кука живёт у узла, неизвестно: по телефону
+     * больше 80 с (удача 14.11 в 23:42) и меньше 6 мин (отказы в 22:27 и 23:49) — берём 150 с, хроника 1.57 уточнит.
+     */
+    private static final long PYAT_STALE_MS = 150000;
+    /** Заранее лечим не чаще: каждое лечение — стёртая кука и новая загрузка главной у защиты (см. HEAL_GAP_MS). */
+    private static final long AHEAD_GAP_MS = 4L * 60 * 1000;
+    private static final int AHEAD_PER_HOUR = 4;
     /** Сколько времени считать завершённую сборку свежей: 6 часов. После этого корзина пересобирается. */
     private static final long FRESH_MS = 6L * 3600 * 1000;
+    /**
+     * Наряд сети в памяти телефона годен столько, дальше — заново у сервера. Не короче FRESH_MS:
+     * пока сборка свежая, сервер наряд не обновляет, и через полчаса (срок до 1.28) правка по
+     * касанию шла долгой дорогой — корзина, ответ сервера, наряд (замер 10.11.2026).
+     */
+    private static final long PLAN_MS = 6L * 3600 * 1000;
     /** Пульс серверу не чаще: строку держит живой и сообщение раз в полторы секунды. */
     private static final int BEAT_MS = 1500;
+    /**
+     * Фоновая сборка идёт дольше — хроника уходит серверу сама, без отчёта (1.55): 15.11.2026 строки Магнита и
+     * Пятёрочки провисели «идёт» две с лишним минуты, а отчёта, к которому хронику приложить, у такой сборки нет.
+     * Одна сеть — не чаще TRACE_GAP_MS.
+     */
+    private static final long TRACE_AFTER_MS = 30000;
+    private static final long TRACE_GAP_MS = 120000;
+    private final Map<String, Long> traceSent = new HashMap<>();
+    /**
+     * Сборка без хода дольше RUN_IDLE_MS оборвана сторожем (1.56): окно сети могло замолчать, а сборка, которую никто не
+     * кончает, держит сеть — правка, пришедшая за ней, ждёт «пишущую» (fastChange), и плитка крутится. Самый долгий законный
+     * перерыв между шагами — пауза узла Пятёрочки около 65 с (HEAL_QUIET_MS), порог выше неё и ниже PHONE_STALE сервера.
+     * shortcut: ход — это вызовы beat(); шаг, молчащий дольше порога, сторож оборвёт, тогда нужны пульсы по таймеру.
+     */
+    private static final long RUN_WATCH_MS = 10000;
+    private static final long RUN_IDLE_MS = 100000;
+    /** Окно сети падало давнее срока — это снова «первый раз»: собираем заново (lostView, 1.56). */
+    private static final long CRASH_FORGET_MS = 5L * 60 * 1000;
     /** Столько карточек подряд без заголовка — и сеть, значит, показывает не товары. */
     private static final int BLANK_LIMIT = 2;
     /** Скрытое окно без дела дольше — убрать: память телефона не резиновая. */
     private static final int IDLE_MS = 10 * 60 * 1000;
+    /** Столько без дела — и окно Пятёрочки идёт на её страницу за свежими куками защиты (warm). */
+    private static final int KEEP_ALIVE_MS = 10 * 60 * 1000;
     /** Приложение свёрнуто дольше — фоновые сборки на паузу; вернулся — продолжат. */
     private static final int AWAY_MS = 60 * 1000;
     /** Заказ на очистку истории не ждёт дольше: наш адрес может так и не открыться. */
@@ -830,6 +1053,31 @@ public class MainActivity extends Activity {
 
     /** Ожидание ответа cartapi.js (APK 1.24): Перекрёсток, Пятёрочка, Дикси. */
     private static final long CARTAPI_WAIT_MS = 45000;
+    /** Соединения с узлами корзин по касанию открываем не чаще: неиспользованное живёт около 10 с. */
+    private static final long PRECONNECT_MS = 8000;
+    /**
+     * Наряд фоновой сборки не пришёл за это время — тот же запрос уходит второй раз (callTwice, 1.44). Обычный
+     * наряд идёт 0,5–1,5 с; ждать дольше нельзя: вместе с запросами сети правка не уложится в 5 с.
+     */
+    private static final long HEDGE_MS = 1800;
+    /**
+     * Чтение корзины заранее (peek, 1.41). cartapi.js минуту помнит корзину из последнего ответа сети, и
+     * правка по касанию не читает её заново: у Пятёрочки чтение — 0,85 с из 1,5 с правки, а после простоя
+     * до 3 с (замеры 12–13.11.2026). Пока человек на экране корзины и трогал его не дольше PEEK_IDLE_MS
+     * назад, память старше PEEK_AGE_MS обновляем сами: одно чтение, записи нет.
+     * Сети с памятью: {код, ключ памяти в cartapi.js, «1» — читать и по расписанию}. У Дикси чтение корзины
+     * считает скидки и занимает до 1,4 с (замер 13.11.2026): её читаем только по касанию и только когда
+     * память не доживёт до правки — лишней нагрузки на сеть нет.
+     */
+    private static final String[][] PEEKS = {
+        {"pyaterochka", "kz.5ka.cart", "1"},
+        {"dixy", "kz.dixy.cart", ""},
+    };
+    private static final long PEEK_TICK_MS = 10000;
+    private static final long PEEK_AGE_MS = 40000;
+    /** По касанию читаем, только если память не доживёт до правки, которая придёт следом (она годна 60 с). */
+    private static final long PEEK_TOUCH_AGE_MS = 55000;
+    private static final long PEEK_IDLE_MS = 3L * 60 * 1000;
     private static final String CARTAPI_START =
         "(function(inp){window.__kzApi=window.__kzApi||{};window.__kzApi[inp.key]=null;KZ_CARTAPI.run(inp).then(function(r){window.__kzApi[inp.key]=r;},function(e){window.__kzApi[inp.key]={ok:false,stage:'js',why:String(e&&e.message||e).slice(0,200)};});return 'started';})(%s)";
     private static final String CARTAPI_POLL =
@@ -842,6 +1090,17 @@ public class MainActivity extends Activity {
         if ("pyaterochka".equals(chain)) return "https://5ka.ru";
         if ("dixy".equals(chain)) return "https://dixy.ru";
         if ("magnit".equals(chain)) return "https://magnit.ru";
+        if ("metro".equals(chain)) return "https://online.metro-cc.ru";
+        if ("samokat".equals(chain)) return "https://samokat.ru";
+        if ("vprok".equals(chain)) return "https://www.vprok.ru";
+        return null;
+    }
+
+    /** Узел запросов корзины, если он не тот, где отдыхает окно сети (cartApiOrigin). */
+    private static String cartApiHost(String chain) {
+        if ("pyaterochka".equals(chain)) return "https://5d.5ka.ru";
+        if ("samokat".equals(chain)) return "https://api-web.samokat.ru";
+        if ("metro".equals(chain)) return "https://supergraph.metro-cc.ru";
         return null;
     }
 
@@ -942,13 +1201,26 @@ public class MainActivity extends Activity {
     }
     /** Последняя корзина, которую страница отдала на сборку (мост collect). */
     private JSONObject lastCollect;
+    private long collectDeadline;
     /** Приложение свёрнуто дольше AWAY_MS: фоновые сборки стоят до возвращения. */
     private boolean away = false;
+    private long preconnectedAt = 0;
+    /** Когда экрана последний раз касались: хвост ждёт тишины и после касаний (1.36), время правки идёт отсюда (1.37). */
+    private long touchedAt = 0;
+    /** Когда человек вернулся в приложение или из окна сети (часы телефона): памяти корзины старше веры нет. */
+    private long homeSince = 0;
+    /** Запуск или возвращение: касаний ещё не было, а корзину Пятёрочки пора прочитать заранее (peek). */
+    private long peekLive = 0;
+    private boolean peekByTouch = false;
+    private final Runnable peekLoop = this::peek;
     private final Runnable goAway = this::pauseBackground;
     private ProgressBar progress;
     private View chainPanel;
     private TextView chainStatus;
     private Button saveLoginBtn;
+    private Button chainBackBtn;
+    private View appErrorPanel;
+    private String failedAppUrl = "";
     private Button saveOffersBtn;
     private Button recordBtn;
     private Button readBtn;
@@ -963,13 +1235,6 @@ public class MainActivity extends Activity {
     /** Сколько раз «Войти» на сайте сети нажато за человека в этот вход (не больше LOGIN_TAPS). */
     private int loginTaps = 0;
     private final Runnable loginWatch = this::checkLogin;
-    /** Окно кабинета ФНС: панель, её строка состояния и кнопка «Забрать чеки». */
-    private View fnsPanel;
-    private TextView fnsStatus;
-    private Button fnsGrabBtn;
-    /** Открыт кабинет ФНС через мост: панель и «назад» следуют за этим режимом. */
-    private boolean fnsMode = false;
-    private boolean fnsGrabbing = false;
     private boolean recording = false;
     // volatile: читает его и мост, а он живёт на своём потоке (JavaBridge).
     private volatile int currentChain = -1;
@@ -993,17 +1258,6 @@ public class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     /**
-     * «Забрать чеки» нажали, а страница так и не вернулась: молчать нельзя —
-     * говорим словами, что ключ не нашёлся, и разрешаем попробовать снова.
-     */
-    private final Runnable fnsStuck = () -> {
-        if (!fnsMode || pageOurs) return;
-        fnsGrabbing = false;
-        setFnsButtons(true);
-        sayFns("Не получилось забрать ключ — войдите в кабинет заново и нажмите «Забрать чеки».");
-    };
-
-    /**
      * Мост window.Korzina: им сайт зовёт телефон (шаг 1 единой архитектуры).
      *
      * Методы исполняются на ОТДЕЛЬНОМ потоке WebView (JavaBridge), поэтому всё,
@@ -1018,6 +1272,17 @@ public class MainActivity extends Activity {
      * это решается ещё и адресом окна (bridgeAllowed ниже), а не только режимом.
      */
     private final class KorzinaBridge {
+        @JavascriptInterface
+        public boolean updateApp() {
+            if (!bridgeAllowed()) return false;
+            if (!BuildConfig.DEBUG) return false;
+            if (currentChain >= 0 || !SERVER.startsWith("https://")) return false;
+            handler.post(() -> {
+                if (bridgeAllowed() && currentChain < 0) apkUpdater.start(SERVER);
+            });
+            return true;
+        }
+
         /** Кто на связи: сайт сверяет версию, прежде чем просить о новом. */
         @JavascriptInterface
         public String info() {
@@ -1093,7 +1358,29 @@ public class MainActivity extends Activity {
         public void openFns() {
             if (!bridgeAllowed()) return;
             if (currentChain >= 0) return;
-            handler.post(() -> openFnsWindow());
+            handler.post(() -> {
+                if (!pageOurs || currentChain >= 0) return;
+                ReceiptSync.account(MainActivity.this, (owner, session) -> {
+                    if (!pageOurs || isFinishing() || isDestroyed()) return;
+                    if (owner.isEmpty()) {
+                        Toast.makeText(MainActivity.this, "Для входа в ФНС нужна связь с корзиной", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    startActivity(new Intent(MainActivity.this, ReceiptLogin.class).putExtra("owner", owner));
+                });
+            });
+        }
+
+        @JavascriptInterface
+        public String receiptStatus(String phone) {
+            if (!bridgeAllowed()) return "{}";
+            return ReceiptSync.status(MainActivity.this, phone);
+        }
+
+        @JavascriptInterface
+        public void leaveReceiptProfile() {
+            if (!bridgeAllowed()) return;
+            ReceiptSync.logout(MainActivity.this);
         }
 
         /**
@@ -1131,6 +1418,30 @@ public class MainActivity extends Activity {
                 ready.await(1500, TimeUnit.MILLISECONDS);
             } catch (InterruptedException ignored) { }
             return answer.get();
+        }
+
+        /**
+         * Правка корзины в миг касания (1.27): {basket, pid, verb, from, stamp} — отпечатки
+         * корзины до и после правки. Их сервер положил в страницу заранее, и сборка не ждёт
+         * его ответа на правку.
+         */
+        @JavascriptInterface
+        public void change(String json) {
+            if (!bridgeAllowed()) return;
+            final JSONObject c;
+            try {
+                c = new JSONObject(json == null ? "{}" : json);
+            } catch (Exception e) {
+                return;
+            }
+            Log.i(TAG, "сборка: правка по касанию");
+            handler.post(() -> {
+                try {
+                    if (pageOurs) fastChange(c);
+                } catch (Exception e) {
+                    Log.w(TAG, "правка по касанию не легла в сборку", e);
+                }
+            });
         }
 
         /** Что собирается в фоне сейчас и что ждёт запуска: {going: [коды], soon: [коды]}. */
@@ -1172,10 +1483,9 @@ public class MainActivity extends Activity {
     private static final String LOCAL_UI_PREFIX = "file:///android_asset/ui/";
 
     private static boolean isOurs(String url) {
-        if (url == null) return false;
-        return url.equals(SERVER)
+        return url != null && (url.equals(SERVER)
             || url.startsWith(SERVER + "/")
-            || url.startsWith(LOCAL_UI_PREFIX);
+            || url.startsWith(LOCAL_UI_PREFIX));
     }
 
     /**
@@ -1200,6 +1510,12 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        try {
+            Log.attach(getSharedPreferences("trace", MODE_PRIVATE));
+        } catch (RuntimeException ignored) {
+            // хроника не должна мешать запуску
+        }
+        Log.i(TAG, "приложение запущено, версия " + BuildConfig.VERSION_NAME);
 
         // Белая заливка окна — чтобы при запуске не мигала тема платформы.
         getWindow().setBackgroundDrawable(new ColorDrawable(Color.WHITE));
@@ -1240,16 +1556,14 @@ public class MainActivity extends Activity {
         web.setBackgroundColor(Color.WHITE);
         stage.addView(web, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        appErrorPanel = buildAppErrorPanel();
+        appErrorPanel.setVisibility(View.GONE);
+        stage.addView(appErrorPanel, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         chainPanel = buildChainPanel();
         chainPanel.setVisibility(View.GONE);
         root.addView(chainPanel, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        // Панель кабинета ФНС — такая же, но своя: режимы разные и одновременно не живут.
-        fnsPanel = buildFnsPanel();
-        fnsPanel.setVisibility(View.GONE);
-        root.addView(fnsPanel, new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
         setContentView(root);
         // ПОСЛЕ setContentView: WindowInsetsController живёт в оформлении окна, которое
         // создаётся вместе с содержимым. До него PhoneWindow.getInsetsController()
@@ -1257,6 +1571,8 @@ public class MainActivity extends Activity {
         paintSystemBars();
         setUpWeb();
         openOurApp("/");
+        ReceiptSync.resume(this);
+        handler.postDelayed(this::noteLastExit, 4000);     // после старта страницы: сессия на сервер нужна кукой окна
     }
 
     /**
@@ -1287,6 +1603,29 @@ public class MainActivity extends Activity {
         }
     }
 
+    private View buildAppErrorPanel() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setGravity(Gravity.CENTER);
+        panel.setPadding(dp(24), dp(24), dp(24), dp(24));
+        panel.setBackgroundColor(0xFFF3F4F6);
+
+        TextView message = new TextView(this);
+        message.setText("Не удалось открыть «Мою корзину». Проверьте соединение.");
+        message.setTextSize(16f);
+        message.setTextColor(0xFF111214);
+        message.setGravity(Gravity.CENTER);
+        panel.addView(message);
+
+        Button retry = new Button(this);
+        retry.setText("Повторить");
+        retry.setOnClickListener(v -> {
+            if (!failedAppUrl.isEmpty()) web.loadUrl(failedAppUrl);
+        });
+        panel.addView(retry);
+        return panel;
+    }
+
     /** Панель на странице сети: действия, которые серверу с этой страницы не сделать. */
     private View buildChainPanel() {
         LinearLayout panel = new LinearLayout(this);
@@ -1299,6 +1638,10 @@ public class MainActivity extends Activity {
         chainStatus.setTextColor(Color.DKGRAY);
         chainStatus.setSingleLine(true);
         chainStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        // Знак слева (say), число табличными цифрами: оно меняется на ходу и не должно плясать.
+        chainStatus.setGravity(Gravity.CENTER_VERTICAL);
+        chainStatus.setCompoundDrawablePadding(dp(8));
+        chainStatus.setFontFeatureSettings("tnum");
         panel.addView(chainStatus);
 
         LinearLayout row = new LinearLayout(this);
@@ -1306,11 +1649,12 @@ public class MainActivity extends Activity {
         row.setGravity(Gravity.CENTER);
         row.setPadding(0, dp(6), 0, 0);
 
-        Button backBtn = new Button(this);
-        backBtn.setText("←");
-        backBtn.setTextSize(12f);
-        backBtn.setOnClickListener(v -> leaveChain());
-        row.addView(backBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.6f));
+        chainBackBtn = new Button(this);
+        chainBackBtn.setText("←");
+        chainBackBtn.setContentDescription("Вернуться в Мою корзину");
+        chainBackBtn.setTextSize(12f);
+        chainBackBtn.setOnClickListener(v -> leaveChain());
+        row.addView(chainBackBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.6f));
 
         saveLoginBtn = new Button(this);
         saveLoginBtn.setText("Вход");
@@ -1358,46 +1702,6 @@ public class MainActivity extends Activity {
         return panel;
     }
 
-    /**
-     * Панель кабинета ФНС: под чужой страницей, как панель сети под магазином.
-     *
-     * Здесь только то, чего страница налоговой сама не сделает: вернуться на наш экран
-     * и забрать вход. Всё остальное — дело сайта кабинета и человека.
-     */
-    private View buildFnsPanel() {
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(8), dp(6), dp(8), dp(8));
-        panel.setBackgroundColor(0xF2F5F5F5);
-
-        fnsStatus = new TextView(this);
-        fnsStatus.setTextSize(13f);
-        fnsStatus.setTextColor(Color.DKGRAY);
-        fnsStatus.setSingleLine(true);
-        fnsStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        panel.addView(fnsStatus);
-
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER);
-        row.setPadding(0, dp(6), 0, 0);
-
-        Button backBtn = new Button(this);
-        backBtn.setText("←");
-        backBtn.setTextSize(12f);
-        backBtn.setOnClickListener(v -> leaveFns());
-        row.addView(backBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.6f));
-
-        fnsGrabBtn = new Button(this);
-        fnsGrabBtn.setText("Забрать чеки");
-        fnsGrabBtn.setTextSize(12f);
-        fnsGrabBtn.setOnClickListener(v -> grabFns());
-        row.addView(fnsGrabBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.4f));
-
-        panel.addView(row);
-        return panel;
-    }
-
     private void setUpWeb() {
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -1411,7 +1715,11 @@ public class MainActivity extends Activity {
         // Метка в конце User-Agent: сервер узнаёт телефон с первого запроса и
         // рисует кнопки моста сразу, а не после того, как встанет скрипт.
         // Вторая, независимая половина узнавания — сам мост ниже.
-        s.setUserAgentString(s.getUserAgentString() + " KorzinaApp/" + BuildConfig.VERSION_NAME);
+        // Версия в метке заморожена на 1.33 (с 1.34): ту же строку берут окна сетей, а защита Пятёрочки
+        // привязывает к ней свои куки. Обновление меняло строку, и узел корзин отказывал, пока страница
+        // сети не пройдёт проверку заново (замер 11.11.2026: первая правка после обновления — 10 с и
+        // касания вместо запросов). Настоящую версию сервер читает из куки kz_app (app/web/device.py).
+        s.setUserAgentString(s.getUserAgentString() + " KorzinaApp/1.33");
         web.addJavascriptInterface(new KorzinaBridge(), "Korzina");
 
         // ПОЛОС ПРОКРУТКИ НЕ ВИДНО (1.15). WebView рисует у правого края полосу — по ней
@@ -1423,8 +1731,34 @@ public class MainActivity extends Activity {
         CookieManager jar = CookieManager.getInstance();
         jar.setAcceptCookie(true);
         jar.setAcceptThirdPartyCookies(web, true);
+        if (!SERVER.isEmpty()) jar.setCookie(SERVER, "kz_app=" + BuildConfig.VERSION_NAME + "; Path=/; Max-Age=31536000");
 
         web.setWebViewClient(new WebViewClient() {
+            // APK ships its own basket screens. Keep same-origin API requests and
+            // the shop login pages on the network.
+            @Override
+            public android.webkit.WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
+                if (!"GET".equals(req.getMethod()) || !req.getUrl().toString().startsWith(SERVER + "/")) return null;
+                String path = req.getUrl().getEncodedPath();
+                if (path == null) return null;
+                String asset;
+                String type;
+                if (req.isForMainFrame() && path.matches("/|/login|/phone/(basket|settings|orders|cheaper|prices|baskets|receipts)")) {
+                    asset = "index.html";
+                    type = "text/html";
+                } else if (path.matches("/(?:phone/)?assets/index-[A-Za-z0-9_-]+\\.(js|css)")) {
+                    asset = path.substring(path.indexOf("assets/"));
+                    type = asset.endsWith(".js") ? "application/javascript" : "text/css";
+                } else {
+                    return null;
+                }
+                try {
+                    return new android.webkit.WebResourceResponse(type, "UTF-8", getAssets().open("ui/" + asset));
+                } catch (java.io.IOException unavailable) {
+                    return null;
+                }
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
                 if (req == null || req.getUrl() == null) return false;
@@ -1448,7 +1782,7 @@ public class MainActivity extends Activity {
                 // DOMContentLoaded. Поток здесь главный — WebView не трогаем.
                 pageUrl = url == null ? "" : url;
                 pageOurs = isOurs(pageUrl);
-                followFnsPage();
+                failedAppUrl = "";
             }
 
             @Override
@@ -1464,24 +1798,14 @@ public class MainActivity extends Activity {
                         && (!loginMode || isOurs(url))) {
                     exitChainMode();
                 }
-                // Кабинет ФНС: вернулись на наш адрес — режим снят, панель ушла.
-                if (fnsMode) {
-                    followFnsPage();
-                }
-                // Ушли с чужого окна на наш экран — историю чужого окна за собой не
-                // тащим. Заказ ставят leaveFns/leaveChain и снятие режимов (и это
-                // может случиться выше, в followFnsPage/exitChainMode), а исполняется
-                // он уже здесь, на нашем адресе. На каждой странице clearHistory не
-                // зовём — иначе «назад» перестанет возвращать между экранами.
                 clearHistoryIfOurs(view);
-                if (fnsMode) return;
                 if (currentChain < 0) return;
                 chainPanel.setVisibility(View.VISIBLE);
                 if (recording) {
                     // Новая страница — новый скрипт: обёртка живёт, пока жива страница.
                     // Записанное раньше лежит в sessionStorage и переживает перезагрузку.
                     view.evaluateJavascript(recScript(currentChain), null);
-                    if (cartRun == null) say("Идёт запись — " + shortenUrl(url), false);
+                    if (cartRun == null) say(Sign.GOING, "", "запись · " + shortenUrl(url), "Идёт запись — " + shortenUrl(url));
                 } else if (cartRun == null && !loginMode) {
                     // Во время сборки строку состояния ведёт она: «кладу 3 из 9», при входе — checkLogin.
                     say(CHAINS[currentChain][0] + " — " + shortenUrl(url), false);
@@ -1493,7 +1817,6 @@ public class MainActivity extends Activity {
                 super.doUpdateVisitedHistory(view, url, isReload);
                 pageUrl = url == null ? "" : url;
                 pageOurs = isOurs(pageUrl);
-                followFnsPage();
             }
 
             @Override
@@ -1501,7 +1824,7 @@ public class MainActivity extends Activity {
                 super.onPageCommitVisible(view, url);
                 pageUrl = url == null ? "" : url;
                 pageOurs = isOurs(pageUrl);
-                followFnsPage();
+                if (pageOurs && failedAppUrl.isEmpty()) appErrorPanel.setVisibility(View.GONE);
                 // Страница уже наша и зафиксирована в истории: исполняем заказ здесь
                 // же, не дожидаясь onPageFinished — из back-forward cache он может
                 // не прийти, а флаг обязан сняться на первом нашем событии страницы.
@@ -1509,13 +1832,14 @@ public class MainActivity extends Activity {
             }
 
             @Override
-            public void onReceivedSslError(WebView view, android.webkit.SslErrorHandler h,
-                                           android.net.http.SslError error) {
-                // Сертификаты Минцифры у части российских магазинов — только для их сайтов.
-                // Наш сервер и чужие адреса с битым сертификатом не открываются никогда:
-                // там ездит сессия владельца.
-                if (currentChain >= 0 && isChainHost(error.getUrl())) h.proceed();
-                else h.cancel();
+            public void onReceivedError(WebView view, android.webkit.WebResourceRequest request,
+                                        android.webkit.WebResourceError error) {
+                String url = request.getUrl().toString();
+                if (request.isForMainFrame() && isOurs(url) && url.equals(pageUrl)) {
+                    failedAppUrl = url;
+                    appErrorPanel.bringToFront();
+                    appErrorPanel.setVisibility(View.VISIBLE);
+                }
             }
 
             @Override
@@ -1537,21 +1861,6 @@ public class MainActivity extends Activity {
 
             @Override
             public boolean onConsoleMessage(ConsoleMessage message) {
-                // Сборщик кабинета ФНС говорит с человеком только через журнал страницы:
-                // моста на чужом адресе нет. Показываем его строки на панели — иначе
-                // «забираю чеки…» висело бы молча, что бы ни случилось.
-                if (fnsMode && message != null) {
-                    String text = message.message() == null ? "" : message.message();
-                    if (text.startsWith(FNS_ERR)) {
-                        // «Ключ не нашёлся» и прочие концы: работу можно начинать заново.
-                        sayFns(text.substring(FNS_ERR.length()).trim());
-                        handler.removeCallbacks(fnsStuck);
-                        fnsGrabbing = false;
-                        setFnsButtons(true);
-                    } else if (text.startsWith(FNS_LOG)) {
-                        sayFns(text.substring(FNS_LOG.length()).trim());
-                    }
-                }
                 return super.onConsoleMessage(message);
             }
 
@@ -1601,7 +1910,6 @@ public class MainActivity extends Activity {
     // ── Режимы: наш сайт и страница сети ──
     private void openOurApp(String path) {
         exitChainMode();
-        exitFnsMode();
         // Стартовый адрес запоминаем до loadUrl: getUrl() сразу после загрузки ещё
         // старый, а мост может спросить в ту же секунду. Дальше адрес ведут колбэки.
         pageUrl = SERVER + path;
@@ -1620,7 +1928,7 @@ public class MainActivity extends Activity {
         stopLogin();
         chainPanel.setVisibility(View.VISIBLE);
         setChainButtons(true);
-        say("Открываю " + CHAINS[idx][0] + "…", false);
+        say(Sign.GOING, "", CHAINS[idx][0], "Открываю " + CHAINS[idx][0]);
         web.loadUrl(CHAINS[idx][2]);
     }
 
@@ -1630,7 +1938,7 @@ public class MainActivity extends Activity {
         for (String[] p : LOGIN_PAGES) if (p[0].equals(CHAINS[idx][1])) web.loadUrl(p[1]);
         loginMode = true;
         showLoginPanel(true);
-        say("Войдите своим номером телефона", false);
+        say(Sign.ACT, "", "Войдите своим номером телефона");
         handler.postDelayed(loginWatch, LOGIN_CHECK_MS);
     }
 
@@ -1659,6 +1967,10 @@ public class MainActivity extends Activity {
 
     /** Уйти со страницы сети обратно к сайту — по истории, если она ещё помнит нас. */
     private void leaveChain() {
+        if (currentChain >= 0) {
+            openOurApp(loginMode ? "/phone/settings" : "/phone/basket");
+            return;
+        }
         if (web.canGoBack()) {
             // История уже помнит наш предыдущий экран — идём по ней и ничего не
             // чистим. Флаг здесь не взводим: goBack() может вернуть на страницу
@@ -1678,6 +1990,11 @@ public class MainActivity extends Activity {
         // когда режим правда был: openOurApp зовёт этот метод и на обычных переходах
         // между нашими экранами, а там историю чистить нельзя.
         if (currentChain >= 0) orderHistoryClear();
+        // В окне сети корзину могли оформить в заказ: памяти корзины (cartapi.js) старше веры нет (1.41).
+        if (currentChain >= 0) {
+            homeSince = System.currentTimeMillis();
+            for (Slot s : slots.values()) s.peekStartedAt = 0;
+        }
         if (cartRun != null) stopRun("Сборка остановлена: вы ушли со страницы сети.");
         currentChain = -1;
         chainLinesOverride = null;
@@ -1696,6 +2013,7 @@ public class MainActivity extends Activity {
 
     /** Панель режима входа: «←» и «Я вошёл»; прочие кнопки сети спрятаны. */
     private void showLoginPanel(boolean on) {
+        chainBackBtn.setText(on ? "В приложение" : "←");
         int rest = on ? View.GONE : View.VISIBLE;
         saveLoginBtn.setVisibility(rest);
         saveOffersBtn.setVisibility(rest);
@@ -1719,97 +2037,6 @@ public class MainActivity extends Activity {
 
     // ── Кабинет ФНС: вход у человека, ключ — у приложения ──
 
-    /** Открыть кабинет ФНС на весь экран. Вход и капчу человек проходит сам. */
-    private void openFnsWindow() {
-        exitChainMode();
-        fnsMode = true;
-        fnsGrabbing = false;
-        pageUrl = FNS_URL;
-        pageOurs = isOurs(pageUrl);
-        showFnsPanel();
-        setFnsButtons(true);
-        sayFns("Войдите в кабинет ФНС сами — приложение капчу не проходит. Потом нажмите «Забрать чеки».");
-        web.loadUrl(FNS_URL);
-    }
-
-    /** Уйти из кабинета на телефонный экран чеков: и по «←», и по кнопке «назад». */
-    private void leaveFns() {
-        // Кабинет и всё, куда с него уехали (вплоть до App Store), остаются позади:
-        // «назад» с экрана чеков должен вести по нашему приложению, а не туда.
-        // Заказ ставится до openOurApp: наш адрес загрузится гарантированно.
-        orderHistoryClear();
-        openOurApp("/phone/receipts");
-    }
-
-    /** Снять режим кабинета ФНС: панель уходит, таймер ожидания гаснет. */
-    private void exitFnsMode() {
-        // Режим снимается, когда окно вернулось на наш адрес (или мы уходим с кабинета):
-        // его история нашему экрану не нужна. Без режима (openOurApp на обычном
-        // переходе) заказа нет — иначе очистка сломала бы «назад» между нашими экранами.
-        if (fnsMode) orderHistoryClear();
-        fnsMode = false;
-        fnsGrabbing = false;
-        handler.removeCallbacks(fnsStuck);
-        if (fnsPanel != null) fnsPanel.setVisibility(View.GONE);
-    }
-
-    /**
-     * Панель видна ровно в одном случае: кабинет открыт через мост, а в окне — чужой
-     * адрес. На нашем сайте её нет: там командует сайт.
-     */
-    private void showFnsPanel() {
-        if (fnsPanel == null) return;
-        fnsPanel.setVisibility(fnsMode && !pageOurs ? View.VISIBLE : View.GONE);
-    }
-
-    /** Режим ФНС следует за адресом окна, а не за намерением: вернулись — панель ушла. */
-    private void followFnsPage() {
-        if (!fnsMode) return;
-        if (pageOurs) exitFnsMode();
-        else showFnsPanel();
-    }
-
-    private void setFnsButtons(boolean on) {
-        if (fnsGrabBtn != null) fnsGrabBtn.setEnabled(on);
-    }
-
-    private void sayFns(String text) {
-        if (fnsStatus == null) return;
-        fnsStatus.setText(text);
-        Log.i(TAG, "кабинет ФНС: " + text);
-    }
-
-    /**
-     * «Забрать чеки»: отдать странице адрес приложения и исполнить сборщик.
-     *
-     * Страница уходит в приложение САМА (location.replace внутри fns-grab.js), когда
-     * найдёт ключ. Поэтому сразу после инъекции ничего не утверждаем: ждём возврата
-     * адреса, а если его нет — через fnsStuck говорим словами. Ошибки сборщика
-     * приходят строками журнала (onConsoleMessage) и тоже видны на панели.
-     */
-    private void grabFns() {
-        if (!fnsMode || pageOurs || fnsGrabbing) return;
-        fnsGrabbing = true;
-        setFnsButtons(false);
-        sayFns("Забираю чеки. Вход и капчу вы уже прошли — приложение вернётся на «Мои чеки».");
-        // Адрес приложения — до сборщика: он берёт его из window.KORZINA_APP_URL.
-        web.evaluateJavascript("window.KORZINA_APP_URL='" + SERVER + "/phone/receipts';", null);
-        handler.removeCallbacks(fnsStuck);
-        handler.postDelayed(fnsStuck, 25 * 1000);
-        // GET, а не POST: статика сервера POST не принимает. call с null телом — GET.
-        call(FNS_GRAB, null, (status, text) -> {
-            if (!fnsMode) return;
-            if (status != 200 || text == null || text.trim().isEmpty()) {
-                fnsGrabbing = false;
-                setFnsButtons(true);
-                handler.removeCallbacks(fnsStuck);
-                sayFns("Сборщик не отдался (код " + status + "). Попробуйте ещё раз.");
-                return;
-            }
-            web.evaluateJavascript(text, null);
-        });
-    }
-
     // ── Запись корзины ──
     /** Скрипт записи со своими адресами этой сети. */
     private static String recScript(int idx) {
@@ -1831,8 +2058,8 @@ public class MainActivity extends Activity {
             recordBtn.setText("Готово");
             web.evaluateJavascript(REC_START_JS, null);
             web.evaluateJavascript(recScript(currentChain), null);
-            say("Идёт запись. Положите в корзину любой товар, потом уберите его и нажмите «Готово».",
-                false);
+            say(Sign.ACT, "", "Положите товар в корзину, уберите его и нажмите «Готово»",
+                "Идёт запись. Положите в корзину любой товар, потом уберите его и нажмите «Готово».");
             return;
         }
         final String chain = CHAINS[currentChain][1];
@@ -1843,19 +2070,20 @@ public class MainActivity extends Activity {
                 String json = (String) new JSONTokener(result).nextValue();
                 JSONArray entries = new JSONArray(json == null ? "[]" : json);
                 if (entries.length() == 0) {
-                    say("Запросов корзины не видно. Войдите в " + name + ", нажмите «Записать», "
-                        + "положите товар и уберите его, затем «Готово».", true);
+                    say(Sign.FAIL, "", "запросов корзины не видно",
+                        "Запросов корзины не видно. Войдите в " + name + ", нажмите «Записать», "
+                        + "положите товар и уберите его, затем «Готово».");
                     return;
                 }
                 JSONObject body = new JSONObject()
                     .put("store", chain)
                     .put("app_version", BuildConfig.VERSION_NAME)
                     .put("entries", entries);
-                say("Отправляю запись…", false);
-                post("/api/cart_record", body,
+                say(Sign.GOING, "", "запись", "Отправляю запись");
+                post("/api/cart_record", body, String.valueOf(entries.length()), "запись",
                      name + " — записано запросов корзины: " + entries.length());
             } catch (Exception e) {
-                say("Не получилось забрать запись: " + e.getMessage(), true);
+                say(Sign.FAIL, "", "запись не забралась: " + e.getMessage(), null);
             }
         });
     }
@@ -1919,6 +2147,13 @@ public class MainActivity extends Activity {
         final JSONObject want = new JSONObject();    // артикул → сколько должно лежать
         // Артикул → товар корзины (product_id): найденное поиском не снимаем, пока его ищут снова.
         final JSONObject pids = new JSONObject();
+        // Товары корзины, у которых в наряде нет строки с артикулом: найденное для них не снимаем (1.43).
+        final Set<Integer> noSku = new HashSet<>();
+        // Артикул → вес наряда в граммах, с которым сверяли фасовку его карточки (1.49). У положенного
+        // до 1.49 отметки нет.
+        final JSONObject packOk = new JSONObject();
+        // Артикулы товаров, найденных поиском сети и положенных раньше: в этой сборке идут знакомыми (ownFound).
+        final Set<String> adopted = new HashSet<>();
         long cartAt = 0;   // когда сеть последний раз показала корзину целиком
         boolean stopped = false;
         // Запрос сети «положить в корзину» выучен по первому касанию (LEARN_JS): дальше
@@ -1935,7 +2170,14 @@ public class MainActivity extends Activity {
         String how = "tap";          // чем легла текущая позиция: касанием или запросом
         final long startedAt = SystemClock.uptimeMillis();
         long planAt = 0, apiAt = 0;  // когда пришёл наряд и пошли запросы сети: для замера в журнале
+        long changedAt = 0;          // касание, с которого началась эта сборка (Slot.changedAt)
+        int changedPid = 0;          // товар этого касания (Slot.changedPid)
         boolean apiOver = false;     // ответ cartapi.js пришёл: окна с касаниями больше не ждут
+        String apiWhy = "";          // почему запросами сети не вышло (1.45): уходит в отчёт
+        String healNote = "";        // как лечили куку защиты Пятёрочки (1.50): дописывается к причине отказа
+        String apiKey = "";          // ключ идущего запуска cartapi.js: им правка говорит адаптеру, что сборку догнали (1.46)
+        boolean fast = false;        // наряд не у сервера, а прежний с правкой по касанию (1.27)
+        boolean healLogged = false;  // ожидание лечения куки уже записано в хронику (1.54): begin зовётся каждые 250 мс
         boolean wall = false;        // сеть не пустила (403, «Выключите VPN»): правка корзины не будит её
         String cartHint = "";        // дорога к корзине не нашлась: что похожее было на странице
         String consent = "";         // на этой позиции закрыли баннер согласия — это видно в отчёте
@@ -1943,17 +2185,21 @@ public class MainActivity extends Activity {
         double cardPrice = 0;         // цена за упаковку из текста карточки этой позиции
         boolean cardGone = false;     // карточка/её текст сказали «нет в наличии»
         boolean searchPause = false; // предыдущая строка упала на поиске/стене: нужна пауза
+        boolean lineWall = false;    // строку остановила стена сети, а не товар: отказ помнить недолго
         int badged = 0;             // счётчик корзины до касания: после — сверяем, вырос ли
         boolean badgeChecked = false; // признак корзины после касания уже проверяли — один раз
         String now = "";             // что делается сейчас — строкой на панели или нашем экране
         int blank = 0;               // сколько карточек подряд открылись без заголовка
         long beatAt = 0;             // когда последний раз сказали серверу, как идёт
+        long actAt = SystemClock.uptimeMillis();   // когда сборка последний раз сделала шаг (beat, даже не ушедший): сторож RUN_IDLE_MS
         boolean again = false;       // корзина сети оказалась пустой: один повтор целиком
         // Последний шаг наряда Ленты (Z9): серверная ссылка на готовую корзину.
         // Спрашиваем один раз за проход; завершение наряда от неё не зависит.
         boolean linkAsked = false;
         boolean linkDone = false;
         String linkNote = "";        // что телефон сказал про ссылку — для отчёта строки
+
+        long deadline = 0;
 
         CartRun(int chain, WebView view, Slot slot) {
             this.chain = chain;
@@ -1978,8 +2224,25 @@ public class MainActivity extends Activity {
         String pending = "";     // какую корзину собрать, когда окно освободится
         Runnable soon;           // отложенный запуск: корзину, может быть, ещё правят
         Runnable sleep;          // убрать окно, если долго без дела
+        Runnable keepAlive;      // поддержание кук ServicePipe (Пятёрочка) в актуальном состоянии
         long heldSince = 0;      // с какого времени окно ждёт сети с запросами (API_HEAD_MS)
+        long changedAt = 0;      // когда человек тронул корзину: отчёт сети несёт время от касания (1.29)
+        int changedPid = 0;      // какой товар тронул: его давний отказ перепроверяем первым
+        long planAsked = 0;      // когда спросили наряд без сборки (fetchPlan)
+        long robotsAt = 0;       // когда supersede повёл окно на robots.txt: новая сборка загрузку не повторяет
+        long movedAt = 0;        // когда окно уводили на страницу сети (часы телефона): касания там меняют корзину
+        long peekAskedAt = 0;    // когда окно последний раз спрашивали, пора ли читать корзину заранее
+        long peekStartedAt = 0;  // когда чтение заранее последний раз ушло в сеть: не вышло — повтор не раньше PEEK_AGE_MS
+        boolean peekOwed = false; // касание было, а окно сети не было готово: чтение заранее по нему ещё впереди
+        long healAt = 0;         // когда последний раз лечили куку защиты Пятёрочки (1.50): чтение заранее — не чаще HEAL_GAP_MS
+        long healUntil = 0;      // до какого времени окно занято лечением куки на главной странице или ждёт паузы узла после него
+        long aheadAt = 0;        // когда последний раз лечили куку до запроса (1.57, аптайм)
+        final long[] aheadLog = new long[AHEAD_PER_HOUR];   // когда лечили заранее: не больше AHEAD_PER_HOUR в час
+        int aheadN = 0;
+        String peekNote = "";    // чем кончилось лечение куки при чтении заранее (1.52): дописывается к причине отказа сборки
+        long peekNoteAt = 0;     // когда (аптайм), чтобы давняя запись не сошла за свежую
         int crashes = 0;
+        long crashAt = 0;        // когда окно падало последний раз (аптайм): через CRASH_FORGET_MS счёт падений заново
 
         Slot(int chain) {
             this.chain = chain;
@@ -2000,6 +2263,11 @@ public class MainActivity extends Activity {
         return r.slot != null && !r.slot.pending.isEmpty() && !r.slot.pending.equals(r.stamp);
     }
 
+    /** cartapi.js сейчас пишет в корзину сети: второй писатель в том же окне спутал бы ей счёт. */
+    private static boolean writing(CartRun r) {
+        return r.apiAt > 0 && !r.apiOver;
+    }
+
     /**
      * Бросить устаревшую сборку и сразу начать новую. Отчёт не шлём: положенное уже в памяти
      * телефона (saveLedger), а поздний отчёт старого отпечатка перебил бы строку новой сборки.
@@ -2009,6 +2277,14 @@ public class MainActivity extends Activity {
         r.stopped = true;
         if (s.run == r) s.run = null;
         Log.i(TAG, r.name + ": корзина поменялась — собираю заново");
+        // Окно сети с запросами — сразу на robots.txt (1.36): страницу поиска, брошенную хвостом, новая
+        // сборка уводила только через 1,1 с, и всё это время она грузила общий поток окон (замер
+        // 12.11.2026: правка при идущем хвосте — 4,6–5,6 с во всех сетях против 1,2–2,0 с без него).
+        String origin = cartApiOrigin(s.code);
+        if (origin != null && r.view != null && !healing(s) && !(origin + "/robots.txt").equals(r.view.getUrl())) {
+            go(r, origin + "/robots.txt");
+            s.robotsAt = SystemClock.uptimeMillis();
+        }
         rest(s);
     }
 
@@ -2027,6 +2303,13 @@ public class MainActivity extends Activity {
             rest(s);
             return;
         }
+        // Блок поставило лечение, пока хвост ждал тишины (tailLater): касания шли бы на закрытый адрес (1.61). Отчёт
+        // головы уже на сервере, и отказ (endBlocked) затёр бы его строку — хвост просто не идёт.
+        if (blocked(s.code)) {
+            Log.i(TAG, r.name + ": хвост не иду — защита сети закрыла адрес");
+            rest(s);
+            return;
+        }
         // Строки поиска — в конец наряда, а не вместо него: по r.lines снятие лишнего
         // (wantOf) знает, что оставить, а повтор при пустой корзине сети проходит всё.
         int from = r.lines.length();
@@ -2042,10 +2325,22 @@ public class MainActivity extends Activity {
         nextLine(r);
     }
 
-    /** Ход сборки: у «Собрать» — на панели сети, у фоновой — на нашем экране, через сервер. */
+    /**
+     * Ход сборки: у «Собрать» — на панели сети, у фоновой — на нашем экране, через сервер.
+     * Панель: кольцо, «сколько позиций прошло/сколько всего» (те же числа, что уходят серверу в
+     * beat) и позиция в работе; фраза text на сервер уходит как была и читается с экрана целиком.
+     */
     private void status(CartRun r, String text, boolean bad) {
         r.now = text;
-        if (r.slot == null) say(text, bad);
+        if (r.slot == null) {
+            int total = r.lines.length();
+            JSONObject line = r.lines.optJSONObject(r.at);
+            String item = line == null ? "" : line.optString("name", "");
+            boolean named = text.startsWith(r.name + ": ");
+            String why = named ? text.substring(r.name.length() + 2) : text;
+            say(bad ? Sign.FAIL : Sign.GOING, total > 0 ? Math.min(r.at, total) + "/" + total : "",
+                bad ? why : item, named ? text : r.name + ": " + text);
+        }
         beat(r, false);
     }
 
@@ -2055,6 +2350,7 @@ public class MainActivity extends Activity {
      */
     private void beat(final CartRun r, boolean force) {
         long t = SystemClock.uptimeMillis();
+        r.actAt = t;
         if (!force && t - r.beatAt < BEAT_MS) return;
         r.beatAt = t;
         JSONObject body = new JSONObject();
@@ -2078,6 +2374,124 @@ public class MainActivity extends Activity {
             // Строка «идёт» уже на сервере — пусть наш экран спросит её сейчас, а не через опрос.
             if (first && r.slot != null) tellPage();
         });
+    }
+
+    /**
+     * Через TRACE_AFTER_MS, если эта сборка всё ещё идёт (в том числе хвостом), хроника журнала уходит серверу
+     * (/api/device/trace): что делали окна сетей, видно по ней, а не по молчанию строки.
+     */
+    private void watchTrace(final CartRun r) {
+        handler.postDelayed(() -> {
+            Slot s = r.slot;
+            if (s == null || s.run != r || r.stopped) return;
+            long now = SystemClock.uptimeMillis();
+            Long was = traceSent.get(r.code);
+            if (was != null && now - was < TRACE_GAP_MS) return;
+            traceSent.put(r.code, now);
+            Log.i(TAG, memoryNote());
+            uploadTrace(r.code, "идёт " + (TRACE_AFTER_MS / 1000) + " с: " + r.now);
+        }, TRACE_AFTER_MS);
+    }
+
+    /**
+     * Сторож сборки (1.56): без хода дольше RUN_IDLE_MS — оборвать, чтобы сеть не стояла «идёт» и следующая правка шла.
+     * Сервер узнаёт причину сразу, а не через PHONE_STALE молчания, и получает хронику.
+     */
+    private void watchRun(final CartRun r) {
+        handler.postDelayed(() -> {
+            Slot s = r.slot;
+            if (s == null || s.run != r || r.stopped) return;
+            long idle = SystemClock.uptimeMillis() - r.actAt;
+            if (idle < RUN_IDLE_MS) {
+                watchRun(r);
+                return;
+            }
+            String why = r.name + ": сборка встала на «" + r.now + "» — без хода " + idle / 1000 + " с";
+            Log.w(TAG, why);
+            Log.i(TAG, memoryNote());
+            uploadTrace(r.code, why);
+            endBackground(r, "failed", why);
+        }, RUN_WATCH_MS);
+    }
+
+    /**
+     * Память телефона для хроники (1.56): процесс страниц один на все окна сетей и при нехватке памяти падает разом
+     * (lostView), а систему при нехватке она может убить и приложение целиком.
+     */
+    private String memoryNote() {
+        try {
+            android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
+            am.getMemoryInfo(mi);
+            int views = 0;
+            for (Slot s : slots.values()) if (s.view != null) views++;
+            return "память телефона: свободно " + mi.availMem / 1048576 + " МБ из " + mi.totalMem / 1048576
+                    + ", порог " + mi.threshold / 1048576 + (mi.lowMemory ? ", МАЛО" : "") + "; окон сетей " + views;
+        } catch (RuntimeException e) {
+            return "память не прочиталась: " + e;
+        }
+    }
+
+    /** Названия причин ApplicationExitInfo.getReason() по номерам (числами — чтобы не зависеть от версии SDK при сборке). */
+    private static final String[] EXIT_WHY = {"неизвестно", "приложение вышло само", "убито сигналом", "МАЛО ПАМЯТИ",
+        "ВЫЛЕТ", "ВЫЛЕТ в родном коде", "не отвечало (ANR)", "не запустилось", "сменили разрешение",
+        "слишком много ресурсов", "закрыл человек (смахнул)", "остановлено в настройках", "умерла служба", "другая причина",
+        "заморожено системой", "изменили пакет", "обновление приложения"};
+
+    /**
+     * Чем кончился прошлый процесс (1.56, Android 11+). 15.11.2026 строки Магнита и Дикси замолчали в одну секунду, и
+     * по серверу было не понять: упал ли процесс страниц, убила ли приложение система или его закрыл человек. Причины
+     * идут в хронику; кроме «вышло само», «закрыл человек», «остановлено в настройках» и обновления хроника с последними
+     * строками прошлого процесса (они стоят в начале кольца, Log.attach) сразу уходит серверу.
+     */
+    private void noteLastExit() {
+        if (Build.VERSION.SDK_INT < 30) return;
+        try {
+            android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            List<android.app.ApplicationExitInfo> list = am.getHistoricalProcessExitReasons(getPackageName(), 0, 8);
+            long seen = memory().getLong("exitSeen", 0);
+            SimpleDateFormat when = new SimpleDateFormat("dd.MM HH:mm:ss", Locale.US);
+            String news = "";
+            long newest = 0;
+            for (android.app.ApplicationExitInfo e : list) {
+                // Окна сетей живут в своих изолированных процессах, и их обычный уход («isolated not needed») —
+                // не выход приложения: только главный процесс.
+                if (!getPackageName().equals(e.getProcessName())) continue;
+                newest = Math.max(newest, e.getTimestamp());
+                int reason = e.getReason();
+                String why = reason >= 0 && reason < EXIT_WHY.length ? EXIT_WHY[reason] : "причина " + reason;
+                Log.i(TAG, "прошлый процесс кончился: " + why + " в " + when.format(new Date(e.getTimestamp()))
+                        + ", важность " + e.getImportance() + ", rss " + e.getRss() / 1024 + " МБ"
+                        + (e.getDescription() == null ? "" : ", " + e.getDescription()));
+                boolean human = reason == 1 || reason == 10 || reason == 11 || reason == 15 || reason == 16;
+                if (news.isEmpty() && e.getTimestamp() > seen && !human) news = why;
+            }
+            if (newest > seen) memory().edit().putLong("exitSeen", newest).apply();
+            if (!news.isEmpty()) uploadTrace("app", "прошлый процесс кончился: " + news);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "причину прошлого выхода не прочитал: " + e);
+        }
+    }
+
+    /** Система просит память (1.56): в хронике видно, не она ли убила окна сетей и приложение. */
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= TRIM_MEMORY_RUNNING_LOW && level != TRIM_MEMORY_UI_HIDDEN) {
+            Log.i(TAG, "система просит память, уровень " + level + "; " + memoryNote());
+        }
+    }
+
+    /** Последние строки журнала (все сети) — серверу. Не вышло — не страшно: хроника не нужна для работы. */
+    private void uploadTrace(String code, String reason) {
+        try {
+            JSONObject body = new JSONObject()
+                .put("store", code)
+                .put("app_version", BuildConfig.VERSION_NAME)
+                .put("reason", reason)
+                .put("trace", Log.tail("", "", 0, 159));    // с первой строкой (часы телефона) — столько, сколько хранит сервер
+            call("/api/device/trace", body, (status, text) -> { });
+        } catch (Exception ignored) { }
     }
 
     /**
@@ -2126,14 +2540,14 @@ public class MainActivity extends Activity {
         cartBtn.setText("Стоп");
         // Человек сам собирает в этой сети — значит, вошёл в неё: фоновая сборка пойдёт сюда тоже.
         memory().edit().putBoolean("in." + r.code, true).apply();
-        say("Беру у сервера, что положить в " + r.name + "…", false);
+        say(Sign.GOING, "", r.name, "Беру у сервера, что положить в " + r.name);
         askPlan(r, () -> {
             if (r.lines.length() == 0) {
                 offerThisCard(r, r.rules.optString("_note", ""));
                 return;
             }
             loadLedger(r);
-            say(r.name + ": позиций " + r.lines.length() + ", начинаю", false);
+            say(Sign.GOING, "0/" + r.lines.length(), r.name, r.name + ": позиций " + r.lines.length() + ", начинаю");
             beat(r, true);
             nextLine(r);
         });
@@ -2145,7 +2559,10 @@ public class MainActivity extends Activity {
         JSONObject body = new JSONObject();
         try {
             body.put("store", r.code);
+            body.put("app_version", BuildConfig.VERSION_NAME);   // сервер включает запросы сети с нужной версии (1.29)
             if (r.slot != null) body.put("background", true);
+            // Номер вопроса: повтор запроса (callTwice) несёт тот же, и сервер считает такой наряд один раз.
+            if (r.slot != null) body.put("ask", SystemClock.uptimeMillis());
             if (r.basket >= 0) body.put("basket", r.basket);
             // Пустой список тоже уходит: после «Заказать» в невыбранной сети наряд пуст —
             // только снять своё. Без lines сервер отдал бы всю корзину, и она легла бы снова.
@@ -2158,7 +2575,7 @@ public class MainActivity extends Activity {
             }
             if (dropSkus.length() > 0) body.put("drop", dropSkus);
         } catch (Exception ignored) { }
-        call("/api/device/cartplan", body, (status, text) -> {
+        final Reply got = (status, text) -> {
             if (!alive(r)) return;
             r.planAt = SystemClock.uptimeMillis();
             if (status != 200) {
@@ -2167,80 +2584,152 @@ public class MainActivity extends Activity {
             }
             try {
                 JSONObject plan = new JSONObject(text);
-                JSONObject rules = plan.optJSONObject("rules");
-                JSONArray lines = plan.optJSONArray("lines");
-                r.rules = rules != null ? rules : new JSONObject();
-                r.rules.put("_note", plan.optString("note", ""));
-                r.lines = lines != null ? lines : new JSONArray();
-                JSONArray dropArr = plan.optJSONArray("drop");
-                for (int i = 0; dropArr != null && i < dropArr.length(); i++) {
-                    JSONObject d = dropArr.optJSONObject(i);
-                    if (d == null) continue;
-                    String sku = d.optString("sku", "");
-                    String u = d.optString("url", "");
-                    String n = d.optString("name", "");
-                    if (!sku.isEmpty()) {
-                        if (!u.isEmpty()) r.urls.put(sku, u);
-                        if (!n.isEmpty() && !r.names.has(sku)) r.names.put(sku, n);
-                    }
-                }
-                // Позиции, которых сеть не знает: сервер просит найти их поиском самой сети.
-                // Там, где сервер к витрине не пробивается (Пятёрочка, Самокат — замер
-                // 18.10.2026), это единственная дорога к настоящему артикулу. Строка ложится
-                // в тот же список, но с пометкой search: первый шаг у неё — страница поиска.
-                // Рядом — второй, короткий адрес поиска (search_alt), если сервер его дал:
-                // когда первый запрос принесёт не тот товар, телефон попробует этот.
-                JSONArray search = plan.optJSONArray("search");
-                for (int i = 0; search != null && i < search.length(); i++) {
-                    JSONObject s = search.optJSONObject(i);
-                    String sUrl = s == null ? "" : s.optString("url", "");
-                    String sName = s == null ? "" : s.optString("name", "");
-                    if (sUrl.isEmpty() || sName.isEmpty()) continue;
-                    (r.slot != null ? r.later : r.lines).put(new JSONObject()
-                        .put("name", sName).put("url", "").put("search", sUrl)
-                        .put("search_alt", s.optString("search_alt", ""))
-                        .put("clicks", 1).put("sku", "")
-                        .put("product_id", s.optInt("product_id", 0)));
-                }
-                JSONArray searchRecent = plan.optJSONArray("search_recent");
-                for (int i = 0; searchRecent != null && i < searchRecent.length(); i++) {
-                    JSONObject s = searchRecent.optJSONObject(i);
-                    if (s == null) continue;
-                    String sName = s.optString("name", "");
-                    if (sName.isEmpty()) continue;
-                    if (r.slot != null) {
-                        r.items.put(new JSONObject()
-                            .put("name", sName).put("sku", "").put("url", "")
-                            .put("ok", false)
-                            .put("why", "поиском сети не нашлась недавно — поищу позже")
-                            .put("put", 0).put("times", 0)
-                            .put("how", "tap").put("calls", new JSONArray()));
-                    } else {
-                        String sUrl = s.optString("url", "");
-                        if (sUrl.isEmpty()) continue;
-                        r.lines.put(new JSONObject()
-                            .put("name", sName).put("url", "").put("search", sUrl)
-                            .put("search_alt", s.optString("search_alt", ""))
-                            .put("clicks", 1).put("sku", "")
-                            .put("product_id", s.optInt("product_id", 0)));
-                    }
-                }
-                r.ourTotal = plan.optDouble("total", 0);
-                if (plan.has("basket") && !plan.isNull("basket")) r.basket = plan.optInt("basket", r.basket);
-                if (!plan.optString("stamp", "").isEmpty()) r.stamp = plan.optString("stamp", "");
-                for (int i = 0; i < r.lines.length(); i++) {
-                    JSONObject line = r.lines.optJSONObject(i);
-                    String sku = line == null ? "" : line.optString("sku", "");
-                    if (sku.isEmpty()) continue;
-                    r.want.put(sku, r.want.optInt(sku, 0) + Math.max(1, line.optInt("clicks", 1)));
-                    r.names.put(sku, line.optString("name", ""));
-                    if (line.optInt("product_id", 0) > 0) r.pids.put(sku, line.optInt("product_id", 0));
+                applyPlan(r, plan);
+                // Правка по касанию (1.27) выводит из этого наряда следующий, не спрашивая сервер.
+                if (r.slot != null && r.linesOverride == null) {
+                    memory().edit().putString("plan." + r.code, text)
+                        .putLong("planAt." + r.code, System.currentTimeMillis()).apply();
                 }
                 then.run();
             } catch (Exception e) {
                 failRun(r, "Сервер ответил непонятно: " + e.getMessage());
             }
-        });
+        };
+        // Фоновый наряд можно спросить дважды: по номеру вопроса (ask) сервер считает его один раз.
+        if (r.slot != null) callTwice("/api/device/cartplan", body, got, () -> alive(r));
+        else call("/api/device/cartplan", body, got);
+    }
+
+    /** Разложить наряд по сборке: правила, позиции, снятие своего, поиск незнакомых, отпечаток. */
+    private void applyPlan(final CartRun r, JSONObject plan) throws Exception {
+        JSONObject rules = plan.optJSONObject("rules");
+        JSONArray lines = plan.optJSONArray("lines");
+        r.rules = rules != null ? rules : new JSONObject();
+        r.rules.put("_note", plan.optString("note", ""));
+        r.lines = lines != null ? lines : new JSONArray();
+        JSONArray dropArr = plan.optJSONArray("drop");
+        for (int i = 0; dropArr != null && i < dropArr.length(); i++) {
+            JSONObject d = dropArr.optJSONObject(i);
+            if (d == null) continue;
+            String sku = d.optString("sku", "");
+            String u = d.optString("url", "");
+            String n = d.optString("name", "");
+            if (!sku.isEmpty()) {
+                if (!u.isEmpty()) r.urls.put(sku, u);
+                if (!n.isEmpty() && !r.names.has(sku)) r.names.put(sku, n);
+            }
+        }
+        // Позиции, которых сеть не знает: сервер просит найти их поиском самой сети.
+        // Там, где сервер к витрине не пробивается (Пятёрочка, Самокат — замер
+        // 18.10.2026), это единственная дорога к настоящему артикулу. Строка ложится
+        // в тот же список, но с пометкой search: первый шаг у неё — страница поиска.
+        // Рядом — второй, короткий адрес поиска (search_alt), если сервер его дал:
+        // когда первый запрос принесёт не тот товар, телефон попробует этот.
+        // И фасовка товара (pack_g, 1.48): packWhy сверяет её с карточкой до касания. Замер 13.11.2026,
+        // Пятёрочка: «хлопья №3 350 г» легли карточкой «…№2 500 г» — веса у строки поиска не было.
+        JSONArray search = plan.optJSONArray("search");
+        for (int i = 0; search != null && i < search.length(); i++) {
+            JSONObject s = search.optJSONObject(i);
+            String sUrl = s == null ? "" : s.optString("url", "");
+            String sName = s == null ? "" : s.optString("name", "");
+            if (sUrl.isEmpty() || sName.isEmpty()) continue;
+            JSONObject found = ownFound(r, s);
+            if (found != null) {
+                r.lines.put(found);
+                continue;
+            }
+            (r.slot != null ? r.later : r.lines).put(new JSONObject()
+                .put("name", sName).put("url", "").put("search", sUrl)
+                .put("search_alt", s.optString("search_alt", ""))
+                .put("clicks", 1).put("sku", "")
+                .put("pack_g", s.optDouble("pack_g", 0))
+                .put("product_id", s.optInt("product_id", 0)));
+        }
+        JSONArray searchRecent = plan.optJSONArray("search_recent");
+        for (int i = 0; searchRecent != null && i < searchRecent.length(); i++) {
+            JSONObject s = searchRecent.optJSONObject(i);
+            if (s == null) continue;
+            String sName = s.optString("name", "");
+            if (sName.isEmpty()) continue;
+            if (r.slot != null) {
+                r.items.put(new JSONObject()
+                    .put("name", sName).put("sku", "").put("url", "")
+                    .put("ok", false)
+                    .put("why", "поиском сети не нашлась недавно — поищу позже")
+                    .put("put", 0).put("times", 0)
+                    .put("how", "tap").put("calls", new JSONArray()));
+            } else {
+                String sUrl = s.optString("url", "");
+                if (sUrl.isEmpty()) continue;
+                r.lines.put(new JSONObject()
+                    .put("name", sName).put("url", "").put("search", sUrl)
+                    .put("search_alt", s.optString("search_alt", ""))
+                    .put("clicks", 1).put("sku", "")
+                    .put("pack_g", s.optDouble("pack_g", 0))
+                    .put("product_id", s.optInt("product_id", 0)));
+            }
+        }
+        // Товар в корзине есть, а строки с артикулом в наряде у него нет (ищется, искали недавно, сверх
+        // предела поиска, сеть его не получит): найденное для него раньше снимать нельзя (searchedAgain).
+        r.noSku.clear();
+        JSONArray inBasket = plan.optJSONArray("pids");
+        for (int i = 0; inBasket != null && i < inBasket.length(); i++) r.noSku.add(inBasket.optInt(i));
+        r.ourTotal = plan.optDouble("total", 0);
+        if (plan.has("basket") && !plan.isNull("basket")) r.basket = plan.optInt("basket", r.basket);
+        if (!plan.optString("stamp", "").isEmpty()) r.stamp = plan.optString("stamp", "");
+        for (int i = 0; i < r.lines.length(); i++) {
+            JSONObject line = r.lines.optJSONObject(i);
+            String sku = line == null ? "" : line.optString("sku", "");
+            if (sku.isEmpty()) continue;
+            r.want.put(sku, r.want.optInt(sku, 0) + Math.max(1, line.optInt("clicks", 1)));
+            r.names.put(sku, line.optString("name", ""));
+            if (line.optInt("product_id", 0) > 0) r.pids.put(sku, line.optInt("product_id", 0));
+            r.noSku.remove(line.optInt("product_id", 0));
+            JSONArray same = line.optJSONArray("product_ids");    // дубли на одном артикуле
+            for (int k = 0; same != null && k < same.length(); k++) r.noSku.remove(same.optInt(k));
+        }
+    }
+
+    /**
+     * Строка товара, который это приложение уже нашло поиском сети и положило (1.49): артикул и адрес
+     * карточки — из памяти телефона, дальше она идёт как знакомая. Иначе хвост после каждой правки
+     * заново открывал поиск и карточку каждой лежащей позиции: десятки секунд касаний, после которых
+     * сеть закрывает запросы (Пятёрочка, корзина из чека, 13.11.2026). В наряде у неё одна штука:
+     * незнакомое сети кладётся по одной (changedPlan), настоящее число придёт со связью сервера.
+     * Лишнее у неё не снимается, как и у строки поиска (searchedAgain): количество в сети человек
+     * мог поправить сам.
+     * null — искать, как раньше: сборку ведёт человек, своего артикула у товара нет или их два,
+     * артикул занят строкой наряда, нет адреса карточки, фасовку карточки с этим весом не сверяли
+     * (положенное до 1.49 один раз сверит хвост).
+     */
+    private JSONObject ownFound(CartRun r, JSONObject row) throws Exception {
+        int pid = row == null ? 0 : row.optInt("product_id", 0);
+        if (r.slot == null || pid <= 0) return null;
+        String own = "";
+        Iterator<String> skus = r.cart.keys();
+        while (skus.hasNext()) {
+            String sku = skus.next();
+            if (r.cart.optInt(sku, 0) <= 0 || r.pids.optInt(sku, 0) != pid) continue;
+            if (!own.isEmpty()) return null;
+            own = sku;
+        }
+        String url = r.urls.optString(own, "");
+        if (own.isEmpty() || url.isEmpty() || !isHostOf(r.chain, url)) return null;
+        for (int i = 0; i < r.lines.length(); i++) {    // артикул занят строкой наряда: два товара на карточке
+            JSONObject known = r.lines.optJSONObject(i);
+            if (known != null && own.equals(known.optString("sku", ""))) return null;
+        }
+        double pack = row.optDouble("pack_g", 0);
+        if (packChecked(row) && Math.abs(r.packOk.optDouble(own, 0) - pack) > packTolerance(pack)) return null;
+        JSONObject line = new JSONObject()
+            .put("name", row.optString("name", "")).put("url", url)
+            .put("clicks", 1).put("sku", own)
+            .put("product_id", pid);
+        noteFail(r, line, "");      // прежние отказы поиска и запроса уже не про неё: позиция лежит
+        noteFail(r, line, "", "apifail.");
+        r.adopted.add(own);
+        Log.i(TAG, r.name + ": найдено и положено раньше, искать не нужно: " + line.optString("name", ""));
+        return line;
     }
 
     /** Нашей корзины в этой сети нет — проверить сборку на открытой карточке. */
@@ -2295,6 +2784,7 @@ public class MainActivity extends Activity {
         r.cardPrice = 0;
         r.cardGone = false;
         r.searchPause = false;
+        r.lineWall = false;
         r.badged = 0;
         r.badgeChecked = false;
         if (r.target - r.have <= 0) {
@@ -2443,11 +2933,17 @@ public class MainActivity extends Activity {
     /** Позиция уже лежит в корзине сети, сколько нужно: её не трогаем, и это не отказ. */
     private void keptLine(final CartRun r, JSONObject line) {
         try {
-            r.items.put(new JSONObject()
+            JSONObject item = new JSONObject()
                 .put("name", line == null ? "" : line.optString("name", ""))
                 .put("sku", line == null ? "" : line.optString("sku", ""))
+                // Адрес и имя карточки, как у положенной позиции (1.48): по ним сервер даёт товару артикул
+                // сети. Без них найденное поиском и уже лежащее искалось бы касаниями после каждой правки.
+                .put("url", line == null ? "" : line.optString("url", ""))
                 .put("ok", true).put("why", "").put("put", 0).put("times", r.target)
-                .put("how", "kept").put("calls", new JSONArray()));
+                .put("how", "kept").put("calls", new JSONArray());
+            String foundName = line == null ? "" : line.optString("found_name", "");
+            if (!foundName.isEmpty()) item.put("found_name", foundName);
+            r.items.put(item);
         } catch (Exception ignored) { }
         r.at++;
         status(r, "уже лежит: " + (line == null ? "" : line.optString("name", "")), false);
@@ -2472,6 +2968,15 @@ public class MainActivity extends Activity {
     }
 
     private String failedRecently(CartRun r, JSONObject line, String prefix) {
+        return failedSince(r, line, prefix, false);
+    }
+
+    /** Почему позиция не легла в эту сеть когда-либо (легла — отказ забыт); "" — не отказывала. */
+    private String failedBefore(CartRun r, JSONObject line, String prefix) {
+        return failedSince(r, line, prefix, true);
+    }
+
+    private String failedSince(CartRun r, JSONObject line, String prefix, boolean ever) {
         try {
             if (r == null) return "";
             String key = lineKey(line);
@@ -2481,7 +2986,8 @@ public class MainActivity extends Activity {
             JSONObject rec = map.optJSONObject(key);
             if (rec != null) {
                 long at = rec.optLong("at", 0);
-                if (System.currentTimeMillis() - at < FAIL_AGAIN_MS) {
+                boolean notFound = !line.optString("search", "").isEmpty() && !rec.optBoolean("wall");
+                if (ever || System.currentTimeMillis() - at < (notFound ? FRESH_MS : FAIL_AGAIN_MS)) {
                     String why = rec.optString("why", "");
                     return why.isEmpty() ? "не легла" : why;
                 }
@@ -2510,6 +3016,7 @@ public class MainActivity extends Activity {
                 JSONObject rec = new JSONObject();
                 rec.put("at", System.currentTimeMillis());
                 rec.put("why", oneSpace(why, 80));
+                if (r.lineWall) rec.put("wall", true);
                 map.put(key, rec);
 
                 if (map.length() > 80) {
@@ -2534,20 +3041,58 @@ public class MainActivity extends Activity {
 
     /** Позиция недавно не легла — в отчёт с прежней причиной, без попытки (FAIL_AGAIN_MS). */
     private void laterLine(final CartRun r, JSONObject line, String why) {
-        String name = line == null ? "" : line.optString("name", "");
+        laterItem(r, line, why, r.target);
+        r.at++;
+        status(r, "позже: " + (line == null ? "" : line.optString("name", "")), false);
+        handler.post(() -> nextLine(r));
+    }
+
+    private static void laterItem(CartRun r, JSONObject line, String why, int times) {
         try {
             r.items.put(new JSONObject()
-                .put("name", name)
+                .put("name", line == null ? "" : line.optString("name", ""))
                 .put("sku", line == null ? "" : line.optString("sku", ""))
                 .put("url", line == null ? "" : line.optString("url", ""))
                 .put("ok", false)
                 .put("why", fitWhy("не легла недавно, попробую позже: " + why))
-                .put("put", 0).put("times", r.target)
+                .put("put", 0).put("times", times)
                 .put("how", "tap").put("calls", new JSONArray()));
         } catch (Exception ignored) { }
-        r.at++;
-        status(r, "позже: " + name, false);
-        handler.post(() -> nextLine(r));
+    }
+
+    /**
+     * Строки хвоста, которые недавно не легли, — сразу в отчёт. Хвост ради них шёл после каждой
+     * правки: ничего не клал, а слал второй отчёт и занимал окно сети (замер 10.11.2026).
+     */
+    private void settleLater(CartRun r) {
+        JSONArray due = new JSONArray();
+        for (int i = 0; i < r.later.length(); i++) {
+            JSONObject line = r.later.optJSONObject(i);
+            if (line == null) continue;
+            String failed = failedRecently(r, line);
+            if (failed.isEmpty()) due.put(line);
+            else laterItem(r, line, failed, Math.max(1, line.optInt("clicks", 1)));
+        }
+        r.later = due;
+    }
+
+    /**
+     * Строки, которые запросом не легли, — в хвост, впереди поиска: касаниями после отчёта.
+     * Сразу касаниями они держали отчёт сети минутами и грузили общий процесс окон, пока
+     * корзину ещё правят (замер 10.11.2026: Пятёрочка после «обрыва сети» — 495 с касаний).
+     */
+    private static void toTail(CartRun r, JSONArray moved) {
+        JSONArray kept = new JSONArray(), later = new JSONArray();
+        for (int i = 0; i < moved.length(); i++) later.put(moved.opt(i));
+        for (int i = 0; i < r.lines.length(); i++) {
+            Object line = r.lines.opt(i);
+            boolean gone = false;
+            for (int k = 0; k < moved.length() && !gone; k++) gone = moved.opt(k) == line;
+            if (!gone) kept.put(line);
+        }
+        for (int i = 0; i < r.later.length(); i++) later.put(r.later.opt(i));
+        r.lines = kept;
+        r.later = later;
     }
 
     /** Позиция касаниями: открыть её карточку и нажать «В корзину» (у лежащей — «+»). */
@@ -2981,6 +3526,7 @@ public class MainActivity extends Activity {
         r.view.evaluateJavascript(WALL_JS, value -> {
             if (!alive(r)) return;
             String wall = value == null ? "" : value.replace("\"", "").trim();
+            r.lineWall = !wall.isEmpty();
             checkLine(r, wall.isEmpty() ? why : wallText(r.name, wall, true));
         });
     }
@@ -3403,6 +3949,9 @@ public class MainActivity extends Activity {
      * уходящая страница сошла бы за пришедшую.
      */
     private void go(CartRun r, String url) {
+        // Память корзины (cartapi.js) старше этого мига не в счёт: на странице сети её меняют касаниями (1.41).
+        // Возврат на robots.txt корзину не трогает — память, прочитанная заранее, остаётся годной.
+        if (r.slot != null && !url.endsWith("/robots.txt")) r.slot.movedAt = System.currentTimeMillis();
         r.view.evaluateJavascript("window.__kzStale=1", null);
         r.view.loadUrl(url);
     }
@@ -3573,11 +4122,23 @@ public class MainActivity extends Activity {
                     // Класть его «В корзину» ещё раз — удвоить. Сколько лежит, сказал счётчик:
                     // хватает — позиция лежит; не хватает — прибавим его «+».
                     JSONObject line = r.lines.optJSONObject(r.at);
-                    String sku = line == null ? "" : line.optString("sku", "");
+                    String sku = ownSku(r, line);
+                    // Найденную поиском карточку числим своей, только если это тот же товар: иначе, убрав
+                    // свой товар из корзины, приложение сняло бы чужой, который человек положил в сети сам.
+                    if (line != null && line.optString("sku", "").isEmpty()
+                            && !sameCard(line, got.optString("title", ""))) sku = "";
+                    // И «лежит» не говорим, когда фасовка не та (1.48): в корзине сети другой товар. Замер
+                    // 13.11.2026: вместо «хлопья №3 350 г» лежали «…№2 500 г», положенные сборкой до 1.48.
+                    String different = strangerPack(line, got.optString("title", ""));
+                    if (!different.isEmpty()) {
+                        lineDone(r, false, different, new JSONArray());
+                        return;
+                    }
                     r.have = Math.max(Math.max(1, r.have), packs(got.optDouble("count", 1)));
                     if (!sku.isEmpty()) {
                         try {
                             r.cart.put(sku, r.have);
+                            ownLine(r, line, sku);
                         } catch (Exception ignored) { }
                         saveLedger(r);
                     }
@@ -3856,7 +4417,8 @@ public class MainActivity extends Activity {
     private void verifyLine(final CartRun r, final JSONArray calls) {
         JSONObject line = r.lines.optJSONObject(r.at);
         final String sku = line == null ? "" : line.optString("sku", "");
-        if (sku.isEmpty()) {
+        // Артикул найденного раньше взят из адреса карточки (ownFound): в запросе сети бывает другой номер.
+        if (sku.isEmpty() || r.adopted.contains(sku)) {
             lineDone(r, true, "", calls);
             return;
         }
@@ -3872,6 +4434,58 @@ public class MainActivity extends Activity {
             }
             lineDone(r, true, "", calls);
         });
+    }
+
+    /**
+     * Карточка — тот же товар, что строка наряда: название и фасовка, как перед касанием «В корзину».
+     * Без заголовка судить не по чему: такую карточку своей не числим.
+     */
+    private static boolean sameCard(JSONObject line, String title) {
+        return !title.isEmpty() && nameWhy(line, title).isEmpty()
+            && (!packChecked(line) || packWhy(line, title).isEmpty());
+    }
+
+    /** У найденной поиском карточки фасовка не та, что в наряде: причина или пустая строка (1.48). */
+    private static String strangerPack(JSONObject line, String title) {
+        if (line == null || !line.optString("sku", "").isEmpty() || !packChecked(line)) return "";
+        return packWhy(line, title);
+    }
+
+    /**
+     * Артикул позиции для памяти телефона. У строки наряда он свой; у товара, найденного поиском самой
+     * сети, его нет — он в адресе карточки, и правило то же, что у сервера (rules.sku_url,
+     * app/catalog/fromurl.py). Без него память такую позицию не знала: товар убирали из корзины, а в
+     * корзине сети он оставался (Магнит, 13.11.2026). В строку наряда найденный артикул не пишем: по
+     * артикулу строки идёт сверка запроса сети (verifyLine), а в запросе у сети бывает другой номер.
+     */
+    private static String ownSku(CartRun r, JSONObject line) {
+        if (line == null) return "";
+        String sku = line.optString("sku", "");
+        String rule = r.rules.optString("sku_url", ""), url = line.optString("url", "");
+        if (!sku.isEmpty() || !line.has("search") || rule.isEmpty() || url.isEmpty()
+                || !isHostOf(r.chain, url)) return sku;
+        try {
+            Matcher m = Pattern.compile(rule).matcher(url);
+            if (!m.find()) return "";
+            for (int g = 1; g <= m.groupCount(); g++) {    // у правила бывает две ветви (Дикси)
+                String got = m.group(g);
+                if (got != null && !got.isEmpty()) return got;
+            }
+        } catch (Exception ignored) { }
+        return "";
+    }
+
+    /** Чей товар, как назван и где карточка: строка наряда приносит это сама, найденное поиском — нет. */
+    private static void ownLine(CartRun r, JSONObject line, String sku) {
+        try {
+            if (line.optInt("product_id", 0) > 0) r.pids.put(sku, line.optInt("product_id", 0));
+            if (!r.names.has(sku)) r.names.put(sku, line.optString("name", ""));
+            String url = line.optString("url", "");
+            if (!r.urls.has(sku) && !url.isEmpty()) r.urls.put(sku, url);
+            // Сюда карточка приходит после сверки фасовки с весом наряда: перед касанием (onCard) или
+            // лежащей (tapAdd).
+            if (packChecked(line)) r.packOk.put(sku, line.optDouble("pack_g", 0));
+        } catch (Exception ignored) { }
     }
 
     private void lineDone(final CartRun r, boolean ok, String why, JSONArray calls) {
@@ -3947,14 +4561,15 @@ public class MainActivity extends Activity {
             if (r.cardGone) item.put("in_stock", false);
             else if (ok && r.put > 0) item.put("in_stock", true);
         } catch (Exception ignored) { }
-        if (taken && !sku.isEmpty() && r.put > 0) {
+        final String own = ownSku(r, line);
+        if (taken && !own.isEmpty() && r.put > 0) {
             // Память телефона: сколько этой позиции теперь лежит в корзине сети. По ней
             // следующая сборка положит только недостающее. Касание прибавляет упаковку;
             // запрос сети, которая ставит количество (qty_sets), ставит итоговое число.
             boolean sets = "request".equals(how) && r.rules.optBoolean("qty_sets");
             try {
-                r.cart.put(sku, sets ? r.target : r.cart.optInt(sku, 0) + r.put);
-                if (line.optInt("product_id", 0) > 0) r.pids.put(sku, line.optInt("product_id", 0));
+                r.cart.put(own, sets ? r.target : r.cart.optInt(own, 0) + r.put);
+                ownLine(r, line, own);
             } catch (Exception ignored) { }
             saveLedger(r);
         }
@@ -3965,14 +4580,15 @@ public class MainActivity extends Activity {
         // (qty_sets): у прочих «ещё одну» бывает другим запросом. Образец хранится
         // между сборками, а свежесть проверяет сам повтор (не принят — учимся заново).
         boolean sets = r.rules.optBoolean("qty_sets");
-        if (ok && "tap".equals(how) && (r.have == 0 || sets) && !r.learned && !r.learnTried && !sku.isEmpty()) {
+        if (ok && "tap".equals(how) && (r.have == 0 || sets) && !r.learned && !r.learnTried && !sku.isEmpty()
+                && !r.adopted.contains(sku)) {      // артикул из адреса карточки — не образец запроса (ownFound)
             r.learnTried = true;
             // У сети, что ставит число, образец — всегда одна своя позиция: после «+» в теле
             // вся корзина, и повтор с ней положил бы артикул дважды — Магнит ответил 500.
             learn(r, sku, sets);
             return;
         }
-        syncCart(r, taken && r.put > 0 ? sku : "", () -> {
+        syncCart(r, taken && r.put > 0 ? own : "", () -> {
             if (r.at >= r.lines.length()) nextLine(r);
             else handler.postDelayed(() -> nextLine(r), pauseNext(r));
         });
@@ -4395,6 +5011,18 @@ public class MainActivity extends Activity {
         return false;
     }
 
+    /** Итог корзины, прочитанный со страницы сети; 0 — не прочитан. */
+    private static double totalOf(JSONObject cart) {
+        JSONArray totals = cart.optJSONArray("totals");
+        for (int i = 0; totals != null && i < totals.length(); i++) {
+            JSONObject t = totals.optJSONObject(i);
+            if (t != null && "total".equals(t.optString("kind")) && t.optDouble("amount", 0) > 0) {
+                return t.optDouble("amount", 0);
+            }
+        }
+        return 0;
+    }
+
     private static boolean emptyAnswer(String value) {
         try {
             Object v = new JSONTokener(value == null ? "null" : value).nextValue();
@@ -4537,12 +5165,13 @@ public class MainActivity extends Activity {
         cartRun = null;
         cartBtn.setText("Собрать");
         setChainButtons(currentChain >= 0);
-        say(why, true);
+        say(Sign.FAIL, "", why);
     }
 
     /** Показать, что вышло, и отдать отчёт серверу. Корзину не трогаем: оформляет человек. */
     private void finishRun(final CartRun r, JSONObject cart, String stoppedWhy) {
         final boolean background = r.slot != null;
+        if (background && !r.tail && stoppedWhy.isEmpty()) settleLater(r);
         final boolean early = background && !r.tail && r.later.length() > 0 && stoppedWhy.isEmpty();
         if (!background) {
             cartRun = null;
@@ -4636,14 +5265,32 @@ public class MainActivity extends Activity {
         msg.append("\nНаш расчёт по корзине: ").append(money(r.ourTotal));
 
         final long seconds = Math.round((SystemClock.uptimeMillis() - r.startedAt) / 1000.0);
+        // От касания до отчёта: по этому числу сервер видит, уложилась ли правка в 5 с (1.29).
+        // У отчёта хвоста своего касания нет; сборка без касания (запуск, чужая правка) его не несёт.
+        final long lag = r.changedAt > 0 ? SystemClock.uptimeMillis() - r.changedAt : -1;
+        r.changedAt = 0;
         final int landedNow = landed;
+        // Панель: «готово» — всё легло, лишнего в корзине сети нет и сборку не останавливали, иначе «не всё».
+        // Остановили — в знаменателе весь наряд, а не то, что успели. Сумма — только итог самой сети: наш
+        // расчёт (r.ourTotal) на панели не показываем, он похож на итог сети (в диалоге он подписан).
+        final int planned = r.items.length();
+        final boolean stopped = !stoppedWhy.isEmpty();
+        final int outOf = stopped ? r.lines.length() : planned;
+        final boolean extra = extraOf(r).length() > 0;
+        final Sign verdict = outOf == 0 ? Sign.NONE
+            : !stopped && landed == outOf && !extra ? Sign.DONE : Sign.PART;
+        final double netTotal = totalOf(cart);
+        final String share = outOf == 0 ? "" : landed + "/" + outOf;
+        final String sum = outOf == 0 ? r.name : verdict == Sign.DONE && netTotal > 0 ? rub(netTotal) : "";
+        final String said = r.name + ": легло " + landed + " из " + outOf
+            + (stopped ? ", остановлено" : extra ? ", в корзине сети лишнее" : "");
         if (!background) {
             new AlertDialog.Builder(this)
                 .setTitle(r.name + ": легло " + landed + " из " + r.items.length() + " за " + seconds + " с")
                 .setMessage(msg.toString())
                 .setPositiveButton("Готово", null)
                 .show();
-            say(r.name + ": легло " + landed + " из " + r.items.length() + ", отправляю отчёт", false);
+            say(verdict, share, sum, said + ", отправляю отчёт");
         } else {
             r.now = early
                 ? "легло " + landed + " из " + (r.items.length() + r.later.length()) + " за " + seconds + " с, ищу в сети ещё " + r.later.length()
@@ -4664,7 +5311,11 @@ public class MainActivity extends Activity {
                 } catch (Exception ignored) { }
             }
         }
-        if (!early && stoppedWhy.isEmpty() && r.items.length() > 0) remember(r, true);
+        // Пустой наряд (класть нечего, только снять своё) помним тоже (1.45): без этого сборка шла заново
+        // с каждой страницей — телефон владельца, 13.11.2026: Лента 7 раз и Пятёрочка 4 раза за минуту.
+        // Своё не снялось — «не вышло»: повтор не раньше RETRY_MS или после правки корзины.
+        // shortcut: то, что снять нельзя вовсе, пробуем каждые RETRY_MS, пока корзина пуста; счётчик попыток — если увидим в журнале.
+        if (!early && stoppedWhy.isEmpty()) remember(r, r.items.length() > 0 || !hasExcess(r));
         try {
             JSONArray reportItems = r.items;
             if (early) {
@@ -4678,7 +5329,11 @@ public class MainActivity extends Activity {
                         .put("sku", "")
                         .put("url", "")
                         .put("ok", false)
-                        .put("why", "ищу в сети после знакомых")
+                        .put("why", lat == null || lat.optString("search", "").isEmpty()
+                            ? "запросом не легла, положу касаниями" : "ищу в сети после знакомых")
+                        // Почему запросами не вышло (1.45) — пометкой: причину сервер разбирает по словам сети
+                        // («войдите», «выберите магазин», «нет в наличии»), а пометку только хранит.
+                        .put("note", fitWhy(r.apiWhy))
                         .put("put", 0)
                         .put("times", 0)
                         .put("how", "tap")
@@ -4696,39 +5351,69 @@ public class MainActivity extends Activity {
                 .put("background", background)
                 .put("seconds", seconds)
                 .put("extra", extraOf(r));
+            if (lag >= 0 && lag < 120000) body.put("lag_ms", lag);
+            // Сколько сборка ждала наряд (1.44): в журнале правок видно, сервер это или дорога к нему.
+            long planMs = r.planAt - r.startedAt;
+            if (r.planAt > 0 && planMs >= 0 && planMs < 120000) body.put("plan_ms", planMs);
             if (r.basket >= 0) body.put("basket", r.basket);
             if (!r.stamp.isEmpty()) body.put("stamp", r.stamp);
             if (cart.has("count") && !cart.isNull("count")) body.put("cart_count", cart.optInt("count"));
+            // Хроника приложения (1.54): что окно Пятёрочки решало до этого отчёта, в том числе на нажатиях, которых
+            // отчёт не дал. Сервер хранит её отдельно (phonecart.traces).
+            if ("pyaterochka".equals(r.code)) body.put("trace", Log.tail(r.name, r.code, 120, 30));
             final String name = r.name;
             call("/api/device/cartreport", body, (status, text) -> {
+                // Отчёт дал товару артикул сети (bound, 1.48): сервер связал его с карточкой, которую
+                // телефон нашёл и положил. Наряд в памяти ещё ищет товар касаниями — его срок вышел:
+                // fetchPlan возьмёт новый, и следующую правку сеть примет запросом.
+                try {
+                    if (status == 200 && new JSONObject(text).optInt("bound", 0) > 0) {
+                        memory().edit().remove("planAt." + r.code).apply();
+                    }
+                } catch (Exception ignored) { }
                 if (background) {
                     if (status != 200) Log.w(TAG, name + ": отчёт не ушёл — " + serverError(status, text));
                     tellPage();
                     return;
                 }
-                if (cartRun != null) return;   // уже идёт новая сборка — её строка важнее
-                if (status == 200) say(name + ": отчёт на сервере", false);
-                else say(name + ": отчёт не ушёл — " + serverError(status, text), true);
+                // Уже идёт новая сборка или человек перешёл в другую сеть — строка там не наша.
+                if (cartRun != null || currentChain != r.chain) return;
+                if (status == 200) say(verdict, share, sum, said + ", отчёт на сервере");
+                else say(Sign.FAIL, "", "отчёт не ушёл — " + serverError(status, text), null);
             });
         } catch (Exception ignored) { }
         if (background) {
             Log.i(TAG, r.name + ": фоновая сборка — легло " + landedNow + " из " + r.items.length()
-                + " за " + seconds + " с");
+                + " за " + seconds + " с" + (lag >= 0 ? ", от касания " + lag + " мс" : ""));
             if (early) tailLater(r); else rest(r.slot);
         }
     }
 
     /**
-     * Хвост (поиск незнакомых) — только после TAIL_QUIET_MS без правок. Он грузит тяжёлые
+     * Хвост (поиск незнакомых) — только после TAIL_QUIET_MS без правок и касаний. Он грузит тяжёлые
      * страницы сети и держит её окно: правка ждала конца его шага, а соседние сети — общий
      * поток WebView (эмулятор, 09.11.2026: Дикси начала через 13 с после касания).
      */
     private void tailLater(final CartRun r) {
         final Slot s = r.slot;
         rest(s);
-        handler.postDelayed(() -> {
-            if (s.run == null && s.last == r && s.view == r.view && s.pending.isEmpty() && !away) {
-                startTail(r);
+        // Дольше трёх TAIL_QUIET_MS касаний не ждём: листает «Где дешевле» — незнакомые ему тоже нужны.
+        final long until = SystemClock.uptimeMillis() + 3L * TAIL_QUIET_MS;
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (s.run != null || s.last != r || s.view != r.view || !s.pending.isEmpty() || away) return;
+                // Окно лечит куку защиты на главной странице (whenHealed): хвост увёл бы его оттуда (1.50).
+                if (healing(s)) {
+                    handler.postDelayed(this, 250);
+                    return;
+                }
+                // Экрана касались меньше TAIL_QUIET_MS назад — человек ещё выбирает, правка близко (1.36):
+                // хвост, начатый под палец, встречал её тяжёлой страницей в общем потоке окон.
+                long now = SystemClock.uptimeMillis();
+                long quiet = now - touchedAt;
+                if (quiet < TAIL_QUIET_MS && now < until) handler.postDelayed(this, TAIL_QUIET_MS - quiet);
+                else startTail(r);
             }
         }, TAIL_QUIET_MS);
     }
@@ -4737,14 +5422,15 @@ public class MainActivity extends Activity {
      * Что лежит в корзине сети сверх корзины человека: было в ней раньше, теперь нет или
      * меньше. Приложение этого не убирает — решает человек, — а называет в отчёте.
      */
-    private static JSONArray extraOf(CartRun r) {
+    private JSONArray extraOf(CartRun r) {
         JSONArray out = new JSONArray();
         Iterator<String> keys = r.cart.keys();
         while (keys.hasNext()) {
             String sku = keys.next();
-            int more = r.cart.optInt(sku, 0) - r.want.optInt(sku, 0);
+            int more = r.cart.optInt(sku, 0) - wantOf(r, sku);
             String name = r.names.optString(sku, "");
-            if (more <= 0 || name.isEmpty()) continue;
+            // Найденное поиском сети для товара из корзины — не лишнее, хотя артикула в наряде у него нет.
+            if (more <= 0 || name.isEmpty() || searchedAgain(r, sku)) continue;
             try {
                 out.put(new JSONObject().put("name", name).put("sku", sku).put("more", more));
             } catch (Exception ignored) { }
@@ -4796,7 +5482,14 @@ public class MainActivity extends Activity {
      * запуск — через DEBOUNCE_MS после последней правки.
      */
     private JSONObject decide(JSONObject payload) {
+        // Та же корзина с другим отпечатком — её правили; без «правки по касанию» так приходит новый товар.
+        final boolean changed = lastCollect != null && !lastCollect.optString("stamp", "").isEmpty()
+                && lastCollect.optInt("basket", -1) == payload.optInt("basket", -2)
+                && !lastCollect.optString("stamp", "").equals(payload.optString("stamp", ""));
+        if (lastCollect == null) peekLive = SystemClock.uptimeMillis();     // запуск: касаний ещё не было
         lastCollect = payload;
+        int budget = payload.optInt("budget_ms", 0);
+        collectDeadline = budget > 0 ? SystemClock.uptimeMillis() + Math.min(5000, budget) : 0;
         JSONObject answer = new JSONObject();
         JSONArray starting = new JSONArray();
         JSONObject skip = new JSONObject();
@@ -4812,6 +5505,7 @@ public class MainActivity extends Activity {
             }
         }
         JSONArray chains = payload.optJSONArray("chains");
+        int warming = 0;
         for (int i = 0; chains != null && i < chains.length(); i++) {
             JSONObject c = chains.optJSONObject(i);
             if (c == null) continue;
@@ -4837,10 +5531,19 @@ public class MainActivity extends Activity {
                     slots.put(code, s);
                 }
                 // Окно сети с запросами открываем заранее (rest ставит его на robots.txt): первая
-                // правка не ждёт загрузки окна, до 1,1 с (замер 09.11.2026).
+                // правка не ждёт загрузки окна, до 1,1 с (замер 09.11.2026). По одному, с шагом:
+                // пять окон разом занимали главный поток на секунды, и касание человека ждало
+                // (эмулятор под нагрузкой, 10.11.2026: «приложение не отвечает»).
                 if (s.view == null && s.run == null && cartApiOrigin(code) != null) {
-                    s.view = hiddenView(idx);
-                    rest(s);
+                    final Slot cold = s;
+                    handler.postDelayed(() -> {
+                        if (cold.view != null || cold.run != null || away) return;
+                        cold.view = hiddenView(idx);
+                        // Сразу на robots.txt: rest ждёт 1,5 с, и правка в первые секунды после запуска или
+                        // возвращения заставала окно пустым (замер 11.11.2026: +0,8–2,2 с к правке).
+                        cold.view.loadUrl(cartApiOrigin(code) + "/robots.txt");
+                        rest(cold);
+                    }, 300L * warming++);
                 }
                 if (cartRun != null && cartRun.chain == idx) {
                     skip.put(code, "собираете сами");
@@ -4849,10 +5552,12 @@ public class MainActivity extends Activity {
                 if (s.run != null) {
                     if (!stamp.equals(s.run.stamp)) {
                         s.pending = stamp;   // доберём после этой сборки
-                        // Хвост правку не держит, бросаем его сразу.
-                        // shortcut: касание хвоста в полёте может лечь мимо памяти телефона, и такую
+                        // Касания устаревшей корзины бросаем сразу (1.27): окна делят процесс страниц,
+                        // и витрина в окне с касаниями держала запросы других сетей 10–19 с
+                        // (замер 09.11.2026). Ждём только запись cartapi.js — она кончается за секунды.
+                        // shortcut: касание в полёте может лечь мимо памяти телефона, и такую
                         // позицию никто не снимет; увидим лишнее в корзинах сетей — ждать конца шага.
-                        if (s.run.tail) supersede(s.run);
+                        if (!writing(s.run)) supersede(s.run);
                     }
                     starting.put(code);
                     continue;
@@ -4872,6 +5577,9 @@ public class MainActivity extends Activity {
                 if (done != null && sameOrder && stamp.equals(done.optString("stamp")) && basket == done.optInt("basket", -2)
                         && ((done.optBoolean("ok") && fresh)
                             || (!done.optBoolean("ok") && System.currentTimeMillis() - doneAt < RETRY_MS))) {
+                    // Собирать нечего, но наряд для правки по касанию должен лежать в памяти; после «Заказать»
+                    // правка по касанию его не выводит.
+                    if (order == null) fetchPlan(s, stamp, basket);
                     skip.put(code, done.optBoolean("ok") ? "уже собрано для этой корзины (свежее)"
                                                          : "не вышло, попробую позже");
                     continue;
@@ -4895,15 +5603,87 @@ public class MainActivity extends Activity {
                         }
                     }
                 }
-                s.pending = stamp;
-                soon(s);
+                // Правку по касанию fastChange уже поставил на отсчёт: ответ сервера его не отодвигает (1.29).
+                if (s.soon == null || !stamp.equals(s.pending)) {
+                    s.pending = stamp;
+                    soon(s);
+                }
                 starting.put(code);
             } catch (Exception ignored) { }
+        }
+        // Время правки без «правки по касанию» (новый товар идёт через сервер) — от последнего касания, если оно
+        // не старше 10 с (1.37): отчёты таких правок шли без времени, и журнал сервера их не видел. У сети,
+        // которая эту корзину не собирает и запуска не ждёт, время стираем: иначе оно ушло бы в отчёт
+        // другой правки.
+        Set<String> started = new HashSet<>();
+        for (int i = 0; i < starting.length(); i++) started.add(starting.optString(i));
+        long now = SystemClock.uptimeMillis();
+        for (Slot s : slots.values()) {
+            if (!started.contains(s.code)) {
+                if (s.soon == null) s.changedAt = 0;
+            } else if (changed && s.changedAt == 0 && now - touchedAt < 10000
+                    && (s.run == null || !stamp.equals(s.run.stamp))) {
+                s.changedAt = touchedAt;
+            }
+        }
+        // Что решили по каждой сети с окном (1.54): в хронику, когда решение или корзина поменялись — collect
+        // приходит с каждой правкой и с каждым возвращением на экран.
+        for (Slot s : slots.values()) {
+            String verdict = skip.has(s.code) ? "не собираю: " + skip.optString(s.code, "")
+                    : started.contains(s.code) ? "собираю" + (s.run != null ? " (сборка уже идёт, доберу)" : "") : "";
+            if (verdict.isEmpty()) continue;
+            verdict += " [" + (stamp.length() > 6 ? stamp.substring(0, 6) : stamp) + "]";
+            if (verdict.equals(lastVerdict.get(s.code))) continue;
+            lastVerdict.put(s.code, verdict);
+            Log.i(TAG, CHAINS[s.chain][0] + ": разбор корзины — " + verdict);
         }
         try {
             answer.put("starting", starting).put("skip", skip);
         } catch (Exception ignored) { }
+        peekSoon(1500);     // окну сети — время открыться
         return answer;
+    }
+
+    /**
+     * Наряд без сборки (1.33). Обновление приложения стирает planAt.* у всех сетей, наряд старше PLAN_MS
+     * негоден — и первая правка шла за ним на сервер (замер 11.11.2026: Дикси 4,3–6,0 с вместо 1,6).
+     * Берём его, пока корзину не правят. Сборки нет: сеть уже собрана, окно и запись в её корзину ни к
+     * чему, а касание во время сборки оборвало бы её и пошло бы за нарядом второй раз.
+     */
+    private void fetchPlan(final Slot s, final String stamp, final int basket) {
+        long now = SystemClock.uptimeMillis();
+        // Не чаще раза в минуту: сервер мог не ответить, а collect приходит с каждой правкой.
+        if (cartApiOrigin(s.code) == null || (s.planAsked != 0 && now - s.planAsked < 60000)
+                || System.currentTimeMillis() - memory().getLong("planAt." + s.code, 0) <= PLAN_MS) return;
+        s.planAsked = now;
+        JSONObject body = new JSONObject();
+        try {
+            body.put("store", s.code).put("app_version", BuildConfig.VERSION_NAME)
+                .put("background", true).put("basket", basket);
+            // Как в askPlan: своё без адреса карточки. Адрес из наряда нужен, когда запросы откажут
+            // и уменьшенное придётся снимать касаниями.
+            JSONObject led = new JSONObject(memory().getString("ledger." + s.code, "{}"));
+            JSONArray dropSkus = new JSONArray();
+            for (Iterator<String> it = led.keys(); it.hasNext(); ) {
+                String sku = it.next();
+                JSONObject item = led.optJSONObject(sku);
+                if (item != null && item.optInt("q", 0) > 0 && item.optString("u", "").isEmpty()) dropSkus.put(sku);
+            }
+            if (dropSkus.length() > 0) body.put("drop", dropSkus);
+        } catch (Exception ignored) { }
+        call("/api/device/cartplan", body, (status, text) -> {
+            // Корзину уже поправили или сборка взяла наряд сама — этот затёр бы наряд новее.
+            if (status != 200 || lastCollect == null || !stamp.equals(lastCollect.optString("stamp", ""))
+                    || System.currentTimeMillis() - memory().getLong("planAt." + s.code, 0) <= PLAN_MS) return;
+            try {
+                if (!stamp.equals(new JSONObject(text).optString("stamp", "-"))) return;
+            } catch (Exception e) {
+                return;
+            }
+            memory().edit().putString("plan." + s.code, text)
+                .putLong("planAt." + s.code, System.currentTimeMillis()).apply();
+            Log.i(TAG, s.code + ": наряд взят заранее, без сборки");
+        });
     }
 
     /** Вошёл ли человек в сеть — насколько видно серверу и самому телефону. */
@@ -4920,18 +5700,564 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    /** Сеть с запросами (cartapi.js) вот-вот начнёт или ещё кладёт. */
-    private boolean apiRunning() {
+    /** Другая сеть с запросами (cartapi.js) вот-вот начнёт или ещё кладёт. */
+    private boolean apiRunning(Slot self) {
         for (Slot o : slots.values()) {
-            if (cartApiOrigin(o.code) == null) continue;
+            if (o == self || cartApiOrigin(o.code) == null) continue;
             if (o.run != null ? !o.run.tail && !o.run.apiOver : o.soon != null) return true;
         }
         return false;
     }
 
+    /**
+     * Соединения с узлами корзин открываем по касанию экрана (1.29): счётчик человек открывает раньше,
+     * чем жмёт «+», и к первому запросу DNS и TLS уже позади. Замер 11.11.2026 на эмуляторе: первое
+     * чтение корзины Пятёрочки после простоя — 0,7 с вместо 4,0 с. Запросов сети подсказка не шлёт.
+     * Вторая, анонимная, — для предварительного запроса браузера (CORS): он ходит своим соединением.
+     */
+    private void preconnect() {
+        long now = SystemClock.uptimeMillis();
+        if (away || now - preconnectedAt < PRECONNECT_MS) return;
+        if (chainPanel != null && chainPanel.getVisibility() == View.VISIBLE) return;   // человек в окне сети
+        for (Slot s : slots.values()) {
+            String origin = cartApiOrigin(s.code);
+            if (origin == null || s.view == null || s.run != null) continue;
+            preconnectedAt = now;
+            String host = cartApiHost(s.code);
+            s.view.evaluateJavascript("(function(o,h){if(location.origin!==o)return;"
+                + "[[o,0],[h,0],[h,1]].forEach(function(p){if(!p[0])return;var l=document.createElement('link');"
+                + "l.rel='preconnect';if(p[1])l.crossOrigin='anonymous';l.href=p[0];"
+                + "(document.head||document.documentElement).appendChild(l);"
+                + "setTimeout(function(){l.remove();},1000);});})("
+                + JSONObject.quote(origin) + "," + JSONObject.quote(host == null ? "" : host) + ")", null);
+        }
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        touchedAt = SystemClock.uptimeMillis();
+        if (ev.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            preconnect();
+            peekByTouch = true;
+            peekSoon(0);
+        }
+        return super.dispatchTouchEvent(ev);
+    }
+
+    /** Прочитать корзину Пятёрочки заранее через delay мс; дальше peek заводит себя сам. */
+    private void peekSoon(long delay) {
+        handler.removeCallbacks(peekLoop);
+        handler.postDelayed(peekLoop, delay);
+    }
+
+    private void peek() {
+        final long now = SystemClock.uptimeMillis();
+        boolean any = false;
+        for (String[] p : PEEKS) any |= slots.get(p[0]) != null;
+        // Человек не на экране корзины или давно его не трогал — сеть не тревожим: заведут касание и collect.
+        // Касание при этом помним (peekByTouch): корзина, которую им открыли, прочитается сразу.
+        if (!any || away || now - Math.max(touchedAt, peekLive) > PEEK_IDLE_MS
+                || !pageOurs || !pageUrl.contains("/phone/basket")) return;
+        peekSoon(PEEK_TICK_MS);
+        final boolean byTouch = peekByTouch;
+        peekByTouch = false;
+        if (chainPanel != null && chainPanel.getVisibility() == View.VISIBLE) return;
+        for (String[] p : PEEKS) {
+            Slot s = slots.get(p[0]);
+            if (s == null) continue;
+            boolean touched = byTouch || s.peekOwed;
+            s.peekOwed = false;
+            if (touched || !p[2].isEmpty()) peekAt(s, p[1], touched, now);
+        }
+    }
+
+    /** Прочитать корзину сети заранее, если её память (memoKey в cartapi.js) устарела; byTouch — по касанию. */
+    private void peekAt(final Slot s, String memoKey, final boolean byTouch, long now) {
+        if (now - s.peekAskedAt < 3000 || now - s.peekStartedAt < PEEK_AGE_MS || s.run != null || s.soon != null) return;
+        // Сеть недавно не пускала (стена, отказ узла корзин): сборки её обходят, чтение заранее — тоже.
+        JSONObject done = doneOf(s.code);
+        long clock = System.currentTimeMillis();
+        if (wallUp(s.code)
+                || (done != null && done.optBoolean("wall") && clock - done.optLong("at", 0) < RETRY_MS)) return;
+        if (s.view == null) {
+            s.peekOwed = byTouch;       // касание помним до повтора: сеть без расписания иначе не прочтётся
+            peekSoon(3000);     // окно сети ещё открывается (запуск приложения)
+            return;
+        }
+        // Кука Пятёрочки старая: узел её не примет, а первый отказ запирает его на минуту — лечим до чтения (1.57).
+        if (aheadDue(s)) {
+            s.peekAskedAt = now;
+            aheadHeal(s, "чтение заранее");
+            return;
+        }
+        final JSONObject input = new JSONObject();
+        try {
+            // Темп — из наряда сети, как у сборки: ведро темпа у них общее. Наряда нет — правка пойдёт
+            // через сервер, и секунду чтения там не выиграть.
+            JSONObject rules = new JSONObject(memory().getString("plan." + s.code, "{}")).optJSONObject("rules");
+            // Запросы сети сервер мог выключить (rules.api): тогда и заранее не читаем.
+            if (rules == null || !rules.optBoolean("api", false)) return;
+            input.put("key", "peek").put("chain", s.code).put("peek", true)
+                 .put("lines", new JSONArray()).put("mine", new JSONObject()).put("want", new JSONObject())
+                 .put("drop", false)
+                 .put("pause_ms", Math.max(300, rules.optInt("request_pause_ms", 1000)))
+                 .put("burst", rules.optInt("api_burst", 3));
+        } catch (Exception e) {
+            return;
+        }
+        s.peekAskedAt = now;
+        final long age = byTouch ? PEEK_TOUCH_AGE_MS : PEEK_AGE_MS;
+        // Только отдыхающее окно, без чтения в полёте и с памятью старше age или возвращения человека.
+        // «0» — окно ещё не на отдыхе (открывается, греет куки на странице сети): заглянем через 3 с.
+        s.view.evaluateJavascript("(function(r,key,since,age){"
+                + "if(window.__kzPeek)return '';"
+                // Прошлое чтение заранее не вышло (метка cartapi.js): сеть, которая не пускает, не дёргаем.
+                + "if(window.__kzPeekFailAt&&Math.abs(Date.now()-window.__kzPeekFailAt)<" + API_WALL_MS + ")return '';"
+                + "if(location.href!==r||window.__kzStale||document.readyState!=='complete')return '0';"
+                + "try{var m=JSON.parse(localStorage[key]||'null');"
+                + "if(m&&m.at>=since&&Math.abs(Date.now()-m.at)<age)return '';}catch(e){}"
+                + "return '1';})(" + JSONObject.quote(cartApiOrigin(s.code) + "/robots.txt") + ","
+                + JSONObject.quote(memoKey) + "," + Math.max(homeSince, s.movedAt) + "," + age + ")", val -> {
+            String state = unquote(val);
+            if ("0".equals(state) && !away) {
+                s.peekOwed = byTouch;
+                peekSoon(3000);
+            }
+            if (!"1".equals(state) || away || s.view == null || s.run != null || s.soon != null) return;
+            String script = cartApiScript();
+            if (script.isEmpty()) return;
+            s.peekStartedAt = SystemClock.uptimeMillis();
+            Log.i(TAG, CHAINS[s.chain][0] + ": читаю корзину заранее");
+            s.view.evaluateJavascript(script + ";" + CARTAPI_START.replace("%s", input.toString()), null);
+            if ("pyaterochka".equals(s.code)) handler.postDelayed(() -> peekCheck(s, 0), 1500);
+        });
+    }
+
+    /**
+     * Чтение Пятёрочки заранее не вышло быстрым «обрывом» при живой связи (fast в cartapi.js): это защита, а не
+     * связь, она не принимает куку (healPyat). Лечим сразу, пока человек не успел правку: иначе первая правка
+     * после запуска платила за это сама (1.50). Не чаще HEAL_GAP_MS. Узлу до конца HEAL_QUIET_MS не пишем: правка,
+     * пришедшая за это время, ждёт паузу (healing), а не идёт касаниями по стене.
+     * Результата ещё нет — чтение идёт (темп, холодное соединение): смотрим снова, до 8,5 с от его начала
+     * (быстрый отказ — до 8 с).
+     */
+    private void peekCheck(final Slot s, final int tries) {
+        if (s.view == null || s.run != null || s.soon != null || away) return;
+        s.view.evaluateJavascript("(function(){var a=window.__kzApi&&window.__kzApi.peek;"
+                + "return !a?'?':(a.ok===false&&a.stage==='net'&&a.fast===true?'1':'');})()", val -> {
+            String state = unquote(val);
+            if ("?".equals(state)) {
+                if (tries < 14) handler.postDelayed(() -> peekCheck(s, tries + 1), 500);
+                return;
+            }
+            Log.i(TAG, CHAINS[s.chain][0] + ": чтение заранее — " + ("1".equals(state) ? "быстрый отказ узла" : "без быстрого отказа")
+                    + "; " + cookieNote(cartApiOrigin(s.code), PYAT_COOKIE) + "; кука освежена "
+                    + agoSince(memory().getLong("warm." + s.code, 0)));
+            if (!"1".equals(state) || s.view == null || s.run != null || s.soon != null || away) return;
+            final long t0 = SystemClock.uptimeMillis();
+            if (!healAllowed(s)) {
+                // Узел отказывает, а лечить уже нельзя (лечили недавно или защита закрыла адрес): сборки и чтение заранее
+                // его не дёргают, правка сразу идёт касаниями, а не после ещё одного отказа.
+                notePeek(s, "лечили недавно, не лечу");
+                memory().edit().putLong("apiwall." + s.code, System.currentTimeMillis()).apply();
+                return;
+            }
+            final String origin = cartApiOrigin(s.code);
+            dropCookie(origin, PYAT_COOKIE);
+            if (hasCookie(origin, PYAT_COOKIE)) {
+                // Стереть не вышло (кука другого пути или домена): новой главная не выдаст, а whenHealed принял бы старую
+                // за выданную, и правка зря ждала бы паузу. Как при !healAllowed: стена, правка сразу касаниями.
+                Log.i(TAG, CHAINS[s.chain][0] + ": чтение заранее не вышло, " + PYAT_COOKIE + " не стёрлась");
+                notePeek(s, PYAT_COOKIE + " не стёрлась");
+                memory().edit().putLong("apiwall." + s.code, System.currentTimeMillis()).apply();
+                return;
+            }
+            // Узел молчит и перед новой кукой: до конца паузы ни сборок (cartApi), ни чтения заранее (peekAt).
+            memory().edit().putLong("apiwall." + s.code, System.currentTimeMillis() - API_WALL_MS + HEAL_QUIET_MS).apply();
+            Log.i(TAG, CHAINS[s.chain][0] + ": чтение заранее не вышло, " + PYAT_COOKIE + " стёрта, открываю главную");
+            s.view.loadUrl(origin + "/");
+            whenHealed(s, origin, miss -> {
+                Log.i(TAG, CHAINS[s.chain][0] + ": " + (miss.isEmpty()
+                        ? PYAT_COOKIE + " и главная готовы за " + (SystemClock.uptimeMillis() - t0) + " мс"
+                        : PYAT_COOKIE + " не вылечена: " + miss));
+                notePeek(s, PYAT_COOKIE + (miss.isEmpty() ? " стёрта, главная готова за " + (SystemClock.uptimeMillis() - t0) + " мс"
+                        : " стёрта, не вылечена: " + miss));
+                // Окно — на robots.txt и тогда, когда правка уже ждёт в begin: запросы на главной пропали бы вместе со
+                // страницей, если защита её перезагрузит. Свёрнутое приложение страниц не грузит (вернётся — warm).
+                if (!away && s.view != null) s.view.loadUrl(origin + "/robots.txt");
+                holdQuiet(s, origin, t0, miss);
+                // Главная только что открыта и выдала куку: подогрев (rest, warm) до срока не нужен — и не остался бы без
+                // своих таймеров, пока окно держит пауза узла.
+                if (hasCookie(origin, PYAT_COOKIE)) {
+                    memory().edit().putLong("warm." + s.code, System.currentTimeMillis()).apply();
+                }
+                s.peekAskedAt = 0;
+                s.peekStartedAt = 0;
+                peekSoon(1500);     // читаем заново: корзина в памяти к первой правке
+            });
+        });
+    }
+
+    /**
+     * Узел корзин Пятёрочки ответил «обрывом» (1.50). Это мгновенный отказ её защиты (ServicePipe): куку
+     * spsc он перестаёт принимать, когда она протухла, а страница сети протухшую не заменяет — «обновляю вход»
+     * главной страницей не помогало, и сеть уходила на три минуты в касания (телефон владельца, 13.11.2026).
+     * Стёртую куку страница выдаёт заново, но узел принимает её лишь после того, как страница дошла до конца
+     * (стенд: 8–10 с). Стираем куку в хранилище WebView (видны и HttpOnly), открываем главную, ждём новую куку
+     * и готовую страницу (whenHealed) и повторяем запрос с robots.txt. Что вышло — в причину отказа (healNote):
+     * не помогло, так журнал скажет, почему.
+     */
+    private void healPyat(final CartRun r, final String origin, final Runnable then) {
+        final boolean had = hasCookie(origin, PYAT_COOKIE);
+        dropCookie(origin, PYAT_COOKIE);
+        final boolean gone = !hasCookie(origin, PYAT_COOKIE);
+        final String was = "; " + PYAT_COOKIE + (had ? " была, " : " не было, ");
+        final long t0 = SystemClock.uptimeMillis();
+        Log.i(TAG, r.name + ": отказ узла корзин, стираю " + PYAT_COOKIE + " и открываю главную");
+        // Узел молчит и перед новой кукой. Стена держит до конца паузы другие сборки (эту закрыли или свернули —
+        // следующую) и чтение заранее; повтор этой сборки (then) стену не читает. Лечить снова — не раньше HEAL_GAP_MS.
+        memory().edit().putLong("apiwall." + r.code, System.currentTimeMillis() - API_WALL_MS + HEAL_QUIET_MS).apply();
+        r.slot.healAt = t0;
+        beat(r, true);      // строка сборки живёт пульсом, а тишина до повтора — около минуты
+        go(r, origin + "/");
+        if (!gone) {        // стереть не вышло: прежний путь, главная и 4 с
+            r.healNote = was + "не стёрлась";
+            whenReady(r, "/", null, 4000, then);
+            return;
+        }
+        whenHealed(r.slot, origin, miss -> {
+            r.healNote = was + (miss.isEmpty() ? "стёрта, главная готова за " + (SystemClock.uptimeMillis() - t0) + " мс"
+                                               : "стёрта, не вылечена: " + miss);
+            Log.i(TAG, r.name + ": лечение" + r.healNote);
+            // Пауза узла держится окном и когда сборку закрыли посреди лечения (новая правка): следующая сборка ждёт её
+            // в begin, а не упирается в стену и не уходит касаниями.
+            holdQuiet(r.slot, origin, t0, miss);
+            if (!alive(r)) {        // сборку закрыли посреди лечения: окно на отдых, не оставлять на главной
+                if (r.slot.run == null) rest(r.slot);
+                return;
+            }
+            beat(r, true);
+            // Запуск запросов на главной пропал бы вместе со страницей, когда защита её перезагрузит
+            // (стенд, 13.11.2026: «сеть не ответила за 45 с», правка 52 с): назад на robots.txt, где окно отдыхает.
+            // Повтор — не раньше HEAL_QUIET_MS после отказа: узел до тех пор отказывает и новой куке (стенд: отказы
+            // до 62-й секунды). Новой куки нет (защита её не выдала) — паузу ждать незачем: повтор получит отказ, и
+            // сеть пойдёт касаниями. Адрес закрыт защитой (HEAL_BLOCKED) — повторять запрос некуда: сразу отказ (apiGaveUp).
+            go(r, origin + "/robots.txt");
+            if (miss.startsWith(HEAL_BLOCKED)) {
+                apiGaveUp(r, "узел корзин закрыт защитой сети" + r.healNote);
+                uploadTrace(r.code, r.name + ": адрес закрыт защитой" + r.healNote);    // отчёта не будет, а хроника нужна
+                return;
+            }
+            long wait = hasCookie(origin, PYAT_COOKIE)
+                    ? Math.max(0, t0 + HEAL_QUIET_MS - SystemClock.uptimeMillis()) : 0;
+            whenReady(r, null, null, (int) wait, then);
+        });
+    }
+
+    /** Есть ли у origin кука name — по хранилищу WebView, а не по странице: видны и HttpOnly (1.50). */
+    private static boolean hasCookie(String origin, String name) {
+        String all = CookieManager.getInstance().getCookie(origin + "/");
+        return all != null && ("; " + all).contains("; " + name + "=");
+    }
+
+    /**
+     * Кука защиты для хроники (1.54): сколько в ней знаков, её очертание (цифра — d, буква — x, прочее как есть, не
+     * больше 40 знаков) и возраст по метке времени в значении, если там такая есть. Значение никуда не пишется.
+     * Зачем: сколько живёт кука на стороне узла, неизвестно, а от этого зависит, как часто её освежать.
+     */
+    private static String cookieNote(String origin, String name) {
+        try {
+            return cookieShape(origin, name);
+        } catch (RuntimeException e) {
+            return name + " не прочиталась: " + e;      // хроника не должна ронять сборку
+        }
+    }
+
+    private static String cookieShape(String origin, String name) {
+        String value = cookieValue(origin, name);
+        if (value == null) return name + " нет";
+        StringBuilder shape = new StringBuilder();
+        for (int i = 0; i < value.length() && shape.length() < 40; i++) {
+            char ch = value.charAt(i);
+            shape.append(Character.isDigit(ch) ? 'd' : Character.isLetter(ch) ? 'x' : ch);
+        }
+        long mark = cookieMarkMs(value);
+        String age = mark < 0 ? "" : ", метка " + (System.currentTimeMillis() - mark) / 1000 + " с назад";
+        return name + " длина " + value.length() + " вид " + shape + age;
+    }
+
+    /** Значение куки name у origin по хранилищу WebView (видны и HttpOnly); нет куки — null. */
+    private static String cookieValue(String origin, String name) {
+        String all = origin == null ? null : CookieManager.getInstance().getCookie(origin + "/");
+        if (all == null) return null;
+        for (String part : all.split(";\\s*")) {
+            if (part.startsWith(name + "=")) return part.substring(name.length() + 1);
+        }
+        return null;
+    }
+
+    /** Метка времени в значении куки (13 цифр — мс, 10 — секунды) в мс; её нет или она не похожа на время — -1. */
+    private static long cookieMarkMs(String value) {
+        Matcher m = Pattern.compile("\\d{10,13}").matcher(value);
+        if (!m.find()) return -1;
+        try {
+            long mark = Long.parseLong(m.group());
+            long ms = mark >= 100000000000L ? mark : mark * 1000;
+            long gone = System.currentTimeMillis() - ms;
+            return gone > -86400000L && gone < 90L * 86400000L ? ms : -1;
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    /**
+     * Сколько мс кука защиты Пятёрочки не освежалась (1.57): по метке времени в её значении, а нет метки — по последнему
+     * удачному запросу или подогреву. Куки нет вовсе — Long.MAX_VALUE: узел без неё отказывает.
+     */
+    private long pyatCookieAgeMs(String origin, String code) {
+        String value = cookieValue(origin, PYAT_COOKIE);
+        if (value == null) return Long.MAX_VALUE;
+        long now = System.currentTimeMillis();
+        long mark = cookieMarkMs(value);
+        if (mark >= 0) return Math.max(0, now - mark);
+        long warm = memory().getLong("warm." + code, 0);
+        return warm <= 0 ? Long.MAX_VALUE : Math.max(0, now - warm);
+    }
+
+    /**
+     * Пора лечить куку Пятёрочки до запроса (1.57): она старше PYAT_STALE_MS, узел ей скоро не поверит, а первый отказ
+     * запирает его на минуту. Не нужно, когда лечение уже идёт, узел недавно отказал (стена: пауза после отказа, её лечит
+     * прежний путь) или защита закрыла адрес; и не чаще AHEAD_GAP_MS и AHEAD_PER_HOUR в час.
+     */
+    private boolean aheadDue(Slot s) {
+        if (s == null || s.view == null || away || !"pyaterochka".equals(s.code)) return false;
+        String origin = cartApiOrigin(s.code);
+        if (origin == null || blocked(s.code) || wallUp(s.code) || healing(s)) return false;
+        if (pyatCookieAgeMs(origin, s.code) <= PYAT_STALE_MS) return false;
+        long now = SystemClock.uptimeMillis();
+        if (s.aheadAt != 0 && now - s.aheadAt < AHEAD_GAP_MS) return false;
+        int lastHour = 0;
+        for (long t : s.aheadLog) if (t != 0 && now - t < 3600000L) lastHour++;
+        return lastHour < s.aheadLog.length;
+    }
+
+    /**
+     * Вылечить куку Пятёрочки до первого запроса (1.57): стереть, открыть главную, дождаться новой куки и конца запроса
+     * защиты (whenHealed), вернуть окно на robots.txt и прочитать корзину заново. В отличие от лечения после отказа здесь
+     * отказа не было, и паузы узла ждать не надо: запрос идёт сразу за лечением (begin ждёт его, пока healing). Лечение
+     * после отказа это не заменяет и не отменяет: метку healAt не трогаем.
+     */
+    private void aheadHeal(final Slot s, final String why) {
+        final String origin = cartApiOrigin(s.code);
+        final String name = CHAINS[s.chain][0];
+        final long t0 = SystemClock.uptimeMillis();
+        s.aheadAt = t0;
+        s.aheadLog[s.aheadN++ % s.aheadLog.length] = t0;
+        if (s.keepAlive != null) {      // подогрев на очереди увёл бы окно на robots.txt посреди лечения
+            handler.removeCallbacks(s.keepAlive);
+            s.keepAlive = null;
+        }
+        Log.i(TAG, name + ": кука старая, лечу до запроса (" + why + "): " + cookieNote(origin, PYAT_COOKIE)
+                + "; кука освежена " + agoSince(memory().getLong("warm." + s.code, 0)));
+        dropCookie(origin, PYAT_COOKIE);
+        if (hasCookie(origin, PYAT_COOKIE)) {
+            Log.i(TAG, name + ": до запроса не вышло, " + PYAT_COOKIE + " не стёрлась");
+            notePeek(s, "до запроса: " + PYAT_COOKIE + " не стёрлась");
+            return;
+        }
+        final long healAt = s.healAt;
+        s.view.loadUrl(origin + "/");
+        whenHealed(s, origin, miss -> {
+            s.healAt = healAt;
+            String note = miss.isEmpty() ? PYAT_COOKIE + " вылечена до запроса за " + (SystemClock.uptimeMillis() - t0) + " мс"
+                                         : PYAT_COOKIE + " до запроса не вылечена: " + miss;
+            Log.i(TAG, name + ": " + note + "; " + cookieNote(origin, PYAT_COOKIE));
+            notePeek(s, note);
+            if (!away && s.view != null) s.view.loadUrl(origin + "/robots.txt");
+            if (hasCookie(origin, PYAT_COOKIE)) memory().edit().putLong("warm." + s.code, System.currentTimeMillis()).apply();
+            s.peekAskedAt = 0;
+            s.peekStartedAt = 0;
+            peekSoon(1000);
+        });
+    }
+
+    /** Сколько прошло от метки в часах телефона, для хроники (1.54). */
+    private static String agoSince(long wallMs) {
+        return wallMs <= 0 ? "ни разу" : (System.currentTimeMillis() - wallMs) / 1000 + " с назад";
+    }
+
+    /**
+     * Стереть куку name у origin: без атрибута Domain (кука только этого хоста) и с ним — на хосте и на каждом его
+     * суффиксе в две и больше метки. Ключ куки — имя, домен и путь, а настоящая spsc живёт на .5ka.ru, не на узле
+     * 5d.5ka.ru: «с доменом хоста» её не взять (1.52). Видны и HttpOnly (CookieManager).
+     */
+    private static void dropCookie(String origin, String name) {
+        CookieManager cm = CookieManager.getInstance();
+        cm.setCookie(origin + "/", name + "=; Max-Age=0; Path=/");
+        for (String d = Uri.parse(origin).getHost(); d != null && d.indexOf('.') > 0; d = d.substring(d.indexOf('.') + 1)) {
+            cm.setCookie(origin + "/", name + "=; Max-Age=0; Path=/; Domain=" + d + "; Secure");
+        }
+        cm.flush();
+    }
+
+    /**
+     * Главная страница окна готова: догрузилась, не уходящая, с каркасом сайта (не страница проверки защиты и
+     * не robots.txt), её запрос защиты gatekeeper/evaluate завершился (запись в Resource Timing появляется после
+     * ответа) и она простояла HEAL_STABLE_MS; не видно запроса — HEAL_LATE_MS. Перезагрузка после проверки
+     * обнуляет метку страницы (1.50). Не готова — коротко, что вместо неё: путь, readyState, «брошена» (go),
+     * «без каркаса», «ждёт защиту». Страница «Проблемы со связью» — HEAL_BLOCK_PAGE: защита закрыла адрес (стенд,
+     * 14.11.2026: без корня сайта #__next, с заголовком h1, поэтому через HEAL_LATE_MS она сошла бы за готовую). 15.11.2026
+     * тот же блок пришёл другим видом: путь /xpvnsulc/, без h1, текст «дата Ваш IP … ID запроса …»; 1.57 его не узнала,
+     * лечила и стучалась дальше (1.58: путь /xpvnsulc/ и «Ваш IP» без ограничения длины текста). Путь без текста
+     * блоком сразу не считается: у Самоката /xpvnsulc/ — и проходящая проверка (20.10.2026); застрявшую на нём до конца
+     * лечения страницу блоком называет whenHealed (1.61). Свой
+     * экран ошибки сайта корень #__next имеет и блокировкой не считается; пробелы в тексте — любые, и неразрывные.
+     */
+    private static final String HEALED_JS =
+        "(function(){var t=document.body?document.body.innerText:'';"
+        + "if(!document.getElementById('__next')&&((t.length<1500&&/Проблемы\\s+со\\s+связью/.test(t))"
+        + "||(location.pathname.indexOf('/xpvnsulc/')===0&&/Ваш\\s+IP/.test(t))))return '"
+        + HEAL_BLOCK_PAGE + "';"
+        + "var m=!!document.querySelector('#__next,main,h1,header');"
+        + "if(document.readyState!=='complete'||window.__kzStale||location.pathname==='/robots.txt'||!m)"
+        + "return location.pathname.slice(0,12)+' '+document.readyState+(window.__kzStale?' брошена':'')+(m?'':' без каркаса');"
+        + "if(!window.__kzHealSeen)window.__kzHealSeen=Date.now();"
+        + "var age=Date.now()-window.__kzHealSeen,g=false;"
+        + "try{g=performance.getEntriesByType('resource').some(function(e){"
+        + "return e.name.indexOf('/gatekeeper/')>=0&&e.responseEnd>0;});}catch(e){}"
+        + "return ((g&&age>=" + HEAL_STABLE_MS + ")||age>=" + HEAL_LATE_MS + ")?'1':'ждёт защиту';})()";
+
+    /** Лечить куку Пятёрочки можно не чаще HEAL_GAP_MS: лечили недавно, и не помогло — причина не в куке (1.50). */
+    private static boolean healAllowed(Slot s) {
+        return s.healAt == 0 || SystemClock.uptimeMillis() - s.healAt >= HEAL_GAP_MS;
+    }
+
+    /** Чем кончилось лечение куки при чтении заранее (1.52): до правки оно видно только в logcat телефона. */
+    private static void notePeek(Slot s, String note) {
+        s.peekNote = note;
+        s.peekNoteAt = SystemClock.uptimeMillis();
+    }
+
+    /** Запись о лечении заранее — в причину отказа сборки, чтобы журнал отказов на сервере сказал, что делало окно. */
+    private static String peekNote(Slot s) {
+        return s == null || s.peekNote.isEmpty() ? ""
+                : "; заранее, " + (SystemClock.uptimeMillis() - s.peekNoteAt) / 1000 + " с назад: " + s.peekNote;
+    }
+
+    /**
+     * К узлу корзин сети не ходим: недавно отказал (стена apiwall.<код> держит API_WALL_MS, метку ставят отказ и лечение)
+     * или защита закрыла адрес (blocked). Метка из «будущего» — часы телефона ушли назад — стену не держит и стирается:
+     * иначе она ожила бы, когда часы дойдут до неё (1.50).
+     */
+    private boolean wallUp(String code) {
+        long d = System.currentTimeMillis() - memory().getLong("apiwall." + code, 0);
+        if (d < 0) memory().edit().remove("apiwall." + code).apply();
+        return blocked(code) || (d >= 0 && d < API_WALL_MS);
+    }
+
+    /**
+     * Защита закрыла адрес сети страницей «Проблемы со связью» (whenHealed): до метки apiblock.<код> узел корзин не
+     * трогаем. Метка дальше HEAL_BLOCK_MS от «сейчас» (часы телефона ушли назад) блок не держит и стирается, как стена.
+     */
+    private boolean blocked(String code) {
+        long until = memory().getLong("apiblock." + code, 0), now = System.currentTimeMillis();
+        if (until - now > HEAL_BLOCK_MS) memory().edit().remove("apiblock." + code).apply();
+        return until > now && until - now <= HEAL_BLOCK_MS;
+    }
+
+    /**
+     * Кука выдана, а узел отказывает и ей до конца паузы (стенд: отказы до 62-й секунды): окно держим до неё, и правка,
+     * пришедшая раньше, ждёт в begin и уходит запросом, а не касаниями по стене (1.50). +1 с: стена пишется в часах
+     * телефона и кончается на миллисекунды позже t0 + HEAL_QUIET_MS. Закрытый защитой адрес паузой не лечится.
+     */
+    private static void holdQuiet(Slot s, String origin, long t0, String miss) {
+        if (hasCookie(origin, PYAT_COOKIE) && !miss.startsWith(HEAL_BLOCKED)) {
+            s.healUntil = Math.max(s.healUntil, t0 + HEAL_QUIET_MS + 1000);
+        }
+    }
+
+    /** Идёт лечение куки защиты на главной странице окна: сборки его не уводят (whenHealed, 1.50). */
+    private static boolean healing(Slot s) {
+        return SystemClock.uptimeMillis() < s.healUntil;
+    }
+
+    /**
+     * Ждёт после стёртой куки, пока у origin появится новая И главная страница окна дойдёт до конца вместе с
+     * запросом защиты (HEALED_JS), но не дольше HEAL_WAIT_MS (1.50). done получает "" — готово, или то, чего не хватило,
+     * и ровно один раз: ответом страницы или сторожем (ответ скрипта мог потеряться, когда защита перезагрузила страницу).
+     * Окно на это время занято: сборки и возврат на robots.txt ждут (healing). Окно потеряли — лечить нечем.
+     * Страница-блокировка защиты (HEALED_JS) кончает ожидание сразу: к узлу корзин не ходим HEAL_BLOCK_MS (blocked).
+     */
+    private void whenHealed(final Slot s, final String origin, final ValueCallback<String> done) {
+        final long t0 = SystemClock.uptimeMillis();
+        final long until = t0 + HEAL_WAIT_MS;
+        final WebView v = s.view;
+        final boolean[] over = {false};
+        final String[] last = {""};     // чем страница отвечала в последний раз: сторожу нечем иначе объяснить молчание
+        s.healAt = t0;
+        s.healUntil = until + 1000;
+        final ValueCallback<String> end = miss -> {
+            if (over[0]) return;
+            over[0] = true;
+            s.healUntil = 0;
+            done.onReceiveValue(miss);
+        };
+        // Страница проверки защиты не отпустила до конца ожидания — это блок (1.61): проходящая проверка уводит назад за
+        // секунды (Самокат, 20.10.2026), а эмулятор 15.11.2026 простоял на /xpvnsulc/ всё лечение «loading без каркаса».
+        // Сторож срабатывает и после конца лечения: метку блока пишем, только пока оно не кончилось.
+        final ValueCallback<String> late = miss -> {
+            if (!over[0]) end.onReceiveValue(last[0].startsWith("/xpvnsulc/")
+                    ? healBlock(s, "проверка не отпустила за " + HEAL_WAIT_MS / 1000 + " с") : miss);
+        };
+        handler.postDelayed(() -> late.onReceiveValue(last[0].isEmpty() ? "страница не ответила" : "страница: " + last[0]),
+                HEAL_WAIT_MS + 900);
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (over[0]) return;
+                if (v == null || s.view != v) {
+                    end.onReceiveValue("окно закрыто");
+                    return;
+                }
+                // Следующий опрос — по таймеру, до ответа: ответ скрипта терялся, когда защита перезагружала страницу
+                // (стенд, 14.11.2026: опрос кончался сторожем при куке, выданной за 6 с), и опрос вставал.
+                handler.postDelayed(this, 500);
+                v.evaluateJavascript(HEALED_JS, val -> {
+                    if (over[0]) return;
+                    String page = unquote(val);
+                    last[0] = page;
+                    if (HEAL_BLOCK_PAGE.equals(page)) {
+                        end.onReceiveValue(healBlock(s, "«Проблемы со связью»"));
+                        return;
+                    }
+                    boolean cookie = hasCookie(origin, PYAT_COOKIE);
+                    boolean shown = "1".equals(page);
+                    boolean ready = cookie && shown;
+                    if (ready || SystemClock.uptimeMillis() >= until) {
+                        late.onReceiveValue(ready ? "" : (cookie ? "" : "куки нет")
+                                + (cookie || shown ? "" : ", ") + (shown ? "" : "страница: " + page));
+                    }
+                });
+            }
+        }, 500);
+    }
+
+    /**
+     * Защита закрыла адрес: ни стёртая кука, ни пауза не помогут, а каждое лечение и каждый запрос копят отказы. К узлу
+     * корзин не ходим HEAL_BLOCK_MS (часы телефона, wallUp); ответ — причина конца лечения для whenHealed.
+     */
+    private String healBlock(Slot s, String what) {
+        memory().edit().putLong("apiblock." + s.code, System.currentTimeMillis() + HEAL_BLOCK_MS).apply();
+        return HEAL_BLOCKED + " (" + what + "): к узлу корзин не хожу " + HEAL_BLOCK_MS / 60000 + " мин";
+    }
+
     /** Запустить сборку в сети через DEBOUNCE_MS: каждая новая правка корзины отодвигает запуск. */
     private void soon(final Slot s) {
         if (s.soon != null) handler.removeCallbacks(s.soon);
+        if (s.keepAlive != null) {
+            handler.removeCallbacks(s.keepAlive);
+            s.keepAlive = null;
+        }
         s.soon = () -> startBackground(s);
         handler.postDelayed(s.soon, DEBOUNCE_MS);
         touchBusy();
@@ -4943,31 +6269,38 @@ public class MainActivity extends Activity {
         if (s.run != null || away || lastCollect == null || s.pending.isEmpty()) return;
         if (cartRun != null && cartRun.chain == s.chain) return;     // человек собирает сам
         // Окна делят один процесс страниц: витрина или проверка Qrator в окне с касаниями
-        // растягивала запросы Дикси и Пятёрочки до 10–13 с (замер 09.11.2026). Ждём их до API_HEAD_MS.
-        if (cartApiOrigin(s.code) == null && apiRunning()) {
-            long now = SystemClock.uptimeMillis();
-            if (s.heldSince == 0) {
-                s.heldSince = now;
-                if (s.view != null) s.view.loadUrl("about:blank");
-            }
-            if (now - s.heldSince < API_HEAD_MS) {
-                s.soon = () -> startBackground(s);
-                handler.postDelayed(s.soon, 250);
-                return;
-            }
-        }
+        // растягивала запросы Дикси и Пятёрочки до 10–13 с (замер 09.11.2026). Сеть без запросов ждёт их уже
+        // с нарядом (heldForApi, 1.59): Впрок без знакомых товаров ждал 5,45 с ради «не пошла».
         s.heldSince = 0;
         if (s.sleep != null) {
             handler.removeCallbacks(s.sleep);
             s.sleep = null;
         }
+        // shortcut: окно сети без запросов создаётся сразу, и пустую сборку rest() паркует на robots.txt, пока другие
+        // сети ждут ответа; задержит их замер холодного старта — создавать окно с нарядом (CartRun.view не final).
         if (s.view == null) s.view = hiddenView(s.chain);
         final CartRun r = new CartRun(s.chain, s.view, s);
         r.basket = lastCollect.optInt("basket", -1);
         r.stamp = s.pending;
+        r.deadline = collectDeadline;
+        r.changedAt = s.changedAt;
+        r.changedPid = s.changedPid;
+        s.changedAt = 0;
+        s.changedPid = 0;
         s.pending = "";
         s.run = r;
         s.last = r;
+        Log.i(TAG, r.name + ": сборка начата [" + (r.stamp.length() > 6 ? r.stamp.substring(0, 6) : r.stamp) + "]"
+                + (r.changedAt > 0 ? ", от касания " + (SystemClock.uptimeMillis() - r.changedAt) + " мс" : ""));
+        watchTrace(r);
+        watchRun(r);
+        // «Собрано» про другую корзину с началом новой сборки — уже неправда (1.45): оборвись она, и корзина,
+        // вернувшаяся к прежнему отпечатку, считалась бы собранной до FRESH_MS с тем, что успело лечь.
+        // Стену (wall) не трогаем: её срок считает decide.
+        JSONObject was = doneOf(s.code);
+        if (was != null && !was.optBoolean("wall") && !r.stamp.equals(was.optString("stamp"))) {
+            memory().edit().remove("done." + s.code).apply();
+        }
 
         // «Заказать» (1.19): если отпечаток равен order.stamp, собираем только долю или снимаем своё
         JSONObject order = getOrderCurrent();
@@ -4980,12 +6313,238 @@ public class MainActivity extends Activity {
             }
             r.orderAt = order.optLong("at", 0);
             r.orderStamp = r.stamp;
+            r.deadline = 0;
         }
 
+        if (r.deadline > 0) {
+            handler.postAtTime(() -> {
+                if (alive(r)) collectionBudgetExpired(r);
+            }, r.deadline);
+        }
+        if (collectionBudgetExpired(r)) return;
         touchBusy();
+        // Наряд этой корзины уже в памяти телефона — выведен из прежнего по касанию (1.27):
+        // сервер на пути не стоит.
+        JSONObject fast = r.linesOverride == null && cartApiOrigin(s.code) != null
+                ? keptPlan(s.code, r.stamp, r.basket) : null;
+        if (fast != null) {
+            r.fast = true;
+            loadLedger(r);
+            try {
+                applyPlan(r, fast);
+            } catch (Exception e) {
+                failRun(r, "наряд из памяти телефона не разобрался: " + e.getMessage());
+                return;
+            }
+            r.planAt = SystemClock.uptimeMillis();
+            r.now = "наряд из памяти телефона";
+            beat(r, true);
+            Log.i(TAG, r.name + ": наряд из памяти телефона, позиций " + r.lines.length());
+            begin(r);
+            return;
+        }
         r.now = "беру наряд у сервера";
         beat(r, true);
         askPlan(r, () -> begin(r));
+    }
+
+    /**
+     * Правка по касанию (1.27): сетям с запросами — наряд, выведенный из прежнего, и сборку сразу;
+     * устаревшие касания любой сети — долой, чтобы не держали общий процесс окон.
+     * Где наряд наверняка не вывести, ждём collect с ответом сервера, как до 1.27.
+     */
+    private void fastChange(JSONObject c) {
+        final int basket = c.optInt("basket", -1);
+        final String stamp = c.optString("stamp", "");
+        if (lastCollect == null || basket < 0 || basket != lastCollect.optInt("basket", -2) || stamp.isEmpty()) return;
+        JSONObject chains = new JSONObject();
+        JSONArray list = lastCollect.optJSONArray("chains");
+        for (int i = 0; list != null && i < list.length(); i++) {
+            JSONObject ch = list.optJSONObject(i);
+            if (ch != null) {
+                try {
+                    chains.put(ch.optString("code", ""), ch);
+                } catch (Exception ignored) { }
+            }
+        }
+        boolean order = getOrderCurrent() != null;
+        // Время правки — от пальца, а не от обработчика страницы (1.37): при занятом потоке окон обработчик
+        // опаздывал на 1,1 с, и отчёт называл 4,3–5,0 с там, где от касания прошло 5,6–6,2 с (12.11.2026).
+        // Касание старше 10 с правку не начинало: тогда время идёт отсюда, как раньше.
+        long at = SystemClock.uptimeMillis();
+        if (at - touchedAt < 10000) at = touchedAt;
+        for (Slot s : slots.values()) {
+            s.changedAt = at;
+            s.changedPid = c.optInt("pid", 0);
+            JSONObject ch = chains.optJSONObject(s.code);
+            JSONObject done = doneOf(s.code);
+            boolean wall = done != null && done.optBoolean("wall")
+                    && System.currentTimeMillis() - done.optLong("at", 0) < RETRY_MS;
+            // Почему наряд не выведен — в хронику (1.54): 14.11.2026 Пятёрочка пропустила пять нажатий молча.
+            String skip = ch == null ? "сервер сети не назвал" : ch.optBoolean("sent") ? "корзину туда положил сервер"
+                    : order ? "идёт заказ" : wall ? "сеть не пускала, стена на 20 мин" : away ? "приложение свёрнуто"
+                    : cartApiOrigin(s.code) == null ? "у сети нет запросов"
+                    : (cartRun != null && cartRun.chain == s.chain) ? "человек собирает сам" : "";
+            planWhy = "";
+            JSONObject plan = skip.isEmpty() ? changedPlan(s.code, c) : null;
+            if (plan == null && skip.isEmpty()) skip = "наряд не вывести: " + planWhy;
+            CartRun run = s.run;
+            boolean stale = run != null && !stamp.equals(run.stamp) && !writing(run);
+            Log.i(TAG, CHAINS[s.chain][0] + ": правка «" + c.optString("verb", "") + "» товара " + c.optInt("pid", 0) + " — "
+                    + (plan != null ? "наряд выведен" : skip) + "; сборка "
+                    + (run == null ? "не идёт" : stamp.equals(run.stamp) ? "этой корзины" : stale ? "старой корзины, сменю" : "старой корзины, пишет"));
+            if (plan != null) {
+                memory().edit().putString("plan." + s.code, plan.toString()).apply();
+                s.pending = stamp;
+                if (stale) supersede(run);       // rest() запустит новую через DEBOUNCE_MS
+                else if (run == null) soon(s);   // идущую запись cartapi.js доберёт rest() после неё
+                // Идущей записи говорим, что её догнали (1.46): итог прежней корзины адаптер не читает, и
+                // запрос за ним не занимает место в темпе у записи следующей сборки (cartapi.js, newer).
+                // Только Дикси: адаптеры остальных сетей флаг не читают.
+                else if ("dixy".equals(s.code) && !stamp.equals(run.stamp) && !run.apiKey.isEmpty()
+                        && run.view != null) {
+                    run.view.evaluateJavascript("window.__kzNewer=" + JSONObject.quote(run.apiKey), null);
+                }
+            } else if (stale) {
+                // Без наряда новую сборку начнёт collect с ответом сервера; эти касания уже лишние.
+                Log.i(TAG, run.name + ": корзина поменялась — касания старой бросаю");
+                stopBackground(s, true);
+                // Прежнее «собрано» забываем: добавил товар и тут же убрал — отпечаток совпал бы с ним,
+                // collect пропустил бы сборку, и сеть осталась бы со строкой «собираю» и с тем, что
+                // успела положить оборванная (замер 11.11.2026: Пятёрочка и Дикси без отчёта).
+                memory().edit().remove("done." + s.code).apply();
+            }
+        }
+    }
+
+    /** Наряд сети из памяти телефона, если он про эту корзину и не старше PLAN_MS; иначе null. */
+    private JSONObject keptPlan(String code, String stamp, int basket) {
+        try {
+            SharedPreferences m = memory();
+            if (System.currentTimeMillis() - m.getLong("planAt." + code, 0) > PLAN_MS) return null;
+            JSONObject plan = new JSONObject(m.getString("plan." + code, "{}"));
+            return stamp.equals(plan.optString("stamp", "-")) && basket == plan.optInt("basket", -2) ? plan : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Наряд сети после правки по касанию — из наряда, который сервер дал для корзины до неё:
+     * позиция товара плюс или минус упаковка либо долой, сумма и отпечаток — новые.
+     * null, если так не вывести наверняка: наряд старше PLAN_MS или от другой корзины, товар
+     * не штучный (упаковок не столько, сколько штук), слит с дублем по артикулу или его нет в наряде.
+     */
+    private JSONObject changedPlan(String code, JSONObject c) {
+        try {
+            SharedPreferences m = memory();
+            if (System.currentTimeMillis() - m.getLong("planAt." + code, 0) > PLAN_MS) {
+                return noPlan(m.getLong("planAt." + code, 0) == 0 ? "наряда в памяти нет" : "наряд в памяти старше 6 ч");
+            }
+            JSONObject plan = new JSONObject(m.getString("plan." + code, "{}"));
+            String verb = c.optString("verb", "");
+            int pid = c.optInt("pid", 0);
+            if (pid <= 0) return noPlan("нет номера товара");
+            if (plan.optInt("basket", -1) != c.optInt("basket", -2)) return noPlan("наряд от другой корзины");
+            if (!c.optString("from", "").equals(plan.optString("stamp", "-"))) {
+                return noPlan("наряд " + plan.optString("stamp", "-").replaceAll("^(.{0,6}).*$", "$1") + ", а правка от "
+                        + c.optString("from", "").replaceAll("^(.{0,6}).*$", "$1"));
+            }
+            if (!("plus".equals(verb) || "minus".equals(verb) || "remove".equals(verb))) return noPlan("правка «" + verb + "» не плюс и не минус");
+            boolean seen = false, out = false;
+            double total = plan.optDouble("total", 0);
+            JSONArray lines = plan.optJSONArray("lines"), kept = new JSONArray();
+            for (int i = 0; lines != null && i < lines.length(); i++) {
+                JSONObject line = lines.getJSONObject(i);
+                JSONArray ids = line.optJSONArray("product_ids");    // дубли на одном артикуле
+                for (int k = 0; ids != null && k < ids.length(); k++) {
+                    if (ids.optInt(k) == pid) return noPlan("товар слит с дублем на одном артикуле");
+                }
+                if (line.optInt("product_id", 0) != pid) {
+                    kept.put(line);
+                    continue;
+                }
+                int clicks = line.optInt("clicks", 0);
+                if (seen || clicks <= 0 || line.optDouble("qty", 0) != clicks) {
+                    return noPlan(seen ? "товар в наряде дважды" : "товар не штучный: упаковок " + clicks + ", штук " + line.optDouble("qty", 0));
+                }
+                seen = true;
+                int now = "plus".equals(verb) ? clicks + 1 : "minus".equals(verb) ? clicks - 1 : 0;
+                double price = line.optDouble("price", 0), fresh = Math.round(price / clicks * now * 100) / 100.0;
+                total += fresh - price;
+                if (now <= 0) {
+                    out = true;
+                    continue;
+                }
+                JSONObject next = new JSONObject(line.toString()).put("clicks", now).put("qty", now);
+                if (!line.isNull("price")) next.put("price", fresh);
+                kept.put(next);
+            }
+            // Незнакомые сети товары ищутся и кладутся по одной: «+» и «−» наряд не меняют, «убрать» — не искать.
+            for (String key : new String[]{"search", "search_recent"}) {
+                JSONArray was = plan.optJSONArray(key);
+                if (was == null) continue;
+                JSONArray left = new JSONArray();
+                for (int i = 0; i < was.length(); i++) {
+                    JSONObject s = was.getJSONObject(i);
+                    if (s.optInt("product_id", 0) != pid) {
+                        left.put(s);
+                        continue;
+                    }
+                    // Ушёл ли товар после «−», говорит страница (gone, с 12.11.2026: ушёл — назовёт «убрать»).
+                    // Страница старше этого не сообщает: тогда ждём сервер, как до 1.37. И товар с запасным
+                    // (swapped) — к серверу: в наряде вместо него строка запасного под другим номером.
+                    planWhy = "товар из поиска сети: " + (seen ? "ещё и в строках наряда" : s.optBoolean("swapped")
+                            ? "с запасным товаром" : "«−», а страница не сказала, ушёл ли товар");
+                    if (seen || s.optBoolean("swapped")
+                            || ("minus".equals(verb) && c.optBoolean("gone", true))) return null;
+                    seen = true;
+                    if (!"remove".equals(verb)) left.put(s);
+                }
+                plan.put(key, left);
+            }
+            // Товар из rest наряда сеть сейчас не получит (не знает, искать нечем, сервер его уже спросил):
+            // его правка наряд не меняет.
+            planWhy = "товара нет в наряде этой сети";
+            JSONArray rest = plan.optJSONArray("rest");
+            for (int i = 0; !seen && rest != null && i < rest.length(); i++) seen = rest.optInt(i) == pid;
+            if (!seen) return null;
+            JSONArray inBasket = plan.optJSONArray("pids");
+            if (inBasket != null && (out || "remove".equals(verb))) {
+                // Товара в корзине больше нет: найденное для него поиском сети теперь можно снимать (1.43).
+                JSONArray left = new JSONArray();
+                for (int i = 0; i < inBasket.length(); i++) if (inBasket.optInt(i) != pid) left.put(inBasket.optInt(i));
+                plan.put("pids", left);
+            }
+            return plan.put("lines", kept).put("total", Math.round(total * 100) / 100.0)
+                       .put("stamp", c.optString("stamp", ""));
+        } catch (Exception e) {
+            return noPlan("ошибка разбора наряда: " + e);
+        }
+    }
+
+    /** Почему changedPlan не вывел наряд (1.54): fastChange кладёт это в хронику. */
+    private String planWhy = "";
+
+    /** Что collect решил по сети в прошлый раз (1.54): хроника пишет решение, когда оно поменялось. */
+    private final Map<String, String> lastVerdict = new HashMap<>();
+
+    /** Хроника: сборка ждёт конца лечения куки (1.54). begin зовётся каждые 250 мс — пишем начало и конец ожидания. */
+    private void noteHeal(CartRun r) {
+        boolean waiting = healing(r.slot);
+        if (waiting && !r.healLogged) {
+            r.healLogged = true;
+            Log.i(TAG, r.name + ": жду конца лечения куки, окно занято ещё "
+                    + Math.max(0, r.slot.healUntil - SystemClock.uptimeMillis()) + " мс");
+        } else if (!waiting && r.healLogged) {
+            r.healLogged = false;
+            Log.i(TAG, r.name + ": лечение куки кончилось, иду запросами");
+        }
+    }
+
+    private JSONObject noPlan(String why) {
+        planWhy = why;
+        return null;
     }
 
     /**
@@ -5045,16 +6604,44 @@ public class MainActivity extends Activity {
      * для Перекрёстка, Пятёрочки и Дикси, с 1.26 — и Магнита.
      */
     private void cartApi(final CartRun r) {
+        if (!alive(r) || collectionBudgetExpired(r)) return;
         if (!alive(r)) return;
         r.cartApiDone = true;
+        if (wallUp(r.code)) {
+            apiGaveUp(r, (blocked(r.code) ? "защита сети закрыла адрес узла корзин" : "узел корзин сети недавно не отвечал") + peekNote(r.slot));
+            return;
+        }
         status(r, r.name + ": кладу запросами сети", false);
         beat(r, true);
+        if ("pyaterochka".equals(r.code)) {
+            Log.i(TAG, r.name + ": перед запросами " + cookieNote(cartApiOrigin(r.code), PYAT_COOKIE) + "; кука освежена "
+                    + agoSince(memory().getLong("warm." + r.code, 0)) + ", лечили "
+                    + (r.slot != null && r.slot.healAt > 0 ? (SystemClock.uptimeMillis() - r.slot.healAt) / 1000 + " с назад" : "ни разу с запуска"));
+        }
 
         final JSONArray rest = new JSONArray();
         final List<JSONObject> skippedLines = new ArrayList<>();
         final List<String> skippedReasons = new ArrayList<>();
         final JSONArray linesInput = new JSONArray();
         final Map<String, JSONObject> inputLinesBySku = new HashMap<>();
+
+        // Правка обязана уложиться в 5 с, а отказы старше FAIL_AGAIN_MS шли на перепроверку все разом и
+        // съедали темп запросов (замер 11.11.2026: Дикси — 8 запросов, 10,8 с). Из отказавших позиций
+        // сборка пробует одну: тронутую человеком — даже после недавнего отказа, иначе первую давнюю.
+        JSONObject again = null;
+        for (int i = 0; i < r.lines.length(); i++) {
+            JSONObject line = r.lines.optJSONObject(i);
+            if (line == null || line.optString("sku", "").isEmpty()
+                    || failedBefore(r, line, "apifail.").isEmpty()) continue;
+            boolean touched = line.optInt("product_id", 0) == r.changedPid;
+            JSONArray ids = line.optJSONArray("product_ids");    // дубли на одном артикуле
+            for (int k = 0; !touched && ids != null && k < ids.length(); k++) touched = ids.optInt(k) == r.changedPid;
+            if (r.changedPid > 0 && touched) {
+                again = line;
+                break;
+            }
+            if (again == null && failedRecently(r, line, "apifail.").isEmpty()) again = line;
+        }
 
         for (int i = 0; i < r.lines.length(); i++) {
             JSONObject line = r.lines.optJSONObject(i);
@@ -5064,7 +6651,7 @@ public class MainActivity extends Activity {
                 rest.put(line);
                 continue;
             }
-            String failed = failedRecently(r, line, "apifail.");
+            String failed = line == again ? "" : failedBefore(r, line, "apifail.");
             if (!failed.isEmpty()) {
                 skippedLines.add(line);
                 skippedReasons.add(failed);
@@ -5075,6 +6662,7 @@ public class MainActivity extends Activity {
                 itemIn.put("sku", sku);
                 itemIn.put("target", Math.max(1, line.optInt("clicks", 1)));
                 itemIn.put("url", line.optString("url", ""));
+                itemIn.put("again", line == again);     // давний отказ: его новый отказ адаптеру не новость (1.41)
             } catch (Exception ignored) { }
             linesInput.put(itemIn);
             inputLinesBySku.put(sku, line);
@@ -5089,14 +6677,27 @@ public class MainActivity extends Activity {
         // Только готовая robots.txt: страница сети, брошенная хвостом, могла ещё уходить по
         // loadUrl, и скрипт адаптера пропал бы вместе с ней (ждали бы CARTAPI_WAIT_MS).
         final String robots = origin + "/robots.txt";
+        final long asked = SystemClock.uptimeMillis();
         r.view.evaluateJavascript("(location.href===" + JSONObject.quote(robots)
-                + "&&!window.__kzStale&&document.readyState==='complete')?'1':''", currentVal -> {
+                + "&&!window.__kzStale&&document.readyState==='complete')?'1'"
+                + ":location.host+location.pathname.slice(0,24)+' '+document.readyState+(window.__kzStale?' брошена':'')",
+                currentVal -> {
             if (!alive(r)) return;
-            if ("1".equals(unquote(currentVal))) {
+            String state = unquote(currentVal);
+            if ("1".equals(state)) {
                 runCartApiPayload(r, origin, rest, skippedLines, skippedReasons, linesInput, inputLinesBySku);
                 return;
             }
-            go(r, robots);
+            // В журнал — почему правка ждёт: окно застали не на отдыхе (замер 11.11.2026: 3,8 с у Пятёрочки).
+            // supersede уже ведёт окно на robots.txt (1.36): загрузку заново не начинаем, ждём её.
+            // 3 с — с запасом на загрузку robots.txt под нагрузкой; дольше — открываем сами, как раньше.
+            // Сверяем и адрес: окно за это время могли увести на пустую страницу (stopBackground, lostView).
+            boolean onTheWay = r.slot != null && SystemClock.uptimeMillis() - r.slot.robotsAt < 3000
+                    && robots.equals(r.view.getUrl());
+            Log.i(TAG, r.name + ": окно сети не на отдыхе (" + state + ", ответило за "
+                    + (SystemClock.uptimeMillis() - asked) + " мс) — "
+                    + (onTheWay ? "robots.txt уже открывается" : "открываю robots.txt"));
+            if (!onTheWay) go(r, robots);
             whenReady(r, null, null, 0, () -> {
                 if (!alive(r)) return;
                 r.view.evaluateJavascript("location.origin", afterVal -> {
@@ -5105,11 +6706,44 @@ public class MainActivity extends Activity {
                     if (origin.equals(afterOrigin)) {
                         runCartApiPayload(r, origin, rest, skippedLines, skippedReasons, linesInput, inputLinesBySku);
                     } else {
-                        begin(r);
+                        apiGaveUp(r, "окно сети ушло на " + afterOrigin);
                     }
                 });
             });
         });
+    }
+
+    /**
+     * Запросами не вышло: отчёт об этом уходит сразу, касания — хвостом после него. Сразу
+     * касаниями сеть держала отчёт минутами и грузила общий процесс окон, пока корзину ещё
+     * правят (замер 10.11.2026: Пятёрочка после «обрыва сети» — 495 с касаний). Адрес закрыт
+     * защитой — касаний нет совсем (endBlocked, 1.61).
+     */
+    private void apiGaveUp(CartRun r, String why) {
+        r.apiOver = true;
+        r.apiWhy = why;
+        if (collectionBudgetExpired(r)) return;
+        Log.i(TAG, r.name + ": запросом не вышло (" + why + ")" + (blocked(r.code) ? "" : ", касаниями — после отчёта"));
+        if (endBlocked(r)) return;
+        // Класть нечего, только снять своё: отчёта без позиций не бывает, идём прежней дорогой.
+        if (r.lines.length() == 0 && r.later.length() == 0) {
+            begin(r);
+            return;
+        }
+        toTail(r, r.lines);
+        finishRun(r, new JSONObject(), "");
+    }
+
+    /**
+     * Адрес сети закрыт защитой (apiblock): карточки и поиск шли бы на тот же адрес и только копили отказы (эмулятор
+     * 15.11.2026: три минуты касаний по /xpvnsulc/). Фоновая сборка кончается отказом с причиной; true — кончилась.
+     * Сборку человека («Собрать», slot == null) не трогаем: он видит окно сети сам.
+     */
+    private boolean endBlocked(CartRun r) {
+        if (r.slot == null || !blocked(r.code)) return false;
+        long left = (memory().getLong("apiblock." + r.code, 0) - System.currentTimeMillis()) / 60000 + 1;
+        endBackground(r, "failed", r.name + ": защита сети закрыла адрес, пауза ещё " + left + " мин");
+        return true;
     }
 
     private void runCartApiPayload(final CartRun r, final String origin,
@@ -5122,10 +6756,12 @@ public class MainActivity extends Activity {
 
         final JSONObject input = new JSONObject();
         final String key = "a" + SystemClock.uptimeMillis();
+        r.apiKey = key;
         try {
             input.put("key", key);
             input.put("chain", r.code);
             input.put("lines", linesInput);
+            if (r.deadline > 0) input.put("budget_ms", Math.max(1, r.deadline - SystemClock.uptimeMillis()));
             JSONObject mine = new JSONObject();
             Iterator<String> skus = r.cart.keys();
             while (skus.hasNext()) {
@@ -5135,31 +6771,36 @@ public class MainActivity extends Activity {
             input.put("mine", mine);
             input.put("want", new JSONObject(r.want.toString()));
             input.put("drop", shouldDrop(r));
+            // Правка от касания (1.41): адаптеры Пятёрочки и Дикси не перечитывают корзину, которую видели
+            // меньше минуты назад и не раньше, чем человек вернулся в приложение или из окна сети.
+            input.put("touch", r.changedAt > 0);
+            input.put("since", Math.max(homeSince, r.slot != null ? r.slot.movedAt : 0));
+            // Точка человека из наряда (1.39): адрес для Самоката, магазин и доставка для Магнита.
+            input.put("place", r.rules.optJSONObject("place"));
             int pauseMs = Math.max(300, r.rules.optInt("request_pause_ms", 1000));
             input.put("pause_ms", pauseMs);
             int burst = r.rules.optInt("api_burst", 3);
             input.put("burst", burst);
-            // Заголовки сайта Магнита cartapi.js берёт из образца, выученного касанием; в окне и остаются.
-            JSONObject tpl = storedTpl(r.code);
-            if (tpl != null && tpl.optJSONObject("tpl") != null) input.put("tpl", tpl.getJSONObject("tpl"));
         } catch (Exception e) {
-            begin(r);
+            apiGaveUp(r, "наряд не собрался: " + e.getMessage());
             return;
         }
 
         String script = cartApiScript();
         if (script.isEmpty()) {
-            begin(r);
+            apiGaveUp(r, "в приложении нет cartapi.js");
             return;
         }
 
+        if (collectionBudgetExpired(r)) return;
         String execCode = script + ";" + CARTAPI_START.replace("%s", input.toString());
         r.apiAt = SystemClock.uptimeMillis();
+        r.apiOver = false;
         r.view.evaluateJavascript(execCode, startedVal -> {
             if (!alive(r)) return;
             String st = unquote(startedVal);
             if (!"started".equals(st)) {
-                begin(r);
+                apiGaveUp(r, "скрипт запросов не запустился на странице сети");
                 return;
             }
 
@@ -5179,7 +6820,7 @@ public class MainActivity extends Activity {
                             return;
                         }
                         if (res.length() == 0) {
-                            begin(r);
+                            apiGaveUp(r, "сеть не ответила за " + CARTAPI_WAIT_MS / 1000 + " с");
                             return;
                         }
 
@@ -5199,6 +6840,13 @@ public class MainActivity extends Activity {
                                      final Map<String, JSONObject> inputLinesBySku) {
         if (!alive(r)) return;
         r.apiOver = true;
+        Log.i(TAG, r.name + ": ответ запросов сети: " + (res.optBoolean("ok", false) ? "ок"
+                : "отказ, шаг «" + res.optString("stage", "") + "»" + (res.optBoolean("fast", false) ? ", быстрый" : ""))
+                + "; запросов " + res.optInt("requests", 0) + ", всего " + res.optLong("ms", 0) + " мс, из них темп "
+                + res.optLong("paced_ms", 0) + " мс"
+                + ("pyaterochka".equals(r.code) ? "; " + cookieNote(cartApiOrigin(r.code), PYAT_COOKIE) : ""));
+        // Сборку догнала правка: адаптер вернул корзину расчётом, без чтения сети (1.46, cartapi.js newer).
+        final boolean reckoned = res.optBoolean("stale", false);
 
         JSONObject resCart = res.optJSONObject("cart");
         if (resCart != null) {
@@ -5209,6 +6857,10 @@ public class MainActivity extends Activity {
             while (wantKeys.hasNext()) skus.add(wantKeys.next());
             for (String s : skus) {
                 int q = resCart.optInt(s, 0);
+                // Расчёту своё убавлять не даём: запись, которую сеть приняла и не выполнила, осталась бы в
+                // её корзине чужой. Убавит чтение сети, которым кончается серия правок.
+                // shortcut: приложение закрыли посреди серии — своё завышено до следующей сборки с чтением.
+                if (reckoned) q = Math.max(q, r.cart.optInt(s, 0));
                 try {
                     r.cart.put(s, q);
                 } catch (Exception ignored) { }
@@ -5233,21 +6885,47 @@ public class MainActivity extends Activity {
         }
 
         boolean ok = res.optBoolean("ok", false);
+        // Запрос прошёл — куки защиты сети живы: подогрев окна (warm) отсчитывается отсюда.
+        if (ok) memory().edit().putLong("warm." + r.code, System.currentTimeMillis()).apply();
         if (!ok) {
             String stage = res.optString("stage", "");
             String why = res.optString("why", "");
 
             // Пятёрочка: «обрыв» — это 403 защиты сети, спрятанный CORS «*». Её куки обновляет
             // только скрипт своей страницы, robots.txt этого не умеет (эмулятор, 09.11.2026).
-            boolean pyatRefresh = "pyaterochka".equals(r.code) && ("net".equals(stage) || "auth".equals(stage));
+            boolean pyatNet = "pyaterochka".equals(r.code) && "net".equals(stage);
+            // Куку лечим только на быстрый отказ защиты при живой связи (fast из cartapi.js): таймаут, обрыв посреди
+            // записи и телефон без сети ею не лечатся. И не чаще HEAL_GAP_MS: лечили недавно, и не помогло — дальше
+            // стена и касания.
+            boolean pyatHeal = pyatNet && res.optBoolean("fast", false) && r.slot != null && healAllowed(r.slot);
+            // Прочие «обрывы» (таймаут, обрыв посреди записи, телефон без сети) идут прежним входом: главная, 4 с, повтор.
+            // Быстрый отказ, которого лечить уже нельзя (лечили недавно), сразу уходит в стену и касания.
+            boolean pyatRefresh = "pyaterochka".equals(r.code)
+                    && ("auth".equals(stage) || pyatHeal || (pyatNet && !res.optBoolean("fast", false)));
             if ((("auth".equals(stage) && "perekrestok".equals(r.code)) || pyatRefresh) && !r.cartApiRefreshed) {
+                r.apiWhy = why;
+                // Пока ждём страницу сети, запись завершена. Повтор начнётся только после проверки срока.
+                if (collectionBudgetExpired(r)) return;
                 r.cartApiRefreshed = true;
+                memory().edit().putLong("warm." + r.code, System.currentTimeMillis()).apply();
                 status(r, r.name + ": обновляю вход на сайте сети", false);
-                go(r, origin + "/");
-                whenReady(r, "/", null, 4000, () -> {
+                final Runnable again = () -> {
                     if (!alive(r)) return;
+                    // Правку, пришедшую, пока сборка ждала, старым нарядом не перебиваем: новая начнёт с нуля (1.50).
+                    if (superseded(r)) {
+                        supersede(r);
+                        return;
+                    }
+                    beat(r, true);      // после паузы узла строка сборки не должна сойти за зависшую
                     runCartApiPayload(r, origin, rest, skippedLines, skippedReasons, linesInput, inputLinesBySku);
-                });
+                };
+                // «Обрыв» Пятёрочки — мгновенный отказ её защиты: протухшую куку главная не заменяет (1.50).
+                if (pyatHeal) {
+                    healPyat(r, origin, again);
+                    return;
+                }
+                go(r, origin + "/");
+                whenReady(r, "/", null, 4000, again);
                 return;
             }
 
@@ -5302,9 +6980,30 @@ public class MainActivity extends Activity {
                 return;
             }
 
-            status(r, r.name + ": запросом не вышло (" + why + "), дальше касаниями", true);
-            Log.i(TAG, r.name + ": запросом не вышло (" + why + "), дальше касаниями");
-            begin(r);
+            // Без входа Магнит отвечает 401, а Самокат отдаёт гостю токен с пустым user (1.29). Касания легли бы в корзину гостя: вход — шаг человека.
+            if ("auth".equals(stage) && ("magnit".equals(r.code) || "samokat".equals(r.code))) {
+                endBackground(r, "failed", why);
+                return;
+            }
+            // Пятёрочка: страница сети открылась, а узел корзин и после неё не ответил — это защита сети,
+            // API_WALL_MS сеть идёт касаниями. Прочим сетям метку не ставим: у них «обрыв» — обычно связь,
+            // и после секундной потери интернета они три минуты шли бы касаниями.
+            // shortcut: обрыв связи ровно на обновлении входа метит и Пятёрочку; проверять, что главная открылась, — если заметим.
+            if (pyatNet) {
+                memory().edit().putLong("apiwall." + r.code, System.currentTimeMillis()).apply();
+                // Куку не лечили — журнал телефона скажет, почему (1.50): отказ не быстрый, повтор входа или лечили недавно.
+                if (r.healNote.isEmpty()) {
+                    r.healNote = "; куку не лечил: " + (!res.optBoolean("fast", false) ? "отказ не быстрый или связи нет"
+                            : r.cartApiRefreshed ? "быстрый отказ после повтора входа" : "быстрый отказ, но лечили недавно")
+                            + " (запросов " + res.optInt("requests", 0) + ", сборка " + res.optLong("ms", 0) + " мс)";
+                }
+            }
+            // Защита сети просит подождать (429 на чтении, Впрок): адрес закрыт на ASK_WAIT_MS — до её конца ни запросов,
+            // ни касаний (те же страницы шли бы на него же). endBlocked закончит фоновую сборку, сборка человека идёт касаниями.
+            if ("wall".equals(stage)) {
+                memory().edit().putLong("apiblock." + r.code, System.currentTimeMillis() + ASK_WAIT_MS).apply();
+            }
+            apiGaveUp(r, why + r.healNote + peekNote(r.slot));
             return;
         }
 
@@ -5450,36 +7149,80 @@ public class MainActivity extends Activity {
             try { cartObj.put("totals", totals); } catch (Exception ignored) { }
         }
 
+        if (reckoned && r.slot != null) {
+            Log.i(TAG, r.name + ": сборку догнала правка — итог не читали (запросов " + res.optInt("requests", 0)
+                + ", ждали темпа " + res.optLong("paced_ms", 0) + " мс)");
+            // Корзина вернулась к отпечатку этой сборки («+» и тут же «−»), а итога у расчёта нет: её же ещё раз.
+            if (r.slot.pending.isEmpty()) {
+                r.slot.pending = r.stamp;
+                r.slot.changedAt = r.changedAt;
+                r.slot.changedPid = r.changedPid;
+            }
+            supersede(r);
+            return;
+        }
         if (superseded(r)) {
             supersede(r);
             return;
         }
 
         Log.i(TAG, r.name + ": запросами сети — легло " + okCount + " из " + totalCount
+            + (res.optString("place").isEmpty() ? "" : " [" + res.optString("place") + "]")
             + " за " + res.optLong("ms", 0) + " мс, снято " + res.optInt("dropped", 0)
             + " (запросов " + res.optInt("requests", 0) + ", ждали темпа " + res.optLong("paced_ms", 0) + " мс;"
             + " от запуска: наряд " + (r.planAt - r.startedAt) + " мс, запросы с " + (r.apiAt - r.startedAt) + " мс)");
 
-        if (rest.length() == 0) {
-            finishRun(r, cartObj, "");
-        } else {
-            r.lines = rest;
-            r.at = 0;
-            begin(r);
-        }
+        toTail(r, rest);   // что запросом не кладётся (весовое): отчёт о положенном их не ждёт
+        finishRun(r, cartObj, "");
+    }
+
+    private boolean collectionBudgetExpired(CartRun r) {
+        if (r.slot == null || r.deadline == 0 || writing(r)
+                || SystemClock.uptimeMillis() < r.deadline) return false;
+        String note = "Сеть не успела подтвердить корзину за 5 секунд";
+        if (!r.apiWhy.isEmpty()) note += ". Последний сбой запроса: " + r.apiWhy;
+        endBackground(r, "failed", fitWhy(note));
+        return true;
     }
 
     /** Наряд пришёл: сначала новые позиции (первая учит запрос сети), потом прибавки, потом лежащие. */
     private void begin(final CartRun r) {
-        loadLedger(r);
+        if (endBlocked(r)) return;      // и сеть без запросов (rules.api), и поиск хвостом шли бы на закрытый адрес
+        loadLedger(r);      // до heldForApi: «снять своё» (hasExcess) считается по записи положенного
+        if (heldForApi(r)) return;
+        if (!alive(r) || collectionBudgetExpired(r)) return;
         if (r.lines.length() == 0 && r.later.length() > 0) {
-            r.lines = r.later;
-            r.later = new JSONArray();
-            r.tail = true;
+            // Сеть не знает ни одного товара корзины (1.48): отчёт уходит сразу, поиск касаниями — хвостом
+            // после него, как при знакомых товарах. Раньше поиск начинался под палец и держал отчёт до
+            // своего конца: корзина из чека, Пятёрочка, 13.11.2026 — 96–135 с от касания. Своё лишнее
+            // сначала снимет cartApi ниже, и отчёт уйдёт после него.
+            boolean byApi = !r.tail && !r.cartApiDone && r.rules.optBoolean("api", false)
+                    && cartApiOrigin(r.code) != null;
+            if (byApi && !(shouldDrop(r) && hasExcess(r))) {
+                finishRun(r, new JSONObject(), "");
+                return;
+            }
+            if (!byApi) {
+                r.lines = r.later;
+                r.later = new JSONArray();
+                r.tail = true;
+            }
         }
         if (r.slot != null && !r.tail && !r.cartApiDone && r.rules.optBoolean("api", false)
                 && cartApiOrigin(r.code) != null
                 && (r.lines.length() > 0 || (shouldDrop(r) && hasExcess(r)))) {
+            // Окно лечит куку защиты на главной странице (whenHealed): уведённое на robots.txt, оно оставило бы
+            // узел корзин без новой куки. Ждём конца лечения, а после чтения заранее — и паузы узла (HEAL_QUIET_MS):
+            // по стене правка ушла бы касаниями (десятки секунд и капча вместо одного запроса).
+            // Кука Пятёрочки старая — первый запрос получил бы отказ, а отказ запирает узел на минуту: лечим до него (1.57).
+            if (aheadDue(r.slot)) aheadHeal(r.slot, "перед сборкой");
+            noteHeal(r);
+            if (healing(r.slot)) {
+                handler.postDelayed(() -> {
+                    if (alive(r)) begin(r);
+                }, 250);
+                return;
+            }
             cartApi(r);
             return;
         }
@@ -5529,6 +7272,34 @@ public class MainActivity extends Activity {
         proceed.run();
     }
 
+    /**
+     * Касания — сети без запросов и касания после запросов (сеть отказала, позиции без артикула) — грузят
+     * общий процесс окон и ждут до API_HEAD_MS, пока другие сети с запросами допишут. Замер 09.11.2026:
+     * Магнит без образца ушёл на касания, и запрос Пятёрочки в соседнем окне не дождался ответа за 15 с
+     * («обрыв сети»). Сборка, которой класть и снимать нечего, не ждёт (1.59).
+     */
+    private boolean heldForApi(final CartRun r) {
+        Slot s = r.slot;
+        boolean touches = r.cartApiDone || cartApiOrigin(r.code) == null;
+        boolean work = r.lines.length() > 0 || r.later.length() > 0 || (shouldDrop(r) && hasExcess(r));
+        if (s == null || !touches || !work || !apiRunning(s)) {
+            if (s != null) s.heldSince = 0;
+            return false;
+        }
+        long now = SystemClock.uptimeMillis();
+        if (s.heldSince == 0) {
+            s.heldSince = now;
+            // Окно сети без запросов гасим, пока ждём: до первого касания пройдёт не меньше 250 мс, и пустая страница успеет встать.
+            if (cartApiOrigin(r.code) == null) r.view.loadUrl("about:blank");
+            status(r, "жду, пока допишут сети с запросами", false);
+        }
+        if (now - s.heldSince >= API_HEAD_MS) return false;
+        handler.postDelayed(() -> {
+            if (alive(r)) begin(r);
+        }, 250);
+        return true;
+    }
+
     /** Фоновая сборка кончилась без отчёта: класть нечего, наряд не пришёл, сеть не пустила. */
     private void endBackground(CartRun r, String state, String note) {
         Slot s = r.slot;
@@ -5536,6 +7307,14 @@ public class MainActivity extends Activity {
         r.stopped = true;
         s.run = null;
         r.now = note;
+        sendEnd(r, state, note);
+        remember(r, "empty".equals(state));
+        Log.i(TAG, r.name + ": фоновая сборка не пошла — " + note);
+        rest(s);
+    }
+
+    /** Сказать серверу, что сборка кончилась без отчёта (state — failed или empty) и почему: строка не ждёт PHONE_STALE. */
+    private void sendEnd(CartRun r, String state, String note) {
         JSONObject body = new JSONObject();
         try {
             body.put("store", r.code).put("state", state).put("note", note)
@@ -5544,15 +7323,13 @@ public class MainActivity extends Activity {
             if (!r.stamp.isEmpty()) body.put("stamp", r.stamp);
         } catch (Exception ignored) { }
         call("/api/device/cartprogress", body, (status, text) -> tellPage());
-        remember(r, "empty".equals(state));
-        Log.i(TAG, r.name + ": фоновая сборка не пошла — " + note);
-        rest(s);
     }
 
     /** Остановить фоновую сборку сети. `forHuman` — человек собирает сам: её корзина — его. */
     private void stopBackground(Slot s, boolean forHuman) {
         CartRun r = s.run;
         if (r == null) return;
+        Log.i(TAG, r.name + ": сборку остановили" + (forHuman ? " (корзина поменялась или человек собирает сам)" : " (уход приложения)"));
         r.stopped = true;
         s.run = null;
         if (!forHuman && !r.stamp.isEmpty() && s.pending.isEmpty()) s.pending = r.stamp;
@@ -5572,24 +7349,48 @@ public class MainActivity extends Activity {
             soon(s);
             return;
         }
+        if (s.keepAlive != null) handler.removeCallbacks(s.keepAlive);
+        s.keepAlive = null;
+        if (!away && s.view != null && warmDue(s) == 0) {
+            warm(s);
+            return;
+        }
         handler.postDelayed(() -> {
-            if (s.run == null && s.view != null) {
+            if (s.run == null && s.view != null && !healing(s)) {
                 // Окно с образцом запроса или адаптером отдыхает на robots.txt своей сети: скриптов
                 // сети там нет, как на пустой странице, а следующей сборке не нужно заново открывать её
                 // адрес (ensureTpl сверяет origin).
-                JSONObject st = storedTpl(s.code);
-                String origin = st != null ? st.optString("origin", "") : "";
-                if (origin.isEmpty()) {
-                    origin = cartApiOrigin(s.code);
+                String origin = cartApiOrigin(s.code);
+                if (origin == null) {
+                    JSONObject st = storedTpl(s.code);
+                    origin = st != null ? st.optString("origin", "") : "";
                 }
                 if (origin != null && !origin.isEmpty()) {
-                    s.view.loadUrl(origin + "/robots.txt");
+                    // Окно уже там — не трогаем (1.29): перезагрузка стирала память окна (витрина Самоката,
+                    // номер заказа Пятёрочки), а правка следом ждала, пока она кончится.
+                    String robots = origin + "/robots.txt";
+                    if (!robots.equals(s.view.getUrl())) s.view.loadUrl(robots);
                 } else {
                     s.view.loadUrl("about:blank");
                 }
             }
         }, 1500);
         if (s.sleep != null) handler.removeCallbacks(s.sleep);
+        s.sleep = null;
+
+        // Пятёрочка: держим куки ServicePipe свежими, чтобы не тратить 4 с на pyatRefresh при нажатии (1.28).
+        long left = warmDue(s);
+        if (!away && left < Long.MAX_VALUE) {
+            s.keepAlive = () -> {
+                s.keepAlive = null;
+                if (!away && s.run == null && s.view != null && s.pending.isEmpty()) warm(s);
+            };
+            handler.postDelayed(s.keepAlive, left);
+        }
+
+        // Окно сети с запросами не убираем: на robots.txt скриптов сети нет, а открыть его заново —
+        // секунда-две из пяти, отведённых на правку (1.28).
+        if (cartApiOrigin(s.code) != null) return;
         s.sleep = () -> {
             s.sleep = null;
             if (s.run != null || s.view == null) return;
@@ -5598,6 +7399,37 @@ public class MainActivity extends Activity {
             s.view = null;
         };
         handler.postDelayed(s.sleep, IDLE_MS);
+    }
+
+    /**
+     * Через сколько мс окну пора на страницу сети за свежими куками защиты; сетям без этого — никогда, и закрытому
+     * защитой адресу тоже (blocked): подогрев раз в KEEP_ALIVE_MS копил бы ему отказы.
+     */
+    private long warmDue(Slot s) {
+        if (!"pyaterochka".equals(s.code) || blocked(s.code)) return Long.MAX_VALUE;
+        long idle = System.currentTimeMillis() - memory().getLong("warm." + s.code, 0);
+        return Math.max(0, Math.min(KEEP_ALIVE_MS, KEEP_ALIVE_MS - idle));
+    }
+
+    /**
+     * Куки защиты Пятёрочки обновляет только скрипт её страницы (см. pyatRefresh). Заходим туда, пока
+     * корзину не правят: при запуске, по возвращении и после KEEP_ALIVE_MS без дела. Свёрнутое
+     * приложение сеть не трогает (1.29): в 1.28 главная грузилась каждые 10 минут, пока жив процесс.
+     */
+    private void warm(final Slot s) {
+        if (healing(s)) return;     // окно и так на главной: лечит куку защиты (whenHealed)
+        Log.i(TAG, CHAINS[s.chain][0] + ": подогрев — открываю главную; " + cookieNote(cartApiOrigin(s.code), PYAT_COOKIE)
+                + "; прошлый подогрев " + agoSince(memory().getLong("warm." + s.code, 0)));
+        memory().edit().putLong("warm." + s.code, System.currentTimeMillis()).apply();
+        s.view.loadUrl(cartApiOrigin(s.code) + "/");
+        s.keepAlive = () -> {
+            s.keepAlive = null;
+            Log.i(TAG, CHAINS[s.chain][0] + ": подогрев кончен; " + cookieNote(cartApiOrigin(s.code), PYAT_COOKIE));
+            // Обратно на robots.txt сразу, без паузы rest: пока окно на главной, правка ждёт его загрузки.
+            if (s.run == null && s.view != null) s.view.loadUrl(cartApiOrigin(s.code) + "/robots.txt");
+            rest(s);
+        };
+        handler.postDelayed(s.keepAlive, 3500);
     }
 
     /**
@@ -5629,14 +7461,6 @@ public class MainActivity extends Activity {
                 // Сеть уводит со своих адресов — на вход, проверку, оплату. Это шаг человека.
                 handler.post(() -> leftChain(idx, hostOf(url)));
                 return true;
-            }
-
-            @Override
-            public void onReceivedSslError(WebView view, android.webkit.SslErrorHandler h,
-                                           android.net.http.SslError error) {
-                // Сертификаты Минцифры у части российских магазинов — только для адресов этой сети.
-                if (isHostOf(idx, error.getUrl())) h.proceed();
-                else h.cancel();
             }
 
             @Override
@@ -5697,22 +7521,52 @@ public class MainActivity extends Activity {
         Slot s = slots.get(CHAINS[idx][1]);
         if (s == null || s.view != view) return;
         CartRun r = s.run;
+        boolean again = false;
         if (r != null) {
             r.stopped = true;
             s.run = null;
-            if (s.crashes++ < 1 && !r.stamp.isEmpty()) s.pending = r.stamp;
+            // До 1.56 счёт падений не обнулялся: второе падение окна за всё время жизни приложения бросало сборку молча,
+            // а строка сети крутилась «идёт» до PHONE_STALE.
+            long now = SystemClock.uptimeMillis();
+            if (now - s.crashAt > CRASH_FORGET_MS) s.crashes = 0;
+            s.crashAt = now;
+            again = s.crashes++ < 1 && !r.stamp.isEmpty();
+            if (again) s.pending = r.stamp;
         }
         stage.removeView(view);
         view.destroy();
         s.view = null;
-        Log.w(TAG, CHAINS[idx][0] + ": скрытое окно сети упало");
+        Log.w(TAG, CHAINS[idx][0] + ": скрытое окно сети упало" + (r == null ? " (сборки не было)"
+                : again ? ", соберу заново" : ", второй раз подряд — заново не собираю"));
+        if (r != null) {
+            // Процесс страниц один на все окна: падает он разом, и хроника у всех сетей одна — не чаще раза за TRACE_GAP_MS.
+            Long was = traceSent.get("crash");
+            long now = SystemClock.uptimeMillis();
+            if (was == null || now - was >= TRACE_GAP_MS) {
+                traceSent.put("crash", now);
+                Log.i(TAG, memoryNote());
+                uploadTrace(s.code, "окно сети упало посреди сборки: " + r.now);
+            }
+            if (!again) sendEnd(r, "failed", CHAINS[idx][0] + ": окно сети упало (нехватка памяти) — соберу при следующей правке");
+        }
         if (!s.pending.isEmpty() && !away) soon(s);
     }
 
     // ── Память телефона: что куда положено и какую корзину собирали ──
 
     private SharedPreferences memory() {
-        if (prefs == null) prefs = getSharedPreferences("korzina-collect", MODE_PRIVATE);
+        if (prefs == null) {
+            prefs = getSharedPreferences("korzina-collect", MODE_PRIVATE);
+            // Наряды в памяти несут правила сервера для прежней версии приложения (с какой версии сеть
+            // кладётся запросами): после обновления берём их у сервера заново (1.29). Стена apiwall.* — тоже: она от
+            // отказа прежней версии, а новую ставят, чтобы узел сети проверить заново (1.53; 14.11.2026 первые минуты
+            // 1.51 прошли за стеной 1.49). Блок защиты (apiblock.*) остаётся: он про адрес сети, а не про версию.
+            if (!BuildConfig.VERSION_NAME.equals(prefs.getString("planApp", ""))) {
+                SharedPreferences.Editor e = prefs.edit().putString("planApp", BuildConfig.VERSION_NAME);
+                for (String k : prefs.getAll().keySet()) if (k.startsWith("planAt.") || k.startsWith("apiwall.")) e.remove(k);
+                e.apply();
+            }
+        }
         return prefs;
     }
 
@@ -5730,6 +7584,7 @@ public class MainActivity extends Activity {
                 if (it.optInt("v", 0) == 1) r.shown.put(sku, true);
                 if (!it.optString("u", "").isEmpty() && !r.urls.has(sku)) r.urls.put(sku, it.optString("u", ""));
                 if (it.optInt("p", 0) > 0 && !r.pids.has(sku)) r.pids.put(sku, it.optInt("p", 0));
+                if (it.optDouble("k", 0) > 0) r.packOk.put(sku, it.optDouble("k", 0));
             }
         } catch (Exception ignored) { }
     }
@@ -5747,6 +7602,7 @@ public class MainActivity extends Activity {
                 String u = r.urls.optString(sku, "");
                 if (!u.isEmpty()) it.put("u", u);
                 if (r.pids.optInt(sku, 0) > 0) it.put("p", r.pids.optInt(sku, 0));
+                if (r.packOk.optDouble(sku, 0) > 0) it.put("k", r.packOk.optDouble(sku, 0));
                 all.put(sku, it);
             }
             memory().edit().putString("ledger." + r.code, all.toString()).apply();
@@ -5789,8 +7645,12 @@ public class MainActivity extends Activity {
      * же лечь снова. Память до 1.25 без product_id бережём, пока в наряде есть любой поиск.
      */
     private boolean searchedAgain(CartRun r, String sku) {
+        // Найдено раньше и лежит (1.49): в наряде у товара одна штука, а сколько их в сети, решал человек.
+        if (r.adopted.contains(sku)) return true;
         if (wantOf(r, sku) > 0) return false;
         int pid = r.pids.optInt(sku, 0);
+        // Товар в корзине есть, артикула в наряде у него нет: строка поиска для защиты не нужна (1.43).
+        if (pid > 0 && r.noSku.contains(pid)) return true;
         for (JSONArray list : new JSONArray[]{r.lines, r.later}) {
             for (int i = 0; i < list.length(); i++) {
                 JSONObject line = list.optJSONObject(i);
@@ -6102,8 +7962,34 @@ public class MainActivity extends Activity {
         return String.format(new Locale("ru"), "%,.2f ₽", value);
     }
 
-    private interface Reply {
+    interface Reply {
         void got(int status, String text);
+    }
+
+    /**
+     * Запрос, который можно повторить без вреда (наряд: оба запроса несут один номер вопроса ask, и сервер
+     * считает его один раз): не ответил за HEDGE_MS — уходит ещё раз, берём первый удачный ответ.
+     * ЗАЧЕМ (замер 13.11.2026): наряды шести сетей уходят разом, часть — по новым соединениям,
+     * и одно из них изредка открывается 3–17 с (VPN, потерянный пакет), пока соседние отвечают за 0,2 с:
+     * Самокат ждал наряд 16,9 с. Второй запрос берёт соединение, которое к тому времени освободил сосед.
+     */
+    private void callTwice(final String path, final JSONObject body, final Reply reply,
+                           final java.util.function.BooleanSupplier wanted) {
+        final int[] flying = {1};
+        final boolean[] done = {false};
+        final Reply once = (status, text) -> {
+            flying[0]--;
+            if (done[0] || (status != 200 && flying[0] > 0)) return;     // отказал один — ждём второй
+            done[0] = true;
+            reply.got(status, text);
+        };
+        call(path, body, once);
+        handler.postDelayed(() -> {
+            if (done[0] || !wanted.getAsBoolean()) return;
+            flying[0]++;
+            Log.i(TAG, path + ": ответа нет " + HEDGE_MS + " мс — тот же запрос ещё раз");
+            call(path, body, once);
+        }, HEDGE_MS);
     }
 
     /**
@@ -6113,8 +7999,12 @@ public class MainActivity extends Activity {
      * /static/fns-grab.js), которую сервер отдаёт только на GET.
      */
     private void call(String path, JSONObject body, Reply reply) {
+        requestApp(CookieManager.getInstance().getCookie(SERVER), path, body, reply);
+    }
+
+    static void requestApp(String session, String path, JSONObject body, Reply reply) {
         final boolean post = body != null;
-        final String session = CookieManager.getInstance().getCookie(SERVER);
+        android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
         new Thread(() -> {
             int code = 0;
             String text = "";
@@ -6164,7 +8054,7 @@ public class MainActivity extends Activity {
         String url = web.getUrl();
         String raw = url == null ? null : CookieManager.getInstance().getCookie(url);
         if (raw == null || raw.trim().isEmpty()) {
-            say("Нет кук — похоже, вы ещё не вошли в магазин.", true);
+            say(Sign.ACT, "", "Сначала войдите в магазин", "Нет кук — похоже, вы ещё не вошли в магазин.");
             return false;
         }
         try {
@@ -6181,13 +8071,13 @@ public class MainActivity extends Activity {
             // Человеку из «Настроек» — что делать дальше, а не где лежат ключи.
             String ok = loginMode ? LOGIN_DONE_TEXT
                 : CHAINS[currentChain][0] + " — вход защищённо сохранён в KeyStore";
-            say("Сохраняю вход в защищённое хранилище…", false);
-            post("/api/device/connected", body, ok);
-            say(loginMode ? LOGIN_DONE_TEXT
-                : CHAINS[currentChain][0] + " — вход надёжно сохранён в KeyStore на устройстве", false);
+            say(Sign.GOING, "", "вход", "Сохраняю вход в защищённое хранилище");
+            post("/api/device/connected", body, "", CHAINS[currentChain][0], ok);
+            say(Sign.DONE, "", CHAINS[currentChain][0], loginMode ? LOGIN_DONE_TEXT
+                : CHAINS[currentChain][0] + " — вход надёжно сохранён в KeyStore на устройстве");
             return true;
         } catch (Exception e) {
-            say("Не получилось сохранить вход: " + e.getMessage(), true);
+            say(Sign.FAIL, "", "вход не сохранён: " + e.getMessage(), null);
             return false;
         }
     }
@@ -6254,6 +8144,23 @@ public class MainActivity extends Activity {
         "hit=hit||alt; if(!hit) return 'none';" +
         "hit.click(); return 'tap';})()";
 
+    /**
+     * Сайт сети не должен сам уйти «назад» на наш экран посреди входа. Самокат после отправки
+     * номера зовёт router.back() (мобильная вёрстка, замер 12.11.2026): в браузере позади его же
+     * страница, у нас — экран «Войти · Самокат», и поле кода из СМС пропадало через 2 с.
+     * «Назад» из скрипта пропускаем, только когда позади есть запись того же сайта: перечень
+     * Navigation API и index в нём считают только идущие подряд страницы этого сайта, наш экран
+     * туда не входит. Кнопку «←» и «назад» телефона это не трогает: они идут мимо скрипта.
+     * shortcut: без Navigation API (WebView старше 102) защиты нет; считать pushState самим,
+     * если такие телефоны появятся.
+     */
+    private static final String LOGIN_BACK_JS = "(function(){" +
+        "if(window.__kzBack) return; window.__kzBack=1;" +
+        "var h=history,back=h.back,go=h.go;" +
+        "function inside(n){var e=window.navigation&&navigation.currentEntry; return !e||e.index>=n;}" +
+        "h.back=function(){if(inside(1)) back.call(h);};" +
+        "h.go=function(n){if(!(n<0)||inside(-n)) go.call(h,n);};})()";
+
     /** Режим входа: раз в LOGIN_CHECK_MS спросить куку и страницу, вошёл ли человек. */
     private void checkLogin() {
         if (!loginMode || loginSaved || currentChain < 0) return;
@@ -6262,6 +8169,8 @@ public class MainActivity extends Activity {
             loginFound();
             return;
         }
+        // Раньше нажатия «Войти»: защита должна стоять до того, как человек отправит номер.
+        if (isHostOf(idx, pageUrl)) web.evaluateJavascript(LOGIN_BACK_JS, null);
         web.evaluateJavascript(LOGIN_STATE_JS, result -> {
             if (!loginMode || loginSaved || currentChain != idx) return;
             String state = result == null ? "" : result.replace("\"", "").trim();
@@ -6270,9 +8179,9 @@ public class MainActivity extends Activity {
                 loginFound();
                 return;
             }
-            if ("vpn".equals(state)) say("Сайт не пускает этот адрес — выключите VPN", true);
-            else if ("check".equals(state)) say("Пройдите проверку «я не робот»", false);
-            else say("Войдите своим номером телефона", false);
+            if ("vpn".equals(state)) say(Sign.ACT, "", "Сайт не пускает этот адрес — выключите VPN");
+            else if ("check".equals(state)) say(Sign.ACT, "", "Пройдите проверку «я не робот»");
+            else say(Sign.ACT, "", "Войдите своим номером телефона");
             // Кнопку входа сеть дорисовывает не сразу, а нажатие до готовности страницы
             // теряется (нижняя панель Магнита — через 7–20 с, замер 09.11.2026). Поэтому
             // жмём на каждой проверке, пока не откроется форма, но не больше LOGIN_TAPS раз.
@@ -6305,7 +8214,7 @@ public class MainActivity extends Activity {
         }
         handler.removeCallbacks(loginWatch);
         chainPanel.setBackgroundColor(0xFFE8F5EC);  // --green-soft из phone.css
-        loginDoneBtn.setText("Готово");
+        loginDoneBtn.setText("Готово · к настройкам");
         loginDoneBtn.setBackgroundTintList(ColorStateList.valueOf(0xFFD4F24A));  // --lime: главное действие
     }
 
@@ -6320,24 +8229,25 @@ public class MainActivity extends Activity {
         if (currentChain < 0) return;
         final String chain = CHAINS[currentChain][1];
         final String name = CHAINS[currentChain][0];
-        say("Собираю акции со страницы…", false);
+        say(Sign.GOING, "", "акции", "Собираю акции со страницы");
         web.evaluateJavascript(OFFERS_JS, result -> {
             try {
                 String json = (String) new JSONTokener(result).nextValue();
                 JSONArray offers = new JSONArray(json == null ? "[]" : json);
                 if (offers.length() == 0) {
-                    say("На этой странице акций не нашлось. Откройте в " + name
-                        + " раздел своих предложений и нажмите ещё раз.", true);
+                    say(Sign.ACT, "", "Откройте раздел своих предложений и нажмите «Акции»",
+                        "На этой странице акций не нашлось. Откройте в " + name
+                        + " раздел своих предложений и нажмите ещё раз.");
                     return;
                 }
                 JSONObject body = new JSONObject()
                     .put("store", chain).put("logged_in", true)
                     .put("gives", new JSONArray().put("coupons"))
                     .put("coupons", offers);
-                post("/api/store_accounts/sync", body,
+                post("/api/store_accounts/sync", body, String.valueOf(offers.length()), "акции",
                      name + " — сохранено акций: " + offers.length());
             } catch (Exception e) {
-                say("Не получилось разобрать страницу: " + e.getMessage(), true);
+                say(Sign.FAIL, "", "не разобрал страницу: " + e.getMessage(), null);
             }
         });
     }
@@ -6440,10 +8350,10 @@ public class MainActivity extends Activity {
         final String chain = CHAINS[currentChain][1];
         final String name = CHAINS[currentChain][0];
         if (cartRun != null) {
-            say(name + ": идёт сборка — раздел прочитаю после неё", true);
+            say(Sign.GOING, "", "сборка", name + ": идёт сборка — раздел прочитаю после неё");
             return;
         }
-        say(name + ": читаю карточки раздела…", false);
+        say(Sign.GOING, "", "раздел", name + ": читаю карточки раздела");
         readRound(chain, name, new JSONArray(), new HashSet<>(), 0, 0);
     }
 
@@ -6509,20 +8419,25 @@ public class MainActivity extends Activity {
         web.evaluateJavascript(BLOCKER_JS, result -> {
             String why = result == null ? "" : result.replace("\"", "").trim();
             if (why.contains("address")) {
-                say(name + ": сеть просит выбрать адрес — выберите его и нажмите «Раздел» снова", true);
+                say(Sign.ACT, "", "Выберите адрес в сети и нажмите «Раздел» снова",
+                    name + ": сеть просит выбрать адрес — выберите его и нажмите «Раздел» снова");
             } else if (why.contains("login")) {
-                say(name + ": сеть просит войти — нажмите «ВХОД», потом «Раздел» снова", true);
+                say(Sign.ACT, "", "Войдите в сети и нажмите «Раздел» снова",
+                    name + ": сеть просит войти — нажмите «Вход», потом «Раздел» снова");
             } else if (why.contains("captcha")) {
-                say(name + ": сеть показывает проверку — пройдите её в окне и нажмите «Раздел» снова", true);
+                say(Sign.ACT, "", "Пройдите проверку в окне и нажмите «Раздел» снова",
+                    name + ": сеть показывает проверку — пройдите её в окне и нажмите «Раздел» снова");
             } else {
-                say(name + ": карточек на странице нет — откройте раздел сети", true);
+                say(Sign.ACT, "", "Откройте раздел сети и нажмите «Раздел»",
+                    name + ": карточек на странице нет — откройте раздел сети");
             }
         });
     }
 
     /** Отдать собранное серверу: пачками по SECTION_LIMIT, с общим итогом в строке. */
     private void sendCards(String chain, String name, JSONArray all) {        if (all.length() == 0) {
-            say(name + ": карточек на странице нет — откройте раздел сети", true);
+            say(Sign.ACT, "", "Откройте раздел сети и нажмите «Раздел»",
+                name + ": карточек на странице нет — откройте раздел сети");
             return;
         }
         sendBatch(chain, name, all, 0, 0, 0, 0);
@@ -6541,7 +8456,7 @@ public class MainActivity extends Activity {
                 .put("page", web.getUrl() == null ? "" : web.getUrl());
             call("/api/device/cards", body, (status, text) -> {
                 if (status != 200) {
-                    say(name + ": раздел не ушёл — " + serverError(status, text), true);
+                    say(Sign.FAIL, "", "раздел не ушёл — " + serverError(status, text), null);
                     return;
                 }
                 JSONObject a = asObject(text);
@@ -6549,13 +8464,17 @@ public class MainActivity extends Activity {
                 int g = got + a.optInt("got");
                 int l = learned + a.optInt("learned");
                 if (next < all.length()) sendBatch(chain, name, all, next, w, g, l);
-                else say(name + ": карточек " + w + " из " + g + ", новых в базе " + l, false);
+                else say(w < g || g == 0 ? Sign.PART : Sign.DONE, w + "/" + g, l > 0 ? "+" + l : "",
+                         name + ": карточек " + w + " из " + g + ", новых в базе " + l);
             });
         } catch (Exception ignored) { }
     }
 
-    /** POST на наш сервер с сессией «Моей корзины» из WebView. В фоне. */
-    private void post(String path, JSONObject body, String okText) {
+    /**
+     * POST на наш сервер с сессией «Моей корзины» из WebView. В фоне. Принял — «готово» с числом и
+     * контекстом (words — та же фраза для чтения с экрана), не принял — «не вышло» с причиной.
+     */
+    private void post(String path, JSONObject body, String number, String what, String words) {
         setChainButtons(false);
         final String session = CookieManager.getInstance().getCookie(SERVER);
         new Thread(() -> {
@@ -6579,35 +8498,69 @@ public class MainActivity extends Activity {
                 conn.disconnect();
             } catch (Exception e) {
                 final String why = e.getMessage();
-                handler.post(() -> done("Сервер недоступен: " + why, true));
+                handler.post(() -> done(Sign.FAIL, "", "сервер недоступен: " + why, "Сервер недоступен: " + why));
                 return;
             }
             final int status = code;
             final String answer = text;
             handler.post(() -> {
                 if (status == 200) {
-                    done(okText, false);
+                    done(Sign.DONE, number, what, words);
                 } else if (status == 401 || status == 302 || status == 303) {
-                    done("Сначала войдите в «Мою корзину» своим номером.", true);
+                    done(Sign.FAIL, "", "Сначала войдите в «Мою корзину» своим номером.", null);
                 } else {
                     String msg = "Ошибка " + status;
                     try { msg = new JSONObject(answer).optString("error", msg); } catch (Exception ignored) { }
-                    done(msg, true);
+                    done(Sign.FAIL, "", msg, null);
                 }
             });
         }).start();
     }
 
-    private void done(String text, boolean bad) {
-        say(text, bad);
+    private void done(Sign sign, String number, String text, String words) {
+        say(sign, number, text, words);
         if (currentChain >= 0) setChainButtons(true);
     }
 
     // ── Вспомогательные ──
+    /** Строка без знака (имя и адрес страницы); bad — «не вышло» с причиной. */
     private void say(String text, boolean bad) {
+        say(bad ? Sign.FAIL : Sign.NONE, "", text, text);
+    }
+
+    private void say(Sign sign, String number, String text) {
+        say(sign, number, text, null);
+    }
+
+    /**
+     * Строка панели сети на языке состояний (DESIGN.md): знак, число N/M и короткий контекст.
+     * Слова остаются там, где человеку надо что-то сделать в чужом окне. Полная фраза для чтения
+     * с экрана — words; без неё читается «состояние: число, контекст».
+     */
+    private void say(Sign sign, String number, String text, String words) {
         if (chainStatus == null) return;
-        chainStatus.setText(text);
-        chainStatus.setTextColor(bad ? 0xFFB71C1C : loginSaved ? 0xFF17703A : Color.DKGRAY);
+        String line = number.isEmpty() ? text : text.isEmpty() ? number : number + " · " + text;
+        SpannableString shown = new SpannableString(line);
+        if (!number.isEmpty()) {
+            shown.setSpan(new StyleSpan(Typeface.BOLD), 0, number.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        chainStatus.setText(shown);
+        chainStatus.setTextColor(sign == Sign.FAIL ? 0xFFB71C1C : sign == Sign.PART ? 0xFF8A5A00
+            : sign == Sign.DONE || (loginSaved && sign != Sign.ACT) ? 0xFF17703A : Color.DKGRAY);
+        chainStatus.setCompoundDrawablesRelativeWithIntrinsicBounds(new SignDrawable(sign, dp(20), animationsOn()), null, null, null);
+        chainStatus.setContentDescription(words != null ? words
+            : sign.words + (sign.words.isEmpty() || line.isEmpty() ? "" : ": ") + line);
+    }
+
+    /** Кольцо «идёт» — единственное движение; анимации в системе выключены — оно стоит. */
+    private boolean animationsOn() {
+        return Settings.Global.getFloat(getContentResolver(), Settings.Global.ANIMATOR_DURATION_SCALE, 1f) != 0f;
+    }
+
+    /** Целые рубли, узкий неразрывный пробел в разрядах и перед ₽ (DESIGN.md). */
+    private static String rub(double value) {
+        char thin = 0x202F;
+        return String.format(Locale.US, "%,d", Math.round(value)).replace(',', thin) + thin + "₽";
     }
 
     private static byte[] readAll(InputStream is) throws java.io.IOException {
@@ -6625,15 +8578,6 @@ public class MainActivity extends Activity {
         for (String own : CHAINS[idx][3].split(",")) {
             String d = own.trim();
             if (host.equals(d) || host.endsWith("." + d)) return true;
-        }
-        return false;
-    }
-
-    private static boolean isChainHost(String url) {
-        String host = hostOf(url);
-        for (String[] c : CHAINS) {
-            String own = hostOf(c[2]).replaceFirst("^www\\.", "");
-            if (host.equals(own) || host.endsWith("." + own)) return true;
         }
         return false;
     }
@@ -6660,10 +8604,8 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        // В кабинете ФНС «назад» — не история налоговой, а наш экран чеков: человек
-        // уходил за ключом, а не листать кабинет.
-        if (fnsMode) {
-            leaveFns();
+        if (currentChain >= 0) {
+            leaveChain();
             return;
         }
         // Идти назад некуда, а человек всё ещё в приложении (экран чеков после окна
@@ -6698,18 +8640,27 @@ public class MainActivity extends Activity {
     @Override
     protected void onStart() {
         super.onStart();
+        Log.i(TAG, "приложение на экране" + (away ? ", после ухода: сборки продолжатся" : ""));
         handler.removeCallbacks(goAway);
+        // Пока приложение было не на экране, корзину в сети могли оформить в заказ: памяти корзины
+        // (cartapi.js) старше этого мига веры нет, читаем заново (1.41).
+        homeSince = System.currentTimeMillis();
+        peekLive = SystemClock.uptimeMillis();
+        for (Slot s : slots.values()) s.peekStartedAt = 0;
+        peekSoon(500);
         if (!away) return;
         // Вернулись: остановленные сборки продолжаются с того, что уже легло.
         away = false;
         for (Slot s : slots.values()) {
             if (s.run == null && !s.pending.isEmpty()) soon(s);
+            else if (s.run == null) rest(s);    // вернуть окну отсчёты: в фоне подогрев снят (1.29)
         }
     }
 
     @Override
     protected void onStop() {
         super.onStop();
+        Log.i(TAG, "приложение ушло с экрана");
         // Человек отлучился (код из СМС, звонок) — минуту сборка ещё идёт, дальше стоит.
         handler.removeCallbacks(goAway);
         if (!slots.isEmpty()) handler.postDelayed(goAway, AWAY_MS);
@@ -6718,6 +8669,7 @@ public class MainActivity extends Activity {
     // Ответ системного выбора файла (onShowFileChooser): отмена — null, и поле снова живое.
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (BuildConfig.DEBUG && apkUpdater.onActivityResult(requestCode, SERVER)) return;
         if (requestCode == REQ_FILE) {
             if (fileUploadCallback != null) {
                 fileUploadCallback.onReceiveValue(
@@ -6748,9 +8700,15 @@ public class MainActivity extends Activity {
     private void pauseBackground() {
         away = true;
         for (Slot s : slots.values()) {
+            if (s.run != null) Log.i(TAG, CHAINS[s.chain][0] + ": сборку остановил долгий уход приложения");
+            s.changedAt = 0;     // правка, не собранная до ухода: время от касания включило бы всю отлучку
             if (s.soon != null) {
                 handler.removeCallbacks(s.soon);
                 s.soon = null;
+            }
+            if (s.keepAlive != null) {
+                handler.removeCallbacks(s.keepAlive);
+                s.keepAlive = null;
             }
             stopBackground(s, false);
         }

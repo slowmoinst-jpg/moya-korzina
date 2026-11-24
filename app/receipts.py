@@ -53,10 +53,10 @@ def _months_between(first: str, last: str) -> int:
 def loaded() -> dict:
     """Что уже лежит в истории."""
     row = query("SELECT COUNT(*) AS rows, MIN(date) AS first, MAX(date) AS last,"
-                " ROUND(SUM(total), 2) AS total FROM purchase_history")[0]
+                " ROUND(SUM(total), 2) AS total FROM effective_purchase_history")[0]
     receipts = repo.imported_receipts()
     stores = query("SELECT COALESCE(s.name, 'без магазина') AS name, COUNT(*) AS rows"
-                   " FROM purchase_history h LEFT JOIN stores s ON s.id = h.store_id"
+                   " FROM effective_purchase_history h LEFT JOIN stores s ON s.id = h.store_id"
                    " GROUP BY 1 ORDER BY 2 DESC")
     # Строки, загруженные до появления учёта чеков: они в истории есть, а какому
     # чеку принадлежат — неизвестно. Молчать о них нельзя, иначе счёт чеков

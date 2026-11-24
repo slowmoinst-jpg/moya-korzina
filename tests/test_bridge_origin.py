@@ -34,12 +34,16 @@ JAVA = os.path.join(ROOT, "android", "app", "app", "src", "main", "java",
 # исключением: JS на странице ждёт объект или строку и разбирает JSON.parse,
 # поэтому «{}» — это «ничего не знаю», а пустая строка сломала бы разбор.
 SAFE = {
+    "updateApp": "return false;",
     "info": 'return "{}";',
     "openStore": "return false;",
     "login": "return false;",
     "openApp": "return;",
+    "receiptStatus": 'return "{}";',
+    "leaveReceiptProfile": "return;",
     "openFns": "return;",
     "collect": 'return "{}";',
+    "change": "return;",
     "busy": 'return "{}";',
     "ordered": "return false;",
 }
@@ -206,6 +210,12 @@ def call_arguments(src: str, callee: str) -> list[str]:
 
 def test_the_bridge_file_is_where_we_think_it_is():
     assert os.path.exists(JAVA), f"нет файла моста: {JAVA}"
+
+
+def test_store_webviews_keep_platform_tls_validation():
+    clean = strip_comments(source())
+    for callback in re.finditer(r"\bvoid\s+onReceivedSslError\s*\(", clean):
+        assert not re.search(r"\.\s*proceed\s*\(", body_of(clean, callback.start()))
 
 
 def test_the_parser_does_not_count_comments_as_annotations_or_guards():

@@ -135,6 +135,17 @@ LIST_LIMIT = 120       # позиций в одном списке строки:
 # (до минуты: поиск самой сети по незнакомым позициям) и карточки (до 30 с).
 PHONE_STALE = 120
 
+# Столько секунд после конца сборки телефона его «идёт» с тем же отпечатком корзины строку не
+# открывает: это опоздавший пульс. Хвост (поиск незнакомых) телефон начинает не раньше чем
+# через 10 с после отчёта, повтор — через минуты.
+LATE_PULSE = 8
+
+# Хвост и повтор после отчёта по той же корзине строку «идёт» не открывают: итог отчёта остаётся на экране,
+# следующий отчёт его обновит (замер владельца 15.11.2026: отчёт о правке пришёл за 1–3 с, а «собираю»
+# после него шло у Дикси 97 с, у Магнита больше трёх минут и кончилось «телефон замолчал»).
+# shortcut: хвост дольше TAIL_HIDE от отчёта снова виден как «идёт»; нужен флаг хвоста от приложения, если и это мешает.
+TAIL_HIDE = 1800
+
 _START = threading.Lock()   # «посмотреть, не идёт ли» + «отметить, что пошла»
 _WRITE = threading.Lock()   # чтение, слияние и запись строк одной настройкой
 
@@ -676,6 +687,34 @@ def _by_link(row: Row) -> Row:
     return out
 
 
+# ---------- корзина ссылкой: что уйдёт в сеть и во что это встанет ----------
+
+def link_cart(code: str, basket_id: int) -> dict | None:
+    """Корзина сети «ссылкой» (handover.LINK): сколько позиций уйдёт и наш расчёт по ним.
+
+    ЗАЧЕМ. Владелец 12.11.2026: у Ленты и ВкусВилла есть MCP, корзину им отдаём через него. Писать
+    в кабинет MCP не умеет ни у одной: он создаёт ссылку на корзину (спрошено у обоих серверов
+    12.11.2026; с нашего сервера 0,1–1,6 с). Значит, после правки корзины в сети обновлять нечего:
+    ссылку делаем, когда человек её открывает (app/web/phone/basket.py, basket_link), а строке
+    сети нужны только числа отсюда. Сеть здесь не спрашивается: наряд и цены — из базы.
+
+    Числа не храним: цены и связи товаров меняются и без правки корзины, а расчёт стоит 30–45 мс
+    на сеть (замер на сервере 12.11.2026). None — корзина не прочиталась.
+    """
+    from app import cartplan, repo
+
+    lines = _lines(code, basket_id)
+    if not lines:
+        return None
+    plan = cartplan.build(code, lines, force=True)
+    total, unpriced = _ours(plan.lines)
+    # shortcut: предел позиций в ссылке (у ВкусВилла 20) в числе не учтён, как и в _by_link;
+    # учесть, когда знакомых сети позиций в корзинах станет больше.
+    return {"count": len(plan.lines), "of": len(repo.basket_items(basket_id)),
+            # Сумма — только когда цена есть у каждой позиции: неполная выглядела бы итогом.
+            "sum": total.sum if total and not unpriced else None}
+
+
 def _by_cart(phone: str, row: Row, again: bool) -> Row:
     """Магнит и METRO: наряд, пускатель и итог сети — ровно как у кнопки «Передать»."""
     from app import cartplan, carttotal, users
@@ -821,6 +860,21 @@ def progress(report: dict, *, by: str = DEVICE) -> Row:
         store = repo.get_store(code)
         basket_id, basket_name = _basket_of(report, current)
         stamp = _stamp_text(report.get("stamp"))
+        if (state == GOING and current is not None and current.by == DEVICE
+                and current.state != GOING and current.stamp == stamp
+                and current.basket_id == basket_id
+                and time.time() - (current.beat or 0) < LATE_PULSE):
+            # Пульс и отчёт телефон шлёт разными запросами, а сборка запросами сети идёт меньше
+            # секунды: «начал» доходит после «готово». Он вернул бы готовую строку в «идёт», и
+            # через PHONE_STALE она стала бы «прервана» (12.11.2026: Дикси и Самокат).
+            # shortcut: порядок по часам сервера; опоздает больше LATE_PULSE — строка снова
+            # «идёт», тогда телефону нужен номер сообщения.
+            log.info("%s: пульс телефона опоздал на отчёт, строка остаётся «%s»", code, current.state)
+            return current
+        if (state == GOING and stamp and current is not None and current.by == DEVICE
+                and current.state in (DONE, FAILED) and current.stamp == stamp
+                and current.basket_id == basket_id and time.time() - (current.beat or 0) < TAIL_HIDE):
+            return current
         same = (current is not None and current.by == DEVICE and current.state == GOING
                 and current.stamp == stamp and current.basket_id == basket_id
                 # Продолжение, а не новая попытка: прошлый пульс ещё жив. Замолчавшую
@@ -916,4 +970,5 @@ __all__ = ["Row", "Total", "NETWORK", "OURS", "KEY", "LINK", "BROWSER", "API", "
            "IDLE", "READY", "GOING", "DONE", "FAILED", "REFUSED", "LOGIN", "SENT", "CANT",
            "EMPTY", "SERVER", "DEVICE", "PHONE_STALE", "GONE_WHY", "LOGIN_WHY", "STORE_WHY",
            "networks", "road", "alive", "live",
-           "prepare", "preview", "rows", "start", "accept", "progress", "stamp_of", "get", "save"]
+           "prepare", "preview", "rows", "start", "accept", "progress", "stamp_of", "get", "save",
+           "link_cart"]

@@ -15,6 +15,12 @@ import type {
   Variant,
 } from '../src/types';
 
+export interface ApkUpdate {
+  version: string;
+  canDownload: boolean;
+  url: string;
+}
+
 export interface AuthState {
   authenticated: boolean;
   phone: string | null;
@@ -40,6 +46,7 @@ export interface WorkspaceSnapshot {
   basketItems: Record<string, BasketItem[]>;
   history: PurchaseRow[];
   receipts: ReceiptRecord[];
+  otherReceipts?: { count: number; recent: Pick<ReceiptRecord, 'key' | 'date' | 'store' | 'total'>[] };
   connections: Record<string, StoreConnection>;
   storeQuotes?: Record<string, StoreCartQuote>;
   storePerks?: Record<string, StorePerk>;
@@ -94,6 +101,7 @@ export interface HabitItem {
 
 export interface OrderLineView {
   product_id: number | null;
+  repeatable: boolean;
   name: string;
   qty: number;
   total: number;
@@ -112,6 +120,7 @@ export interface OrderEntry {
 }
 
 export interface SearchResultItem {
+  available?: boolean;
   product: Product;
   prices: Record<string, StoreProductPrice>;
   chainsCount: number;

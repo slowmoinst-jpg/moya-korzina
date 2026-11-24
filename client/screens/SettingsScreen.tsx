@@ -1,13 +1,13 @@
+import { loadBasketLayout, saveBasketLayout, type BasketLayout } from '../storage';
+import { getFnsStatus } from '../api';
 import React, { useEffect, useState } from 'react';
 import {
   cheques,
-  goods,
   PHONE_CHAINS,
   rub,
 } from '../../src/shared/format';
 import { AddressPicker } from '../components/AddressPicker';
 import { ChainMark, Icon, MoneyWhole } from '../components/Icons';
-import { MobileTabs } from '../components/MobileTabs';
 import { KorzinaBridge } from '../device';
 import type { WorkspaceSnapshot } from '../types';
 
@@ -30,9 +30,6 @@ const STORE_LOGIN_URLS: Record<string, string> = {
 interface SettingsScreenProps {
   ws: WorkspaceSnapshot;
   storeTotals: Record<string, number>;
-  itemsCount: number;
-  bestTotal: number | null;
-  isDesktop: boolean;
   activeCollecting?: string[];
   onToggleStore: (code: string, connect: boolean, mode?: 'session' | 'manual') => void;
   onUpdateStorePerk: (code: string, perk: StorePerk) => void;
@@ -46,11 +43,7 @@ interface SettingsScreenProps {
     capRub: number;
   }) => void;
   onDeleteOffer: (offerId: number) => void;
-  onSyncFns: (phone: string, keys?: string) => Promise<void>;
-  onDisconnectFns: () => Promise<void>;
-  onPasteReceipt: (storeCode: string, text: string) => Promise<void>;
-  onOpenBasket: () => void;
-  onOpenCheaper: () => void;
+  onRefreshReceipts: () => Promise<void>;
   onOpenPrices: () => void;
   onLogout: () => Promise<void>;
   initialAuthStore?: string | null;
@@ -60,9 +53,6 @@ interface SettingsScreenProps {
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   ws,
   storeTotals,
-  itemsCount,
-  bestTotal,
-  isDesktop,
   activeCollecting = [],
   onToggleStore,
   onUpdateStorePerk,
@@ -70,16 +60,14 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   onToggleOffer,
   onAddOffer,
   onDeleteOffer,
-  onSyncFns,
-  onDisconnectFns,
-  onPasteReceipt,
-  onOpenBasket,
-  onOpenCheaper,
+  onRefreshReceipts,
   onOpenPrices,
   onLogout,
   initialAuthStore,
   onClearInitialAuthStore,
 }) => {
+  const [layout, setLayout] = useState(loadBasketLayout);
+  const updateLayout = (next: BasketLayout) => { setLayout(next); saveBasketLayout(next); };
   const [authStoreCode, setAuthStoreCode] = useState<string | null>(null);
   const [storeSessionInput, setStoreSessionInput] = useState('');
   const [perkLabel, setPerkLabel] = useState('');
@@ -121,17 +109,80 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [offerPct, setOfferPct] = useState('5');
   const [offerCap, setOfferCap] = useState('3000');
 
-  const [showReceiptForm, setShowReceiptForm] = useState(false);
-  const [receiptStore, setReceiptStore] = useState('pyaterochka');
-  const [receiptText, setReceiptText] = useState('');
-  const [receiptBusy, setReceiptBusy] = useState(false);
-  const [receiptError, setReceiptError] = useState<string | null>(null);
-
-  const [showFnsModal, setShowFnsModal] = useState(false);
-  const [fnsPhoneInput, setFnsPhoneInput] = useState(ws.fnsPhone || ws.phoneLabel || '');
-  const [fnsKeysInput, setFnsKeysInput] = useState('');
-  const [fnsBusy, setFnsBusy] = useState(false);
-  const [fnsError, setFnsError] = useState<string | null>(null);
+  const [needsLogin, setNeedsLogin] = useState(false);
+  const [deviceReceipt, setDeviceReceipt] = useState<ReturnType<typeof KorzinaBridge.receiptStatus>>({});
+  const [serverState, setServerState] = useState('');
+  const [loginError, setLoginError] = useState('');
+  useEffect(() => {
+    if (window.location.pathname === '/phone/receipts')
+      requestAnimationFrame(() => document.getElementById('my-receipts')?.scrollIntoView());
+    if (ws.isDemo) return;
+    let active = true;
+    let revision: string | undefined, refreshedAt = 0, refreshing = false;
+    const check = async () => {
+      if (document.hidden || !active) return;
+      const device = KorzinaBridge.receiptStatus(ws.phone);
+      setDeviceReceipt(device);
+      if (revision === undefined) { revision = device.updated; return; }
+      if (!refreshing && revision !== device.updated && (device.phase === 'done' || Date.now() - refreshedAt >= 60000)) {
+        refreshing = true;
+        refreshedAt = Date.now();
+        try { await onRefreshReceipts(); revision = device.updated; } catch { /* Retry on the next refresh. */ }
+        finally { refreshing = false; }
+      }
+    };
+    const serverStatus = async () => {
+      if (!ws.fnsConnected || document.hidden) return;
+      try {
+        const state = await getFnsStatus();
+        if (!active) return;
+        setNeedsLogin(Boolean(state.needsConnection));
+        setServerState(state.running ? 'Проверяем чеки…' : state.failed ? state.message : '');
+        if (state.lastSync?.replace('T', ' ').slice(0, 16) !== ws.fnsSyncedAt && state.lastSync)
+          await onRefreshReceipts();
+      } catch { /* Keep the last known connection state while offline. */ }
+    };
+    void check(); void serverStatus();
+    const timer = window.setInterval(check, 3000);
+    const serverTimer = window.setInterval(serverStatus, 60000);
+    const resume = () => { void check(); void serverStatus(); };
+    window.addEventListener('focus', resume);
+    document.addEventListener('visibilitychange', resume);
+    return () => {
+      active = false;
+      clearInterval(timer); clearInterval(serverTimer);
+      window.removeEventListener('focus', resume);
+      document.removeEventListener('visibilitychange', resume);
+    };
+  }, [ws.phone, ws.fnsConnected, ws.fnsSyncedAt, ws.isDemo, onRefreshReceipts]);
+  const receiptsConnected = deviceReceipt.connected || (ws.fnsConnected && !needsLogin);
+  const checked = deviceReceipt.connected ? deviceReceipt.checked : ws.fnsSyncedAt;
+  const checkedDate = checked ? new Date(typeof checked === 'string' ? checked.replace(' ', 'T') : checked) : null;
+  const lastCheck = checkedDate && !Number.isNaN(checkedDate.getTime())
+    ? 'Последняя проверка ' + checkedDate.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+    : 'Ожидаем фоновую проверку.';
+  const position = deviceReceipt.position || 0;
+  const totalReceipts = deviceReceipt.total || 0;
+  const average = deviceReceipt.millisPerReceipt || 0;
+  const remainingMinutes = totalReceipts > position && average > 0
+    ? Math.ceil((totalReceipts - position) * average / 60000) : null;
+  const scanning = deviceReceipt.phase === 'running';
+  const showPosition = deviceReceipt.connected && position > 0 && deviceReceipt.phase !== 'done';
+  const progressTime = deviceReceipt.advanced ? new Date(deviceReceipt.advanced)
+    .toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+  const receiptProgress = deviceReceipt.connected ? ({
+    running: position ? 'Загружаем чеки.' : 'Открываем список чеков…', denied: 'ФНС отклонила загрузку. Проверим позже.',
+    partial: 'Часть чеков ещё не загружена. Повторим автоматически.',
+    resuming: 'Открываем список на месте остановки…',
+    account: 'Проверяем подключение к вашему профилю. Повторим автоматически.',
+    upload: 'Не удалось сохранить чек на сервере. Повторим автоматически.',
+    cabinet: 'Кабинет ФНС не ответил. Повторим автоматически.',
+    retry: 'Проверка не завершилась. Повторим автоматически.', waiting: 'Ожидаем фоновую проверку.'
+  } as Record<string, string>)[deviceReceipt.phase || ''] || lastCheck : serverState || lastCheck;
+  const signInToReceipts = () => {
+    if (!KorzinaBridge.openFns())
+      setLoginError('Для входа откройте настройки в приложении на Android.');
+  };
 
   const storeByCode = new Map(ws.stores.map((s) => [s.code, s]));
   const storeById = new Map(ws.stores.map((s) => [s.id, s]));
@@ -199,82 +250,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     setShowAddOffer(false);
   };
 
-  const handlePasteSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setReceiptError(null);
-    setReceiptBusy(true);
-    try {
-      await onPasteReceipt(receiptStore, receiptText);
-      setReceiptText('');
-      setShowReceiptForm(false);
-    } catch (err) {
-      setReceiptError(err instanceof Error ? err.message : 'Не удалось разобрать чек');
-    } finally {
-      setReceiptBusy(false);
-    }
-  };
-
-  const openFnsAuthModal = () => {
-    setFnsPhoneInput(ws.fnsPhone || ws.phoneLabel || '');
-    setFnsKeysInput('');
-    setFnsError(null);
-    setShowFnsModal(true);
-  };
-
-  const handleFnsSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setFnsError(null);
-    const trimmedKeys = fnsKeysInput.trim();
-    if (!ws.fnsConnected && !isAndroidApp && trimmedKeys.length < 8) {
-      setFnsError('Вставьте ключ кабинета ФНС (JSON lkdr-keys или refreshToken из lkdr.nalog.ru), либо загрузите чек текстом ниже.');
-      return;
-    }
-    if (trimmedKeys.startsWith('{')) {
-      try {
-        JSON.parse(trimmedKeys);
-      } catch {
-        setFnsError('Некорректный JSON ключа. Скопируйте объект полностью от { до }.');
-        return;
-      }
-    }
-    setFnsBusy(true);
-    try {
-      await onSyncFns(fnsPhoneInput.trim() || ws.phoneLabel, trimmedKeys || undefined);
-      setShowFnsModal(false);
-      setFnsKeysInput('');
-    } catch (err) {
-      setFnsError(err instanceof Error ? err.message : 'Не удалось подключить кабинет ФНС');
-    } finally {
-      setFnsBusy(false);
-    }
-  };
-
-  const handleFnsQuickSync = async () => {
-    setFnsBusy(true);
-    try {
-      await onSyncFns(ws.fnsPhone || ws.phoneLabel);
-    } catch (err) {
-      setFnsError(err instanceof Error ? err.message : 'Не удалось обновить чеки');
-      setShowFnsModal(true);
-    } finally {
-      setFnsBusy(false);
-    }
-  };
-
-  const handleFnsDisconnect = async () => {
-    setFnsBusy(true);
-    setFnsError(null);
-    try {
-      await onDisconnectFns();
-      setShowFnsModal(false);
-    } catch (err) {
-      setFnsError(err instanceof Error ? err.message : 'Не удалось отключить кабинет ФНС');
-    } finally {
-      setFnsBusy(false);
-    }
-  };
-
-  const totalSpent = ws.receipts.reduce((acc, r) => acc + r.total, 0);
   const authStore = authStoreCode ? storeByCode.get(authStoreCode) : null;
   const authStoreLoginUrl = authStoreCode ? STORE_LOGIN_URLS[authStoreCode] || 'https://vkusvill.ru/' : '';
 
@@ -284,6 +259,36 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         <header className="top">
           <h1>Настройки</h1>
         </header>
+
+        <section className="sec basket-layout">
+          <div className="sh"><h2>Вид корзины</h2></div>
+          <div className="card">
+            <div className="layout-setting" role="radiogroup" aria-labelledby="basket-panel-title">
+              <h3 id="basket-panel-title">Панель «Где дешевле»</h3>
+              <div className="layout-options">
+                {(['top', 'bottom'] as const).map(value => (
+                  <label key={value}>
+                    <input type="radio" name="basket-panel" checked={layout.panel === value}
+                      onChange={() => updateLayout({ ...layout, panel: value })} />
+                    <span>{value === 'top' ? 'Над списком' : 'Под списком'}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="layout-setting" role="radiogroup" aria-labelledby="basket-add-title">
+              <h3 id="basket-add-title">Строка «Добавить товар»</h3>
+              <div className="layout-options">
+                {(['first', 'last'] as const).map(value => (
+                  <label key={value}>
+                    <input type="radio" name="basket-add" checked={layout.add === value}
+                      onChange={() => updateLayout({ ...layout, add: value })} />
+                    <span>{value === 'first' ? 'В начале группы' : 'В конце группы'}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
 
         {ws.isDemo && (
           <div className="note spa-demo-note">
@@ -535,101 +540,36 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         </section>
 
         <section className="sec">
-          <div className="sh">
+          <div className="sh" id="my-receipts">
             <h2>Мои чеки</h2>
-            <span className="cnt">{cheques(ws.receipts.length)}</span>
+            <span className="cnt">{cheques(Math.max(ws.receipts.length + (ws.otherReceipts?.count || 0), deviceReceipt.connected ? deviceReceipt.storedCount || 0 : 0))}</span>
           </div>
 
           <div className="card spa-fns-card">
             <div className="spa-fns-top">
               <div className="who">
-                <div className="nm">
-                  <Icon name="receipt" /> Чеки из ФНС
-                </div>
-                <div className="sub">
-                  {ws.fnsConnected
-                    ? `Подключено (${ws.fnsPhone || ws.phoneLabel}) · ${cheques(ws.receipts.length)} · ${goods(ws.history.length)} на ${rub(totalSpent)}`
-                    : 'Подтянем покупки из «Мои чеки онлайн» ФНС, чтобы знать привычные товары и реальные прошлые цены'}
+                <div className="nm"><Icon name="receipt" /> Чеки из ФНС</div>
+                <div className="sub" role="status">
+                  {ws.isDemo ? 'Пример истории покупок'
+                    : receiptsConnected ? receiptProgress
+                    : !isAndroidApp ? 'Войдите в приложении на Android, чтобы получать чеки.'
+                    : !KorzinaBridge.supportsReceiptLogin() ? 'Для автоматической загрузки чеков нужна версия 1.75 или новее.'
+                    : 'После входа чеки появятся в заказах автоматически.'}
+                  {showPosition && <div>Чек {position.toLocaleString('ru-RU')}{totalReceipts > 0
+                    ? ` из ${totalReceipts.toLocaleString('ru-RU')} в открытом списке` : ' · общее число пока неизвестно'}.</div>}
+                  {showPosition && scanning && !totalReceipts && average > 0 &&
+                    <div>Скорость · {cheques(Math.max(1, Math.round(60000 / average)))} в минуту.</div>}
+                  {showPosition && scanning && remainingMinutes !== null &&
+                    <div>{remainingMinutes === 1 ? 'До конца списка меньше минуты.' : `До конца списка около ${remainingMinutes} мин при текущей скорости.`}</div>}
+                  {showPosition && !scanning && progressTime && <div>Последнее продвижение · {progressTime}</div>}
                 </div>
               </div>
-              {ws.fnsConnected ? (
-                <button
-                  type="button"
-                  className="bt sm lime"
-                  onClick={handleFnsQuickSync}
-                  disabled={fnsBusy}
-                >
-                  {fnsBusy ? 'Обновляем…' : 'Обновить'}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="bt sm lime"
-                  onClick={() => {
-                    if (isAndroidApp) {
-                      KorzinaBridge.openFns();
-                    } else {
-                      openFnsAuthModal();
-                    }
-                  }}
-                  disabled={fnsBusy}
-                >
-                  Подключить
-                </button>
+              {!ws.isDemo && !receiptsConnected && KorzinaBridge.supportsReceiptLogin() && (
+                <button type="button" className="bt sm lime" onClick={signInToReceipts}>Войти</button>
               )}
-            </div>
 
-            <div className="spa-fns-actions">
-              <button
-                type="button"
-                className="bt sm"
-                onClick={() => setShowReceiptForm((v) => !v)}
-              >
-                <Icon name={showReceiptForm ? 'x' : 'plus'} />
-                <span>{showReceiptForm ? 'Скрыть форму' : 'Вставить чек текстом'}</span>
-              </button>
-              {ws.fnsConnected && (
-                <button
-                  type="button"
-                  className="bt sm"
-                  onClick={openFnsAuthModal}
-                >
-                  Ключ / отключить
-                </button>
-              )}
             </div>
-
-            {showReceiptForm && (
-              <form className="spa-receipt-form" onSubmit={handlePasteSubmit}>
-                <label className="spa-field">
-                  <span>Магазин</span>
-                  <select
-                    value={receiptStore}
-                    onChange={(e) => setReceiptStore(e.target.value)}
-                  >
-                    {ws.stores.map((s) => (
-                      <option key={s.code} value={s.code}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="spa-field">
-                  <span>Строки чека (Название; кол-во; цена)</span>
-                  <textarea
-                    rows={4}
-                    placeholder={'Молоко Простоквашино 2.5%; 2; 89.90\nХлеб Дарницкий; 1; 54'}
-                    value={receiptText}
-                    onChange={(e) => setReceiptText(e.target.value)}
-                    required
-                  />
-                </label>
-                {receiptError && <div className="note warn">{receiptError}</div>}
-                <button type="submit" className="bt sm spa-lime-btn" disabled={receiptBusy}>
-                  {receiptBusy ? 'Сохраняем…' : 'Добавить в историю'}
-                </button>
-              </form>
-            )}
+            {loginError && <div className="sub" role="alert">{loginError}</div>}
           </div>
         </section>
 
@@ -675,19 +615,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         </section>
       </div>
 
-      {!isDesktop && (
-        <div className="ph-foot">
-          <MobileTabs
-            active="settings"
-            itemsCount={itemsCount}
-            bestTotal={bestTotal}
-            onSelect={(tab) => {
-              if (tab === 'basket') onOpenBasket();
-              else if (tab === 'cheaper') onOpenCheaper();
-            }}
-          />
-        </div>
-      )}
 
       {/* Store Settings, Native Login & Perks Modal */}
       {authStoreCode && (
@@ -867,131 +794,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       )}
 
       {/* FNS Receipts Authorization Modal */}
-      {showFnsModal && (
-        <div
-          className="spa-modal-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Подключение чеков ФНС"
-          onClick={() => setShowFnsModal(false)}
-        >
-          <div className="card spa-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="spa-modal-head">
-              <div className="spa-modal-title">
-                <span className="spa-brand-dot">
-                  <Icon name="receipt" />
-                </span>
-                <div>
-                  <h3>Чеки из ФНС</h3>
-                  <small>Кабинет «Мои чеки онлайн» (lkdr.nalog.ru)</small>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="ibtn"
-                aria-label="Закрыть"
-                onClick={() => setShowFnsModal(false)}
-              >
-                <Icon name="x" />
-              </button>
-            </div>
-
-            <div className="spa-modal-body">
-              {ws.isDemo ? (
-                <div className="note warn">
-                  В демо-режиме личный кабинет ФНС не подключается — выйдите из демо и войдите по своему номеру телефона.
-                </div>
-              ) : (
-                <form className="spa-modal-form" onSubmit={handleFnsSubmit}>
-                  {isAndroidApp ? (
-                    <>
-                      <p className="spa-modal-desc">
-                        Откройте кабинет ФНС во встроенном окне и войдите по номеру телефона и СМС — приложение само подхватит ключи и загрузит чеки.
-                      </p>
-                      <button
-                        type="button"
-                        className="cta"
-                        onClick={() => KorzinaBridge.openFns()}
-                      >
-                        <span>Открыть кабинет ФНС (lkdr.nalog.ru)</span>
-                        <Icon name="out" />
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <p className="spa-modal-desc">
-                        Для загрузки реальных чеков в веб-версии откройте официальный кабинет ФНС и вставьте ключ сессии (<code>lkdr-keys</code> JSON или <code>refreshToken</code>). В Android-приложении вход проходит напрямую по СМС.
-                      </p>
-                      <a
-                        href="https://lkdr.nalog.ru/"
-                        target="_blank"
-                        rel="noreferrer"
-                        className="bt spa-full-btn"
-                      >
-                        <span>Открыть «Мои чеки онлайн» ФНС</span>
-                        <Icon name="out" />
-                      </a>
-                    </>
-                  )}
-
-                  <label className="spa-field">
-                    <span>Телефон в кабинете ФНС</span>
-                    <input
-                      type="tel"
-                      value={fnsPhoneInput}
-                      onChange={(e) => setFnsPhoneInput(e.target.value)}
-                      placeholder="+7 900 000-00-00"
-                    />
-                  </label>
-
-                  <label className="spa-field">
-                    <span>Ключ кабинета ФНС (JSON или refreshToken)</span>
-                    <textarea
-                      rows={3}
-                      value={fnsKeysInput}
-                      onChange={(e) => setFnsKeysInput(e.target.value)}
-                      placeholder='{"source": "lkdr-keys", "token": "…"}'
-                    />
-                  </label>
-
-                  {fnsError && <div className="note warn">{fnsError}</div>}
-
-                  <div className="spa-modal-actions">
-                    {ws.fnsConnected ? (
-                      <button
-                        type="button"
-                        className="bt danger"
-                        disabled={fnsBusy}
-                        onClick={handleFnsDisconnect}
-                      >
-                        Отключить ФНС
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="bt"
-                        onClick={() => {
-                          setShowFnsModal(false);
-                          setShowReceiptForm(true);
-                        }}
-                      >
-                        Вставить чек текстом
-                      </button>
-                    )}
-                    <button type="submit" className="bt lime" disabled={fnsBusy}>
-                      {fnsBusy
-                        ? 'Проверяем…'
-                        : ws.fnsConnected
-                          ? 'Обновить'
-                          : 'Подключить ФНС'}
-                    </button>
-                  </div>
-                </form>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

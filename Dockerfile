@@ -10,6 +10,7 @@ COPY package.json package-lock.json* vite.config.ts tsconfig.json index.html ./
 RUN npm install --no-audit --no-fund
 COPY client ./client
 COPY src ./src
+COPY data/demo_basket.csv data/fallback_prices.csv data/seed_offers.csv data/seed_products.csv data/seed_receipt.csv ./data/
 RUN npx vite build
 
 # Этап 2: боевой Python-бэкенд (Flask + waitress + SQLite + Playwright).
@@ -36,9 +37,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # xvfb — виртуальный экран для окна магазина. Поднимает его tools/entrypoint.sh
 # напрямую, а не обёрткой xvfb-run: та требует ещё и xauth, а с ним зависает на
 # ожидании экрана, не дойдя до Python (проверено на выкладке 17.09.2026).
-RUN playwright install --with-deps chromium \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends xvfb \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libatomic1 xvfb \
+    && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 
 COPY app ./app

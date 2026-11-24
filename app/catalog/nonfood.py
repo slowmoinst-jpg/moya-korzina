@@ -146,3 +146,30 @@ def reason(name: str | None) -> str:
 def is_service_name(name: str | None) -> bool:
     """Услуга или платёж, а не товар: такую строку не ищем в каталоге сетей."""
     return bool(reason(name))
+
+
+_CHECKOUT_BAG = re.compile(
+    r"(?:пакет(?:\s*[-–]\s*|\s+)(?:майка\s+)?(?:мигом|пятерочка)|"
+    r"мигом|пятерочка(?=\s*65\s*[хx×]\s*40))"
+    r"(?:\s*\d{2,3}\s*[хx×]\s*\d{2,3}\s*(?:см)?)?\s*[.,]?"
+)
+_DURABLE_GOODS = re.compile(r"^(?:(?:вок[-\s]+)?сковород(?:а|ы|ка|ки)|набор сковород\w*|шлейк[аи]|повод(?:ок|ки))\b")
+_LAB_TEST = re.compile(
+    r"\b(?:анализ\w*\s+(?:крови|мочи|кала)|лабораторн\w+\s+(?:исследован\w*|анализ\w*)|"
+    r"тиреотропн\w+\s+гормон|гормональн\w+\s+статус|копрограмм\w*)\b"
+)
+
+
+def excluded_from_receipt_basket(name: str | None) -> bool:
+    """Кассовый пакет, разовая покупка или лабораторная услуга."""
+    text = _text(name)
+    return bool(_CHECKOUT_BAG.fullmatch(text) or _DURABLE_GOODS.match(text) or _LAB_TEST.search(text))
+
+
+def is_receipt_product(raw_name: str | None, product_name: str | None = None) -> bool:
+    """Можно ли создать или взять товар из строки чека уже подтверждённой сети."""
+    return bool(raw_name or product_name) and not (
+        is_service_name(raw_name or product_name)
+        or excluded_from_receipt_basket(raw_name)
+        or (product_name and excluded_from_receipt_basket(product_name))
+    )

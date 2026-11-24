@@ -292,6 +292,8 @@ def run_all(only: str | None = None, fresh: float | None = None) -> list[dict]:
                     continue
                 todo.append(code)
             count = lanes()
+            if not todo and recent and _unmatched():
+                summary = refresh.match_all(progress=lambda m: log.info("сопоставление: %s", m))
             if count <= 1 or len(todo) <= 1:
                 for code in todo:
                     prepared = _prepare(code)
@@ -525,6 +527,8 @@ def serve() -> None:
     # Дозор цен — тоже своим потоком: обход держит этот поток часами, а цены корзин
     # за это время протухли бы (app/freshness.py).
     pricewatch.serve_in_background()
+    from app.catalog import photos
+    photos.serve_in_background()
     revived = store.revive_stuck()
     if revived:
         log.info("возвращено в очередь после перезапуска: %d адрес(ов)", revived)

@@ -1,42 +1,22 @@
-"""Окно кабинета ФНС внутри приложения: вход у человека, ключ — у приложения.
-
-ЗАЧЕМ ЭТОТ СТОРОЖ. На телефонном экране «Мои чеки» человек видит состояние кабинета,
-но получить ключ ему негде: закладок в WebView нет, а вход в кабинет по СМС закрыт
-капчей. Поэтому в приложении появилось окно: человек сам входит в кабинет в том же
-WebView и проходит капчу, а панель приложения по кнопке «Забрать чеки» инжектит на
-страницу кабинета `static/fns-grab.js`. Тот забирает ключ ЕГО ЖЕ сессии и возвращает
-окно на `/phone/receipts?keys=…`, где ключ принимает сервер.
-
-ЧТО ЗДЕСЬ ПРОВЕРЯЕТСЯ. Android-сборку в питоновских тестах не запустить (нет ни
-gradle, ни эмулятора), поэтому проверка статическая — как в tests/test_bridge_origin.py:
-в исходниках должно быть ровно то, на что опирается обещание.
-
-- метод моста `openFns` есть и первым делом спрашивает, чья страница открыта;
-- окно кабинета открывается в ГЛАВНОМ `web`, а не в скрытом окне сети;
-- панель ФНС со «←» и «Забрать чеки» видна только в режиме ФНС и только когда
-  `pageOurs == false` — на нашем сайте командует сайт;
-- «Забрать чеки» кладёт в страницу `window.KORZINA_APP_URL` и исполняет сборщик,
-  полученный существующим `call(...)` как GET (статика POST не принимает);
-- кнопка «назад» ОС в режиме ФНС ведёт на `/phone/receipts`, а не в историю налоговой;
-- возврат на наш адрес снимает режим и прячет панель;
-- в классе моста нет `getUrl()`: он исполнился бы на потоке JavaBridge и упал;
-- в сборщике есть запрос описи кабинета и `window.KORZINA_APP_URL`, а `document`-
-  хаков закладки (панель, копирование, файл) нет — это не javascript:-ссылка;
-- страница чеков содержит кнопку `data-open-fns` и честную подсказку «Откройте
-  приложение» для случая, когда моста нет.
-
-ЖИВОЙ ВХОД В КАБИНЕТ ЗДЕСЬ НЕ ПРОВЕРЯЕТСЯ И НЕ МОЖЕТ: капчу и код из СМС проходит
-человек. Проверено только то, что код к этому готов.
-"""
+"""Android: вход в кабинет и явный импорт выбранного пользователем чека."""
 from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
+
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JAVA = os.path.join(ROOT, "android", "app", "app", "src", "main", "java",
                     "ru", "moyakorzina", "app", "MainActivity.java")
 GRAB = os.path.join(ROOT, "app", "web", "static", "fns-grab.js")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="Node.js required for cabinet import")
+def test_receipt_import_paging_duplicates_and_permission():
+    subprocess.run(["node", "tests/fns-receipt-import.cjs"], cwd=ROOT, check=True, timeout=20)
 
 # Первое действие метода моста: проверка адреса и пустой ответ по типу метода.
 GUARD = re.compile(r'\s*if\s*\(\s*!bridgeAllowed\(\)\s*\)\s*return\b([^;]*);')
@@ -165,87 +145,21 @@ def test_open_fns_is_a_bridge_method_and_checks_the_page_first():
     assert got == "return;", f"openFns на отказ отвечает «{got}», а ждёт JS «return;»"
 
 
-def test_open_fns_window_opens_the_cabinet_in_the_main_webview():
-    """Кабинет — в главном окне: человек должен видеть свой вход и капчу."""
-    clean = strip_comments(source(JAVA))
-    body = method_body(clean, "private void openFnsWindow(")
-    for piece in ("fnsMode = true", "pageUrl = FNS_URL", "pageOurs = isOurs(pageUrl)",
-                  "showFnsPanel()", "web.loadUrl(FNS_URL)"):
-        assert piece in body, f"openFnsWindow не делает «{piece}»"
-    assert 'https://lkdr.nalog.ru/' in clean, "нет адреса кабинета ФНС"
-
-
-def test_the_fns_panel_has_back_and_grab_buttons():
-    """Своя панель со своими кнопками: «←» и «Забрать чеки»."""
-    clean = strip_comments(source(JAVA))
-    body = method_body(clean, "private View buildFnsPanel(")
-    assert '"←"' in body, "у панели ФНС нет кнопки «назад»"
-    assert '"Забрать чеки"' in body, "у панели ФНС нет кнопки «Забрать чеки»"
-    assert "leaveFns()" in body and "grabFns()" in body, "кнопки панели никуда не ведут"
-    assert "fnsPanel.setVisibility(View.GONE)" in clean, \
-        "панель ФНС не спрятана при запуске"
-
-
-def test_the_fns_panel_shows_only_away_from_our_site():
-    """Панель видна, только когда открыта через openFns и pageOurs == false."""
-    clean = strip_comments(source(JAVA))
-    body = method_body(clean, "private void showFnsPanel(")
-    assert "fnsMode" in body, "панель не знает, открыт ли кабинет"
-    assert "!pageOurs" in body, "панель не сверяется с адресом окна"
-    assert "View.VISIBLE" in body and "View.GONE" in body, "у панели нет обоих исходов"
-
-
-def test_the_cabinet_mode_follows_the_page_address():
-    """Вернулись на наш адрес — режим снят; чужой — панель на месте."""
-    clean = strip_comments(source(JAVA))
-    body = method_body(clean, "private void followFnsPage(")
-    assert "if (!fnsMode) return" in body
-    assert "if (pageOurs) exitFnsMode()" in body
-    assert "showFnsPanel()" in body
-
-    for name in ("onPageStarted", "onPageFinished",
-                 "doUpdateVisitedHistory", "onPageCommitVisible"):
-        callback = method_body(clean, f"public void {name}(")
-        assert "followFnsPage()" in callback, \
-            f"{name}: адрес окна ведётся, а режим ФНС за ним не следит"
-
-
-# ---------- инъекция сборщика ----------
-def test_grab_hands_the_page_the_app_url_then_runs_the_script():
-    """«Забрать чеки»: адрес приложения в window, затем текст сборщика на страницу."""
-    clean = strip_comments(source(JAVA))
-    body = method_body(clean, "private void grabFns(")
-    assert "window.KORZINA_APP_URL" in body, "сборщик не узнает, куда вернуться"
-    assert "/phone/receipts" in body, "возврат ведёт не на телефонный экран чеков"
-    assert "web.evaluateJavascript" in body, "скрипт не исполняется на странице кабинета"
-    assert "call(FNS_GRAB, null" in body, "сборщик берётся не существующим call(...)"
-    assert '"/static/fns-grab.js"' in clean, "нет пути к сборщику"
-    assert "FNS_LOG" in clean and '"korzina:"' in clean, \
-        "ошибки сборщика не узнаются на панели"
-    assert "FNS_ERR" in clean and '"korzina!"' in clean, \
-        "у ошибок сборщика нет отдельной метки — панель не отличит их от хода работы"
-
-
-def test_the_script_is_fetched_as_a_get():
-    """Статику Flask отдаёт только GET: POST вернул бы 405 и HTML вместо JS."""
-    clean = strip_comments(source(JAVA))
-    body = method_body(clean, "private void call(")
-    assert "body != null" in body, "call не различает GET и POST"
-    assert 'post ? "POST" : "GET"' in body, "call всегда POST — статику так не забрать"
-    assert "if (post)" in body, "GET пытается писать тело"
-
-
-def test_back_in_the_cabinet_goes_to_phone_receipts_not_to_tax_history():
-    """«Назад» ОС в кабинете — наш экран чеков: человек шёл за ключом."""
-    clean = strip_comments(source(JAVA))
-    leave = method_body(clean, "private void leaveFns(")
-    assert "/phone/receipts" in leave and "openOurApp" in leave
-
-    back = method_body(clean, "public void onBackPressed(")
-    assert "fnsMode" in back, "onBackPressed не знает про кабинет ФНС"
-    assert "leaveFns()" in back, "onBackPressed уводит в историю налоговой"
-    assert back.index("fnsMode") < back.index("canGoBack"), \
-        "сначала история налоговой, потом режим ФНС"
+def test_login_returns_automatically_and_registers_persistent_jobs():
+    package = os.path.dirname(JAVA)
+    login = source(os.path.join(package, "ReceiptLogin.java"))
+    sync = source(os.path.join(package, "ReceiptSync.java"))
+    job = source(os.path.join(package, "ReceiptJob.java"))
+    assert 'ReceiptLogin.class' in source(JAVA)
+    assert 'ReceiptSync.connect' in login and 'owner.equals(current)' in login
+    assert 'setPersisted(true)' in sync and 'setPeriodic(' in sync
+    assert 'new WebView(this)' in job and 'fns-screen.js' in job
+    assert 'addJavascriptInterface' not in login + job
+    assert 'setProfile(view, "fns-" + owner)' in sync
+    assert 'ReceiptSync.bound' in job and 'ReceiptSync.official(view.getUrl())' in job
+    for removed in ('Загрузить чеки','Импортировать файл','Вставить чек текстом','Ключ / отключить'):
+        assert removed not in login and removed not in source(JAVA)
+        assert removed not in source(os.path.join(ROOT, "client/screens/SettingsScreen.tsx"))
 
 
 def test_leaving_a_foreign_window_orders_one_history_cleanup():
@@ -264,15 +178,6 @@ def test_leaving_a_foreign_window_orders_one_history_cleanup():
     clean = strip_comments(source(JAVA))
     assert re.search(r"private\s+boolean\s+clearHistoryOnce\s*=\s*false\s*;", clean), \
         "нет флага разовой очистки истории"
-
-    leave_fns = method_body(clean, "private void leaveFns(")
-    assert "orderHistoryClear()" in leave_fns, "leaveFns не заказывает очистку"
-    assert leave_fns.index("orderHistoryClear()") < leave_fns.index("openOurApp"), \
-        "флаг ставится после загрузки нашего адреса — наша страница его не увидит"
-
-    exit_fns = method_body(clean, "private void exitFnsMode(")
-    assert "if (fnsMode) orderHistoryClear()" in exit_fns, \
-        "снятие режима ФНС (возврат на наш адрес) не заказывает очистку"
 
     leave_chain = method_body(clean, "private void leaveChain(")
     branches = re.search(
@@ -348,9 +253,6 @@ def test_the_history_is_cleared_on_the_next_our_page_and_only_once():
     assert "clearHistoryIfOurs(view)" in finished, "onPageFinished не исполняет заказ"
     assert finished.index("exitChainMode()") < finished.index("clearHistoryIfOurs(view)"), \
         "очистка идёт раньше снятия режима сети — заказ от exitChainMode пропадёт"
-    assert finished.index("followFnsPage()") < finished.index("clearHistoryIfOurs(view)"), \
-        "очистка идёт раньше снятия режима ФНС — заказ от exitFnsMode пропадёт"
-
     committed = method_body(clean, "public void onPageCommitVisible(")
     assert "clearHistoryIfOurs(view)" in committed, \
         "заказ исполняется только в onPageFinished: из back-forward cache его не будет"

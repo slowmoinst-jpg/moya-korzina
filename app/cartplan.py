@@ -176,6 +176,19 @@ def _per(line, product_id) -> str | None:
     return "kg" if service.is_weighed(product_id, unit, name) else "pcs"
 
 
+def _by_kilos(qty: float, per: str | None, shop_unit: str | None, product_id) -> tuple[float, str | None]:
+    """Штучный товар («Морковь 1 кг» × 3), а строка сети продаётся на вес: в наряде — килограммы.
+
+    Так же считает цену service.line_price (штуки × вес штуки). Без веса штуки перевести нечем:
+    количество остаётся как есть.
+    """
+    if per != "pcs" or shop_unit != "kg" or not product_id:
+        return qty, per
+    product = repo.get_product(product_id)
+    grams = float(product.weight_g or 0) if product else 0.0
+    return (round(qty * grams / 1000.0, 3), "kg") if grams > 0 else (qty, per)
+
+
 def _pack(mapping: dict | None) -> float | None:
     """Вес упаковки товара сети в граммах, если он известен и осмыслен."""
     try:
@@ -216,14 +229,15 @@ def build(store_code: str, lines, *, force: bool = False, verify_prices: bool = 
             continue
         shop_unit = (mapping or {}).get("unit")
         raw = (mapping or {}).get("raw_name") or ""
+        qty, per = _by_kilos(float(getattr(line, "qty", 1) or 1), _per(line, product_id), shop_unit, product_id)
         plan.lines.append(PlanLine(
             sku=str(sku),
-            qty=float(getattr(line, "qty", 1) or 1),
+            qty=qty,
             name=raw if _CYRILLIC.search(raw) else (getattr(line, "title", None) or name),
             unit=shop_unit,
             price=_price(line, store_code),
             url=(mapping or {}).get("url"),
-            per=_per(line, product_id),
+            per=per,
             pack_g=_pack(mapping) if shop_unit != "kg" else None,
             product_id=product_id,
         ))
@@ -282,7 +296,10 @@ def verify(plan: CartPlan, refresh=None) -> CartPlan:
             continue
         product = repo.get_product(ln.product_id)
         unit = (product.unit if product else None) or ln.per or "pcs"
-        found = service.line_price(ln.product_id, store, ln.qty, unit,
+        qty = ln.qty
+        if ln.per == "kg" and unit != "kg" and product and product.weight_g:
+            qty = ln.qty * 1000.0 / float(product.weight_g)      # штучный товар, наряд в килограммах (_by_kilos)
+        found = service.line_price(ln.product_id, store, qty, unit,
                                    product.weight_g if product else None)
         if not found or not found["in_stock"]:
             plan.gone.append(ln.name)

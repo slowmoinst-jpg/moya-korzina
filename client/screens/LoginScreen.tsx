@@ -1,14 +1,18 @@
 import React, { useState } from 'react';
+import type { ApkUpdate } from '../types';
+import { ApkUpdateBanner } from '../components/ApkUpdateBanner';
 import { Icon } from '../components/Icons';
 
 interface LoginScreenProps {
   pinRequired: boolean;
+  apkUpdate: ApkUpdate | null;
   onLogin: (phone: string, pin: string) => Promise<void>;
   onDemo: () => Promise<void>;
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({
   pinRequired,
+  apkUpdate,
   onLogin,
   onDemo,
 }) => {
@@ -55,6 +59,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               <p className="sub">Где дешевле купить ваш набор продуктов с учётом доставки и кэшбэка</p>
             </div>
           </div>
+
+          {apkUpdate && <ApkUpdateBanner update={apkUpdate} />}
 
           <form className="card spa-login-form" onSubmit={handleSubmit}>
             <div className="spa-field">

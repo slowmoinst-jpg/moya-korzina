@@ -1533,13 +1533,14 @@ def test_rest_loads_robots_txt():
 
 
 def test_askplan_background_and_search_later():
-    """askPlan кладёт "background" и в цикле search пишет в r.later при slot."""
+    """askPlan кладёт "background", а разбор наряда (applyPlan, APK 1.27) в цикле search пишет в r.later при slot."""
     clean = strip_comments(source())
     body = method_body(clean, "private void askPlan(")
     assert '"background"' in body
     assert "r.slot != null" in body
-    assert "r.later" in body
-    assert "r.slot != null ? r.later : r.lines" in body
+    assert "applyPlan(r, plan)" in body
+    parse = method_body(clean, "private void applyPlan(")
+    assert "r.slot != null ? r.later : r.lines" in parse
 
 
 def test_begin_moves_later_to_lines_when_empty():
@@ -1549,6 +1550,185 @@ def test_begin_moves_later_to_lines_when_empty():
     assert "r.lines.length() == 0 && r.later.length() > 0" in body
     assert "r.lines = r.later" in body
     assert "r.tail = true" in body
+
+
+def test_taps_after_a_failed_request_wait_for_the_other_request_chains():
+    """Замер 09.11.2026: касания Магнита после отказа запроса оборвали запрос Пятёрочки в общем процессе окон.
+    С 1.59 так же, уже с нарядом, ждёт и сеть без запросов, а сборка, которой класть и снимать нечего, не ждёт:
+    Впрок без знакомых товаров ждал 5,45 с ради «не пошла» (эмулятор, 15.11.2026)."""
+    clean = strip_comments(source())
+    begin = method_body(clean, "private void begin(")
+    head = [line.strip() for line in begin.strip().splitlines()[:3]]
+    assert head == ["if (endBlocked(r)) return;", "loadLedger(r);", "if (heldForApi(r)) return;"], \
+        "«снять своё» (hasExcess) — по записи положенного; закрытый защитой адрес не ждёт ничего"
+    held = method_body(clean, "private boolean heldForApi(")
+    assert "r.cartApiDone || cartApiOrigin(r.code) == null" in held, "ждут только касания: после запросов и без них"
+    assert "!work" in held, "сборка без дела не ждёт"
+    assert "API_HEAD_MS" in held, "ожидание без предела задержит сеть навсегда"
+    running = method_body(clean, "private boolean apiRunning(")
+    assert "o == self" in running, "сеть не должна ждать сама себя"
+
+
+def test_tail_lines_that_failed_recently_go_straight_into_the_report():
+    """Замер 10.11.2026: хвост ради недавно не найденных шёл после каждой правки — ничего не клал,
+    а слал второй отчёт и занимал окно сети. Такие строки уходят в первый отчёт, хвост — только
+    ради тех, что пора пробовать."""
+    clean = strip_comments(source())
+    finish = method_body(clean, "private void finishRun(")
+    assert 0 <= finish.find("settleLater(r)") < finish.find("final boolean early")
+    settle = method_body(clean, "private void settleLater(")
+    assert "failedRecently(r, line)" in settle and "r.later = due" in settle
+    failed = method_body(clean, "private String failedSince(")
+    assert "notFound ? FRESH_MS : FAIL_AGAIN_MS" in failed, "ненайденное поиском помним, как сервер, 6 часов"
+    assert 'rec.optBoolean("wall")' in failed, "стена сети — не «товара нет»: её помним недолго"
+
+
+def test_request_failures_and_leftovers_wait_for_the_report():
+    """Замер 10.11.2026: после отказа запроса Пятёрочка 495 с клала касаниями — отчёт ждал, а
+    витрина в её окне держала запросы соседних сетей. Касания идут хвостом, после отчёта."""
+    clean = strip_comments(source())
+    body = method_body(clean, "private void handleCartApiResult(")
+    assert "apiGaveUp(r, why + r.healNote + peekNote(r.slot))" in body
+    assert re.search(r"toTail\(r, rest\);\s+finishRun\(r, cartObj, \"\"\);", body)
+    gave_up = method_body(clean, "private void apiGaveUp(")
+    assert re.search(r'toTail\(r, r\.lines\);\s+finishRun\(r, new JSONObject\(\), ""\);', gave_up)
+    assert "r.apiOver = true" in gave_up, "иначе окна с касаниями ждали бы эту сеть до API_HEAD_MS"
+    # Адрес закрыт защитой (1.61): касания и поиск пошли бы на тот же адрес (эмулятор 15.11.2026: три минуты карточек
+    # по /xpvnsulc/) — фоновая сборка кончается отказом раньше отчёта и хвоста; причина отказа — в журнале до конца.
+    assert gave_up.index("Log.i(TAG, r.name + \": запросом не вышло (\" + why + \")\"") < gave_up.index("if (endBlocked(r)) return;") \
+        < gave_up.index("toTail(r, r.lines);")
+    ended = method_body(clean, "private boolean endBlocked(")
+    assert "if (r.slot == null || !blocked(r.code)) return false;" in ended, "сборку человека («Собрать») не трогаем"
+    assert re.search(r'endBackground\(r, "failed", r\.name \+ ": защита сети закрыла адрес, пауза ещё " \+ left \+ " мин"\);\s+'
+                     r'return true;', ended)
+    # Тот же конец — в начале сборки (сеть без запросов и поиск хвостом). Хвост, блок которому поставило лечение, просто
+    # не идёт: отказ затёр бы на сервере строку уже отправленного отчёта головы.
+    assert method_body(clean, "private void begin(").strip().startswith("if (endBlocked(r)) return;")
+    tail = method_body(clean, "private void startTail(")
+    assert re.search(r"if \(blocked\(s\.code\)\) \{\s+Log\.i\(TAG, .*?\);\s+rest\(s\);\s+return;\s+\}", tail)
+    assert tail.index("if (blocked(s.code)) {") < tail.index("s.run = r;")
+    assert "endBlocked" not in tail and "sendEnd" not in tail
+    # Молчаливых уходов на касания нет: скрипт не запустился, сеть не ответила — тот же выход.
+    assert "begin(r)" not in method_body(clean, "private void runCartApiPayload(")
+    # Магнит и Самокат без входа: касания легли бы в корзину гостя — сборка кончается шагом человека.
+    assert re.search(r'"auth"\.equals\(stage\) && \("magnit"\.equals\(r\.code\) \|\| "samokat"\.equals\(r\.code\)\)\) \{\s+'
+                     r'endBackground\(r, "failed", why\);', body)
+    tail = method_body(clean, "private static void toTail(")
+    assert "r.lines = kept" in tail and "r.later = later" in tail
+
+
+def test_a_stale_run_stopped_without_a_plan_forgets_the_old_done_mark():
+    """Добавил товар и тут же убрал: отпечаток равен давно собранной корзине, и collect пропустил бы
+    сборку — сеть застыла бы на «собираю» (замер 11.11.2026, Пятёрочка и Дикси)."""
+    fast = method_body(strip_comments(source()), "private void fastChange(")
+    assert re.search(r'stopBackground\(s, true\);\s+memory\(\)\.edit\(\)\.remove\("done\." \+ s\.code\)\.apply\(\);',
+                     fast)
+
+
+def test_a_touch_run_rechecks_one_old_refusal_and_opens_connections_early():
+    """Замер 11.11.2026: раз в полчаса сеть перепроверяла все давние отказы разом — Дикси 8 запросов
+    и 10,8 с при цели 5 с. По касанию — один за сборку, тронутая позиция первой. Соединения с узлами
+    корзин открываются по касанию экрана: первое чтение Пятёрочки после простоя 0,7 с вместо 4,0 с."""
+    clean = strip_comments(source())
+    api = method_body(clean, "private void cartApi(")
+    assert 'line.optInt("product_id", 0) == r.changedPid' in api
+    assert "touched = ids.optInt(k) == r.changedPid" in api, "слитый дубль артикула: тронут второй товар строки"
+    assert 'String failed = line == again ? "" : failedBefore(r, line, "apifail.");' in api
+    assert "ever ||" in method_body(clean, "private String failedSince(")
+    start = method_body(clean, "private void startBackground(")
+    assert "r.changedPid = s.changedPid" in start
+    pre = method_body(clean, "private void preconnect(")
+    assert "PRECONNECT_MS" in pre and "l.rel='preconnect'" in pre and "s.run != null" in pre
+    assert "XMLHttpRequest" not in pre and "fetch(" not in pre, "подсказка не шлёт запросов сети"
+    touch = method_body(clean, "public boolean dispatchTouchEvent(")
+    assert "ACTION_DOWN" in touch and "preconnect()" in touch
+
+
+def test_session_refresh_does_not_exempt_a_run_from_its_deadline():
+    clean = strip_comments(source())
+    result = method_body(clean, "private void handleCartApiResult(")
+    before_refresh, refresh = result.split("&& !r.cartApiRefreshed) {", 1)
+    refresh = refresh.split('if ("address".equals(stage))', 1)[0]
+    assert "r.apiOver = true;" in before_refresh and "saveLedger(r);" in before_refresh
+    assert "r.apiOver = false;" not in refresh, "ожидание входа должно завершаться по дедлайну"
+
+    launch = method_body(clean, "private void runCartApiPayload(")
+    assert (launch.index("if (collectionBudgetExpired(r)) return;")
+            < launch.index("r.apiOver = false;")
+            < launch.index("r.view.evaluateJavascript(execCode")), "касание не должно обрывать начатую запись"
+
+
+def test_a_chain_whose_cart_host_just_refused_goes_straight_to_taps():
+    """Узел корзин Пятёрочки отвечал 403 (защита сети), а каждая правка повторяла запрос: 5–9 с впустую,
+    общий процесс окон занят, и соседние сети выходили к пределу 5 с (замер 11.11.2026: Дикси 4,8 с
+    вместо 1,9). После такого отказа сеть API_WALL_MS идёт сразу касаниями."""
+    text = source()
+    clean = strip_comments(text)
+    api = method_body(clean, "private void cartApi(")
+    wall = api.find('wallUp(r.code)')
+    assert 0 < wall < api.find("status(r,"), "проверка стоит до запросов и до строки «кладу запросами сети»"
+    assert 'apiGaveUp(r, (blocked(r.code) ? "защита сети закрыла адрес узла корзин" : "узел корзин сети недавно не отвечал") + peekNote(r.slot))' in api
+    result = method_body(clean, "private void handleCartApiResult(")
+    # Только Пятёрочке и только после обновления входа: у прочих сетей «обрыв» — обычно связь, и после
+    # секундной потери интернета они три минуты шли бы касаниями.
+    assert re.search(r'if \(pyatNet\) \{\s+memory\(\)\.edit\(\)\.putLong\("apiwall\." \+ r\.code, '
+                     r'System\.currentTimeMillis\(\)\)\.apply\(\);', result)
+    assert result.index('"apiwall." + r.code, System.currentTimeMillis())') \
+        < result.index("apiGaveUp(r, why + r.healNote + peekNote(r.slot));")
+    # Куку не лечили — журнал телефона скажет, почему: отказ не быстрый, повтор входа или лечили недавно (1.50).
+    assert re.search(r'if \(r\.healNote\.isEmpty\(\)\) \{\s+r\.healNote = "; куку не лечил: "', result)
+    assert '"отказ не быстрый или связи нет"' in result and 'res.optInt("requests", 0)' in result and "r.cartApiRefreshed ?" in result
+    assert 2 <= int(re.search(r"API_WALL_MS = (\d+)L \* 60 \* 1000", text).group(1)) <= 10
+
+
+def test_request_chain_windows_stay_and_the_kept_plan_lives_as_long_as_a_fresh_run():
+    """Холодная правка (замер 10.11.2026): окно сети убрано через 10 минут, наряд в памяти старше
+    получаса — и правка шла 30 с вместо 3. Окно сети с запросами не убираем, наряд годен, пока
+    свежа сборка."""
+    text = source()
+    rest = method_body(strip_comments(text), "private void rest(")
+    assert re.search(r"if \(cartApiOrigin\(s\.code\) != null\) return;\s+s\.sleep = \(\) ->", rest)
+    hours = {name: int(re.search(name + r" = (\d+)L \* 3600 \* 1000", text).group(1))
+             for name in ("PLAN_MS", "FRESH_MS")}
+    assert hours["PLAN_MS"] >= hours["FRESH_MS"]
+    start = method_body(strip_comments(text), "private void startBackground(")
+    assert "keptPlan(s.code, r.stamp, r.basket)" in start
+
+
+def test_a_missing_or_old_plan_is_fetched_when_the_basket_opens_not_on_the_first_tap():
+    """После обновления приложения наряды в памяти сброшены (memory), а наряд старше PLAN_MS негоден:
+    первая правка шла за ним на сервер (замер 11.11.2026: Дикси 4,3–6,0 с вместо 1,6). Сеть с запросами
+    берёт наряд, когда корзина открылась и собирать нечего, — без сборки: окно, отчёт и запись в корзину
+    сети тут лишние, а касание во время такой сборки оборвало бы её и пошло бы за нарядом второй раз."""
+    clean = strip_comments(source())
+    decide = method_body(clean, "private JSONObject decide(")
+    skipped = decide[decide.index('(done.optBoolean("ok") && fresh)'):
+                     decide.index('"уже собрано для этой корзины (свежее)"')]
+    assert "if (order == null) fetchPlan(s, stamp, basket);" in skipped, \
+        "после «Заказать» правка по касанию наряд не выводит"
+    fetch = method_body(clean, "private void fetchPlan(")
+    # Только сети с запросами, не чаще раза в минуту и только когда наряда нет или он старше PLAN_MS.
+    assert "cartApiOrigin(s.code) == null" in fetch and "now - s.planAsked < 60000" in fetch
+    assert fetch.count('memory().getLong("planAt." + s.code, 0) <= PLAN_MS') == 2, "и до запроса, и перед записью"
+    assert 'call("/api/device/cartplan"' in fetch and '.put("background", true)' in fetch
+    # Своё без адреса карточки наряд несёт и здесь, как в askPlan: при отказе запросов его снимают касаниями.
+    assert 'item.optString("u", "").isEmpty()) dropSkus.put(sku);' in fetch and 'body.put("drop", dropSkus)' in fetch
+    # Ответ про корзину, которую уже поправили, в память не идёт: затёр бы наряд новее.
+    assert '!stamp.equals(lastCollect.optString("stamp", ""))' in fetch
+    assert '!stamp.equals(new JSONObject(text).optString("stamp", "-"))' in fetch
+    assert '.putLong("planAt." + s.code, System.currentTimeMillis())' in fetch
+    for word in ("new CartRun", "hiddenView(", "soon(", "failRun(", '"done.'):
+        assert word not in fetch, f"наряд заранее — не сборка: {word}"
+    # Обновление сбрасывает возраст нарядов — его проверяет fetchPlan — и стену apiwall.* прежней версии: на телефоне
+    # владельца первые минуты 1.51 прошли за стеной отказа 1.49 (14.11.2026). Блок защиты (apiblock.*) остаётся.
+    memory = method_body(clean, "private SharedPreferences memory(")
+    assert 'if (k.startsWith("planAt.") || k.startsWith("apiwall.")) e.remove(k);' in memory
+    assert "apiblock" not in memory
+    # Сборка, взявшая наряд у сервера, кладёт его в память сама: из него правка по касанию выводит следующий.
+    ask = method_body(clean, "private void askPlan(")
+    assert re.search(r'if \(r\.slot != null && r\.linesOverride == null\) \{\s+'
+                     r'memory\(\)\.edit\(\)\.putString\("plan\." \+ r\.code, text\)\s+'
+                     r'\.putLong\("planAt\." \+ r\.code, System\.currentTimeMillis\(\)\)\.apply\(\);', ask)
 
 
 def test_opencart_checks_later_before_apitotal():
@@ -1571,12 +1751,64 @@ def test_finishrun_early_and_starttail():
     assert '"ищу в сети после знакомых"' in body
     assert "tailLater(r)" in body
     assert "!early" in body
-    line_with_remember = next(line for line in body.splitlines() if "remember(r, true)" in line)
+    line_with_remember = next(line for line in body.splitlines() if "remember(r, " in line)
     assert "!early" in line_with_remember
     later = method_body(clean, "private void tailLater(")
     assert "startTail(r)" in later
     assert "TAIL_QUIET_MS" in later
     assert "s.pending.isEmpty()" in later
+
+
+def test_an_edit_frees_the_tail_window_at_once_and_the_tail_waits_for_idle_fingers():
+    """Замер 12.11.2026 на эмуляторе: правка при идущем хвосте — 4,6–5,6 с во всех сетях против
+    1,2–2,0 с без него. Страницу поиска, брошенную хвостом, новая сборка уводила на robots.txt только
+    через 1,1 с. Теперь её уводит сам supersede, новая сборка эту загрузку не начинает заново, а хвост
+    не стартует, пока экрана касались меньше TAIL_QUIET_MS назад."""
+    clean = strip_comments(source())
+    drop = method_body(clean, "private void supersede(")
+    assert re.search(r'go\(r, origin \+ "/robots\.txt"\);\s+s\.robotsAt = SystemClock\.uptimeMillis\(\);', drop)
+    assert drop.index("go(r, origin") < drop.index("rest(s)"), "сначала окно, потом новая сборка"
+    assert '!(origin + "/robots.txt").equals(r.view.getUrl())' in drop, "окно на robots.txt не перезагружаем"
+    api = method_body(clean, "private void cartApi(")
+    assert "if (!onTheWay) go(r, robots);" in api
+    assert "robots.equals(r.view.getUrl())" in api, "окно за это время могли увести на пустую страницу"
+    later = method_body(clean, "private void tailLater(")
+    assert "long quiet = now - touchedAt;" in later
+    assert "if (quiet < TAIL_QUIET_MS && now < until) handler.postDelayed(this, TAIL_QUIET_MS - quiet);" in later
+    assert "3L * TAIL_QUIET_MS" in later, "касаний ждём не вечно: незнакомые нужны и тому, кто листает"
+    assert "touchedAt = SystemClock.uptimeMillis();" in method_body(clean, "public boolean dispatchTouchEvent(")
+
+
+def test_the_edit_time_is_counted_from_the_finger():
+    """Замер 12.11.2026: при идущем хвосте обработчик страницы опаздывал на 1,1 с, и отчёт называл
+    4,3–5,0 с там, где от касания прошло 5,6–6,2 с. Время правки идёт от последнего касания экрана;
+    касание старше 10 с правку не начинало."""
+    fast = method_body(strip_comments(source()), "private void fastChange(")
+    assert re.search(r"long at = SystemClock\.uptimeMillis\(\);\s+if \(at - touchedAt < 10000\) at = touchedAt;", fast)
+    assert "s.changedAt = at;" in fast and "s.changedAt = SystemClock" not in fast
+    # Новый товар идёт без «правки по касанию»: время ему ставит decide, и только сети, которая эту корзину
+    # соберёт; у остальных оно стирается, иначе ушло бы в отчёт другой правки.
+    plan = method_body(strip_comments(source()), "private JSONObject decide(")
+    assert plan.index("final boolean changed = lastCollect != null") < plan.index("lastCollect = payload;")
+    assert 'lastCollect.optInt("basket", -1) == payload.optInt("basket", -2)' in plan, "другая корзина — не правка"
+    assert re.search(r"if \(!started\.contains\(s\.code\)\) \{\s+if \(s\.soon == null\) s\.changedAt = 0;\s+"
+                     r"\} else if \(changed && s\.changedAt == 0 && now - touchedAt < 10000\s+"
+                     r"&& \(s\.run == null \|\| !stamp\.equals\(s\.run\.stamp\)\)\) \{\s+s\.changedAt = touchedAt;", plan)
+
+
+def test_an_edit_of_a_product_the_chain_does_not_get_keeps_the_plan():
+    """Правка товара, которого сеть не знает, ждала сервера: «−» у товара из поиска (приложение не знало,
+    ушёл ли он) и любая правка товара, которого в наряде нет вовсе (у Перекрёстка нет адреса поиска, у
+    Самоката поиск выключен). Замер 12.11.2026: 5,6–6,2 с во всех сетях. Остался ли товар, говорит страница
+    (gone), чего сеть не получит — наряд (rest); со старой страницей и старым нарядом — через сервер."""
+    plan = method_body(strip_comments(source()), "private JSONObject changedPlan(")
+    # Товар с запасным (swapped) — всегда к серверу: в наряде вместо него строка запасного под другим номером.
+    assert re.search(r'if \(seen \|\| s\.optBoolean\("swapped"\)\s+'
+                     r'\|\| \("minus"\.equals\(verb\) && c\.optBoolean\("gone", true\)\)\) return null;', plan)
+    assert 'if (!"remove".equals(verb)) left.put(s);' in plan
+    assert re.search(r'JSONArray rest = plan\.optJSONArray\("rest"\);\s+for \(int i = 0; !seen && rest != null '
+                     r'&& i < rest\.length\(\); i\+\+\) seen = rest\.optInt\(i\) == pid;\s+if \(!seen\) return null;',
+                     plan)
 
 
 def test_starttail_sets_fields_and_checks_pending():
@@ -1637,4 +1869,403 @@ def test_same_path_handles_pyaterochka_redirect():
     assert "samePath(want, pathOf(open))" in card_line, "тело cardLine не зовёт samePath(want, pathOf(open))"
 
 
+def test_found_by_search_is_remembered_by_card_address():
+    """Найденное поиском сети — в память телефона: артикул из адреса карточки по правилу наряда (1.43).
 
+    Без записи приложение не считало товар своим и после удаления из корзины оставляло его в корзине сети.
+    """
+    clean = strip_comments(source())
+    own = method_body(clean, "private static String ownSku(")
+    assert 'r.rules.optString("sku_url"' in own and "Pattern.compile(rule)" in own
+    assert 'line.has("search")' in own, "артикул из адреса — только у строки поиска"
+    assert "isHostOf(r.chain, url)" in own, "чужой адрес артикулом этой сети не становится"
+    done = method_body(clean, "private void lineDone(final CartRun r, boolean ok, String why, JSONArray calls, boolean taken)")
+    assert "ownSku(r, line)" in done and "r.cart.put(own," in done
+    assert 'line.put("sku"' not in done, "в строку наряда найденный артикул не пишем: по нему шла бы сверка запроса сети"
+    tap = method_body(clean, "private void tapAdd(")
+    assert "ownSku(r, line)" in tap, "лежащее в корзине сети — тоже в память"
+    lying = tap[tap.index("ownSku(r, line)"):tap.index("r.cart.put(sku, r.have)")]
+    same = method_body(clean, "private static boolean sameCard(")
+    assert "sameCard(line, " in lying and "nameWhy(line, title)" in same and "packWhy(line, title)" in same, \
+        "чужой товар, который человек положил сам, своим не числим: та же сверка названия и фасовки, что перед касанием"
+    assert "syncCart(r, taken && r.put > 0 ? own" in done, "снимку корзины сети верим, только если в нём эта позиция"
+    # Найденное не «лишнее» и не снимается, пока товар в корзине, — и без строки поиска в наряде (plan.pids).
+    extra = method_body(clean, "private JSONArray extraOf(")
+    assert "wantOf(r, sku)" in extra and "searchedAgain(r, sku)" in extra, "найденное поиском отчёт «лишним» не зовёт"
+    assert "r.noSku.contains(pid)" in method_body(clean, "private boolean searchedAgain(")
+    plan = method_body(clean, "private void applyPlan(")
+    assert 'plan.optJSONArray("pids")' in plan and "r.noSku.remove(" in plan, "товар со строкой с артикулом — не в noSku"
+    assert 'plan.put("pids"' in method_body(clean, "private JSONObject changedPlan("), \
+        "убранный товар уходит из списка корзины: найденное для него снимается"
+    with open(GRADLE, encoding="utf-8") as fh:
+        code = re.search(r"versionCode\s+(\d+)", fh.read())
+    assert code and int(code.group(1)) >= 47, "правка идёт с 1.43 (versionCode 47)"
+
+
+def test_a_background_plan_is_asked_again_when_the_first_request_hangs():
+    """Наряды шести сетей уходят разом, часть — по новым соединениям, и одно из них изредка открывается
+    3–17 с, пока соседние отвечают за 0,2 с (замер 13.11.2026: Самокат ждал наряд 16,9 с при 0,7–1,1 с у
+    остальных; с той же машины без приложения новое соединение трижды открывалось 16,5–16,8 с). Фоновый
+    наряд сервер считает без живого поиска, его можно спросить дважды: берём первый удачный ответ."""
+    clean = strip_comments(source())
+    wait = int(re.search(r"private static final long HEDGE_MS = (\d+);", clean).group(1))
+    assert 1500 <= wait <= 2500, "раньше — лишние запросы при обычном наряде (0,5–1,5 с), позже — не уложиться в 5 с"
+    ask = method_body(clean, "private void askPlan(")
+    # Только фоновая сборка: «Собрать» ведёт на сервере живой поиск, второй такой запрос — не повтор.
+    assert re.search(r'if \(r\.slot != null\) callTwice\("/api/device/cartplan", body, got, \(\) -> alive\(r\)\);\s+'
+                     r'else call\("/api/device/cartplan", body, got\);', ask)
+    # Оба запроса несут один номер вопроса: по нему сервер считает наряд один раз (phonecart.plan).
+    assert 'if (r.slot != null) body.put("ask", SystemClock.uptimeMillis());' in ask
+    twice = method_body(clean, "private void callTwice(")
+    assert twice.count("call(path, body, once);") == 2
+    assert "handler.postDelayed(" in twice and "}, HEDGE_MS);" in twice
+    # Ответ уходит дальше один раз; отказ одного запроса ждёт второй; оборванной сборке повтор не нужен.
+    assert "if (done[0] || (status != 200 && flying[0] > 0)) return;" in twice
+    assert "if (done[0] || !wanted.getAsBoolean()) return;" in twice
+    # Отчёт несёт, сколько сборка ждала наряд: в журнале правок видно, сервер это или дорога к нему.
+    report = clean[clean.index('body.put("lag_ms", lag);'):]
+    assert re.match(r'body\.put\("lag_ms", lag\);\s+long planMs = r\.planAt - r\.startedAt;\s+'
+                    r'if \(r\.planAt > 0 && planMs >= 0 && planMs < 120000\) body\.put\("plan_ms", planMs\);', report)
+    with open(GRADLE, encoding="utf-8") as fh:
+        code = re.search(r"versionCode\s+(\d+)", fh.read())
+    assert code and int(code.group(1)) >= 48, "правка идёт с 1.44 (versionCode 48)"
+
+
+def test_an_empty_plan_is_remembered_and_the_report_names_why_requests_failed():
+    """Телефон владельца, 13.11.2026: корзину опустошили, и сборка с пустым нарядом (класть нечего, только
+    снять своё) не запоминалась — collect каждой страницы запускал её снова: Лента 7 раз и Пятёрочка 4 раза
+    за минуту. Своё не снялось — это «не вышло», повтор не раньше RETRY_MS. Причину отказа запросов сети
+    отчёт не называл, и с телефона владельца её было не узнать: теперь она идёт пометкой позиции — причину
+    (why) сервер разбирает по словам сети («войдите», «выберите магазин»), текст ответа сети туда нельзя."""
+    clean = strip_comments(source())
+    finish = method_body(clean, "private void finishRun(")
+    assert "if (!early && stoppedWhy.isEmpty()) remember(r, r.items.length() > 0 || !hasExcess(r));" in finish
+    assert "r.apiWhy = why;" in method_body(clean, "private void apiGaveUp(")
+    assert re.search(r'\? "запросом не легла, положу касаниями" : "ищу в сети после знакомых"\)\s+'
+                     r'\.put\("note", fitWhy\(r\.apiWhy\)\)', finish)
+    # «Собрано» про другую корзину новая сборка снимает: оборвись она, прежний отпечаток не сочтётся собранным.
+    start = method_body(clean, "private void startBackground(")
+    assert re.search(r'if \(was != null && !was\.optBoolean\("wall"\) && !r\.stamp\.equals\(was\.optString\("stamp"\)\)\) \{\s+'
+                     r'memory\(\)\.edit\(\)\.remove\("done\." \+ s\.code\)\.apply\(\);', start)
+    with open(GRADLE, encoding="utf-8") as fh:
+        code = re.search(r"versionCode\s+(\d+)", fh.read())
+    assert code and int(code.group(1)) >= 49, "правка идёт с 1.45 (versionCode 49)"
+
+
+def test_a_run_overtaken_by_the_next_edit_is_told_so_and_its_reckoned_cart_is_not_the_network():
+    """Телефон владельца, 13.11.2026: 11 удалений подряд, отчёт Дикси через 6,2 с после последнего касания —
+    каждая сборка тратила запрос на итог корзины, которую уже поправили снова. Идущей записи приложение
+    называет её ключ (cartapi.js, newer), адаптер отдаёт корзину расчётом, без чтения. Расчёт — не ответ
+    сети: своё по нему не убавляется, итога у него нет, и сборка идёт заново, даже если корзина вернулась к
+    её отпечатку."""
+    clean = strip_comments(source())
+    assert "r.apiKey = key;" in method_body(clean, "private void runCartApiPayload(")
+    change = method_body(clean, "private void fastChange(")
+    assert re.search(r'else if \(run == null\) soon\(s\);\s+'
+                     r'else if \("dixy"\.equals\(s\.code\) && !stamp\.equals\(run\.stamp\) && !run\.apiKey\.isEmpty\(\)\s+'
+                     r'&& run\.view != null\) \{\s+'
+                     r'run\.view\.evaluateJavascript\("window\.__kzNewer=" \+ JSONObject\.quote\(run\.apiKey\), null\);',
+                     change)
+    result = method_body(clean, "private void handleCartApiResult(")
+    assert 'final boolean reckoned = res.optBoolean("stale", false);' in result
+    assert "if (reckoned) q = Math.max(q, r.cart.optInt(s, 0));" in result
+    # Расчёт без итога в отчёт не идёт: сборка начинается заново раньше, чем дойдёт до finishRun.
+    again = re.search(r"if \(reckoned && r\.slot != null\) \{(.+?)supersede\(r\);\s+return;", result, re.S)
+    assert again and "r.slot.pending = r.stamp;" in again.group(1)
+    assert result.index("if (reckoned && r.slot != null)") < result.index("finishRun(r, cartObj")
+    with open(os.path.join(os.path.dirname(GRADLE), "src", "main", "assets", "cartapi.js"), encoding="utf-8") as fh:
+        js = fh.read()
+    assert "window.__kzNewer === input.key" in js and "stale: true" in js
+    with open(GRADLE, encoding="utf-8") as fh:
+        code = re.search(r"versionCode\s+(\d+)", fh.read())
+    assert code and int(code.group(1)) >= 50, "правка идёт с 1.46 (versionCode 50)"
+
+
+def test_a_searched_line_carries_the_pack_and_a_bound_report_drops_the_kept_plan():
+    """Замер 13.11.2026, Пятёрочка, корзина из чека: «хлопья №3 350 г» легли карточкой «…№2 500 г» —
+    строка поиска не несла фасовку, и packWhy её не сверял. С того же дня сервер связывает найденную
+    и положенную карточку с товаром (bound в ответе на отчёт): наряд в памяти телефона ещё ищет товар
+    касаниями, поэтому его срок сбрасывается, и fetchPlan берёт новый."""
+    clean = strip_comments(source())
+    plan = method_body(clean, "private void applyPlan(")
+    assert plan.count('.put("pack_g", s.optDouble("pack_g", 0))') == 2, "фасовку несут и search, и search_recent"
+    finish = method_body(clean, "private void finishRun(")
+    assert re.search(r'if \(status == 200 && new JSONObject\(text\)\.optInt\("bound", 0\) > 0\) \{\s+'
+                     r'memory\(\)\.edit\(\)\.remove\("planAt\." \+ r\.code\)\.apply\(\);', finish)
+    # Сеть не знает ни одного товара: отчёт сразу, поиск — хвостом после него; своё лишнее снимает cartApi.
+    begin = method_body(clean, "private void begin(")
+    early = re.search(r'if \(r\.lines\.length\(\) == 0 && r\.later\.length\(\) > 0\) \{(.+?)\n        \}\n', begin, re.S)
+    assert early, "пропал разбор сборки без знакомых товаров"
+    assert re.search(r'if \(byApi && !\(shouldDrop\(r\) && hasExcess\(r\)\)\) \{\s+'
+                     r'finishRun\(r, new JSONObject\(\), ""\);\s+return;', early.group(1))
+    assert re.search(r'if \(!byApi\) \{\s+r\.lines = r\.later;', early.group(1)), "сети без запросов идут прежней дорогой"
+    assert begin.index("finishRun(r, new JSONObject(), \"\");") < begin.index("cartApi(r);")
+    # Карточка другой фасовки, уже лежащая в корзине сети, — не «лежит».
+    tap = method_body(clean, "private void tapAdd(")
+    lying = tap[tap.index("ownSku(r, line)"):tap.index("r.cart.put(sku, r.have)")]
+    assert re.search(r'String different = strangerPack\(line, got\.optString\("title", ""\)\);\s+'
+                     r'if \(!different\.isEmpty\(\)\) \{\s+lineDone\(r, false, different, new JSONArray\(\)\);\s+return;', lying)
+    # Позиция, которая уже лежит, несёт адрес карточки: иначе положенное до 1.48 не получило бы артикул.
+    kept = method_body(clean, "private void keptLine(")
+    assert '.put("url", line == null ? "" : line.optString("url", ""))' in kept
+    assert 'if (!foundName.isEmpty()) item.put("found_name", foundName);' in kept and "r.items.put(item);" in kept
+    stranger = method_body(clean, "private static String strangerPack(")
+    assert '!line.optString("sku", "").isEmpty()' in stranger and "packWhy(line, title)" in stranger, \
+        "строку с артикулом не судим: её карточку назвал сервер"
+    with open(GRADLE, encoding="utf-8") as fh:
+        code = re.search(r"versionCode\s+(\d+)", fh.read())
+    assert code and int(code.group(1)) >= 52, "правка идёт с 1.48 (versionCode 52)"
+
+
+def test_a_product_the_phone_found_and_put_before_is_not_searched_again():
+    """Стенд, 13.11.2026, корзина из чека: сервер связал один товар Пятёрочки из четырёх найденных, и
+    остальные три после каждой правки искались бы касаниями заново — поиск и карточка на каждую лежащую
+    позицию. С 1.49 строка такого товара берёт артикул и адрес карточки из памяти телефона и идёт как
+    знакомая. Положенное до 1.49 (отметки о сверке фасовки нет) и сборка человека идут прежней дорогой."""
+    clean = strip_comments(source())
+    plan = method_body(clean, "private void applyPlan(")
+    assert re.search(r"JSONObject found = ownFound\(r, s\);\s+if \(found != null\) \{\s+"
+                     r"r\.lines\.put\(found\);\s+continue;\s+\}\s+"
+                     r"\(r\.slot != null \? r\.later : r\.lines\)\.put\(new JSONObject\(\)", plan), \
+        "строка поиска: сначала своё найденное"
+    # Фоновой сборке сервер «искал недавно» не присылает (phonecart: background): вторая вставка была бы мёртвой.
+    assert plan.count("ownFound(") == 1
+    # Строки наряда уже разложены, память телефона уже прочитана: по ним ownFound и судит.
+    assert plan.index("ownFound(r, s)") < plan.index("r.want.put(sku, r.want.optInt(sku, 0)")
+    ask = method_body(clean, "private void askPlan(")
+    assert ask.index("loadLedger(r);") < ask.index("applyPlan(r, plan);")
+    fast = method_body(clean, "private void startBackground(")
+    assert fast.index("loadLedger(r);") < fast.index("applyPlan(r, fast);")
+    own = method_body(clean, "private JSONObject ownFound(")
+    assert "if (r.slot == null || pid <= 0) return null;" in own, "«Собрать» человека кладёт всё, как раньше"
+    assert re.search(r"if \(r\.cart\.optInt\(sku, 0\) <= 0 \|\| r\.pids\.optInt\(sku, 0\) != pid\) continue;\s+"
+                     r"if \(!own\.isEmpty\(\)\) return null;\s+own = sku;", own), "два своих артикула — чей, не понять"
+    assert "if (own.isEmpty() || url.isEmpty() || !isHostOf(r.chain, url)) return null;" in own
+    assert 'if (known != null && own.equals(known.optString("sku", ""))) return null;' in own, \
+        "артикул занят строкой наряда: вторая строка удвоила бы «сколько должно лежать»"
+    assert ("if (packChecked(row) && Math.abs(r.packOk.optDouble(own, 0) - pack) > packTolerance(pack)) return null;"
+            in own), "фасовку карточки сверяли не с этим весом (или до 1.49, без отметки)"
+    line = own[own.index("new JSONObject()"):]
+    assert '.put("clicks", 1).put("sku", own)' in line and '"search"' not in line and '"pack_g"' not in line, \
+        "строка знакомая: по одной, без адреса поиска и без повторной сверки фасовки"
+    assert 'noteFail(r, line, "");' in own and 'noteFail(r, line, "", "apifail.");' in own, \
+        "прежние отказы не отправят лежащую в «попробую позже»"
+    assert "r.adopted.add(own);" in own
+    # Артикул взят из адреса карточки. Лишнее по нему не снимаем (в наряде одна штука, остальное решал человек),
+    # запрос сети по нему не сверяем и образцу запроса по нему не учимся: у сети в запросе бывает другой номер.
+    again = method_body(clean, "private boolean searchedAgain(")
+    assert again.index("if (r.adopted.contains(sku)) return true;") < again.index("if (wantOf(r, sku) > 0) return false;")
+    assert "if (sku.isEmpty() || r.adopted.contains(sku)) {" in method_body(clean, "private void verifyLine(")
+    assert re.search(r"!r\.learned && !r\.learnTried && !sku\.isEmpty\(\)\s+&& !r\.adopted\.contains\(sku\)\) \{", clean)
+    # Отметка «с каким весом сверяли фасовку» ставится там, где карточка стала своей, и живёт в памяти телефона.
+    assert ('if (packChecked(line)) r.packOk.put(sku, line.optDouble("pack_g", 0));'
+            in method_body(clean, "private static void ownLine("))
+    assert ('if (it.optDouble("k", 0) > 0) r.packOk.put(sku, it.optDouble("k", 0));'
+            in method_body(clean, "private void loadLedger("))
+    assert ('if (r.packOk.optDouble(sku, 0) > 0) it.put("k", r.packOk.optDouble(sku, 0));'
+            in method_body(clean, "private void saveLedger("))
+    # Обе дороги к ownLine идут после сверки фасовки: лежащая карточка и касание «В корзину».
+    tap = method_body(clean, "private void tapAdd(")
+    assert tap.index("strangerPack(line, got.optString(\"title\", \"\"))") < tap.index("ownLine(r, line, sku);")
+    with open(GRADLE, encoding="utf-8") as fh:
+        code = re.search(r"versionCode\s+(\d+)", fh.read())
+    assert code and int(code.group(1)) >= 53, "правка идёт с 1.49 (versionCode 53)"
+
+
+def test_a_refused_pyaterochka_cart_node_is_healed_by_erasing_the_stale_protection_cookie():
+    """Телефон владельца, 13.11.2026: узел корзин Пятёрочки отвечал «обрыв сети», «главная + 4 с» не лечила,
+    сеть три минуты шла касаниями (правки «0 из 7» за 0,3 с, хвост 90 с). Стенд: без куки spsc и с мусором в ней
+    узел отвечает за 60–350 мс статусом 0; главная выдаёт заново стёртую (6,9 с) и не заменяет протухшую.
+    Теперь «обрыв» лечится стиранием куки в хранилище WebView; 401 и Перекрёсток идут прежним входом."""
+    text = source()
+    clean = strip_comments(text)
+    result = method_body(clean, "private void handleCartApiResult(")
+    # Лечение только на «обрыв» Пятёрочки; прежний вход (главная и 4 с) остаётся для 401 и для Перекрёстка.
+    assert "healAllowed(r.slot)" in result, "лечат не чаще HEAL_GAP_MS: лечили недавно — стена и касания"
+    # Кукой лечится только быстрый отказ защиты при живой связи (fast из cartapi.js), а не любой «обрыв».
+    assert 'boolean pyatHeal = pyatNet && res.optBoolean("fast", false) && r.slot != null && healAllowed(r.slot);' in result
+    assert re.search(r'if \(pyatHeal\) \{\s+healPyat\(r, origin, again\);\s+return;\s+\}'
+                     r'\s+go\(r, origin \+ "/"\);\s+whenReady\(r, "/", null, 4000, again\);', result)
+    # Правка, пришедшая за время ожидания, старый наряд не перебивает: новая сборка начнёт с нуля.
+    assert re.search(r'if \(!alive\(r\)\) return;\s+if \(superseded\(r\)\) \{\s+supersede\(r\);\s+return;\s+\}'
+                     r'\s+beat\(r, true\);[^\n]*\s+runCartApiPayload\(', result)
+    assert 'apiGaveUp(r, why + r.healNote + peekNote(r.slot));' in result, "журнал должен сказать, что вышло с кукой"
+    # Прочие «обрывы» (таймаут, обрыв посреди записи, телефон без сети) идут прежним входом 1.49: главная, 4 с, повтор;
+    # быстрый отказ, которого уже нельзя лечить, сразу уходит в стену и касания.
+    assert re.search(r'boolean pyatRefresh = "pyaterochka"\.equals\(r\.code\)\s+&& \("auth"\.equals\(stage\) \|\| pyatHeal'
+                     r' \|\| \(pyatNet && !res\.optBoolean\("fast", false\)\)\);', result)
+    heal = method_body(clean, "private void healPyat(")
+    assert heal.index("dropCookie(origin, PYAT_COOKIE)") < heal.index("go(r, origin + \"/\")") \
+        < heal.index("whenHealed(r.slot, origin")
+    assert "if (!gone)" in heal and "whenReady(r, \"/\", null, 4000, then)" in heal, \
+        "кука не стёрлась — лечить нечем, идём прежней дорогой"
+    assert "r.healNote = " in heal
+    assert heal.count("Log.i(TAG, r.name + ") == 2, "журнал приложения говорит, что лечили и что вышло"
+    # Выдав куку, защита перезагружает страницу: повтор запроса идёт с robots.txt, а не с главной (стенд: 52 с).
+    # Повтор — не раньше HEAL_QUIET_MS после отказа: узел до тех пор отказывает и настоящей куке (стенд, penalty_test).
+    assert re.search(r'go\(r, origin \+ "/robots\.txt"\);.*?whenReady\(r, null, null, \(int\) wait, then\);', heal, re.S)
+    assert re.search(r"hasCookie\(origin, PYAT_COOKIE\)\s+\? Math\.max\(0, t0 \+ HEAL_QUIET_MS - SystemClock\.uptimeMillis\(\)\) : 0;",
+                     heal), "кука не выдана — паузу ждать незачем: повтор получит отказ, и сеть пойдёт касаниями"
+    # Пауза узла держится окном и когда сборку закрыли посреди лечения (новая правка); закрытый защитой адрес повтора
+    # запроса не получает: сразу отказ (apiGaveUp, касаний при блоке нет с 1.61).
+    assert heal.index("holdQuiet(r.slot, origin, t0, miss);") < heal.index("if (!alive(r)) {")
+    assert re.search(r'if \(miss\.startsWith\(HEAL_BLOCKED\)\) \{\s+apiGaveUp\(r, "узел корзин закрыт защитой сети" \+ r\.healNote\);'
+                     r'\s+uploadTrace\(r\.code, r\.name \+ ": адрес закрыт защитой" \+ r\.healNote\);\s+return;\s+\}\s+long wait = ',
+                     heal), "отчёта при блоке нет (endBlocked), хроника лечения уходит на сервер сама"
+    # Узел молчит и перед новой кукой: стена на другие сборки и чтение заранее, лечить снова — не раньше HEAL_GAP_MS,
+    # пульс — чтобы тишина до повтора не сошла за зависание (PHONE_STALE).
+    assert '"apiwall." + r.code, System.currentTimeMillis() - API_WALL_MS + HEAL_QUIET_MS' in heal
+    assert heal.index('"apiwall." + r.code') < heal.index("go(r, origin + \"/\")")
+    assert "r.slot.healAt = t0;" in heal and heal.count("beat(r, true);") == 2
+    assert "if (r.slot.run == null) rest(r.slot);" in heal, "сборку закрыли посреди лечения — окно на отдых"
+    # Кука стирается и без домена, и с доменом на хосте узла и на каждом его суффиксе в две и больше метки; видна и
+    # HttpOnly (CookieManager, а не document.cookie). Настоящая spsc живёт на .5ka.ru, а не на узле 5d.5ka.ru (CDP,
+    # 13.11.2026): ключ куки — имя, домен и путь, и стирание «с доменом хоста» её не берёт (телефон владельца, 14.11).
+    drop = method_body(clean, "private static void dropCookie(")
+    assert 'name + "=; Max-Age=0; Path=/")' in drop and "flush()" in drop
+    assert 'Path=/; Domain=" + d + "; Secure")' in drop and "Domain=\" + host" not in drop
+    assert "d = Uri.parse(origin).getHost(); d != null && d.indexOf('.') > 0; d = d.substring(d.indexOf('.') + 1)" in drop, \
+        "5d.5ka.ru → 5ka.ru, а «ru» (публичный суффикс) не трогаем"
+    assert "CookieManager.getInstance().getCookie(origin" in method_body(clean, "private static boolean hasCookie(")
+    # Новой куки мало: узел принимает её, когда главная страница дошла до конца и простояла на месте
+    # (стенд, 13.11.2026: уход на robots.txt в миг выдачи куки оставлял узел отказывающим).
+    wait = method_body(clean, "private void whenHealed(")
+    assert "hasCookie(origin, PYAT_COOKIE)" in wait and "evaluateJavascript(HEALED_JS" in wait
+    assert "boolean ready = cookie && shown;" in wait and "SystemClock.uptimeMillis() >= until" in wait
+    assert "s.healUntil = until + 1000;" in wait and wait.count("s.healUntil = 0;") == 1, "окно освобождается при любом конце"
+    # Конец один для ответа страницы и сторожа: ответ скрипта мог потеряться, когда защита перезагрузила страницу.
+    assert "if (over[0]) return;" in wait and "over[0] = true;" in wait and "HEAL_WAIT_MS + 900" in wait
+    assert "s.view != v" in wait and "v.evaluateJavascript(HEALED_JS" in wait, "лечим окно, где начали"
+    # Опрос идёт по таймеру, а не из ответа скрипта: потерянный при перезагрузке страницы ответ его не обрывает.
+    assert wait.index("handler.postDelayed(this, 500);") < wait.index("v.evaluateJavascript(HEALED_JS")
+    assert "handler.postDelayed(again" not in wait and "last[0] = page;" in wait and '"страница: " + last[0]' in wait
+    assert "s.healAt = t0;" in wait
+    assert 'PYAT_COOKIE = "spsc"' in text and re.search(r"HEAL_WAIT_MS = \d+;", text)
+    assert "HEAL_STABLE_MS = 500;" in text and "HEAL_LATE_MS = 8000;" in text
+    page = re.search(r"HEALED_JS =(.*?);\n", clean, re.S).group(1)
+    for part in ("document.readyState!=='complete'", "window.__kzStale", "location.pathname==='/robots.txt'",
+                 "#__next,main,h1,header", "window.__kzHealSeen", "HEAL_STABLE_MS", "HEAL_LATE_MS"):
+        assert part in page, part
+    # Уход с главной, пока её запрос защиты gatekeeper/evaluate в полёте, оставлял узел отказывающим (стенд, 13.11.2026):
+    # конец запроса виден странице в Resource Timing.
+    assert "performance.getEntriesByType('resource')" in page and "/gatekeeper/" in page and "e.responseEnd>0" in page
+    # Страница «Проблемы со связью» (защита закрыла адрес; стенд, 14.11.2026) не сходит за готовую главную: у неё есть h1,
+    # и через HEAL_LATE_MS она прошла бы проверку. Свой экран ошибки сайта корень #__next имеет и блоком не считается.
+    # К узлу корзин при блоке не ходим HEAL_BLOCK_MS: метка в часах телефона, её читает wallUp.
+    assert "!document.getElementById('__next')" in page and "t.length<1500" in page and "HEAL_BLOCK_PAGE" in page
+    assert r"/Проблемы\\s+со\\s+связью/.test(t)" in page, "пробелы в тексте страницы бывают неразрывными"
+    # 15.11.2026 защита закрыла адрес эмулятора страницей другого вида: путь /xpvnsulc/, без h1, текст «дата Ваш IP … ID
+    # запроса …». 1.57 её не узнала, лечила и стучалась дальше; 1.58 узнаёт по пути и «Ваш IP», длину текста не проверяет.
+    # Путь без текста сразу блоком не считается: у Самоката /xpvnsulc/ — и проходящая проверка (20.10.2026).
+    assert "location.pathname.indexOf('/xpvnsulc/')===0" in page and r"/Ваш\\s+IP/.test(t)" in page
+    # Вечером 15.11 та же страница простояла всё лечение «loading без каркаса», без текста, и 1.60 пустила сеть касаниями:
+    # застрявшую до конца ожидания проверку блоком называет whenHealed (1.61) — и по опросу, и по сторожу.
+    assert re.search(r'final ValueCallback<String> late = miss -> \{\s+if \(!over\[0\]\) end\.onReceiveValue\('
+                     r'last\[0\]\.startsWith\("/xpvnsulc/"\)\s+\? healBlock\(s, "проверка не отпустила за " \+ HEAL_WAIT_MS / 1000 \+ " с"\)'
+                     r' : miss\);\s+\};', wait), "сторож после конца лечения метку блока не пишет"
+    assert re.search(r"handler\.postDelayed\(\(\) -> late\.onReceiveValue\(", wait), "сторож тоже"
+    assert re.search(r"if \(ready \|\| SystemClock\.uptimeMillis\(\) >= until\) \{\s+late\.onReceiveValue\(", wait), "конец опроса"
+    assert "end.onReceiveValue(\"окно закрыто\")" in wait, "закрытое окно — не повод для блока"
+    assert page.index("/xpvnsulc/") < page.index("#__next,main,h1,header")
+    assert page.index("HEAL_BLOCK_PAGE") < page.index("#__next,main,h1,header")
+    assert 'HEAL_BLOCK_PAGE = "#block"' in text and 'HEAL_BLOCKED = "блок защиты"' in text
+    assert re.search(r"HEAL_BLOCK_MS = 30L \* 60 \* 1000;", text)
+    assert wait.index("if (HEAL_BLOCK_PAGE.equals(page)) {") < wait.index("boolean cookie = hasCookie(")
+    block = wait[wait.index("if (HEAL_BLOCK_PAGE.equals(page)) {"):wait.index("boolean cookie = hasCookie(")]
+    assert 'end.onReceiveValue(healBlock(s, "«Проблемы со связью»"));' in block
+    mark = method_body(clean, "private String healBlock(")
+    assert '"apiblock." + s.code, System.currentTimeMillis() + HEAL_BLOCK_MS' in mark and "return HEAL_BLOCKED + " in mark
+    assert "healAt" not in mark, "срок блока — в часах телефона, а не в аптайме окна: переживёт перезапуск и сон"
+    blocked = method_body(clean, "private boolean blocked(")
+    assert 'getLong("apiblock." + code, 0)' in blocked and "until - now <= HEAL_BLOCK_MS" in blocked
+    assert 'remove("apiblock." + code)' in blocked and "until - now > HEAL_BLOCK_MS" in blocked, \
+        "метка из «будущего» блок не держит и не оживает позже"
+    assert "blocked(s.code)" in method_body(clean, "private long warmDue("), "закрытому адресу главную не подогреваем"
+    # Пока окно лечит куку на главной странице, его никто не уводит: сборка ждёт, возврат на robots.txt тоже.
+    begin = method_body(clean, "private void begin(")
+    assert re.search(r"if \(healing\(r\.slot\)\) \{\s+handler\.postDelayed\(\(\) -> \{\s+if \(alive\(r\)\) begin\(r\);"
+                     r"\s+\}, 250\);\s+return;\s+\}\s+cartApi\(r\);", begin)
+    assert "!healing(s)" in method_body(clean, "private void supersede(")
+    assert "!healing(s)" in method_body(clean, "private void rest(")
+    assert "if (healing(s)) return;" in method_body(clean, "private void warm(")
+    # Чтение заранее, не вышедшее «обрывом», лечит куку само — до первой правки, не чаще HEAL_GAP_MS, только у Пятёрочки.
+    peek = method_body(clean, "private void peekAt(")
+    assert 'if ("pyaterochka".equals(s.code)) handler.postDelayed(() -> peekCheck(s, 0), 1500);' in peek
+    check = method_body(clean, "private void peekCheck(")
+    assert "a.ok===false&&a.stage==='net'" in check
+    assert "s.run != null || s.soon != null || away" in check, "сборка или правка идут — окну не мешаем"
+    # Лечить уже нельзя — узел всё равно отказывает: стена на сборки и чтение заранее, правка сразу идёт касаниями.
+    assert re.search(r'if \(!healAllowed\(s\)\) \{\s+notePeek\(s, "лечили недавно, не лечу"\);\s+memory\(\)\.edit\(\)\.putLong'
+                     r'\("apiwall\." \+ s\.code, System\.currentTimeMillis\(\)\)\.apply\(\);\s+return;\s+\}', check)     # метку лечения ставит whenHealed
+    # Чем кончилось лечение при чтении заранее — в журнал отказов (1.52): правки телефона до этого окно не видно.
+    assert check.count("notePeek(s, ") == 3 and 'notePeek(s, PYAT_COOKIE + " не стёрлась");' in check
+    note = method_body(clean, "private static String peekNote(")
+    assert "s == null || s.peekNote.isEmpty()" in note and "s.peekNoteAt" in note, "давняя запись несёт возраст"
+    assert "s.peekNote = note;" in method_body(clean, "private static void notePeek(")
+    assert "a.fast===true" in check, "лечим быстрый отказ защиты при живой связи, а не обрыв связи"
+    # Результата ещё нет — чтение идёт: смотрим снова (холодное соединение, темп), не дольше 8,5 с от начала:
+    # быстрый отказ — до 8 с (cartapi.js, netFail).
+    assert "tries < 14" in check and "peekCheck(s, tries + 1)" in check
+    # Стереть куку не вышло (другой путь или домен): новой главная не выдаст, а whenHealed принял бы старую за выданную —
+    # окно держало бы паузу зря. Как при !healAllowed: стена на 3 минуты, правка сразу касаниями, ни главной, ни паузы.
+    assert re.search(r'dropCookie\(origin, PYAT_COOKIE\);\s+if \(hasCookie\(origin, PYAT_COOKIE\)\) \{[^}]*?'
+                     r'putLong\("apiwall\." \+ s\.code, System\.currentTimeMillis\(\)\)\.apply\(\);\s+return;\s+\}', check)
+    # Узел молчит до конца паузы: стена на сборки и чтение заранее ставится после стирания куки и до загрузки главной.
+    assert check.index("dropCookie(origin, PYAT_COOKIE)") \
+        < check.index('"apiwall." + s.code, System.currentTimeMillis() - API_WALL_MS + HEAL_QUIET_MS') \
+        < check.index('s.view.loadUrl(origin + "/")')
+    assert re.search(r"HEAL_QUIET_MS = 65000;", text) and "private static boolean healAllowed(" in clean
+    assert check.index("dropCookie(origin, PYAT_COOKIE)") < check.index("s.view.loadUrl(origin + \"/\")") \
+        < check.index("whenHealed(s, origin")
+    assert 's.view.loadUrl(origin + "/robots.txt")' in check and "s.peekStartedAt = 0;" in check and "peekSoon(1500);" in check
+    # Окно возвращается на robots.txt и тогда, когда правка уже ждёт в begin (на главной её запросы пропали бы вместе
+    # со страницей); свёрнутое приложение страниц не грузит. Пауза узла держится окном (healing): правка ждёт её, а не
+    # идёт касаниями по стене; адрес закрыт — ждать нечего.
+    assert 'if (!away && s.view != null) s.view.loadUrl(origin + "/robots.txt");' in check
+    assert "holdQuiet(s, origin, t0, miss);" in check
+    hold = method_body(clean, "private static void holdQuiet(")
+    assert "hasCookie(origin, PYAT_COOKIE) && !miss.startsWith(HEAL_BLOCKED)" in hold
+    assert "s.healUntil = Math.max(s.healUntil, t0 + HEAL_QUIET_MS + 1000);" in hold
+    # Главная только что открыта: подогрев не нужен, и rest/warm не остаются без таймеров, пока окно держит пауза.
+    assert re.search(r'if \(hasCookie\(origin, PYAT_COOKIE\)\) \{\s+memory\(\)\.edit\(\)\.putLong\("warm\." \+ s\.code, '
+                     r'System\.currentTimeMillis\(\)\)\.apply\(\);\s+\}', check)
+    assert 15 == int(re.search(r"HEAL_GAP_MS = (\d+)L \* 60 \* 1000", text).group(1)), \
+        "лечение чаще раза в 15 минут закрыло адрес стенда (шесть за час, 14.11.2026)"
+    # «Обрыв» первых запросов Пятёрочки несёт время запроса: быстрый отказ защиты или таймаут.
+    with open(os.path.join(ROOT, "android", "app", "app", "src", "main", "assets", "cartapi.js"), encoding="utf-8") as fh:
+        js = fh.read()
+    assert js.count("'Пятёрочка: обрыв сети (' + ") == 1 and "return netFail(actRes);" in js and "return netFail(initRes);" in js
+    # Все семь «обрывов» Пятёрочки строит netFail: отказ первого запроса сборки — защита, позже — связь.
+    for res in ("dRes", "pRes", "putRes", "rDel", "rPut"):
+        assert f"if ({res}.status === 0) return netFail({res}, lastCart);" in js, res
+    assert "'Пятёрочка: обрыв сети'" not in js
+    assert "out.fast = stats.requests === 1 && res.ms < 8000 && (typeof navigator === 'undefined' || navigator.onLine !== false);" in js
+    # Без разрешения на состояние сети navigator.onLine может не отличить телефон без связи от отказа защиты.
+    with open(os.path.join(ROOT, "android", "app", "app", "src", "main", "AndroidManifest.xml"), encoding="utf-8") as fh:
+        assert "android.permission.ACCESS_NETWORK_STATE" in fh.read()
+    with open(GRADLE, encoding="utf-8") as fh:
+        code = re.search(r"versionCode\s+(\d+)", fh.read())
+    assert code and int(code.group(1)) >= 57, ("лечение куки — с 1.50 (54), раз в 15 минут — с 1.51 (55), стирание на .5ka.ru — "
+                                               "с 1.52 (56), стена прежней версии стирается при обновлении — с 1.53 (57)")
+    # Хвост поиска не уводит окно с главной, пока оно лечит куку: тогда защита недосказала бы, и лечение пропало.
+    tail = method_body(clean, "private void tailLater(")
+    assert re.search(r"if \(healing\(s\)\) \{\s+handler\.postDelayed\(this, 250\);\s+return;\s+\}", tail)
+
+
+def test_pyaterochka_heal_timings_and_wall_readers_agree():
+    """Лечение куки Пятёрочки держится на сроках: оно кончается раньше конца паузы, пауза короче стены, повторное
+    лечение — после паузы. Стену apiwall читает одно место (wallUp) — по API_WALL_MS, без меток из «будущего»;
+    зовут его чтение заранее и сборка."""
+    text = source()
+    wait = int(re.search(r"HEAL_WAIT_MS = (\d+);", text).group(1))
+    quiet = int(re.search(r"HEAL_QUIET_MS = (\d+);", text).group(1))
+    wall = int(re.search(r"API_WALL_MS = (\d+)L \* 60 \* 1000", text).group(1)) * 60 * 1000
+    gap = int(re.search(r"HEAL_GAP_MS = (\d+)L \* 60 \* 1000", text).group(1)) * 60 * 1000
+    assert wait + 1000 < quiet < wall and quiet < gap, (wait, quiet, wall, gap)
+    clean = strip_comments(text)
+    readers = re.findall(r'getLong\("apiwall\."[^;]*', clean)
+    up = method_body(clean, "private boolean wallUp(")
+    assert len(readers) == 1 and readers[0] in up and "d < API_WALL_MS" in up and "blocked(code)" in up, readers
+    assert "if (d < 0)" in up and 'remove("apiwall." + code)' in up, "метка из «будущего» стену не держит и не оживает"
+    assert "wallUp(s.code)" in method_body(clean, "private void peekAt(")
+    assert "wallUp(r.code)" in method_body(clean, "private void cartApi(")

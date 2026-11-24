@@ -1,3 +1,4 @@
+import { purchasedProducts, rankProducts } from '../src/shared/searchRank';
 import {
   chooseBestVariant,
   handoverByStore,
@@ -45,6 +46,7 @@ export interface BasketItemView {
   weight_g: number | null;
   qty: number;
   photo: string | null;
+  preferredStore?: string | null;
 }
 
 export function computeBasketStamp(
@@ -68,7 +70,8 @@ export function getActiveBasketItems(ws: WorkspaceSnapshot, basketId: number | n
     const prod = byId.get(it.product_id);
     return {
       product_id: it.product_id,
-      name: prod?.name || 'Товар',
+      name: prod?.title || prod?.name || 'Товар',
+      preferredStore: it.preferred_store,
       unit: prod?.unit || 'pcs',
       weight_g: prod?.weight_g ?? null,
       qty: it.qty,
@@ -135,6 +138,7 @@ export function buildBoardClient(
     const adjust: Record<string, number> = {};
 
     for (const [code, snap] of Object.entries(storePrices)) {
+      if (item.preferredStore && item.preferredStore !== code) continue;
       prices[code] = Math.round(snap.price * item.qty * 100) / 100;
       inStock[code] = snap.in_stock;
       notes[code] = null;
@@ -185,7 +189,7 @@ export function buildBoardClient(
     offers: offersMap,
     cards: ws.cards,
     baseline,
-    topN: 3,
+    topN: Math.max(3, ws.stores.length ** 2),
     maxStores: 2,
     handover,
     baselineLines,
@@ -336,9 +340,9 @@ export function getHabitsClient(
   );
   const byId = new Map(ws.products.map((p) => [p.id, p]));
   const byProd = new Map<number, { days: Map<string, number>; prod: Product }>();
-
   for (const row of ws.history) {
-    if (!row.product_id) continue;
+    // The server validates the receipt's chain and excludes non-purchase lines.
+    if (!row.recommendable || !row.product_id) continue;
     const prod = byId.get(row.product_id);
     if (!prod) continue;
     let entry = byProd.get(row.product_id);
@@ -397,37 +401,7 @@ export function getHabitsClient(
   due.sort((a, b) => b.overdue - a.overdue);
   regs.sort((a, b) => b.times - a.times);
 
-  const out: HabitItem[] = [];
-  const seen = new Set<number>();
-  for (const item of [...due, ...regs]) {
-    if (seen.has(item.pid)) continue;
-    seen.add(item.pid);
-    out.push(item);
-    if (out.length >= limit) break;
-  }
-
-  // If user has no history yet, surface popular priced catalog items so the shelf is immediately helpful
-  if (!out.length) {
-    for (const p of ws.products) {
-      if (!p.active || inBasket.has(p.id)) continue;
-      const pMap = ws.prices[String(p.id)];
-      if (!pMap || Object.keys(pMap).length === 0) continue;
-      out.push({
-        pid: p.id,
-        name: p.name,
-        unit: p.unit,
-        why: 'популярное',
-        qty: 1,
-        photo: p.photo ?? null,
-        times: 0,
-        cycle: 7,
-        since: 0,
-      });
-      if (out.length >= Math.min(limit, 8)) break;
-    }
-  }
-
-  return out;
+  return [...due, ...regs].slice(0, Math.max(0, limit));
 }
 
 export function buildOrdersClient(ws: WorkspaceSnapshot): OrderEntry[] {
@@ -458,6 +432,7 @@ export function buildOrdersClient(ws: WorkspaceSnapshot): OrderEntry[] {
     const prod = row.product_id ? byId.get(row.product_id) : undefined;
     order.lines.push({
       product_id: row.product_id,
+      repeatable: row.recommendable === true,
       name: prod?.name || row.raw_name,
       qty: row.qty,
       total: row.total,
@@ -482,16 +457,17 @@ export function groupOrdersByMonth(orders: OrderEntry[]): Array<[string, OrderEn
 }
 
 export function localSearchProducts(ws: WorkspaceSnapshot, query: string, limit = 25): SearchResultItem[] {
-  const q = query.trim().toLowerCase();
+  const normalize = (s: string) => s.toLowerCase().replace(/яйц[ао](?![а-яё])/gu, 'яйца').replace(/(?:с|c)([012])(?!\d)/gu, 'с$1').replace(/(\d+)\s*шт/gu, '$1 шт');
+  const q = normalize(query.trim());
   if (q.length < 2) return [];
   const tokens = q.split(/\s+/).filter(Boolean);
   const out: SearchResultItem[] = [];
   for (const p of ws.products) {
     if (!p.active) continue;
-    const hay = `${p.name} ${p.brand || ''} ${p.category || ''}`.toLowerCase();
-    if (!tokens.every((t) => hay.includes(t))) continue;
+    const hay = normalize(`${p.title || ''} ${p.name} ${p.brand || ''}`);
+    if (!tokens.every((t) => hay.includes(t)) && normalize(p.category || '') !== q) continue;
     const prices = ws.prices[String(p.id)] || {};
-    const chainsCount = Object.keys(prices).length;
+    const chainsCount = Object.values(prices).filter(p => p.in_stock && p.price > 0).length;
     const parts: string[] = [];
     if (p.weight_g) parts.push(`${Math.round(p.weight_g)} г`);
     else parts.push(p.unit === 'kg' ? 'на вес' : 'шт');
@@ -503,9 +479,8 @@ export function localSearchProducts(ws: WorkspaceSnapshot, query: string, limit 
       chainsCount,
       small: parts.join(' · '),
     });
-    if (out.length >= limit) break;
   }
-  return out;
+  return rankProducts(out, purchasedProducts(ws.history)).slice(0, limit);
 }
 
 export interface StorePartMeta {

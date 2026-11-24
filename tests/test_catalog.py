@@ -83,10 +83,48 @@ def test_same_product_across_chains_is_one_item(catalog):
     assert len(items) == 1 and items[0]["chains_n"] == 3
 
 
+def test_egg_search_finds_priced_pack_before_generic_card(catalog):
+    offer = "Яйцо куриное Завтрак C1, 10 шт"
+    store.upsert_products("magnit", [P("100", offer, price=119, in_stock=True), P("101", "Яйца С1")])
+    store.upsert_products("dixy", [P("102", "Яйца С2", price=79, in_stock=True)])
+    refresh.match_all()
+    for query in ("Яйца С1", "яйцо c1"):
+        top = store.search_items(query, by_name=True, limit=1)
+        assert [item["name"] for item in top] == [offer]
+        assert not store.search_items(query, by_name=True, chain="dixy")
+
+
 def test_pack_size_separates_products(catalog):
     store.upsert_products("lenta", [P("1", "Страчателла 200 г")])
     store.upsert_products("vkusvill", [P("2", "Страчателла 92 г")])
     assert refresh.match_all()["items"] == 2
+
+
+def test_bought_catalog_item_ranks_before_limit_and_only_in_its_store(catalog):
+    store.upsert_products("magnit", [
+        P("11", "Молоко Марка А 1 л", price=130, in_stock=True),
+        P("12", "Молоко Марка Б 1 л", price=80, in_stock=True),
+        P("13", "Молоко Марка В 1 л", price=60, in_stock=False),
+    ])
+    refresh.match_all()
+    ids = {r["sku"]: r["item_id"] for r in store.products_of_chain("magnit")}
+    def hits(bought, **kwargs):
+        return [r["id"] for r in store.search_items("молоко", by_name=True, purchased=bought, **kwargs)]
+    assert hits(set()) == [ids["12"], ids["11"], ids["13"]]
+    assert hits({ids["11"], ids["13"]}, limit=1) == [ids["11"]]
+    assert hits({ids["13"]}, limit=1) == [ids["13"]]
+    assert hits({ids["11"]}, chain="magnit") == [ids["11"], ids["12"]]
+
+
+def test_partial_feed_preserves_pack_photo_and_link(catalog):
+    store.upsert_products("lenta", [P("35", "Мука", weight_g=1000, category="Бакалея",
+        barcode="4601234567893", image="https://example.test/flour.jpg")])
+    refresh.match_all()
+    before = store.products_of_chain("lenta")[0]
+    assert store.upsert_products("lenta", [P("35", "Мука", image="", price=83)]) == (1, 0, 0)
+    after = store.products_of_chain("lenta")[0]
+    for field in ("item_id", "weight_g", "category", "image", "barcode"):
+        assert after[field] == before[field]
 
 
 def test_broader_name_is_another_product(catalog):

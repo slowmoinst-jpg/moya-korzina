@@ -78,6 +78,82 @@ def _is_tried(kind: str, db_path: str, store: str, product_id: int) -> bool:
         ts = _TRIED.get((str(kind), str(db_path), str(store), int(product_id)))
     return bool(ts and (time.time() - ts) < RETRY_SECONDS)
 
+
+# (база, сеть, товар) → когда за него взялся фоновый поиск сети (_ask_later): через секунды сеть может его
+# узнать. Поиск идёт секунды; запись старше ASKING_SECONDS — поток завис или не стартовал, товар спрошен.
+_ASKING: dict[tuple[str, str, int], float] = {}
+ASKING_SECONDS = 120
+
+
+def _settled(db_path: str, store: str, product_id: int) -> bool:
+    """Сервер с незнакомым товаром закончил: каталог и поиск сети спрошены, фоновый поиск не идёт."""
+    # Порядок чтения обратен порядку записи в _link (сначала _ASKING, потом «спрошен»): увидев «спрошен»,
+    # запись о начатом поиске уже не пропустим.
+    if not _is_tried("link", db_path, store, product_id):
+        return False
+    asked = _ASKING.get((str(db_path), str(store), int(product_id)))
+    return asked is None or time.monotonic() - asked > ASKING_SECONDS
+
+
+# Каталог отвечает на вопрос одинаково для всех сетей, а наряды сетей после правки спрашивают его разом.
+# Каждый вопрос — проход по всей таблице каталога, около 0,1 с. Замер 13.11.2026: наряд на новый товар шёл
+# 3,1–3,5 с вместо 0,4 с, и Магнит не уложился в 5 с от касания. Ответ помним: вопрос → (когда, ответ).
+_ANSWERS: dict[tuple, tuple[float, Any]] = {}
+_ANSWER_GATES: dict[tuple, threading.Lock] = {}
+ANSWERS_KEEP = 2000
+ANSWER_WAIT_SECONDS = 3     # дольше чужой ответ не ждём: каталог завис — спрашиваем сами, как до этой памяти
+RESOLVE_SECONDS = 60        # опознание товара: на время одной правки, дальше его не зовёт пометка «спрошен»
+
+
+def _asked_once(key: tuple, seconds: float, ask):
+    """Ответ каталога на вопрос: свежий — из памяти, иначе спрашивает один поток, остальные ждут его.
+
+    Ответ общий для всех потоков и людей: менять его нельзя. Отказ каталога (исключение) не запоминается.
+    """
+    gate = _ANSWER_GATES.setdefault(key, threading.Lock())
+    got = gate.acquire(timeout=ANSWER_WAIT_SECONDS)
+    try:
+        hit = _ANSWERS.get(key)
+        if hit and time.monotonic() - hit[0] < seconds:
+            return hit[1]
+        if len(_ANSWER_GATES) > ANSWERS_KEEP:       # замок есть и у вопроса без ответа: считаем их
+            _ANSWERS.clear()
+            _ANSWER_GATES.clear()
+        answer = ask()
+        _ANSWERS[key] = (time.monotonic(), answer)
+        return answer
+    finally:
+        if got:
+            gate.release()
+
+
+# Наряды телефона идут раньше фонового счёта. Наряд — 330–660 коротких запросов к базе, и рядом со счётным
+# потоком того же процесса (расчёт «Где дешевле», пересчёт цен после правки) каждый запрос ждёт GIL. Замер
+# 13.11.2026: шесть нарядов разом — 0,45 с без помех и больше 8 с рядом со счётом; на телефоне наряд на
+# новый товар шёл 3,1–3,3 с, и три сети из пяти не уложились в 5 с от касания.
+_PLANS_LOCK = threading.Lock()
+_PLANS = {"now": 0, "until": 0.0}   # сколько нарядов считается; до какого времени (monotonic) их ещё ждём
+PLANS_AFTER_EDIT_SEC = 2.0          # телефон спрашивает наряды через 0,3–1,7 с после правки
+PLANS_GAP_SEC = 1.0                 # наряды сетей приходят не разом: новому соединению нужно до секунды
+PLANS_WAIT_SEC = 3.0                # дольше счёт не ждёт: расчёт «Где дешевле» стартует не позже 5 с от правки
+
+
+def plans_expected() -> None:
+    """Корзину только что правили: телефон вот-вот спросит наряды сетей, фоновый счёт их пропустит."""
+    with _PLANS_LOCK:
+        _PLANS["until"] = max(_PLANS["until"], time.monotonic() + PLANS_AFTER_EDIT_SEC)
+
+
+def wait_for_plans() -> None:
+    """Фоновый счёт ждёт, пока наряды телефона считаются или вот-вот придут, но не дольше PLANS_WAIT_SEC."""
+    end = time.monotonic() + PLANS_WAIT_SEC
+    while time.monotonic() < end:
+        with _PLANS_LOCK:
+            if not _PLANS["now"] and time.monotonic() >= _PLANS["until"]:
+                return
+        time.sleep(0.05)
+
+
 # Куда идти за итогом, если на странице сети не нашлось ссылки на корзину.
 # Замерено только у ВкусВилла (docs/design/store-apis.md: «/cart/ работает»).
 # У Магнита страницы корзины нет вовсе (замер 20.09.2026): его корзину телефон
@@ -135,6 +211,15 @@ API_TOTALS: dict[str, list[dict]] = {
     ],
 }
 
+# Страницы корзины, где копейки стоят вплотную к рублям: «1 541» и «87» телефон читает как 54187
+# (Пятёрочка, замер 11.11.2026: строка сети показала 54 187 ₽ за три товара). Суммам такой
+# страницы не верим: итог сети есть только в отчёте запросами cartapi.js. Ответ сайта о заказе
+# (/api/orders/v11/orders/<номер>/, basket.final_sum и basket.total_sum в рублях) сторож
+# приложения тоже передаёт, но хранит его между сборками, и свежесть серверу не проверить.
+# shortcut: лечится разбором страницы в приложении (READ_JS) или меткой свежести у сторожа;
+# починят — убрать сеть отсюда.
+GLUED_PAGES: tuple[str, ...] = ("pyaterochka",)
+
 # Ответы сети на запись корзины, в которых лежит ВСЯ её корзина — у каждой позиции
 # артикул и количество. Магнит, замер на эмуляторе 18.10.2026: PUT carts/lite после
 # «В корзину» вернул в items и только что положенный товар, и лежавший раньше, с qnty у
@@ -153,10 +238,15 @@ FULL_CART: dict[str, tuple[str, ...]] = {
 # сетям, пока не замерено, прибавку телефон делает касаниями «+», по одной упаковке.
 QTY_SETS: tuple[str, ...] = ("magnit",)
 
-# Телефон кладёт эти сети запросами из cartapi.js (APK 1.24, Магнит — с 1.26: старые
-# версии адреса его окна не знают и кладут касаниями); убрать сеть из кортежа — вернуть
+# Телефон кладёт эти сети запросами из cartapi.js (APK 1.24, Магнит — с 1.26, METRO — с 1.27, Самокат — с 1.29,
+# Впрок — с 1.62: старые версии адреса их окна не знают и кладут касаниями); убрать сеть из кортежа — вернуть
 # её на касания без выпуска APK.
-API_CARTS: tuple[str, ...] = ("perekrestok", "pyaterochka", "dixy", "magnit")
+API_CARTS: tuple[str, ...] = ("perekrestok", "pyaterochka", "dixy", "magnit", "metro", "samokat", "vprok")
+
+# С какой версии приложения адаптер сети в cartapi.js годен. Самокат из 1.28 брал витрину по точке
+# из кода и считал копейки сети рублями: до 1.29 сеть остаётся на касаниях. Версию приложение шлёт
+# в запросе наряда с 1.29, у прежних её там нет. Впрок: окно сети с запросами появилось в 1.62.
+API_SINCE: dict[str, tuple[int, ...]] = {"samokat": (1, 29), "vprok": (1, 62)}
 
 # Корзина сети пуста — так пишут её страницы. Если приложение помнит, что клало сюда,
 # а сеть показывает пустую корзину, человек оформил заказ или очистил её сам.
@@ -166,6 +256,32 @@ EMPTY_CART = (r"корзина пуста|в корзине пока|в корз
 HOWS = ("tap", "request", "kept")
 
 REPORT_KEY = "phonecart.last."
+# Журнал времени правок «от касания до отчёта»: строка на отчёт, последние LAGS_KEEP. Цель
+# владельца — не дольше 5 с в каждой сети, а строки журнала сервера стирает каждая выкладка.
+# Восьмым в строке, если приложение его прислало (1.44), — сколько сборка ждала наряд, мс.
+LAGS_KEY = "phonecart.lags"
+LAGS_KEEP = 300
+_LAGS_LOCK = threading.Lock()   # отчёты сетей приходят разом, журнал читается и пишется целиком
+# Журнал отказов: последние FAILS_KEEP отчётов, где легло не всё, с причинами. Следующий отчёт стирает
+# прошлый (REPORT_KEY) за секунды, а телефон владельца отладчиком не посмотреть: 13.11.2026 Дикси и
+# Пятёрочка ответили «легло 0 из 11», и причины ушли вместе с отчётами.
+FAILS_KEY = "phonecart.fails"
+FAILS_KEEP = 40
+# Хроника приложения (1.54): последние строки его журнала при отчёте. 14.11.2026 Пятёрочка не собралась на пяти
+# нажатиях подряд (три другие сети уложились в 3,2 с), а чем занималось окно сети, серверу не видно:
+# отчёт один на сборку, а нажатия, пропущенные до сборки, отчёта не дают вовсе. Хранится отдельно от отчёта:
+# следующий отчёт той же сети его стёр бы.
+TRACES_KEY = "phonecart.traces"
+TRACES_KEEP = 6
+TRACE_LINES = 160
+TRACE_WIDTH = 220
+# Хроника без отчёта (1.55): сборка идёт дольше 30 с, а отчёта нет — приложение шлёт журнал само. 15.11.2026 строки
+# Магнита и Пятёрочки провисели «идёт» две с лишним минуты после запуска приложения, и хроника, привязанная к отчёту,
+# не доехала: отчёта у такой сборки не бывает. Отдельный журнал: частые нажатия не вытесняют хроники отчётов.
+SLOW_KEY = "phonecart.slowtraces"
+SLOW_KEEP = 8
+# Так приложение называет в раннем отчёте позицию, которую поищет в сети после знакомых (finishRun).
+LATER_WHY = "ищу в сети после знакомых"
 # Столько незнакомых позиций за один наряд ищем поиском самой сети. Поиск — запрос
 # к сети на каждую позицию, а телефон ждёт ответа наряда не дольше минуты.
 LIVE_LIMIT = 10
@@ -193,7 +309,14 @@ def _store(body: dict) -> str:
     return code
 
 
-def rules(store: str) -> dict:
+def _version(text) -> tuple[int, ...]:
+    """«1.29» → (1, 29); пусто или не числа через точку → ()."""
+    parts = str(text or "").strip().split(".")
+    ok = all(p.isascii() and p.isdigit() and len(p) <= 6 for p in parts)
+    return tuple(int(p) for p in parts) if ok else ()
+
+
+def rules(store: str, app_version: str | None = None) -> dict:
     """Чем телефон отличает кнопку товара и с каким темпом жмёт — из серверных правил."""
     from app.shopbrowser import cart, signals
 
@@ -220,7 +343,7 @@ def rules(store: str) -> dict:
         "full_cart": list(FULL_CART.get(store, ())),
         "qty_sets": store in QTY_SETS,
         # Телефон кладёт эти сети запросами из cartapi.js (APK 1.24): Перекрёсток, Пятёрочка, Дикси.
-        "api": store in API_CARTS,
+        "api": store in API_CARTS and _version(app_version) >= API_SINCE.get(store, ()),
         "api_burst": 3,
         "empty_cart": EMPTY_CART,
         # Сигнал бот-проверки (Пятёрочка, Этап 1): паттерн на странице означает «сеть
@@ -231,7 +354,25 @@ def rules(store: str) -> dict:
         "check_signal": signals.CHECK,
         "check_pause_ms": _check_pause_ms(),
         "api_total": _api_total(store),
+        # Точка человека для адаптера сети (APK 1.39): корзина собирается по ЕГО адресу, а не по
+        # тому, что сайт сети выбрал сам.
+        "place": _place(store),
+        # Артикул из адреса карточки — правило сервера (app/catalog/fromurl.py) строкой для телефона.
+        # Товар, найденный поиском сети, приложение по нему числит своим и снимает, когда его убрали
+        # из корзины (APK 1.43): до этого артикул знал только сервер, и товар оставался в корзине сети.
+        "sku_url": _sku_url(store),
     }
+
+
+def _sku_url(store: str) -> str:
+    """Правило «адрес карточки → артикул сети» для телефона; у сети без правила — пустая строка."""
+    from app.catalog import fromurl
+
+    rule = fromurl.RULES.get(store)
+    if rule is None:
+        return ""
+    # Флаг IGNORECASE (Дикси) — записью (?i): её одинаково понимают Python и Java.
+    return ("(?i)" if rule.flags & re.IGNORECASE else "") + rule.pattern
 
 
 def _api_total(store: str) -> dict | None:
@@ -253,6 +394,91 @@ def _api_total(store: str) -> dict | None:
     return None
 
 
+# Точка человека для адаптера сети в телефоне (rules.place). Подбор ходит в сеть — геокодер,
+# справочник магазинов, — поэтому ответ помним в настройках человека: наряд ждёт подбора раз в
+# PLACE_TTL_SEC (первый подбор — 0,45 с, замер 12.11.2026), а не при каждом запросе.
+PLACE_KEY = "phonecart.place."
+PLACE_TTL_SEC = 6 * 3600      # как кэш справочника магазинов (connectors.cache_ttl_hours)
+PLACE_RETRY_SEC = 600         # не подобралась — спросим снова через десять минут
+PLACE_KEEP_SEC = 24 * 3600    # столько прежняя точка живёт без подтверждения: сбой службы пережидаем, закрытый магазин — нет
+
+
+def _place(store: str) -> dict | None:
+    """Точка человека для адаптера сети; None — сеть берёт то, что выбрано на её сайте.
+
+    ЗАЧЕМ (12.11.2026). Сайт сети выбирает адрес сам: Самокат — последний добавленный (у владельца
+    это был адрес в другом городе), Магнит определяет город по сети и ставит самовывоз. Корзина,
+    собранная не по адресу человека, не годится ни для заказа, ни для сравнения цен. Самокату
+    отдаём координаты адреса из настроек, Магниту — магазин, по которому считаем его цены.
+    Пятёрочке (APK 1.63) — те же координаты: адаптер сверяет с ними адрес корзины сети и в корзину
+    по чужому адресу («Тверская улица, 1», 16.11.2026) не пишет, а просит выбрать свой.
+
+    shortcut: смена адреса доходит до телефона с новым нарядом — до 6 ч (PLAN_MS приложения);
+    нужна сразу — добавить адрес в отпечаток корзины (cartrun.stamp_of).
+    """
+    if store not in ("magnit", "samokat", "pyaterochka"):
+        return None
+    import hashlib
+    from app import location
+
+    try:
+        addr = (location.address() or "").strip()
+        if not addr:
+            return None
+        mark = hashlib.sha1(addr.casefold().encode("utf-8")).hexdigest()[:12]
+        kept = json.loads(repo.get_setting(PLACE_KEY + store) or "null")
+        if not isinstance(kept, dict) or kept.get("for") != mark:
+            kept = {}
+        now = time.time()
+        # Точка Магнита, запомненная до 1.55, перечня deliver не знает: подбираем заново, а не ждём шесть часов.
+        old_format = store == "magnit" and isinstance(kept.get("place"), dict) and "deliver" not in kept["place"]
+        if kept and not old_format and now - float(kept.get("at") or 0) < (
+                PLACE_TTL_SEC if kept.get("place") else PLACE_RETRY_SEC):
+            return kept.get("place")
+        try:
+            found = _find_place(store, addr)
+        except Exception as exc:  # noqa: BLE001 — геокодер или справочник молчат
+            log.warning("%s: точка человека для телефона не подобрана (%s)", store, type(exc).__name__)
+            found = None
+        seen = now if found else float(kept.get("ok") or 0)      # когда точку подобрали в последний раз
+        if found or not kept.get("place") or now - seen > PLACE_KEEP_SEC:
+            at, place = now, found
+        else:
+            # Прежняя точка того же адреса лучше никакой; спросим снова через PLACE_RETRY_SEC.
+            at, place = now - PLACE_TTL_SEC + PLACE_RETRY_SEC, kept["place"]
+        repo.set_setting(PLACE_KEY + store, json.dumps({"for": mark, "at": at, "ok": seen, "place": place}))
+        return place
+    except Exception as exc:  # noqa: BLE001 — наряд важнее точки: без неё телефон кладёт, как раньше
+        log.warning("%s: точка человека для телефона не прочитана (%s)", store, type(exc).__name__)
+        return None
+
+
+def _find_place(store: str, addr: str) -> dict | None:
+    """Точка по адресу: координаты для Самоката и Пятёрочки, магазин расчёта и магазины вокруг — для Магнита."""
+    from app import geo, location
+
+    if store in ("samokat", "pyaterochka"):
+        spot = geo.coords(addr) or location.point()
+        return {"lat": round(spot[0], 6), "lon": round(spot[1], 6)} if spot else None
+    from app.connectors import magnit
+    from app.shopbrowser import point
+
+    place = location.for_store("magnit")
+    spot = geo.coords(addr)
+    if not place or not place.store_id or not spot or not point.served("magnit", place):
+        return None
+    # Магазины у адреса: магазин, выбранный на сайте, из этого перечня телефон не меняет.
+    stores = magnit.stores_near(*spot, limit=500)
+    near = [str(s["code"]) for s in stores]
+    if str(place.store_id) not in near:
+        return None       # справочник не ответил: с пустым перечнем телефон менял бы любой выбор человека
+    # Доставку отдают не все магазины у адреса (замер 15.11.2026: из 15 у адреса владельца — один склад, остальные
+    # «Магнит у дома» и мини только на самовывоз). Кука сайта с таким магазином и доставкой — не «Экспресс»:
+    # телефон принимает свой выбор человека, только если магазин в deliver (1.55).
+    return {"shop": str(place.store_id), "type": str(place.shop_type or "ME"), "delivery": bool(place.delivery),
+            "near": near, "deliver": [str(s["code"]) for s in stores if s.get("delivery")]}
+
+
 def _request_pause_ms() -> int:
     """Пауза между запросами к корзине сети, мс: 1 / connectors.rate_limit_rps, не меньше 300."""
     from app import config
@@ -269,8 +495,8 @@ def _check_pause_ms() -> int:
 
     По умолчанию 5 с — достаточно, чтобы Пятёрочка сняла краткосрочную блокировку,
     но не так много, чтобы сборка корзины длилась целую минуту. Если первая попытка
-    после паузы снова упирается в CHECK — позиция помечается «check» и добирается
-    следующим прогоном (top_up).
+    после паузы снова упирается в CHECK — позиция помечается «check», её возьмёт
+    следующая сборка.
     """
     from app import config
 
@@ -281,46 +507,56 @@ def _check_pause_ms() -> int:
     return max(1000, ms)
 
 
-def _landed_skus(store: str) -> frozenset[str]:
-    """SKU позиций, которые уже лежат в корзине сети по последнему отчёту телефона.
-
-    ЗАЧЕМ (Этап 1, 25.10.2026). Пятёрочка и Самокат пропускают 2–3 позиции за прогон
-    из-за бот-защиты и таймаутов. «Добор» — следующий наряд с `top_up=true` содержит
-    ТОЛЬКО пропущенные: те, чьего SKU нет среди уже положенных. Это позволяет добрать
-    корзину без нажатия кнопки и не удвоить уже лежащее.
-
-    Берём только реально положенные (ok=true), исключая «kept» (они тоже ok, но их
-    клал предыдущий прогон, и следующий обязан класть снова только то, чего не хватает).
-    Пустое множество — отчёта нет или все позиции не легли; тогда top_up вернёт полный
-    наряд, как обычно.
-    """
-    report = last(store)
-    if not report:
-        return frozenset()
-    return frozenset(
-        str(item["sku"])
-        for item in (report.get("items") or [])
-        if item.get("ok") and item.get("sku") and item.get("how") != "kept"
-    )
+# Наряды-близнецы. Приложение с 1.44 повторяет запрос наряда, не дождавшись ответа за 1,8 с (новое соединение
+# изредка открывается 3–17 с), и помечает оба запроса одним числом ask. Если медлит не дорога, а сервер,
+# повтор ждёт ответ первого: наряд не считается второй раз рядом с первым, и новый товар не ищется в сети
+# дважды. (база, сеть, ask) → [готово, ответ] наряда, который считается сейчас.
+_TWINS: dict[tuple, list] = {}
+TWIN_WAIT_SEC = 3.0                 # дольше повтор не ждёт: первый завис — считает сам
 
 
 def plan(body: dict) -> dict:
+    """Наряд для телефона (собирает _plan). Пока он считается, фоновый счёт ждёт: wait_for_plans."""
+    began = time.monotonic()
+    ask = body.get("ask")               # время работы телефона в мс: _count отбросил бы всё больше 1e9
+    key = (str(config.db_path()), str(body.get("store")), ask) if isinstance(ask, int) else None
+    mine: list = [threading.Event(), None]
+    joined = False
+    with _PLANS_LOCK:
+        _PLANS["now"] += 1
+        first = _TWINS.setdefault(key, mine) if key else mine
+    try:
+        if first is not mine and first[0].wait(TWIN_WAIT_SEC) and first[1] is not None:
+            joined = True
+            return first[1]
+        mine[1] = _plan(body)           # сюда же идёт повтор, чей первый запрос упал или завис
+        return mine[1]
+    finally:
+        with _PLANS_LOCK:
+            _PLANS["now"] -= 1
+            _PLANS["until"] = max(_PLANS["until"], time.monotonic() + PLANS_GAP_SEC)
+            if key and _TWINS.get(key) is mine:
+                del _TWINS[key]
+        mine[0].set()
+        # Сколько наряд занял здесь, и при ошибке тоже. Телефон ждал дольше — остальное ушло на дорогу, вход
+        # в рабочее место или очередь Waitress («Task queue depth» в журнале). Замер 13.11.2026: Самокат ждал
+        # 16,9 с, и по журналу было не отличить сервер от сети.
+        log.info("наряд %.40r: %.2f с%s", body.get("store"), time.monotonic() - began,
+                 ", ответ первого запроса" if joined else "")
+
+
+def _plan(body: dict) -> dict:
     """Наряд для телефона: вся последняя корзина, переложенная на артикулы этой сети.
 
     Не только позиции лучшего варианта, а вся корзина: смысл в том, чтобы каждая
     сеть посчитала одну и ту же корзину и итоги можно было сравнить. Вход здесь
     не проверяется (force): вход живёт на телефоне, и сервер о нём может не знать.
     Цены перед нарядом не перезапрашиваются: итог всё равно скажет сеть.
-
-    TOP_UP (Этап 1). При `top_up=true` возвращает только позиции, которых ещё нет в
-    корзине сети по последнему отчёту: SKU, не попавших в landed. Это добор — следующий
-    прогон без нажатия, который добирает пропущенные позиции после частичной сборки.
     """
     from app import api, cartplan
     from app.shopbrowser import cart
 
     store = _store(body)
-    top_up = bool(body.get("top_up"))
     background = bool(body.get("background"))
     picked = {k: v for k, v in body.items() if k in ("basket", "lines")}
     found = {"linked": 0, "recent": 0, "later": 0} if picked.get("lines") is not None else _link(picked, store, live=not background)
@@ -331,10 +567,6 @@ def plan(body: dict) -> dict:
     lines, service_skipped = _without_service_lines(lines)
     basket_id = _basket_id(picked)
     built = cartplan.build(store, lines, force=True)
-    # TOP_UP: убираем из наряда позиции, чей SKU уже лежит в корзине сети. Сеть кладёт
-    # поверх лежащего, и повторная кладка удвоила бы их. При этом позиции без SKU (ещё
-    # не привязанные) остаются: их телефон найдёт поиском, а не нажатием на карточку.
-    already: frozenset[str] = _landed_skus(store) if top_up else frozenset()
     rows = []
     by_sku: dict[str, dict] = {}
     for line in built.lines[:cart.LINE_LIMIT]:
@@ -351,17 +583,13 @@ def plan(body: dict) -> dict:
             same["qty"] = round(float(same.get("qty") or 0) + float(row.get("qty") or 0), 3)
             if row.get("price") is not None:
                 same["price"] = round(float(same.get("price") or 0) + float(row["price"]), 2)
-            continue
-        # Top-up: пропускаем позиции, которые уже легли (SKU есть в landed прошлого отчёта).
-        if top_up and sku_key and sku_key in already:
+            # Слитую позицию телефон по касанию не правит (APK 1.27): чьи в ней штуки, видно только здесь.
+            same.setdefault("product_ids", [same.get("product_id")]).append(row.get("product_id"))
             continue
         if sku_key:
             by_sku[sku_key] = row
         rows.append(row)
     note = built.note
-    if top_up and already:
-        note = (f"{(note or '').strip()} Добор: {len(already)} поз. уже лежит "
-                f"в корзине сети с прошлой сборки — их не трогаем.").strip()
     if not rows:
         # Пустой наряд должен сказать, ЧТО искали: в окне телефона это единственная
         # подсказка, почему класть нечего (замер владельца 17.10.2026 без неё не читался).
@@ -382,33 +610,57 @@ def plan(body: dict) -> dict:
         # Служебные строки не товар: человек видит, что они не потерялись, а пропущены.
         note = f"{(note or '').strip()} Служебных строк пропущено: {service_skipped}.".strip()
     db_path = str(config.db_path())
-    all_search = _search_lines(found.get("unresolved") or [], store)
+    # Фоновой сборке (после каждой правки корзины) поиск по названию не заказываем. Замер 15.11.2026 на телефоне
+    # владельца: знакомые товары ложатся за 1–3 с, а хвост поиска держал строку сети ещё 60–137 с и не находил
+    # почти ничего (за всё время две связи method='phone'). Незнакомый сети товар строка показывает сразу
+    # (app/web/phone/basket.py, _absent); искать его остаётся кнопке «Собрать» в окне сети и серверу (_ask_later).
+    all_search = [] if background else _search_lines(found.get("unresolved") or [], store)
     search_lines: list[dict] = []
     search_recent: list[dict] = []
     for s_line in all_search:
         pid = s_line.get("product_id")
-        if background:
-            search_lines.append(s_line)
-        elif pid and _is_tried("search", db_path, store, int(pid)):
+        if pid and _is_tried("search", db_path, store, int(pid)):
             search_recent.append(s_line)
         else:
             if pid:
                 _tried_mark("search", db_path, store, int(pid))
             search_lines.append(s_line)
-    res = {"ok": True, "store": store, "lines": rows, "unknown": list(built.unknown),
-           "total": built.total, "note": note, "linked": found["linked"], "rules": rules(store),
+    # У товара с запасным строка наряда несёт номер запасного, а сам товар остаётся в поиске. Его правку
+    # телефон (APK 1.37) не выводит: по «+» строка запасного осталась бы с прежним числом.
+    own = {line.product_id for line in lines}
+    for s_line in all_search:
+        if s_line.get("product_id") not in own:
+            s_line["swapped"] = True
+    # Товары, которых сеть сейчас не получит ни запросом, ни поиском: она их не знает, искать их телефону
+    # нечем (нет адреса поиска, search_off, сверх SEARCH_LIMIT), и сервер с ними закончил (_settled). Их
+    # правка наряд не меняет, и телефон (APK 1.37) выводит его сам, не дожидаясь сервера. Не спрошенный
+    # товар и тот, кого ещё ищет фоновый поиск сети, сюда не идут: через секунды сеть может его узнать, а
+    # телефон держал бы наряд без него до 6 ч. Товара с запасным здесь тоже нет: его номера нет в lines.
+    # Привязку, которую фоновый поиск успел поставить, пока считался этот наряд, перепроверяем: такой товар
+    # сеть уже знает, и его правке нужен свежий наряд.
+    told = {line.product_id for line in built.lines} | {s.get("product_id") for s in all_search}
+    shop = repo.get_store(store)
+    rest = []
+    if shop and len(built.lines) + len(built.unknown) == len(lines):
+        rest = [int(line.product_id) for line in lines
+                if getattr(line, "product_id", None) and line.product_id not in told
+                and _settled(db_path, store, line.product_id)
+                and not repo.confirmed_mapping(line.product_id, shop.id, real_only=True)]
+    res = {"ok": True, "store": store, "lines": rows, "unknown": list(built.unknown), "rest": rest,
+           "total": built.total, "note": note, "linked": found["linked"],
+           "rules": rules(store, body.get("app_version")),
            # Позиции, которых сеть не знает: пусть их найдёт телефон поиском самой сети
            # (app/phonecart.py, SEARCH_LIMIT). Для сетей, куда сервер не пускают
            # (Пятёрочка, Самокат), это единственная дорога к настоящему артикулу.
            "search": search_lines,
            "search_recent": search_recent,
+           # Все товары корзины, о которой наряд. Найденное поиском сети для товара из этого списка телефон
+           # (APK 1.43) не снимает и без строки поиска: искали недавно, сверх SEARCH_LIMIT, rest.
+           "pids": sorted({int(line.product_id) for line in lines if getattr(line, "product_id", None)}),
            # Какую корзину описывает наряд и её отпечаток: по нему телефон узнаёт, менялась
            # ли корзина с прошлой сборки в этой сети, и без перемен её не повторяет.
            "basket": basket_id,
-           "stamp": _stamp(basket_id, custom_lines=picked.get("lines")),
-           # Флаг добора: сколько позиций уже лежит и пропущено в этом наряде.
-           "top_up": top_up,
-           "already_landed": len(already)}
+           "stamp": _stamp(basket_id, custom_lines=picked.get("lines"))}
     if "drop" in body:
         # Своё, что телефон снимет из корзины сети (1.19): карточка и название по артикулу.
         st = repo.get_store(store)
@@ -478,6 +730,8 @@ def _search_lines(unresolved: list[dict], store: str) -> list[dict]:
         query = _query_name(int(product_id), name) if product_id else _clean_query(name)
         row = {"product_id": product_id, "name": name,
                "url": template.replace("{q}", quote_plus(query))}
+        if item.get("pack_g"):      # фасовка товара (_unknown): телефон сверит её с карточкой
+            row["pack_g"] = item["pack_g"]
         short = _short_query(query)
         # Сравниваем без учёта регистра: «Молоко» и «молоко» — один и тот же запрос,
         # и второй адрес тут был бы повтором, а не вторым шансом.
@@ -519,6 +773,12 @@ SERVICE_ROOTS: tuple[str, ...] = (
     "сборка",       # «Сборка» — служебная строка приложения
 )
 
+# Фирменный пакет сети с кассы: в чеке «Пакет ПЯТЕРОЧКА 65х40 см», а у товара в корзине «Пятерочка 65х40см» —
+# слово «Пакет» при разборе чека теряется, и корень «пакет» его не поймал бы. Здесь только название сети и размер
+# в сантиметрах: обычный товар так не называется, а «Пакеты для мусора 30 л» или «Салфетки 20х20 см» не он.
+_CHECKOUT_BAG = re.compile(r"^(?:пакет )?(?:пятерочка|перекресток|магнит|лента|дикси|вкусвилл|самокат|metro|метро)"
+                           r" \d+ ?[xх] ?\d+ ?см$")
+
 
 def _service_line(name: str | None) -> bool:
     """Служебная ли это строка: услуга, сбор или штраф, а не товар.
@@ -536,7 +796,7 @@ def _service_line(name: str | None) -> bool:
     середине). Регистр, лишние пробелы и «ё» не важны: «ЧАЁВЫЕ» — те же «чаевые».
     """
     text = re.sub(r"\s+", " ", str(name or "").casefold().replace("ё", "е")).strip()
-    return any(text.startswith(root) for root in SERVICE_ROOTS)
+    return any(text.startswith(root) for root in SERVICE_ROOTS) or bool(_CHECKOUT_BAG.match(text))
 
 
 def _without_service_lines(lines) -> tuple[list, int]:
@@ -604,7 +864,11 @@ def _query_name(product_id: int, fallback: str) -> str:
                 return _clean_query(fallback)
     except Exception:  # noqa: BLE001 — каталог не открылся: ищем как написан товар
         log.info("имя для поиска не подобралось у товара %s", product_id, exc_info=True)
-    found = _catalog_name(fallback)
+    try:
+        found = _asked_once(("name", fallback), RETRY_SECONDS, lambda: _catalog_name(fallback))
+    except Exception:  # noqa: BLE001 — каталог не ответил: не выдумываем, и отказ не запоминаем
+        log.info("каталог не ответил об имени для поиска", exc_info=True)
+        found = None
     if found:
         if _has_cyrillic(found) or not _has_cyrillic(fallback):
             return found
@@ -684,10 +948,14 @@ def _catalog_name(text: str) -> str | None:
     почистит обрубок чека.
     """
     from app.catalog import store
+    from app.catalog.match import ordered_words
     from app.matcher.normalize import parse_weight
 
     raw = (text or "").strip()
     if len(raw) < 4:
+        return None
+    # Один вид продукта с фасовкой не определяет марку, даже если вес похож.
+    if len(ordered_words(raw)) < 2:
         return None
     russian = _has_cyrillic(raw)
     grams, _unit = parse_weight(raw)
@@ -696,10 +964,7 @@ def _catalog_name(text: str) -> str | None:
     if len(words) > SHORT_QUERY_WORDS:
         attempts.append(" ".join(words[:SHORT_QUERY_WORDS]))
     for attempt in attempts:
-        try:
-            hits = store.search_items(attempt, limit=3)
-        except Exception:  # noqa: BLE001 — каталог не ответил: не выдумываем
-            return None
+        hits = store.search_items(attempt, limit=3)      # каталог не ответил — решает зовущий (_query_name)
         for hit in hits:
             name = str(hit.get("name") or "").strip()
             if not name or len(name) <= len(raw):
@@ -755,8 +1020,19 @@ def _ask_later(product_ids: list[int], store: str) -> None:
     """
     from app import users
 
+    # Пока поиск идёт, товар в rest наряда не попадает (_settled): телефон не должен считать его чужим сети.
+    # Запись ставит ещё _link, до пометки «спрошен»; здесь она снимается на каждом выходе.
+    asking = [(str(config.db_path()), str(store), int(pid)) for pid in product_ids]
+    for key in asking:
+        _ASKING.setdefault(key, time.monotonic())
+
+    def asked():
+        for key in asking:
+            _ASKING.pop(key, None)
+
     phone = users.current()
     if not phone:
+        asked()
         return
 
     def _worker():
@@ -770,12 +1046,28 @@ def _ask_later(product_ids: list[int], store: str) -> None:
                 users.deactivate()
         except Exception:  # noqa: BLE001 — фоновый поиск не должен ронять процесс
             log.warning("фоновый поиск позиций %s в сети %s не удался", product_ids, store, exc_info=True)
+        finally:
+            asked()
 
     worker = threading.Thread(target=_worker, name=f"link-{store}", daemon=True)
     try:
         worker.start()
     except Exception:  # noqa: BLE001 — сбой старта потока не должен ронять наряд
+        asked()
         log.warning("поток фонового поиска link-%s не запустился", store, exc_info=True)
+
+
+def _unknown(product_id: int, product: Any) -> dict:
+    """Товар, которого сеть не знает, — строкой для поиска телефоном (_search_lines).
+
+    С фасовкой: телефон сверит её с карточкой до касания «В корзину» (packWhy, приложение 1.48). Замер
+    13.11.2026: «хлопья №3 350 г» легли карточкой «…№2 500 г» — веса у строки поиска не было. Весовому
+    товару фасовка не нужна: он продаётся на развес, и сверка только мешала бы.
+    """
+    row = {"product_id": product_id, "name": product.name}
+    if product.weight_g and product.unit != "kg":
+        row["pack_g"] = float(product.weight_g)
+    return row
 
 
 def _link(picked: dict, store: str, live: bool = True) -> dict:
@@ -848,13 +1140,13 @@ def _link(picked: dict, store: str, live: bool = True) -> dict:
         # Позиция уже исследовалась недавно — не тратим время на повторный поиск
         if _is_tried("link", db_path, store, product_id):
             recent += 1
-            unresolved.append({"product_id": product_id, "name": product.name})
+            unresolved.append(_unknown(product_id, product))
             continue
 
         tried += 1
         try:
-            found = refresh.resolve(product.name, product.brand, product.weight_g,
-                                    product.unit, product.barcode)
+            about = (product.name, product.brand, product.weight_g, product.unit, product.barcode)
+            found = _asked_once(("resolve", *about), RESOLVE_SECONDS, lambda: refresh.resolve(*about))
             if found and any(r.get("chain") == store for r in found.get("chains") or []):
                 refresh.adopt(int(found["id"]), product_id=product_id)
                 linked += 1
@@ -866,8 +1158,10 @@ def _link(picked: dict, store: str, live: bool = True) -> dict:
             continue
         if not live:
             ask_later_ids.append(product_id)
+            # До пометки «спрошен»: наряд соседнего запроса не должен увидеть товар спрошенным и не ищущимся.
+            _ASKING[(db_path, str(store), product_id)] = time.monotonic()
             _tried_mark("link", db_path, store, product_id)
-            unresolved.append({"product_id": product_id, "name": product.name})
+            unresolved.append(_unknown(product_id, product))
             continue
 
         searched += 1
@@ -884,7 +1178,7 @@ def _link(picked: dict, store: str, live: bool = True) -> dict:
             log.warning("%s: поиск сети по позиции %s не удался", store, product_id, exc_info=True)
         _tried_mark("link", db_path, store, product_id)
         if not repo.confirmed_mapping(product_id, shop.id, real_only=True):
-            unresolved.append({"product_id": product_id, "name": product.name})
+            unresolved.append(_unknown(product_id, product))
 
     if ask_later_ids:
         _ask_later(ask_later_ids, store)
@@ -944,7 +1238,7 @@ def _num(value: Any) -> float | None:
         value = value.replace(" ", "").replace(" ", "").replace(",", ".")
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # OverflowError — целое из сотен цифр
         return None
     if number != number or abs(number) > 1e9:      # NaN и мусорные величины
         return None
@@ -1019,7 +1313,7 @@ def _card_name(raw: Any) -> str:
     return _text(text, 120)
 
 
-def accept_report(body: dict) -> dict:
+def accept_report(body: dict, device: str = "") -> dict:
     """Принять отчёт телефона о собранной корзине и сохранить последний по сети."""
     store = _store(body)
     items = []
@@ -1111,6 +1405,10 @@ def accept_report(body: dict) -> dict:
         if clean:
             found[cartrecord.template_path(_text(path, 200))] = clean
 
+    # Отчёт запросами несёт адрес ответа сети («/api/…»): его суммы — её числа, а не разбор страницы.
+    if store in GLUED_PAGES and not _text(body.get("cart_page"), 200).startswith("/api/"):
+        page = []
+
     extra = []
     for raw in (body.get("extra") or [])[:ITEMS_LIMIT]:
         if isinstance(raw, dict) and _text(raw.get("name"), 120):
@@ -1135,12 +1433,33 @@ def accept_report(body: dict) -> dict:
         "stamp": _text(body.get("stamp"), 40),
         "extra": extra,
         "seconds": _count(body.get("seconds")),
+        # От касания «+» или «−» до этого отчёта, мс (приложение 1.29): цель владельца — не дольше 5 с.
+        "lag_ms": _count(body.get("lag_ms")),
+        # Сколько из них сборка ждала наряд, мс (приложение 1.44): сервер это или дорога к нему.
+        "plan_ms": _count(body.get("plan_ms")),
     }
+    trace = _trace(body.get("trace"))
     repo.set_setting(REPORT_KEY + store, json.dumps(report, ensure_ascii=False))
-    log.info("корзина с телефона, %s: легло %d из %d за %s с, итог сети %s, полей из ответов %d",
-             store, report["landed"], report["planned"], report["seconds"], total_of(report),
+    if trace:
+        note_trace(report, trace, device)
+    lag, waited = report["lag_ms"], report["plan_ms"]
+    touch = ""
+    if lag is not None:
+        row = [report["at"], store, report["landed"], report["planned"], lag, report["app_version"],
+               _text(device, 40)]
+        note_lag(row if waited is None else row + [waited])
+        touch = f", от касания {lag / 1000:.1f} с" + ("" if waited is None else f" (наряд ждали {waited / 1000:.1f} с)")
+    if report["landed"] < report["planned"]:
+        note_fail(report, device)
+    log.info("корзина с телефона, %s: легло %d из %d за %s с%s, итог сети %s, полей из ответов %d",
+             store, report["landed"], report["planned"], report["seconds"], touch, total_of(report),
              sum(len(v) for v in found.values()))
     _learn(report)
+    bound = 0
+    try:
+        bound = _bind(report)
+    except Exception:  # noqa: BLE001 — артикул товару — прибыль, а не условие приёма отчёта
+        log.warning("%s: товар не связался с найденной карточкой", store, exc_info=True)
     _stock(report)
     try:
         _cart_prices(report)
@@ -1157,9 +1476,11 @@ def accept_report(body: dict) -> dict:
                                   int(report.get("planned") or 0))
     except Exception:  # noqa: BLE001 — отметка не должна ломать приём отчёта
         log.exception("не смог отметить приход отчёта для %s", store)
+    # bound — скольким товарам этот отчёт дал артикул сети: наряд в памяти телефона ещё ищет их
+    # касаниями, и приложение (1.48) берёт новый.
     return {"ok": True, "store": store, "landed": report["landed"],
             "planned": report["planned"], "total": total_of(report),
-            "network": network_total(report)}
+            "network": network_total(report), "bound": bound}
 
 
 def accept_cards(body: dict) -> dict:
@@ -1409,6 +1730,64 @@ def _revive_seen(chain: str, seen: list[str]) -> int:
     return touched
 
 
+BOUND = "phone"     # product_mapping.method: связь доказал телефон — нашёл карточку поиском сети и положил
+
+
+def _bind(report: dict) -> int:
+    """Связать товар корзины с карточкой сети, которую телефон сам нашёл и положил.
+
+    ЗАЧЕМ. `_learn` заводит найденную карточку в каталоге сети, а связь с товаром корзины оставляет
+    сопоставлению по названиям — строку чека оно не узнаёт. Замер 13.11.2026, корзина из чека
+    Пятёрочки: 7 товаров, настоящих артикулов 0, и каждая правка искала их касаниями заново
+    (96–135 с), хотя адрес найденной карточки приходил в отчёте. Здесь товар получает артикул
+    сети, и следующую правку сеть принимает запросом.
+
+    Товар узнаётся по названию позиции в корзине отчёта: номера товара в отчёте нет. Связь
+    пишется, только когда позиция легла и карточка прошла сверку фасовки, чисел и слов
+    (x5.found_by_phone): в том же замере «…хлопья овсян №3 350 г» легли карточкой «…2-500g».
+    Товар с настоящим артикулом сети не трогаем, от сети, где человек связь убирал, отступаем.
+    """
+    from app.catalog import fromurl, model, x5
+
+    chain = str(report.get("store") or "")
+    shop = repo.get_store(chain)
+    hosts = tuple(cartrecord.CHAIN_HOSTS.get(chain) or ())
+    if shop is None or not hosts or not report.get("basket"):
+        return 0
+    names: dict[str, int | None] = {}
+    for row in repo.basket_items(int(report["basket"])):
+        # Название в отчёте прошло чистку _card_name (accept_report) — ключ чистим так же. Одно
+        # название у двух товаров корзины: чей артикул, по отчёту не понять.
+        name = _card_name(row["name"])
+        names[name] = None if name in names else int(row["product_id"])
+    bound = 0
+    for item in report.get("items") or []:
+        url = str(item.get("url") or "")
+        pid = names.get(str(item.get("name") or ""))
+        if not item.get("ok") or pid is None or not any(host in url for host in hosts):
+            continue
+        sku = str(item.get("sku") or "").strip() or fromurl.sku_of(chain, url)
+        if (not sku or model.placeholder_sku(sku, chain) or repo.chain_rejected(pid, shop.id)
+                or repo.confirmed_mapping(pid, shop.id, real_only=True)):
+            continue
+        card = _text(item.get("found_name") or fromurl.name_of(url, sku), 120)
+        product = repo.get_product(pid)
+        if product is None or not x5.found_by_phone(product, card):
+            continue
+        known = repo.store_product_by_sku(shop.id, sku)      # известной строке название не портим
+        sp = known["id"] if known else repo.upsert_store_product(
+            shop.id, sku, card, weight_g=x5.weight_of(card, None), url=url, keep_known=True)
+        repo.confirm_mapping(pid, sp, confirmed=True, method=BOUND)
+        # Запись молча не проходит, когда человек убирал у товара заглушку этой сети («stub:»).
+        if (repo.confirmed_mapping(pid, shop.id, real_only=True) or {}).get("sku") != sku:
+            continue
+        item["sku"] = sku       # цену карточки запишет _cart_prices из этого же отчёта
+        bound += 1
+    if bound:
+        log.info("%s: телефон нашёл и положил — артикул сети получили товаров: %d", chain, bound)
+    return bound
+
+
 def _stock(report: dict) -> None:
     """Наличие и цены из корзины сети — в единую базу (решение владельца 18.10.2026).
 
@@ -1641,6 +2020,119 @@ def last(store: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def lags() -> list[list]:
+    """Журнал времени правок этого рабочего места: [когда, сеть, легло, всего, мс от касания,
+    версия приложения, устройство] и, если приложение прислало (1.44), мс ожидания наряда; старые сверху."""
+    try:
+        rows = json.loads(repo.get_setting(LAGS_KEY) or "[]")
+    except ValueError:
+        return []
+    return rows if isinstance(rows, list) else []
+
+
+def note_lag(row: list) -> None:
+    """Дописать строку в журнал времени правок (формат — в lags). Пишет и сервер: ссылку-корзину
+    сетей «ссылкой» (basket_link) он делает сам, устройство у такой строки — «ссылка»."""
+    try:
+        with _LAGS_LOCK:
+            repo.set_setting(LAGS_KEY, json.dumps((lags() + [row])[-LAGS_KEEP:], ensure_ascii=False))
+    except Exception:  # noqa: BLE001 — журнал не должен ломать то, что он замеряет
+        log.warning("время правки не записалось в журнал: %s", row[1:2], exc_info=True)
+
+
+def fails() -> list[dict]:
+    """Журнал отказов этого рабочего места, старые сверху: когда, сеть, легло и всего, секунды сборки,
+    мс от касания, версия, устройство, корзина, причины с числом позиций (до четырёх, частые первыми;
+    пометка позиции — в скобках), запросы первой не лёгшей позиции, у которой они есть, и times —
+    сколько отчётов подряд слилось в строку (тогда first — время первого)."""
+    try:
+        rows = json.loads(repo.get_setting(FAILS_KEY) or "[]")
+    except ValueError:
+        return []
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def note_fail(report: dict, device: str = "") -> None:
+    """Дописать в журнал отказов отчёт, где легло не всё (формат — в fails). Отчёт той же сети с теми же
+    причинами строку не добавляет, а обновляет: серия касаний иначе вытеснила бы первый отказ."""
+    try:
+        whys: dict[str, int] = {}
+        calls: list = []
+        for item in report["items"]:
+            # Отложенная позиция раннего отчёта — не отказ: о ней доложит хвост. С пометкой — отказ запросов
+            # сети (приложение кладёт его причину в каждую позицию раннего отчёта), его пишем.
+            if item["ok"] or (item["why"] == LATER_WHY and not item.get("note")):
+                continue
+            why = (item["why"] or "без причины")[:160] + (f" ({item['note']})" if item.get("note") else "")
+            whys[why] = whys.get(why, 0) + 1
+            calls = calls or item["calls"]
+        if not whys:
+            return
+        top = sorted(whys.items(), key=lambda pair: -pair[1])[:4]
+        row = {"at": report["at"], "store": report["store"], "landed": report["landed"],
+               "planned": report["planned"], "seconds": report["seconds"], "lag_ms": report["lag_ms"],
+               "app_version": report["app_version"], "device": _text(device, 40), "basket": report["basket"],
+               "whys": top, "calls": calls, "times": 1}
+        with _LAGS_LOCK:
+            rows = fails()
+            same = next((old for old in reversed(rows) if old.get("store") == row["store"]), None)
+            if same is not None and {pair[0] for pair in same.get("whys") or []} == {why for why, _ in top}:
+                row["times"] = int(same.get("times") or 1) + 1
+                row["first"] = same.get("first") or same.get("at")
+                rows.remove(same)
+            repo.set_setting(FAILS_KEY, json.dumps((rows + [row])[-FAILS_KEEP:], ensure_ascii=False))
+    except Exception:  # noqa: BLE001 — журнал не должен ломать приём отчёта
+        log.warning("отказ не записался в журнал: %s", report.get("store"), exc_info=True)
+
+
+def _trace(raw: Any) -> list[str]:
+    """Хроника приложения из отчёта: последние TRACE_LINES строк, каждая не шире TRACE_WIDTH; не список — пусто."""
+    if not isinstance(raw, list):
+        return []
+    lines = (_text(line, TRACE_WIDTH) for line in raw[-TRACE_LINES:])
+    return [line for line in lines if line]
+
+
+def traces(key: str = TRACES_KEY) -> list[dict]:
+    """Хроники приложения при отчётах этого рабочего места (key=SLOW_KEY — без отчёта, 1.55), старые сверху:
+    когда, сеть, легло и всего, версия, устройство, trace — строки журнала приложения с метками времени
+    телефона (1.54) — и reason, если приложение назвало, почему прислало хронику."""
+    try:
+        rows = json.loads(repo.get_setting(key) or "[]")
+    except ValueError:
+        return []
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def note_trace(report: dict, trace: list[str], device: str = "", key: str = TRACES_KEY,
+               keep: int = TRACES_KEEP) -> None:
+    """Дописать хронику приложения к журналу (формат — в traces); хранится последних keep."""
+    try:
+        row = {"at": report["at"], "store": report["store"], "landed": report["landed"],
+               "planned": report["planned"], "app_version": report["app_version"],
+               "device": _text(device, 40), "trace": trace}
+        if report.get("reason"):
+            row["reason"] = report["reason"]
+        with _LAGS_LOCK:
+            repo.set_setting(key, json.dumps((traces(key) + [row])[-keep:], ensure_ascii=False))
+    except Exception:  # noqa: BLE001 — хроника не должна ломать приём отчёта
+        log.warning("хроника приложения не записалась: %s", report.get("store"), exc_info=True)
+
+
+def accept_trace(body: dict, device: str = "") -> dict:
+    """Хроника без отчёта (1.55): {store, reason, app_version, trace} — сборка идёт долго, и отчёта к ней может не
+    быть. Пустую хронику или сеть без названия не берём: ответ 400, приложение не повторяет."""
+    store = _text(body.get("store"), 24)
+    lines = _trace(body.get("trace"))
+    if not store or not lines:
+        raise ValueError("Хроника пуста или не названа сеть")
+    note_trace({"at": datetime.now().isoformat(timespec="seconds"), "store": store, "landed": 0, "planned": 0,
+                "app_version": _text(body.get("app_version"), 16), "reason": _text(body.get("reason"), 120)},
+               lines, device, SLOW_KEY, SLOW_KEEP)
+    return {"ok": True, "lines": len(lines)}
+
+
 __all__ = ["CHAINS", "CART_PAGES", "KINDS", "API_TOTALS", "FULL_CART", "QTY_SETS", "API_CARTS",
            "EMPTY_CART", "rules", "plan", "accept_report", "accept_cards", "progress",
-           "network_total", "total_of", "last"]
+           "network_total", "total_of", "last", "lags", "note_lag", "fails", "note_fail",
+           "traces", "note_trace", "accept_trace"]

@@ -95,7 +95,9 @@ def snapshot() -> dict:
     week_before = (datetime.now() - timedelta(days=7)).isoformat(timespec="microseconds")
     for row in conn.execute(
             "SELECT chain, COUNT(*) AS products,"
-            " SUM(price IS NOT NULL) AS priced, SUM(in_stock IS NOT NULL) AS stocked,"
+            " SUM(CASE WHEN price>0 THEN 1 ELSE 0 END) AS priced, SUM(in_stock IS NOT NULL) AS stocked,"
+            " SUM(CASE WHEN image LIKE 'https://%' OR image LIKE 'http://%' THEN 0 ELSE 1 END) AS no_photo,"
+            " SUM(item_id IS NULL) AS unlinked,"
             " SUM(CASE WHEN price IS NOT NULL"
             "     AND COALESCE(price_seen, first_seen) <= ? THEN 1 ELSE 0 END) AS stale_week,"
             # РОСТ БАЗЫ. Цель говорит «наполнение для всех магазинов» — и проверить это
@@ -110,6 +112,8 @@ def snapshot() -> dict:
         chains[row["chain"]] = {"products": int(row["products"]),
                                 "priced": int(row["priced"] or 0),
                                 "stocked": int(row["stocked"] or 0),
+                                "no_photo": int(row["no_photo"] or 0),
+                                "unlinked": int(row["unlinked"] or 0),
                                 "stale_week": int(row["stale_week"] or 0),
                                 "new_week": int(row["new_week"] or 0),
                                 "last_new": row["last_new"]}
@@ -491,6 +495,11 @@ def render(snap: dict, notes: list[str]) -> str:
         lines.append(f"  {chain:<12} {info.get('products', 0):>7}   {info.get('priced', 0):>7}"
                      f"   {info.get('stocked', 0):>9}"
                      f"   {info.get('stale_week', 0):>17}")
+    for chain, info in sorted(snap.get("chains", {}).items()):
+        if "no_photo" in info:
+            lines.append(f"  {chain}: без цены {info['products'] - info['priced']},"
+                         f" без фото {info['no_photo']}, наличие неизвестно {info['products'] - info['stocked']},"
+                         f" без связи {info['unlinked']}")
     device = snap.get("device") or {}
     if device:
         lines.append("")

@@ -31,11 +31,17 @@ APK_TYPE = "application/vnd.android.package-archive"
 # Версия раздаваемой сборки. Кладёт tools/build_apk.ps1 рядом с APK и ПОСЛЕ него: плашка
 # «вышла новая версия» не должна звать к сборке, которой ещё нет.
 VERSION_FILE = "version.txt"
+# Файл в томе данных удерживает паузу раздачи и после пересборки образа.
+PAUSE_FILE = "distribution.paused"
 # Первая версия, которая умеет скачивать файлы (DownloadListener в MainActivity). Старшим
 # плашка даёт кнопку, младшим — адрес сборки для браузера телефона.
 DOWNLOADS_FROM = (1, 18)
 
 bp = Blueprint("apk", __name__)
+
+
+def distribution_paused() -> bool:
+    return os.path.isfile(os.path.join(config.ROOT, "data", "apk", PAUSE_FILE))
 
 
 def fresh_path() -> str | None:
@@ -46,6 +52,8 @@ def fresh_path() -> str | None:
 
 def latest_version() -> str | None:
     """Версия раздаваемой сборки из data/apk/version.txt; нет файла или он пуст — None."""
+    if distribution_paused():
+        return None
     path = os.path.join(config.ROOT, "data", "apk", VERSION_FILE)
     try:
         with open(path, encoding="utf-8") as fh:
@@ -82,6 +90,9 @@ def update_for(app_version: str | None) -> dict | None:
 
 @bp.route("/static/" + APK_NAME)
 def download():
+    if distribution_paused():
+        return ("Скачивание приложения временно приостановлено.\n", 503,
+                {"Cache-Control": "no-store", "Content-Type": "text/plain; charset=utf-8"})
     # max_age=0: телефон не должен держать в кэше прошлую сборку под тем же адресом.
     path = fresh_path()
     if path:

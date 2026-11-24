@@ -104,3 +104,42 @@ def test_an_empty_or_zero_price_is_not_judged(base):
     _history("dixy", "99", [100.0, 110.0, 90.0])
     assert price_suspect("dixy", "99", None) is None
     assert price_suspect("dixy", "99", 0) is None
+
+
+@pytest.fixture()
+def shop(base, tmp_path, monkeypatch):
+    from app import config, repo, users
+
+    monkeypatch.setattr(config, "ROOT", str(tmp_path))
+    monkeypatch.setattr(users, "USERS_DIR", str(tmp_path / "users"))
+    users.open_workspace("79990000089")
+    yield repo.get_store("dixy")
+    users.deactivate()
+
+
+def _planned(store, sku: str, shelf: float, qty: float):
+    from app import api, repo
+    from app.models import BasketLine, Product
+
+    pid = repo.upsert_product(Product(id=None, name=f"Сырок {sku}", unit="pcs"))
+    sp = repo.upsert_store_product(store.id, sku, f"Сырок {sku}")
+    repo.confirm_mapping(pid, sp, confirmed=True)
+    repo.save_price(sp, shelf, None)
+    return api._priced([BasketLine(product_id=pid, name=f"Сырок {sku}", unit="pcs", qty=qty)], "dixy")[0]
+
+
+def test_a_position_of_several_packs_keeps_its_price_in_the_plan(shop):
+    """15.11.2026: три сырка Дикси (209,97 ₽) сверялись с обычной ценой одной штуки (49,99 ₽) и выпадали из наряда."""
+    _history("dixy", "S3", [50.0, 55.0, 45.0, 50.0])
+
+    line = _planned(shop, "S3", 69.99, 3)
+
+    assert line.prices["dixy"] == 209.97 and "dixy" not in line.notes
+
+
+def test_a_garbage_shelf_price_still_leaves_the_plan(shop):
+    _history("dixy", "S4", [100.0, 110.0, 90.0, 100.0])
+
+    line = _planned(shop, "S4", 1.99, 1)
+
+    assert "dixy" not in line.prices and "втрое ниже" in line.notes["dixy"]

@@ -77,7 +77,9 @@ def from_address(url: str) -> ChainProduct | None:
     match = ADDRESS.search(url)
     if not match:
         return None
-    slug, sku = match.group(1), match.group(2)
+    # В адресе артикул строчный («…-di00078791/»), а сеть знает его заглавным (xml_id «DI00078791»):
+    # строчному она отвечает «в наличии 0», и в каталоге заводилась вторая строка того же товара.
+    slug, sku = match.group(1), match.group(2).upper()
     if not any(ch.isdigit() for ch in sku):
         return None
     name = slug.replace("-", " ").strip()

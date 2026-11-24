@@ -29,6 +29,13 @@
 неизвестна, сокращение, где чек промолчал о сорте, спор настоящих штрихкодов. Положить
 не тот творог хуже, чем не положить ничего.
 
+ЧЕК ПЯТЁРОЧКИ (14.11.2026). «Морковь весовая 1кг» — весовой товар: у строк человека
+единица «kg» и нет фасовки (_rows_of_person), а «1000 г» у весовой строки сети — килограмм
+цены, не пачка (_per_kg). «Батон ДОМАШНИЙ НАРЕЗ.230г» — заглавный хвост не марка: он
+спорит с маркой кандидата, только если какого-то из его слов нет в названии кандидата
+(_fit). Чего правила не берут: чек, молчащий о сорте или виде («ПРЕДП.Мука в/с» — не
+«пшеничная»), фасовку дальше 3 % (45 г и 50 г), строку без марки по своду письма.
+
 КАЖДАЯ СТРОКА СЕТИ ПРОВЕРЯЕТСЯ ОТДЕЛЬНО (_row_ok, ревью 18.10.2026). Единый товар —
 группа, склеенная для поиска: молчание процента у неё согласие, фасовка — ±20 %.
 Поэтому строка сети подтверждается, только если она сама — товар человека: её
@@ -69,11 +76,13 @@ from datetime import datetime, timedelta
 from app import repo
 from app.catalog import match as matching
 from app.catalog import store
-from app.matcher.normalize import _PREFIX_RE, display_name, gtin, gtin_trusted
+from app.matcher.normalize import _PREFIX_RE, display_name, gtin, gtin_trusted, sold_by_weight
 
 log = logging.getLogger(__name__)
 
 MASTER = "master"            # product_mapping.method у артикулов из единой базы
+PRODUCE = "cheapest"         # то же у овощей без бренда: самая дешёвая на развес строка вида (app/catalog/produce.py)
+STRICT = "strict"            # то же у строгой сверки названий по каталогу сети (x5.fill_chains)
 PACK_SAME = 0.03             # фасовка «та же самая»: 930 мл и 900 мл — уже разные
 DOUBTFUL = "doubtful"        # ответ поиска «есть, но угадывать не станем»
 ROWS_LIMIT = 40              # строк сетей одного товара, по которым судим
@@ -84,6 +93,13 @@ SLEEP_DAYS = 14              # сколько спящий номер держи
 DESCRIPTORS = matching.DESCRIPTORS
 GENERIC_HEADS = matching.GENERIC_HEADS
 SORT_WORDS = matching.SORT_WORDS
+# Нарезка — форма, о которой сеть часто молчит. Пятёрочка пишет «Батон ДОМАШНИЙ НАРЕЗ.230г», ВкусВилл и
+# Магнит — «…Домашний нарезанный 230 г», а Дикси и METRO — просто «Батон Хлебный Дом Домашний 230г»: один
+# батон (замер 15.11.2026: у Дикси и METRO связи не было из-за слова «нарез.»). Только для сравнения
+# с человеком здесь: пересборку единой базы это слово не касается (match.DESCRIPTORS не тронут).
+_CUT = frozenset(matching.fold(w) for w in (
+    "нарезка", "нарезанный", "нарезанная", "нарезанное", "нарезанные",
+    "нарезной", "нарезная", "нарезное", "нарезные"))
 # Двухбуквенные слова, которые сокращением не считаются: единицы («мл», «шт») и шум.
 _ABBREV_SKIP = frozenset(matching.fold(w) for w in matching._UNIT_TOKENS) | matching.NOISE
 # Точка между буквами в строке чека — сокращение, а не конец предложения.
@@ -191,13 +207,19 @@ def _close(a: float | None, b: float | None) -> bool:
     return abs(a - b) / max(a, b) <= PACK_SAME
 
 
+def _per_kg(row: matching.Row) -> bool:
+    """Весовая строка без фасовки. «1000 г» у весового — не пачка, а килограмм, на который
+    назначена цена: так пишет почти каждая весовая строка Дикси (298 из 307 на 14.11.2026) и часть METRO."""
+    return row.unit == "kg" and (not row.weight_g or row.weight_g == 1000)
+
+
 def _by_weight(a: matching.Row, b: matching.Row) -> bool:
     """Обе стороны продаются на вес: фасовки нет у обеих по определению, и это не помеха.
 
     Иначе каждый фрукт, овощ и весовой сыр владелец подтверждал бы руками в каждой
     сети (ревью 18.10.2026). Весовым считается только явное «kg» у обеих сторон.
     """
-    return a.unit == "kg" and b.unit == "kg" and not a.weight_g and not b.weight_g
+    return _per_kg(a) and _per_kg(b)
 
 
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
@@ -331,12 +353,20 @@ def _rows_of_person(product, raw_names: list[str]) -> list[matching.Row]:
         return []
     packs = next(iter(said), None)
     marks = frozenset().union(*(matching.variant_marks(matching.glue(n)) for n in receipts))
+    # «Морковь весовая 1кг»: чек сам называет товар весовым, а «1кг» — цена за килограмм, не
+    # фасовка. Импорт при названной массе ставил такому товару «pcs» и 1000 г (ofd_pdf:
+    # `and not grams`), и он не встречал весовую «Морковь» сетей: _weighed_vs_packed и спор
+    # единиц рвали пару, а выбор человека по весовой строке считался возражением (_disputed).
+    # Все строки чека называют весовое — строки человека весовые; хоть одна не называет — как есть.
+    weighed = bool(receipts) and all(sold_by_weight(n) for n in receipts)
     out: list[matching.Row] = []
     for name in names:
         row = _prep({"id": 0, "chain": "mine", "name": name, "brand": product.brand,
                      "weight_g": product.weight_g,
                      "unit": product.unit if product.unit in ("pcs", "kg") else None,
                      "barcode": None}, receipt=True)
+        if weighed:
+            row = replace(row, unit="kg", weight_g=None)
         if row.pct is None and pct is not None:
             row = replace(row, pct=pct)
         if packs and row.packs == 1:
@@ -363,6 +393,61 @@ def _starts(word: str, head: str) -> bool:
         return True
     a, b = _negation(word), _negation(head)
     return bool(a and b and a.startswith(b))
+
+
+def _fit(mine: matching.Row, cand: matching.Row) -> matching.Row:
+    """Заглавные слова чека не оспаривают марку кандидата, когда это слова его названия.
+
+    ЗАЧЕМ (14.11.2026). Пятёрочка пишет строчную голову и заглавный хвост: «Батон ДОМАШНИЙ
+    НАРЕЗ.230г». match.prepare принимает заглавные за марку, и она спорила с маркой «Хлебный
+    дом» у «Батон Хлебный Дом Домашний нарезанный 230 г», хотя «домашний» и «нарез…» — слова
+    самого названия. Мост человека вёл к этому товару, а строки Дикси, Метро и ВкусВилла не
+    подтверждались: compatible видел спор марок. Спор настоящий, если хоть одно заглавное
+    слово в названии кандидата не встречается: «ПРОСТОКВАШИНО» против «Данон» остаётся спором.
+    Слово чека покрыто, если оно равно слову кандидата или (от четырёх букв) начинает его —
+    так же, как якорь в _abbrev. Названия без заглавных слов и совпавшие марки не меняются.
+
+    ОБОРВАННОЕ «НАРЕЗ.» МАРКОЙ НЕ БЫВАЕТ (15.11.2026). Дикси и METRO не пишут «нарезанный»: «Батон
+    Хлебный Дом Домашний 230г». Слово «нарез» кандидат не покрывал, и спор марок снова рвал пару,
+    хотя это сокращение формы, а не марка. Оно не требует покрытия (_cut_word); остальные
+    заглавные слова — требуют: «ДОМАШНИЙ НАРЕЗ.» против «Батон Колибри нарезной» спорит из-за «домашний».
+    """
+    if not (mine.fbrand and cand.fbrand) or mine.fbrand & cand.fbrand:
+        return mine
+    said = [b for b in mine.fbrand if not _cut_word(b)]
+    if all(any(c == b or (len(b) >= 4 and _starts(c, b)) for c in cand.fwords) for b in said):
+        return replace(mine, brand_words=frozenset(), fbrand=frozenset())
+    return mine
+
+
+def _cut_word(word: str) -> bool:
+    """Слово чека — «нарезка» целиком или оборванное: «нарез», «нарезан» (от пяти букв)."""
+    return len(word) >= 5 and any(c.startswith(word) for c in _CUT)
+
+
+# «в/с» в строке чека — «высший сорт» («ПРЕДП.Мука в/с 2кг»). match.prepare роняет его как
+# однобуквенный мусор, а у сетей это слова «высший сорт», и мука с таким сортом оставалась
+# непокрытой словами кандидата (замер 14.11.2026).
+_GRADE_ABBR = re.compile(r"(?<![A-Za-zА-Яа-яЁё])в\s*/\s*с(?![A-Za-zА-Яа-яЁё])", re.I)
+_HIGH, _SORT, _FLOUR, _WHEAT = (matching.fold(w) for w in ("высш", "сорт", "мука", "пшеничная"))
+
+
+def _graded(mine: matching.Row, cand: matching.Row) -> set[str]:
+    """Слова кандидата, которые покрывает «в/с» чека: «высший сорт» и, у муки, «пшеничная».
+
+    Покрывает, только если кандидат сам называет высший сорт («высший», «высшего») или тоже пишет
+    «в/с»: «1 сорт», «обойная» и название без сорта «в/с» не покрывает, и мука «кукурузная» или
+    «ржаная» остаётся непокрытой. «Пшеничная» у муки сорта «в/с» — единственный вид, поэтому чек
+    о нём молчит; у прочих товаров «в/с» покрывает только сорт.
+    """
+    words = set(cand.fwords)
+    high = {c for c in words if c.startswith(_HIGH)}
+    if not (high or _GRADE_ABBR.search(cand.name)):
+        return set()
+    covered = high | {c for c in words if c.startswith(_SORT)}
+    if _FLOUR in mine.fwords:
+        covered |= words & {_WHEAT}
+    return covered
 
 
 def _abbrev(mine: matching.Row, cand: matching.Row) -> int:
@@ -416,6 +501,8 @@ def _abbrev(mine: matching.Row, cand: matching.Row) -> int:
     rest = words - brand - DESCRIPTORS
     uncovered = {c for c in rest if c not in exact
                  and not any(_starts(c, r) or _starts(r, c) for r in loose)}
+    if uncovered and _GRADE_ABBR.search(mine.name):
+        uncovered -= _graded(mine, cand)
     if uncovered - SORT_WORDS:
         return 0
     if not any(len(r) >= 4 and any(b.startswith(r) for b in brand) for r in said):
@@ -441,15 +528,16 @@ def _judge(mine: matching.Row, cand: matching.Row, vocab: frozenset[str]
            ) -> tuple[bool, float, str] | None:
     """(сильная ли, уверенность, способ) или None — не тот товар."""
     mine, cand = replace(mine, bkey=None), replace(cand, bkey=None)
+    mine = _fit(mine, cand)
     ok, method, score = matching.same_product(mine, cand, vocab)
     if ok:
         close = _close(mine.weight_g, cand.weight_g)
         if mine.words == cand.words:
             return close or _by_weight(mine, cand) or _counted(mine, cand), score, "words"
-        # Вложение, где лишние слова — только описание обработки: тот же товар, если
-        # фасовка та же. Всё прочее вложение — слабая связь.
+        # Вложение, где лишние слова — только описание обработки (и нарезка, _CUT): тот же
+        # товар, если фасовка та же. Всё прочее вложение — слабая связь.
         small, big = sorted((mine.fwords, cand.fwords), key=len)
-        if close and small < big and (big - small) <= (DESCRIPTORS | GENERIC_HEADS):
+        if close and small < big and (big - small) <= (DESCRIPTORS | GENERIC_HEADS | _CUT):
             return True, 0.9, "words"
         return False, score, "translit" if mine.fwords == cand.fwords else "inclusion"
     if matching.compatible(mine, cand):
@@ -481,7 +569,8 @@ def _numbers_disagree(mine: matching.Row, cand: matching.Row) -> bool:
 def _agrees(person: list[matching.Row], cand: matching.Row) -> bool:
     """Строка ничем не спорит ни с одной строкой человека: единица, фасовка, штуки,
     процент, числа строки, молчащей о проценте, метки, марка."""
-    return all(matching.compatible(mine, cand) and not _numbers_disagree(mine, cand) for mine in person)
+    return all(matching.compatible(_fit(mine, cand), cand) and not _numbers_disagree(mine, cand)
+               for mine in person)
 
 
 def _weight_ok(person: list[matching.Row], cand: matching.Row) -> bool:
@@ -516,7 +605,7 @@ def _item_verdict(mine: matching.Row, cand: matching.Row, rows: list[matching.Ro
     930 мл» у Магнита) — тогда связь сильная. Но к строкам обращаемся, только если
     сам товар ничем не спорит с человеком.
     """
-    if not matching.compatible(mine, cand) or _conflict(mine, rows):
+    if not matching.compatible(_fit(mine, cand), cand) or _conflict(mine, rows):
         return None
     verdict = _judge(mine, cand, vocab)
     if verdict is None or not verdict[0]:
@@ -529,8 +618,13 @@ def _item_verdict(mine: matching.Row, cand: matching.Row, rows: list[matching.Ro
 
 # ---------- выбор не базой: человек и живой поиск ----------
 def _human(mappings: list[dict]) -> list[dict]:
-    """Подтверждённые не базой: выбор человека, живой поиск, прежние связи."""
-    return [m for m in mappings if m.get("method") != MASTER]
+    """Подтверждённые не базой: выбор человека, живой поиск, прежние связи.
+
+    Строка «самая дешёвая за кг» (PRODUCE) — тоже решение приложения, а не человека: мостом к
+    единому товару она не служит, иначе «Морковь» тянула бы за собой соседние товары.
+    Строгая сверка названий (STRICT) — тоже: её строки часто лежат в соседних единых товарах,
+    и два таких моста сделали бы товар сомнительным и сняли бы связи базы."""
+    return [m for m in mappings if m.get("method") not in (MASTER, PRODUCE, STRICT)]
 
 
 def _same_name(seen: str, row: dict) -> bool:
@@ -584,7 +678,7 @@ def _disputed(person: list[matching.Row], cand: matching.Row, strict: bool) -> b
     выбором пересекается словами, но ни в чём с ним не сходится.
     """
     for mine in person:
-        if not matching.compatible(mine, cand):
+        if not matching.compatible(_fit(mine, cand), cand):
             return True
         if mine.weight_g and cand.weight_g and not _close(mine.weight_g, cand.weight_g):
             return True
@@ -827,7 +921,7 @@ def _by_words(product, raw_names: list[str], conn,
             searched[key] = (cands, matching.brand_vocabulary(list(cands.values())))
         cands, vocab = searched[key]
         for cid, cand in cands.items():
-            if not matching.compatible(mine, cand):
+            if not matching.compatible(_fit(mine, cand), cand):
                 continue
             if cid not in prepared:
                 prepared[cid] = [_prep(r) for r in _rows_of_item(cid, conn, cache)]
@@ -1334,6 +1428,8 @@ def link_products(product_ids: list[int] | None = None, *, force: bool = False,
     """
     from app import config
 
+    from app.catalog import produce
+
     report = Report()
     store.init()
     wanted = set(product_ids) if product_ids is not None else None
@@ -1354,6 +1450,11 @@ def link_products(product_ids: list[int] | None = None, *, force: bool = False,
                 report.failed += 1
                 report.network.failed += int(ours)
                 log.exception("единая база: товар %s сопоставить не удалось", product.id)
+            if write:
+                try:       # овощи без бренда: после обычного сопоставления, поверх него (produce.py)
+                    produce.refresh(product, conn)
+                except Exception:  # noqa: BLE001 — сбой овощей не должен обрывать проход
+                    log.exception("овощи: товар %s не выбран", product.id)
         if product_ids is None:
             try:
                 from app.catalog import x5
@@ -1408,6 +1509,13 @@ def link_soon(phone: str | None, sync: bool = False) -> bool:
             users.open_workspace(phone)
             while True:
                 link_products(sync=mode)
+                if config.get("catalog.vprok_search", True):
+                    try:        # артикулы Впрока — поиском его витрины: карта сайта неполна (vprokfind.py)
+                        from app.catalog import vprokfind
+
+                        vprokfind.fill()
+                    except Exception:  # noqa: BLE001 — поиск во Впроке не должен ронять поток
+                        log.exception("поиск во Впроке: сбой")
                 with _RUNNING_LOCK:
                     if phone not in _AGAIN:
                         # Метку снимаем в том же захвате замка, где решили выйти: иначе

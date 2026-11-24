@@ -2,13 +2,13 @@ import React, { useState } from 'react';
 import {
   buildStoreSearchUrl,
   goods,
+  plural,
   qtyLabel,
   rub,
   wholeText,
 } from '../../src/shared/format';
 import type { StoreBreakdown } from '../../src/types';
 import { ChainMark, Icon, MoneyExact, MoneyWhole, ProductPic } from '../components/Icons';
-import { MobileTabs } from '../components/MobileTabs';
 import { KorzinaBridge } from '../device';
 import { buildStorePartMeta, type StorePartMeta } from '../engine';
 import type { BoardPlace, ClientBoard, WorkspaceSnapshot } from '../types';
@@ -58,7 +58,6 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
   const parts: StorePartMeta[] = chosen
     ? chosen.stores.map((sb) => buildStorePartMeta(ws, sb))
     : [];
-  const bestTotal = board.places.length > 0 ? board.places[0].total : null;
   const storesByCode = new Map(ws.stores.map((s) => [s.code, s]));
 
   const renderMinimumOrder = (part: StoreBreakdown, showStoreName = false) => {
@@ -187,7 +186,7 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
   return (
     <div className={`spa-screen${embedded ? ' spa-embedded' : ''}`}>
       <div className="ph-body">
-        <header className="top">
+        <header className="top checkout-header">
           <div className="top-left">
             {!embedded && onBack && (
               <button type="button" className="back" onClick={onBack} aria-label="Назад к корзине">
@@ -270,7 +269,7 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
                   <span>
                     {showMore
                       ? 'Скрыть остальные варианты'
-                      : `Ещё ${board.morePlaces.length} ${board.morePlaces.length === 1 ? 'вариант' : 'варианта'}`}
+                      : `Ещё ${board.morePlaces.length} ${plural(board.morePlaces.length, 'вариант', 'варианта', 'вариантов')}`}
                   </span>
                   <Icon name="down" className={`i${showMore ? ' rot' : ''}`} />
                 </button>
@@ -505,15 +504,6 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
             </div>
           )}
 
-          <MobileTabs
-            active="cheaper"
-            itemsCount={itemsCount}
-            bestTotal={bestTotal}
-            onSelect={(tab) => {
-              if (tab === 'basket' && onBack) onBack();
-              else if (tab === 'settings' && onOpenSettings) onOpenSettings();
-            }}
-          />
         </div>
       )}
     </div>

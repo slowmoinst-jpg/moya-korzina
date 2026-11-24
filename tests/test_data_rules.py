@@ -144,6 +144,7 @@ def test_verify_counts_packs_like_the_calculation(db, monkeypatch):
     ("ВкусВилл", "vkusvill"),
     ("ООО «Умный ритейл»", "samokat"),
     ("Перекрёсток", "perekrestok"),
+    ("Метро Кэш энд Керри", "metro"),
     ("Лента Строй", None),
     ("Аптека «Ригла»", None),
 ])
@@ -162,10 +163,10 @@ def test_only_orderable_chains_become_orders(db):
 
     got = store_receipts([cheque('ООО "Агроторг"', "2026-09-20"),
                           cheque("Аптека «Ригла»", "2026-09-21"),
-                          cheque("Перекрёсток", "2026-09-22")], source="lkdr")
+                          cheque("Метро Кэш энд Керри", "2026-09-22")], source="lkdr")
 
     assert got["receipts"] == 1
-    assert {r["store"] for r in got["other"]} == {"Аптека «Ригла»", "Перекрёсток"}
+    assert {r["store"] for r in got["other"]} == {"Аптека «Ригла»", "Метро Кэш энд Керри"}
     assert len(repo.list_history()) == 1, "чеки других магазинов не пишутся в историю"
     assert len(repo.other_store_receipts()) == 2
     assert repo.pending_receipts() == [], "отложенный чек — не «осталось загрузить»"
@@ -178,11 +179,11 @@ def test_usual_basket_skips_old_purchases_from_other_chains(db):
     from app import baskets
 
     milk, _ = _mapped("magnit", "Молоко", "m-30")
-    coffee, _ = _mapped("perekrestok", "Кофе", "x-30")
+    coffee, _ = _mapped("metro", "Кофе", "x-30")
     for day in ("2026-09-01", "2026-09-08"):
         repo.add_history_row(date=day, store_id=repo.get_store("magnit").id, product_id=milk,
                              raw_name="Молоко", qty=1, unit_price=84, total=84, receipt_key="a" + day)
-        repo.add_history_row(date=day, store_id=repo.get_store("perekrestok").id, product_id=coffee,
+        repo.add_history_row(date=day, store_id=repo.get_store("metro").id, product_id=coffee,
                              raw_name="Кофе", qty=1, unit_price=399, total=399, receipt_key="b" + day)
 
     assert [r["product_id"] for r in baskets.regular_purchases()] == [milk]

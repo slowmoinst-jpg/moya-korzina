@@ -22,6 +22,91 @@ from app.fns.client import Cabinet, CabinetError, Unauthorized, format_phone
 GOOD_CODE = "123456"
 
 
+def test_server_checks_connected_profiles_with_no_open_app(tmp_path, monkeypatch, cabinet_server):
+    import time
+    from app import users
+    from app.fns import background
+
+    url, upstream = cabinet_server
+    monkeypatch.setattr(users, "USERS_DIR", str(tmp_path / "users"))
+    monkeypatch.setattr(sync, "make_cabinet", lambda: _client(url))
+    owner, unconnected = "79990000174", "79990000175"
+
+    def wait_for_job():
+        until = time.monotonic() + 12
+        while background.running(owner) and time.monotonic() < until:
+            time.sleep(.05)
+        assert not background.running(owner)
+
+    try:
+        users.open_workspace(unconnected)
+        users.open_workspace(users.DEMO)
+        repo.set_setting(sync.K_TOKEN, "test-demo")
+        users.open_workspace(owner)
+        repo.set_setting(sync.K_TOKEN, "acc-1")
+        users.deactivate()
+        background.scan()
+        wait_for_job()
+        users.activate(owner)
+        assert repo.imported_receipt_keys() == {"k1", "k2", "k3"}
+        assert float(repo.get_setting(background.NEXT)) > time.time()
+        count = len(upstream.requests)
+        background.scan()
+        assert len(upstream.requests) == count
+        upstream.receipts.insert(0, {**upstream.receipts[0], "key": "k4", "totalSum": 3700})
+        users.activate(owner)
+        repo.set_setting(background.NEXT, "0")
+        background.scan()
+        wait_for_job()
+        users.activate(owner)
+        assert repo.imported_receipt_keys() == {"k1", "k2", "k3", "k4"}
+        assert [b["key"] for path, b, _ in upstream.requests[count:] if path.endswith("fiscal_data")] == ["k4"]
+        background.disconnect(owner)
+        count = len(upstream.requests)
+        background.scan()
+        assert not background.running(owner) and len(upstream.requests) == count
+        for phone in [unconnected, users.DEMO]:
+            users.activate(phone)
+            assert not repo.imported_receipt_keys()
+    finally:
+        wait_for_job()
+        users.deactivate()
+
+
+def test_temporary_refresh_failure_keeps_connected_account(db, monkeypatch):
+    repo.set_setting(sync.K_TOKEN, "old")
+    repo.set_setting(sync.K_REFRESH, "refresh")
+    cab = _client("http://127.0.0.1")
+    def offline(_):
+        raise CabinetError("offline", status=503)
+    monkeypatch.setattr(cab, "refresh", offline)
+    with pytest.raises(CabinetError, match="offline"):
+        sync._renewed(cab)
+    assert repo.get_setting(sync.K_REFRESH) == "refresh"
+
+
+def test_denied_background_access_waits_for_reconnection(tmp_path, monkeypatch):
+    from app import users
+    from app.fns import background
+    from app.fns.client import PermissionDenied
+    phone = "79990000174"
+    monkeypatch.setattr(users, "USERS_DIR", str(tmp_path / "users"))
+    users.open_workspace(phone)
+    repo.set_setting(sync.K_TOKEN, "test-connection")
+    def denied(**kwargs):
+        raise PermissionDenied("denied", status=403)
+    monkeypatch.setattr(sync, "sync", denied)
+    try:
+        background._run(phone, threading.Event())
+        users.activate(phone)
+        assert repo.get_setting(background.PAUSED) == "1"
+        repo.set_setting(background.NEXT, "0")
+        monkeypatch.setattr(background, "start", lambda *a, **kw: pytest.fail("paused connection retried"))
+        background.scan()
+    finally:
+        users.deactivate()
+
+
 class FakeCabinet:
     """Состояние поддельного кабинета: какие ключи живы, сколько чеков, что спросили."""
 

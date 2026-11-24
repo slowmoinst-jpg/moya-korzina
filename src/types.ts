@@ -8,7 +8,9 @@ export interface Product {
   unit: UnitType;
   category: string | null;
   active: boolean;
+  title?: string | null;
   photo?: string | null;
+  previouslyBought?: boolean;
 }
 
 export interface Store {
@@ -65,6 +67,7 @@ export interface BasketItem {
   basket_id: number;
   product_id: number;
   qty: number;
+  preferred_store?: string | null;
   fallback_product_id?: number | null;
 }
 
@@ -141,6 +144,8 @@ export interface PurchaseRow {
   unit_price: number;
   total: number;
   receipt_key: string;
+  is_service?: boolean;
+  recommendable?: boolean;
 }
 
 export interface ReceiptRecord {
@@ -155,6 +160,8 @@ export interface ReceiptRecord {
 export interface StoreConnection {
   store_code: string;
   connected: boolean;
+  connectedAt?: string | null;
+  disconnectSeen?: string | null;
   again: boolean;
   last: string | null;
   mode?: 'session' | 'manual';

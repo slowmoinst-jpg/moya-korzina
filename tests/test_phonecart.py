@@ -7,7 +7,9 @@
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 
 import pytest
@@ -25,8 +27,10 @@ PHONE = "79990000088"
 @pytest.fixture(autouse=True)
 def clean_tried():
     phonecart._TRIED.clear()
+    phonecart._ASKING.clear()
     yield
     phonecart._TRIED.clear()
+    phonecart._ASKING.clear()
 
 
 @pytest.fixture
@@ -94,6 +98,8 @@ def test_the_buttons_rules_are_the_servers_own(web):
     assert rules["below"] == cart.BUYBOX_BELOW
     assert rules["hosts"] == ["dixy.ru"]
     assert rules["request_pause_ms"] >= 300, "повтор запроса сети — не чаще rate_limit_rps"
+    assert rules["check_signal"] == signals.CHECK and "я не робот" in rules["check_signal"]
+    assert isinstance(rules["check_pause_ms"], int) and rules["check_pause_ms"] >= 1000, "пауза проверки мала"
 
 
 def test_a_chain_without_our_cards_says_so_instead_of_guessing(web):
@@ -147,7 +153,7 @@ def test_report_keeps_sums_and_drops_what_points_to_a_person(web):
 
     assert answer.status_code == 200, answer.get_json()
     assert answer.get_json() == {"ok": True, "store": "magnit", "landed": 1, "planned": 2,
-                                 "total": 1178.9, "network": None}
+                                 "total": 1178.9, "network": None, "bound": 0}
     users.open_workspace(PHONE)
     saved = phonecart.last("magnit")
     text = str(saved)
@@ -266,6 +272,47 @@ def test_magnit_checkout_preview_is_the_verified_network_total(web):
     row = cartrun.get("magnit")
     assert (row.total.sum, row.total.goods, row.total.discount, row.total.count) == \
         (510.97, 492.97, 80.0, 3)
+
+
+def test_pyaterochka_page_sums_with_glued_kopecks_are_not_a_total(web):
+    """Замер 11.11.2026: страница корзины Пятёрочки пишет «1 541» и «87» слитно — телефон прочитал 54187.
+
+    Ответ сайта о заказе сторож приложения хранит между сборками: его свежесть не проверить, итогом не берём.
+    """
+    from app import cartrun
+
+    report = dict(REPORT, store="pyaterochka", cart_page="/cart/", cart_count=6,
+                  page_totals=[{"kind": "total", "label": "Итого", "amount": 54187.0},
+                               {"kind": "delivery", "label": "Доставка", "amount": 9900.0}],
+                  api_totals={"/api/orders/v11/orders/12345678/": {
+                      "basket.total_sum": 1541.87, "basket.final_sum": 1555.87, "basket.items_count": 6}})
+    answer = logged_in(web).post("/api/device/cartreport", json=report).get_json()
+
+    assert (answer["total"], answer["network"]) == (None, None)
+    users.open_workspace(PHONE)
+    assert phonecart.last("pyaterochka")["page_totals"] == []
+    assert cartrun.get("pyaterochka").total is None
+
+    # Старое приложение адреса страницы не шлёт — это тоже разбор страницы.
+    old = {key: value for key, value in report.items() if key != "cart_page"}
+    assert logged_in(web).post("/api/device/cartreport", json=old).get_json()["total"] is None
+
+    # Отчёт запросами cartapi.js несёт адрес ответа: его суммы — числа сети, а не разбор страницы.
+    by_requests = dict(report, cart_page="/api/orders/v10/orders",
+                       page_totals=[{"kind": "total", "label": "Итого", "amount": 1410.88},
+                                    {"kind": "goods", "label": "Товары", "amount": 1351.88, "base": 1396.88}],
+                       api_totals={"/api/orders/v10/orders": {
+                           "amount": 1410.88, "goods": 1351.88, "base": 1396.88, "discount": 45,
+                           "delivery": 0, "count": 5}})
+    answer = logged_in(web).post("/api/device/cartreport", json=by_requests).get_json()
+    assert (answer["total"], answer["network"]) == (1410.88, None)
+    users.open_workspace(PHONE)
+    total = cartrun.get("pyaterochka").total
+    assert (total.sum, total.goods, total.source) == (1410.88, 1396.88, cartrun.NETWORK)
+
+    # Другим сетям страница корзины по-прежнему даёт итог.
+    magnit = dict(REPORT, api_totals={}, page_totals=[{"kind": "total", "label": "Итого", "amount": 1600.4}])
+    assert logged_in(web).post("/api/device/cartreport", json=magnit).get_json()["total"] == 1600.4
 
 
 def test_empty_plan_says_which_basket_was_looked_up(web, monkeypatch):
@@ -457,6 +504,48 @@ def test_a_new_report_replaces_the_old_one(web):
     saved = phonecart.last("magnit")
     assert saved["planned"] == 1 and saved["landed"] == 1
     assert phonecart.total_of(saved) is None
+
+
+def test_the_report_keeps_the_time_since_the_touch(web, caplog):
+    """Цель владельца — правка во всех сетях за 5 с: время от касания едет в отчёте (приложение 1.29)."""
+    client = logged_in(web)
+    with caplog.at_level("INFO", logger=phonecart.log.name):
+        client.post("/api/device/cartreport", json=dict(REPORT, lag_ms=3400))
+    users.open_workspace(PHONE)
+    assert phonecart.last("magnit")["lag_ms"] == 3400
+    assert "от касания 3.4 с" in caplog.text
+    client.post("/api/device/cartreport", json=REPORT)     # прежние версии времени не шлют
+    users.open_workspace(PHONE)
+    assert phonecart.last("magnit")["lag_ms"] is None
+
+
+def test_edit_times_are_kept_in_a_journal(web, monkeypatch):
+    """Время правки по каждой сети переживает выкладку: журнал лежит в рабочем месте, а строки
+    журнала сервера стирает пересоздание контейнера. Устройство — чтобы отличить телефон от эмулятора."""
+    client = logged_in(web)
+    phone_ua = {"User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UQ1A.240205; wv) KorzinaApp/1.33"}
+    client.post("/api/device/cartreport", json=dict(REPORT, lag_ms=3400, app_version="1.35"), headers=phone_ua)
+    client.post("/api/device/cartreport", json=REPORT)                     # без времени — не в журнал
+    client.post("/api/device/cartreport", json=dict(REPORT, store="dixy", lag_ms=1200))
+    users.open_workspace(PHONE)
+    rows = phonecart.lags()
+    assert [row[1:] for row in rows] == [["magnit", 1, 2, 3400, "1.35", "Pixel 8"],
+                                         ["dixy", 1, 2, 1200, "1.4", ""]]
+    assert all(row[0][:2] == "20" for row in rows), "первым идёт время отчёта"
+
+    monkeypatch.setattr(phonecart, "LAGS_KEEP", 2)
+    client.post("/api/device/cartreport", json=dict(REPORT, lag_ms=900))
+    users.open_workspace(PHONE)
+    assert [row[4] for row in phonecart.lags()] == [1200, 900], "журнал держит только последние строки"
+
+    # Испорченный журнал и число из сотен цифр приём отчёта не ломают: журнал начинается заново.
+    repo.set_setting(phonecart.LAGS_KEY, "{не журнал")
+    assert phonecart.lags() == []
+    answer = client.post("/api/device/cartreport", json=dict(REPORT, lag_ms=700, basket=10 ** 400))
+    assert answer.status_code == 200
+    users.open_workspace(PHONE)
+    assert [row[4] for row in phonecart.lags()] == [700]
+    assert phonecart.last("magnit")["basket"] is None
 
 
 def test_a_placeholder_is_not_a_known_article(web, monkeypatch):
@@ -879,6 +968,141 @@ def test_learn_reads_a_price_written_as_a_string(monkeypatch):
     assert calls[0][1][0]["in_stock"] is True
 
 
+# --- Товар, который телефон нашёл поиском сети и положил, получает её артикул --------
+
+
+FIVE_BRAN = "https://5ka.ru/product/otrubi-vkus-polza-khrustyashchie-ovsyanye-230g--4377613"
+FIVE_FLAKES = "https://5ka.ru/product/khlopya-ovsyanye-yasno-solnyshko-3-350g--2122914/"
+
+
+def _from_receipt(name, raw, weight):
+    """Товар из чека Пятёрочки в своей корзине: у сети только заглушка строки чека (hist-)."""
+    users.open_workspace(PHONE)
+    shop = repo.get_store("pyaterochka")
+    pid = repo.upsert_product(Product(id=None, name=name, weight_g=weight, unit="pcs"))
+    repo.add_history_row("2026-11-01", shop.id, pid, raw, 1, 62.99, 62.99, f"k-{pid}")
+    repo.confirm_mapping(pid, repo.upsert_store_product(shop.id, f"hist-{pid}", name), confirmed=True)
+    basket_id = repo.create_basket("Из заказа 1 ноября")
+    repo.set_basket_item(basket_id, pid, 1.0)
+    users.deactivate()
+    return pid, basket_id, shop.id
+
+
+def _real_sku(pid, shop_id):
+    users.open_workspace(PHONE)
+    try:
+        return (repo.confirmed_mapping(pid, shop_id, real_only=True) or {}).get("sku")
+    finally:
+        users.deactivate()
+
+
+def test_a_card_the_phone_found_and_put_gives_the_product_the_chains_article(web):
+    """Замер 13.11.2026: корзина из чека Пятёрочки, 7 товаров, настоящих артикулов 0.
+
+    Каждая правка искала товары касаниями заново (96–135 с), хотя адрес найденной карточки был в
+    отчёте: каталог сети строку получал, а товар корзины с ней никто не связывал.
+    """
+    pid, basket_id, shop_id = _from_receipt("Отруби хруст овсян 230 г", "ВК/ПОЛ.Отруби хруст.овсян.230г", 230.0)
+    client = logged_in(web)
+    ask = {"store": "pyaterochka", "basket": basket_id}
+    assert client.post("/api/device/cartplan", json=ask).get_json()["lines"] == []
+    report = {**ask, "items": [{"name": "Отруби хруст овсян 230 г", "ok": True, "how": "tap", "put": 1,
+                                "price": 62.99, "url": FIVE_BRAN}]}
+
+    answer = client.post("/api/device/cartreport", json=report)
+
+    assert answer.status_code == 200, answer.get_json()
+    assert answer.get_json()["bound"] == 1, "телефон узнаёт, что наряд в его памяти устарел"
+    assert _real_sku(pid, shop_id) == "4377613"
+    users.open_workspace(PHONE)
+    sp = repo.store_product_by_sku(shop_id, "4377613")["id"]
+    assert repo.mapping_method(pid, sp) == phonecart.BOUND, "связь помечена: её записал не человек"
+    assert (repo.latest_price(sp) or {}).get("price") == 62.99, "цена карточки — из этого же отчёта"
+    users.deactivate()
+    after = client.post("/api/device/cartplan", json=ask).get_json()
+    assert [line["sku"] for line in after["lines"]] == ["4377613"], "следующую правку сеть принимает запросом"
+    asked = [s.get("product_id") for key in ("search", "search_recent") for s in after.get(key) or []]
+    assert pid not in asked + list(after.get("rest") or []), "и телефон товар больше не ищет"
+    again = client.post("/api/device/cartreport", json=report).get_json()
+    assert again["bound"] == 0, "повторный отчёт наряд в памяти телефона не сбрасывает"
+    assert _real_sku(pid, shop_id) == "4377613"
+
+
+@pytest.mark.parametrize("item, basket, sku", [
+    ({"ok": True, "url": FIVE_FLAKES}, True, "2122914"),
+    ({"ok": True, "how": "kept", "put": 0, "url": FIVE_FLAKES}, True, "2122914"),
+    ({"ok": True, "url": "https://5ka.ru/product/khlopya-ovsyanye-yasno-solnyshko-2-500g--2122915/"}, True, None),
+    ({"ok": False, "why": "на карточке не нашлось кнопки", "url": FIVE_FLAKES}, True, None),
+    ({"ok": True, "url": FIVE_FLAKES.replace("5ka.ru", "magnit.ru"), "sku": "2122914"}, True, None),
+    ({"ok": True, "url": FIVE_FLAKES}, False, None),
+    ({"ok": True, "url": FIVE_FLAKES, "name": "Хлопья"}, True, None),
+], ids=["легла своей карточкой", "уже лежала в корзине сети (приложение 1.48 шлёт её адрес)",
+        "легла карточкой другой фасовки", "не легла", "адрес чужой сети",
+        "отчёт без корзины", "название не из корзины"])
+def test_the_article_is_taken_only_from_a_card_that_landed_and_is_the_same_product(web, item, basket, sku):
+    """Замер 13.11.2026: «…хлопья овсян №3 350 г» телефон положил карточкой «…solnyshko-2-500g»."""
+    pid, basket_id, shop_id = _from_receipt("Ясно солн хлопья овсян 3 350 г", "ЯСНО СОЛН.Хлопья ОВСЯН.№3  350г", 350.0)
+    body = {"store": "pyaterochka", "items": [{"name": "Ясно солн хлопья овсян 3 350 г", "how": "tap", **item}]}
+    if basket:
+        body["basket"] = basket_id
+
+    assert logged_in(web).post("/api/device/cartreport", json=body).status_code == 200
+
+    assert _real_sku(pid, shop_id) == sku
+
+
+def test_a_dropped_receipt_stub_keeps_the_article_away_and_the_answer_honest(web):
+    """Человек убрал у товара заглушку чека: запись связи молча не проходит — и ответ её не считает."""
+    pid, basket_id, shop_id = _from_receipt("Отруби хруст овсян 230 г", "ВК/ПОЛ.Отруби хруст.овсян.230г", 230.0)
+    users.open_workspace(PHONE)
+    repo.drop_mapping(pid, shop_id)
+    assert not repo.chain_rejected(pid, shop_id), "отказ от заглушки — не отказ от сети"
+    users.deactivate()
+
+    answer = logged_in(web).post("/api/device/cartreport", json={
+        "store": "pyaterochka", "basket": basket_id,
+        "items": [{"name": "Отруби хруст овсян 230 г", "ok": True, "how": "tap", "url": FIVE_BRAN}]})
+
+    assert answer.get_json()["bound"] == 0
+    assert _real_sku(pid, shop_id) is None
+
+
+def test_a_search_line_carries_the_pack_so_the_phone_checks_the_card(web):
+    """Замер 13.11.2026: «хлопья №3 350 г» легли карточкой «…№2 500 г» — у строки поиска веса не было.
+
+    Весовому товару фасовка не нужна: он продаётся на развес, и сверка только мешала бы.
+    """
+    flakes, basket_id, _ = _from_receipt("Ясно солн хлопья овсян 3 350 г", "ЯСНО СОЛН.Хлопья ОВСЯН.№3  350г", 350.0)
+    users.open_workspace(PHONE)
+    carrot = repo.upsert_product(Product(id=None, name="Морковь весовая", weight_g=1000.0, unit="kg"))
+    repo.set_basket_item(basket_id, carrot, 1.0)
+    users.deactivate()
+
+    plan = logged_in(web).post("/api/device/cartplan", json={"store": "pyaterochka", "basket": basket_id}).get_json()
+
+    assert {s["product_id"]: s.get("pack_g") for s in plan["search"]} == {flakes: 350.0, carrot: None}
+
+
+def test_the_phones_find_does_not_argue_with_the_persons_choice(web):
+    """Свой артикул человека находка не заменяет, а в сеть, где он связь убрал, не возвращается."""
+    pid, basket_id, shop_id = _from_receipt("Отруби хруст овсян 230 г", "ВК/ПОЛ.Отруби хруст.овсян.230г", 230.0)
+    users.open_workspace(PHONE)
+    repo.confirm_mapping(pid, repo.upsert_store_product(shop_id, "9000001", "Отруби овсяные 230 г"), confirmed=True)
+    users.deactivate()
+    client = logged_in(web)
+    report = {"store": "pyaterochka", "basket": basket_id, "items": [
+        {"name": "Отруби хруст овсян 230 г", "ok": True, "how": "tap", "url": FIVE_BRAN}]}
+
+    assert client.post("/api/device/cartreport", json=report).status_code == 200
+    assert _real_sku(pid, shop_id) == "9000001"
+
+    users.open_workspace(PHONE)
+    repo.drop_mapping(pid, shop_id)
+    users.deactivate()
+    assert client.post("/api/device/cartreport", json=report).status_code == 200
+    assert _real_sku(pid, shop_id) is None
+
+
 # --- Наблюдение телефона оживляет УЖЕ ИЗВЕСТНЫЕ строки каталога ---------------------
 
 
@@ -1006,6 +1230,83 @@ def test_link_skips_recent_and_counts_it(web, monkeypatch):
         users.deactivate()
 
 
+def test_link_asks_the_catalog_once_for_all_chains(web, monkeypatch):
+    """Наряды сетей после правки спрашивают каталог об одном товаре разом: вопрос один, ответ общий."""
+    from app import matcher
+    from app.catalog import refresh
+
+    users.open_workspace(PHONE)
+    tea = repo.upsert_product(Product(id=None, name="ЧАЙ ГРИНФИЛД 100ПАК", unit="pcs"))
+    basket_id = repo.create_basket("Чай")
+    repo.set_basket_item(basket_id, tea, 1.0)
+    users.deactivate()
+
+    asked = []
+    monkeypatch.setattr(refresh, "resolve", lambda *a, **kw: asked.append(a))
+    monkeypatch.setattr(matcher, "auto_match", lambda *a, **kw: {"auto": 0, "need_review": []})
+
+    users.open_workspace(PHONE)
+    try:
+        for store in ("magnit", "dixy", "perekrestok"):
+            assert phonecart._link({"basket": basket_id}, store)["tried"] == 1, store
+    finally:
+        users.deactivate()
+    assert len(asked) == 1, "каждая сеть спросила каталог об одном и том же товаре сама"
+
+
+def test_asked_once_shares_one_answer_and_forgets_a_failure():
+    """Память ответов каталога: шесть потоков — один вопрос; срок вышел — спрашиваем снова; отказ не помним."""
+    import threading
+    import time
+
+    calls = []
+
+    def slow():
+        calls.append("ask")
+        time.sleep(0.05)
+        return "ответ"
+
+    got = []
+    threads = [threading.Thread(target=lambda: got.append(phonecart._asked_once(("k",), 60, slow))) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert got == ["ответ"] * 6 and len(calls) == 1, "каждый поток спросил каталог сам"
+    assert phonecart._asked_once(("k",), 0, slow) == "ответ" and len(calls) == 2, "срок вышел, а ответ взят из памяти"
+
+    def boom():
+        calls.append("boom")
+        raise RuntimeError("каталог не ответил")
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            phonecart._asked_once(("сбой",), 60, boom)
+    assert calls.count("boom") == 2, "отказ каталога запомнился как ответ"
+
+
+def test_asked_once_does_not_wait_for_a_stuck_catalog(monkeypatch):
+    """Каталог завис у первого потока — второй не стоит за ним в очереди, а спрашивает сам."""
+    import threading
+
+    monkeypatch.setattr(phonecart, "ANSWER_WAIT_SECONDS", 0.05)
+    stuck, release = threading.Event(), threading.Event()
+
+    def hang():
+        stuck.set()
+        release.wait(5)
+        return "поздно"
+
+    first = threading.Thread(target=lambda: phonecart._asked_once(("завис",), 60, hang))
+    first.start()
+    try:
+        assert stuck.wait(5)
+        assert phonecart._asked_once(("завис",), 60, lambda: "сам") == "сам"
+    finally:
+        release.set()
+        first.join()
+
+
 def test_link_budget_exhausted_leaves_positions_unasked(web, monkeypatch):
     """(б) бюджет: LINK_BUDGET_SECONDS = 0 через monkeypatch — auto_match не зовётся, позиции в unasked."""
     from app import config, matcher
@@ -1070,6 +1371,37 @@ def test_rules_api_total_verified():
     assert vkusvill_rules["api_total"] is None
 
 
+def test_rules_carry_the_card_address_rule():
+    """Правило «адрес карточки → артикул» телефон получает то же, каким артикул достаёт сервер."""
+    import re
+
+    from app.catalog import fromurl
+
+    def as_the_app(rule: str, url: str) -> str:            # ownSku приложения: первая непустая группа
+        found = re.search(rule, url)
+        return next((group for group in found.groups() if group), "") if found else ""
+
+    cards = {
+        "magnit": "https://magnit.ru/product/1000204366-testo-dlya-cheburekov?shopCode=652",
+        "pyaterochka": "https://5ka.ru/product/sushki-prostye--4359341/",
+        "perekrestok": "https://www.perekrestok.ru/cat/58/p/bliny-s-masom-morozko-370g-3342904",
+        "samokat": "https://samokat.ru/product/khurma-korolyok-500-g",
+        "dixy": "https://dixy.ru/catalog/molochnye-produkty-yaytsa/moloko/2000328870/",
+        "lenta": "https://lenta.com/product/rk-gorbusha-naturalnaya-rossiya-240g-21/",
+        "monetka": "https://monetka.ru/product/sok-dobryjj-yabloko-1l-rossiya-810000639/",
+        "fixprice": "https://fix-price.com/catalog/produkty-i-napitki/p-1660028-sahar-1-kg",
+        "vprok": "https://www.vprok.ru/product/linakva-linakva-bebi-0-9-aerozol-150-ml--1284993",
+    }
+    for store, url in cards.items():
+        sku = fromurl.sku_of(store, url)
+        assert sku and as_the_app(phonecart.rules(store)["sku_url"], url) == sku, store
+    capital = "https://dixy.ru/product/Moloko-AB12CD34/"    # правило Дикси не смотрит на регистр
+    assert as_the_app(phonecart.rules("dixy")["sku_url"], capital) == fromurl.sku_of("dixy", capital) == "AB12CD34"
+    assert phonecart.rules("vkusvill")["sku_url"] == "", "адреса карточки ВкусВилла мы не знаем"
+    for store, rule in fromurl.RULES.items():               # правило читает и Java: без (?P<…>) и чужих флагов
+        assert "(?P" not in rule.pattern and not rule.flags & ~(re.IGNORECASE | re.UNICODE), store
+
+
 def test_link_live_false_defers_search_to_ask_later(web, monkeypatch):
     """(а) _link(..., live=False) не зовёт auto_match, зовёт _ask_later и кладёт later == 1, повтор — recent."""
     from app import matcher
@@ -1110,8 +1442,10 @@ def test_link_live_false_defers_search_to_ask_later(web, monkeypatch):
         users.deactivate()
 
 
-def test_cartplan_background_preserves_search_lines(web, monkeypatch):
-    """(б) POST /api/device/cartplan с background=true дважды подряд оставляет товар в search, без background — search_recent."""
+def test_a_background_plan_orders_no_search_by_name(web, monkeypatch):
+    """Фоновой сборке (background=true) поиск по названию не заказывается: ни search, ни search_recent. Замер
+    15.11.2026: хвост поиска держал строку сети 60–137 с и почти ничего не находил. Без background наряд
+    кнопки «Собрать» несёт search, а второй такой наряд — search_recent."""
     from app import config
     from app.catalog import refresh
 
@@ -1131,14 +1465,12 @@ def test_cartplan_background_preserves_search_lines(web, monkeypatch):
 
     client = logged_in(web)
 
-    # 1. background=True дважды подряд: оба раза в search, search_recent пуст
+    # 1. background=True дважды подряд: искать телефону нечего, товар остаётся в pids
     res1 = client.post("/api/device/cartplan", json={"store": "magnit", "basket": basket_id, "background": True}).get_json()
-    assert len(res1.get("search", [])) == 1
-    assert res1.get("search_recent", []) == []
-
     res2 = client.post("/api/device/cartplan", json={"store": "magnit", "basket": basket_id, "background": True}).get_json()
-    assert len(res2.get("search", [])) == 1
-    assert res2.get("search_recent", []) == []
+    for res in (res1, res2):
+        assert res["search"] == [] and res["search_recent"] == []
+        assert res["lines"] == [] and res["pids"] == [juice]
 
     # 2. Без background: второй наряд кладёт его в search_recent
     users.open_workspace(PHONE)
@@ -1155,4 +1487,361 @@ def test_cartplan_background_preserves_search_lines(web, monkeypatch):
     assert r2.get("search", []) == []
     assert len(r2.get("search_recent", [])) == 1
     assert r2["search_recent"][0]["name"] == "ВОДА МИНЕРАЛЬНАЯ 1Л"
+    # Что ищется поиском телефона, в rest не идёт: такую правку телефон выводит по списку поиска.
+    assert res1["rest"] == [] and r2["rest"] == []
 
+
+def test_the_plan_names_products_the_chain_will_not_get_only_when_the_server_is_done(web, monkeypatch):
+    """rest — товары, чья правка наряд сети не меняет: телефон (APK 1.37) выводит его сам, не дожидаясь
+    сервера. Пока фоновый поиск сети идёт, товара там нет: через секунды сеть может его узнать, а телефон
+    держал бы наряд без него до 6 ч (находка проверки 12.11.2026)."""
+    import threading
+
+    from app import matcher
+    from app.catalog import refresh
+
+    users.open_workspace(PHONE)
+    water = repo.upsert_product(Product(id=None, name="ВОДА МИНЕРАЛЬНАЯ 1Л", unit="pcs"))
+    basket_id = repo.create_basket("Вода")
+    repo.set_basket_item(basket_id, water, 1.0)
+    users.deactivate()
+    monkeypatch.setattr(refresh, "resolve", lambda *a, **kw: None)
+    found_nothing = threading.Event()
+    monkeypatch.setattr(matcher, "auto_match", lambda ids, codes, **kw: found_nothing.wait(10) and {})
+    client = logged_in(web)
+    ask = {"store": "perekrestok", "basket": basket_id, "background": True}   # адреса поиска у сети нет
+
+    first = client.post("/api/device/cartplan", json=ask).get_json()
+    assert first["lines"] == [] and first.get("search", []) == []
+    assert first["rest"] == [], "фоновый поиск сети ещё идёт"
+    assert first["pids"] == [water], "товар в корзине есть и без строки в наряде: найденное для него телефон бережёт"
+    found_nothing.set()
+    for worker in threading.enumerate():
+        if worker.name == "link-perekrestok":
+            worker.join(10)
+    assert phonecart._ASKING == {}
+    assert client.post("/api/device/cartplan", json=ask).get_json()["rest"] == [water]
+
+
+def test_a_product_with_a_stand_in_is_marked_in_the_search_list(web, monkeypatch):
+    """У товара с запасным строка наряда несёт номер запасного, а сам товар остаётся в поиске. По «+» у
+    такого товара телефон оставил бы строку запасного с прежним числом, поэтому его правку он не выводит."""
+    from app import config
+    from app.catalog import refresh
+
+    users.open_workspace(PHONE)
+    shop = repo.get_store("magnit")
+    kefir = repo.upsert_product(Product(id=None, name="Кефир Домик 1 л", unit="pcs"))
+    spare = repo.upsert_product(Product(id=None, name="Кефир Простоквашино 1 л", unit="pcs"))
+    spare_sp = repo.upsert_store_product(shop.id, "m-9", "Кефир Простоквашино 1 л",
+                                         url="https://magnit.ru/product/9")
+    repo.confirm_mapping(spare, spare_sp, confirmed=True)
+    repo.save_price(spare_sp, 99.0, in_stock=1)
+    juice = repo.upsert_product(Product(id=None, name="СОК ЯБЛОЧНЫЙ 1Л", unit="pcs"))
+    basket_id = repo.create_basket("Кефир")
+    repo.set_basket_item(basket_id, kefir, 2.0)
+    repo.set_basket_item(basket_id, juice, 1.0)
+    repo.set_basket_fallback(basket_id, kefir, spare)
+    users.deactivate()
+    monkeypatch.setattr(refresh, "resolve", lambda *a, **kw: None)
+    monkeypatch.setattr(phonecart, "_ask_later", lambda *a, **kw: None)
+    real_get = config.get
+    monkeypatch.setattr(config, "get", lambda key, *a, **k: "https://magnit.ru/search?q={q}"
+                        if key == "search_url.magnit" else real_get(key, *a, **k), raising=False)
+
+    # Наряд кнопки «Собрать»: фоновому поиск по названию не заказывают.
+    plan = logged_in(web).post("/api/device/cartplan", json={"store": "magnit", "basket": basket_id}).get_json()
+    assert [line["product_id"] for line in plan["lines"]] == [spare], "вместо кефира в наряде запасной"
+    assert {s["product_id"]: s.get("swapped", False) for s in plan["search"]} == {kefir: True, juice: False}
+    assert plan["rest"] == []
+    assert plan["pids"] == sorted([spare, juice]), "товары корзины, о которой наряд: вместо кефира запасной"
+
+
+
+def test_the_plan_carries_the_person_place_for_samokat_and_magnit(tmp_path, monkeypatch):
+    """Наряд несёт точку человека: Самокату — координаты адреса, Магниту — магазин расчёта и магазины вокруг.
+
+    Подбор ходит в сеть, поэтому ответ помнится в настройках человека: тот же адрес геокодер второй
+    раз не зовёт, новый — зовёт, а когда геокодер молчит, остаётся прежняя точка этого адреса.
+    """
+    from app import geo, location
+    from app.connectors import magnit
+    from app.models import Location
+
+    monkeypatch.setattr("app.config.ROOT", str(tmp_path))
+    monkeypatch.setattr(users, "USERS_DIR", str(tmp_path / "users"))
+    users.open_workspace(PHONE)
+    try:
+        assert phonecart.rules("samokat")["place"] is None, "адреса нет — точки нет"
+        asked = []
+        monkeypatch.setattr(geo, "coords", lambda addr: asked.append(addr) or (59.123456789, 30.5))
+        monkeypatch.setattr(location, "for_store",
+                            lambda code: Location(store_id="652", shop_type="DARKSTORE", delivery=True))
+        monkeypatch.setattr(magnit, "stores_near",
+                            lambda lat, lon, **kw: [{"code": "652", "delivery": True}, {"code": 700, "delivery": False}])
+        repo.set_setting(location.KEY_ADDRESS, "Город, улица 1")
+        assert phonecart.rules("samokat")["place"] == {"lat": 59.123457, "lon": 30.5}
+        assert phonecart.rules("magnit")["place"] == {"shop": "652", "type": "DARKSTORE", "delivery": True,
+                                                      "near": ["652", "700"], "deliver": ["652"]}
+        assert phonecart.rules("pyaterochka")["place"] == {"lat": 59.123457, "lon": 30.5}, "Пятёрочка сверяет адрес корзины (1.63)"
+        assert phonecart.rules("dixy")["place"] is None, "остальные сети берут адрес со своего сайта"
+        calls = len(asked)
+        assert phonecart.rules("samokat")["place"] and phonecart.rules("magnit")["place"]
+        assert len(asked) == calls, "точка того же адреса — из памяти, без геокодера"
+        repo.set_setting(location.KEY_ADDRESS, "Город, улица 2")
+        phonecart.rules("samokat")
+        assert len(asked) == calls + 1, "новый адрес — точка подбирается заново"
+
+        def silent(addr):
+            raise OSError("геокодер молчит")
+
+        monkeypatch.setattr(phonecart, "PLACE_TTL_SEC", 0)       # память точки истекла
+        monkeypatch.setattr(geo, "coords", silent)
+        assert phonecart.rules("samokat")["place"] == {"lat": 59.123457, "lon": 30.5}, "прежняя точка лучше никакой"
+        monkeypatch.setattr(phonecart, "PLACE_TTL_SEC", -1000)   # и отсрочка повтора тоже прошла
+        monkeypatch.setattr(phonecart, "PLACE_KEEP_SEC", -1)
+        assert phonecart.rules("samokat")["place"] is None, "без подтверждения прежняя точка живёт не вечно"
+
+        monkeypatch.setattr(geo, "coords", lambda addr: (59.0, 30.0))
+        monkeypatch.setattr(magnit, "stores_near", lambda lat, lon, **kw: [])
+        assert phonecart.rules("magnit")["place"] is None, "справочник молчит: без перечня магазинов точку не отдаём"
+    finally:
+        users.deactivate()
+
+
+def test_the_journal_keeps_how_long_the_phone_waited_for_the_plan(web, caplog):
+    """Правка дольше 5 с: по времени ожидания наряда видно, сервер это или дорога к нему (приложение 1.44)."""
+    client = logged_in(web)
+    with caplog.at_level("INFO", logger=phonecart.log.name):
+        client.post("/api/device/cartreport", json=dict(REPORT, lag_ms=17748, plan_ms=16906))
+    client.post("/api/device/cartreport", json=dict(REPORT, lag_ms=1200))      # прежние версии его не шлют
+    users.open_workspace(PHONE)
+    assert [row[4:] for row in phonecart.lags()] == [[17748, "1.4", "", 16906], [1200, "1.4", ""]]
+    assert "от касания 17.7 с (наряд ждали 16.9 с)" in caplog.text
+    assert phonecart.last("magnit")["plan_ms"] is None
+
+
+def test_a_repeated_plan_request_waits_for_the_first_answer(monkeypatch):
+    """Приложение 1.44 повторяет запрос наряда, не дождавшись ответа за 1,8 с, и помечает оба одним ask.
+    Медлит сервер, а не дорога — повтор ждёт ответ первого: наряд не считается второй раз рядом с первым,
+    и новый товар не ищется в сети дважды."""
+    import threading
+    import time
+
+    inside, release = threading.Event(), threading.Event()
+    calls: list = []
+    ask = 5_000_000_000         # время работы телефона в мс: за два месяца без перезагрузки больше 1e9
+
+    def slow(body):
+        calls.append(body["store"])
+        inside.set()
+        release.wait(5)
+        if body.get("fail") and len(calls) == 1:
+            raise RuntimeError("первый запрос упал")
+        return {"ok": True, "n": len(calls)}
+
+    def together(counted: int, *bodies) -> list:
+        """Первый запрос стоит в расчёте, остальные приходят следом; counted — сколько из них считают сами."""
+        got: list = [None] * len(bodies)
+
+        def one(i):
+            try:
+                got[i] = phonecart.plan(bodies[i])
+            except RuntimeError:
+                got[i] = "упал"
+
+        inside.clear(), release.clear(), calls.clear()
+        threads = [threading.Thread(target=one, args=(i,)) for i in range(len(bodies))]
+        threads[0].start()
+        assert inside.wait(5)
+        for thread in threads[1:]:
+            thread.start()
+        end = time.monotonic() + 5      # все дошли до расчёта или ожидания: «now» растёт под замком близнецов
+        while (phonecart._PLANS["now"], len(calls)) != (len(bodies), counted) and time.monotonic() < end:
+            time.sleep(0.01)
+        assert (phonecart._PLANS["now"], len(calls)) == (len(bodies), counted)
+        release.set()
+        for thread in threads:
+            thread.join(5)
+        assert not phonecart._TWINS and phonecart._PLANS["now"] == 0
+        return got
+
+    monkeypatch.setattr(phonecart, "_plan", slow)
+    magnit = {"store": "magnit", "ask": ask}
+    assert together(1, magnit, dict(magnit)) == [{"ok": True, "n": 1}] * 2, "повтор наряд не считал"
+    # Первый упал — повтор считает сам.
+    assert together(1, dict(magnit, fail=True), dict(magnit, fail=True)) == ["упал", {"ok": True, "n": 2}]
+    # Другая сеть, другой вопрос и запрос без номера (прежние версии, «Собрать») первого не ждут.
+    together(4, magnit, {"store": "dixy", "ask": ask}, {"store": "magnit", "ask": ask + 1}, {"store": "magnit"})
+    # Первый завис дольше TWIN_WAIT_SEC — повтор считает сам.
+    monkeypatch.setattr(phonecart, "TWIN_WAIT_SEC", 0.05)
+    together(2, magnit, dict(magnit))
+
+
+def test_the_fail_journal_keeps_why_a_report_did_not_land(web):
+    """Телефон владельца отладчиком не посмотреть, а следующий отчёт стирает прошлый за секунды: причины
+    отказов копятся отдельно (13.11.2026: Дикси и Пятёрочка «легло 0 из 11», причины ушли с отчётами)."""
+    client = logged_in(web)
+
+    def send(store: str, items: list, **more) -> None:
+        assert client.post("/api/device/cartreport", json=dict(REPORT, store=store, items=items, **more)).status_code == 200
+
+    wall = [{"name": f"Товар {n}", "sku": f"p-{n}", "ok": False, "why": "обрыв сети", "how": "request",
+             "calls": ["PUT /api/cart?x=1 403"] if n else []} for n in range(3)]
+    send("pyaterochka", wall, seconds=5)
+    send("pyaterochka", wall[:2], lag_ms=300)
+    send("magnit", REPORT["items"])                       # легло 1 из 2
+    send("magnit", REPORT["items"][:1])                   # легло всё — не отказ
+    # Ранний отчёт: отложенная позиция — не отказ; почему запросами не вышло, приходит пометкой позиции,
+    # и с ней в журнал идёт и отложенная (иначе отказ сети при корзине из одних незнакомых пропал бы).
+    later = {"name": "Товар 9", "ok": False, "why": phonecart.LATER_WHY, "how": "tap"}
+    send("dixy", [later])
+    send("dixy", [{"name": "Товар 8", "ok": False, "why": "запросом не легла, положу касаниями",
+                   "note": "сеть ответила 403", "how": "tap"}, dict(later, note="сеть ответила 403")])
+    # Причин больше, чем хранит строка: одинаковые отчёты всё равно сливаются.
+    many = [{"name": f"Товар {n}", "ok": False, "why": f"причина {n}", "how": "tap"} for n in range(6)]
+    send("perekrestok", many)
+    send("perekrestok", many)
+    users.open_workspace(PHONE)
+    first, second, third, fourth = phonecart.fails()
+    assert (first["store"], first["landed"], first["planned"], first["times"]) == ("pyaterochka", 0, 2, 2), \
+        "тот же отказ той же сети строку не плодит: серия касаний не вытеснит первый"
+    assert first["whys"] == [["обрыв сети", 2]] and first["calls"] == ["PUT /api/cart 403"] and first["first"]
+    assert first["lag_ms"] == 300 and first["app_version"] == "1.4"
+    assert (second["store"], second["landed"], second["planned"], second["times"]) == ("magnit", 1, 2, 1)
+    assert second["whys"] == [["на карточке не нашлось кнопки «в корзину»", 1]] and "first" not in second
+    assert (third["store"], third["planned"], third["times"]) == ("dixy", 2, 1)
+    assert third["whys"] == [["запросом не легла, положу касаниями (сеть ответила 403)", 1],
+                             [phonecart.LATER_WHY + " (сеть ответила 403)", 1]]
+    assert (fourth["store"], fourth["times"], len(fourth["whys"])) == ("perekrestok", 2, 4)
+    # Чужое в журнале (не строка) приём отчёта не ломает и само уходит.
+    repo.set_setting(phonecart.FAILS_KEY, json.dumps(["мусор", first]))
+    users.deactivate()
+    send("lenta", wall[:1])
+    users.open_workspace(PHONE)
+    assert [row["store"] for row in phonecart.fails()] == ["pyaterochka", "lenta"]
+
+
+def test_the_apps_trace_outlives_the_next_report_of_the_same_chain(web):
+    """Хроника приложения (1.54): что решало окно сети перед отчётом, отчёт другой правки не стирает."""
+    client = logged_in(web)
+
+    def send(store: str, **more) -> None:
+        assert client.post("/api/device/cartreport", json=dict(REPORT, store=store, **more)).status_code == 200
+
+    send("pyaterochka", trace=["23:43:10.120 Пятёрочка: читаю корзину заранее", "", "  23:43:11.500   Пятёрочка:  отказ  ",
+                               "я" * 500])
+    send("pyaterochka", trace="не список")      # чужое в поле приём не ломает и строки не даёт
+    send("magnit")                              # без хроники строки нет
+    send("pyaterochka", trace=[f"строка {n}" for n in range(500)])
+    users.open_workspace(PHONE)
+    first, second = phonecart.traces()
+    assert (first["store"], second["store"]) == ("pyaterochka", "pyaterochka") and first["app_version"] == "1.4"
+    assert first["trace"][:2] == ["23:43:10.120 Пятёрочка: читаю корзину заранее", "23:43:11.500 Пятёрочка: отказ"], \
+        "пустые строки уходят, пробелы сжимаются"
+    assert len(first["trace"]) == 3 and len(first["trace"][2]) == phonecart.TRACE_WIDTH
+    assert len(second["trace"]) == phonecart.TRACE_LINES and second["trace"][-1] == "строка 499", "берём последние"
+    # Последний отчёт сети хроники в себе не носит: он нужен приложению для расчёта, а не для разбора.
+    assert "trace" not in phonecart.last("pyaterochka")
+    # Журнал держит последние TRACES_KEEP хроник.
+    users.deactivate()
+    for n in range(phonecart.TRACES_KEEP + 2):
+        send("dixy", trace=[f"хроника {n}"])
+    users.open_workspace(PHONE)
+    kept = phonecart.traces()
+    assert len(kept) == phonecart.TRACES_KEEP and kept[-1]["trace"] == [f"хроника {phonecart.TRACES_KEEP + 1}"]
+    # Мусор в журнале (не строка) приём отчёта не ломает и сам уходит.
+    repo.set_setting(phonecart.TRACES_KEY, json.dumps(["мусор", kept[0]]))
+    users.deactivate()
+    send("lenta", trace=["после мусора"])
+    users.open_workspace(PHONE)
+    assert [row["trace"] for row in phonecart.traces()] == [kept[0]["trace"], ["после мусора"]]
+
+
+def test_the_magnit_place_remembered_before_1_55_is_picked_again(tmp_path, monkeypatch):
+    """Точка Магнита без перечня магазинов с доставкой (deliver) — запомнена старой версией: срока в шесть часов
+    не ждём, подбираем заново, иначе телефон принимал бы самовывозный магазин как экспресс до вечера."""
+    import time
+
+    from app import geo, location
+    from app.connectors import magnit
+    from app.models import Location
+
+    monkeypatch.setattr("app.config.ROOT", str(tmp_path))
+    monkeypatch.setattr(users, "USERS_DIR", str(tmp_path / "users"))
+    users.open_workspace(PHONE)
+    try:
+        monkeypatch.setattr(geo, "coords", lambda addr: (59.0, 30.0))
+        monkeypatch.setattr(location, "for_store",
+                            lambda code: Location(store_id="652", shop_type="DARKSTORE", delivery=True))
+        monkeypatch.setattr(magnit, "stores_near",
+                            lambda lat, lon, **kw: [{"code": "652", "delivery": True}, {"code": "700"}])
+        repo.set_setting(location.KEY_ADDRESS, "Город, улица 1")
+        old = {"shop": "652", "type": "DARKSTORE", "delivery": True, "near": ["652", "700"]}
+        import hashlib
+        mark = hashlib.sha1("город, улица 1".encode("utf-8")).hexdigest()[:12]
+        repo.set_setting(phonecart.PLACE_KEY + "magnit",
+                         json.dumps({"for": mark, "at": time.time(), "ok": time.time(), "place": old}))
+        assert phonecart.rules("magnit")["place"]["deliver"] == ["652"], "старая запись подобрана заново"
+    finally:
+        users.deactivate()
+
+
+def test_the_app_sends_a_trace_without_a_report_when_a_run_drags(web):
+    """Хроника без отчёта (1.55): сборка идёт долго, отчёта нет — приложение шлёт журнал само, и он лежит
+    отдельно от хроник отчётов. Пустая хроника и сеть без названия — отказ, чужое в полях не ломает приём."""
+    client = logged_in(web)
+
+    def send(**body):
+        return client.post("/api/device/trace", json=body)
+
+    ok = send(store="magnit", app_version="1.55", reason="идёт 30 с: ищу в сети незнакомые: 3",
+              trace=["10:00:01.000 отчёт; часы телефона UTC+03:00", "", "  10:00:02.500   Магнит:  хвост  ", "я" * 500])
+    assert ok.status_code == 200 and ok.get_json() == {"ok": True, "lines": 3}
+    assert send(store="magnit", trace=[]).status_code == 400, "хроники нет — нечего хранить"
+    assert send(store="", trace=["строка"]).status_code == 400, "сеть не названа"
+    assert send(store="dixy", trace="не список").status_code == 400
+    for n in range(phonecart.SLOW_KEEP + 2):
+        assert send(store="pyaterochka", trace=[f"строка {n}"]).status_code == 200
+    users.open_workspace(PHONE)
+    try:
+        assert phonecart.traces() == [], "хроники отчётов не тронуты"
+        kept = phonecart.traces(phonecart.SLOW_KEY)
+        assert len(kept) == phonecart.SLOW_KEEP and kept[-1]["trace"] == [f"строка {phonecart.SLOW_KEEP + 1}"]
+        assert kept[-1]["store"] == "pyaterochka" and "reason" not in kept[-1], "причина — только если названа"
+    finally:
+        users.deactivate()
+    # Приложение называет в хронике сеть своей причиной и укладывается в то, что хранит сервер.
+    java = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "android", "app", "app",
+                        "src", "main", "java", "ru", "moyakorzina", "app", "MainActivity.java")
+    with open(java, encoding="utf-8") as fh:
+        text = fh.read()
+    assert '"/api/device/trace"' in text and "watchTrace(r);" in text
+    sent = re.search(r'\.put\("trace", Log\.tail\("", "", 0, (\d+)\)\)', text)
+    assert sent and int(sent.group(1)) + 1 <= phonecart.TRACE_LINES, "первая строка — часы телефона"
+
+
+def test_the_app_sends_its_trace_in_a_size_the_server_keeps():
+    """Хроника (1.54): приложение шлёт её с отчётом Пятёрочки, и ключ и размер — те, что принимает сервер. Значения
+    куки в ней нет: только длина и очертание."""
+    java = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "android", "app", "app",
+                        "src", "main", "java", "ru", "moyakorzina", "app", "MainActivity.java")
+    with open(java, encoding="utf-8") as fh:
+        text = fh.read()
+    # Журнал приложения — свой класс с тем же именем, что у android.util.Log: вызовы по файлу остались прежними.
+    assert "private static final class Log {" in text and "import android.util.Log;" not in text
+    sent = re.search(r'if \("pyaterochka"\.equals\(r\.code\)\) body\.put\("trace", Log\.tail\(r\.name, r\.code, (\d+), (\d+)\)\);', text)
+    assert sent, "отчёт Пятёрочки несёт хронику"
+    own, anywhere = int(sent.group(1)), int(sent.group(2))
+    assert own + anywhere + 1 <= phonecart.TRACE_LINES, "первая строка — часы телефона; сервер хранит последние строки"
+    assert "Character.isDigit(ch) ? 'd' : Character.isLetter(ch) ? 'x' : ch" in text and "shape.length() < 40" in text
+    assert 'return name + " длина " + value.length() + " вид " + shape + age;' in text, "значение куки в хронику не идёт"
+
+
+def test_later_why_is_the_text_the_app_sends():
+    """LATER_WHY — слово в слово строка приложения (finishRun, ранний отчёт): разойдутся — и журнал отказов
+    молча начнёт писать отложенные позиции как отказы."""
+    java = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "android", "app", "app",
+                        "src", "main", "java", "ru", "moyakorzina", "app", "MainActivity.java")
+    with open(java, encoding="utf-8") as fh:
+        assert f'"{phonecart.LATER_WHY}"' in fh.read()

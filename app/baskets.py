@@ -45,8 +45,8 @@ def orderable_history(store_id: int | None = None) -> list[dict]:
 
     Новые чеки таких сетей и так не попадают в историю (app/chains.py), а этот
     фильтр убирает то, что успело лечь раньше: иначе «Как обычно» предлагала бы
-    товары, которые приложение заказать не может. Строки без магазина остаются —
-    их человек добавил сам, и судить их не по чему.
+    товары, которые приложение заказать не может. Строки без подтверждённой сети
+    остаются в исходных чеках без участия в рекомендациях.
 
     Услуги из чека — поездка, аренда, штраф, «Сборка» заказа — тоже не товар: их не
     повторить и не сравнить по цене, а в «Истории заказов» они стояли с кнопкой
@@ -57,13 +57,12 @@ def orderable_history(store_id: int | None = None) -> list[dict]:
     from app.catalog import nonfood
 
     allowed = chains.orderable()
-    blocked = {s.id for s in repo.list_stores() if s.code not in allowed}
     rows = [r for r in repo.list_history(store_id=store_id)
-            if r.get("product_id") and r.get("store_id") not in blocked]
-    # Вердикт — раз на имя, а не на строку: имён в истории в разы меньше, чем строк.
-    names = {r.get("raw_name") or r.get("product_name") for r in rows}
-    services = {n for n in names if nonfood.is_service_name(n)}
-    return [r for r in rows if (r.get("raw_name") or r.get("product_name")) not in services]
+            if r.get("product_id") and r.get("store_code") in allowed]
+    # Вердикт — раз на пару названий: нормализация может убрать слово «пакет».
+    names = {(r.get("raw_name"), r.get("product_key")) for r in rows}
+    eligible = {(raw, key) for raw, key in names if nonfood.is_receipt_product(raw, key)}
+    return [r for r in rows if (r.get("raw_name"), r.get("product_key")) in eligible]
 
 
 def last_purchase_items(store_id: int | None = None) -> tuple[str | None, list[dict]]:
@@ -165,10 +164,21 @@ def habits(today: date | None = None) -> list[dict]:
     return out
 
 
+# Привычка, к которой не возвращались год и дольше трёх своих циклов, умерла: в «Пора докупить» ей не место.
+ABANDONED_DAYS = 365
+
+
 def due_items(today: date | None = None) -> list[dict]:
-    """«Пора докупить»: привычное, что не покупали дольше обычного. Самое просроченное сверху."""
-    found = [h for h in habits(today) if h["due"]]
-    found.sort(key=lambda h: (-h["overdue"], -h["times"], h["name"]))
+    """«Пора докупить»: привычное, что не покупали дольше обычного. Сверху то, что берут чаще.
+
+    Раньше сверху стояло самое просроченное, и список возглавляло купленное дважды подряд три года назад
+    («цикл» день, просрочка в тысячу раз): у владельца 15.11.2026 первыми шли баранки 2023 года, ламели для
+    кровати и книги. Умершие привычки выбрасываем; то, чего не знает ни одна сеть, уходит в конец: по нажатию
+    оно не легло бы ни в одну корзину.
+    """
+    found = [h for h in habits(today) if h["due"] and h["since"] <= max(3 * h["cycle"], ABANDONED_DAYS)]
+    known = {pid for pid, _store in repo.real_pairs(h["product_id"] for h in found)}
+    found.sort(key=lambda h: (h["product_id"] not in known, -h["times"], h["name"]))
     return found
 
 

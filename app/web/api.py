@@ -20,24 +20,19 @@ bp = Blueprint("api", __name__, url_prefix="/api")
 
 
 def _cors_response(resp):
-    origin = request.headers.get("Origin")
-    if origin:
-        resp.headers["Access-Control-Allow-Origin"] = origin
-        resp.headers["Access-Control-Allow-Credentials"] = "true"
-    else:
-        resp.headers["Access-Control-Allow-Origin"] = "*"
+    # Cross-origin clients use their explicit Bearer token or workplace key.
+    resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, Accept"
     resp.headers["Access-Control-Max-Age"] = "600"
-    resp.headers["Vary"] = "Origin"
     return resp
 
 
-@bp.route("/<path:_subpath>", methods=["OPTIONS"])
-@bp.route("", methods=["OPTIONS"])
-def api_options(_subpath=""):
-    resp = make_response("", 204)
-    return _cors_response(resp)
+@bp.before_request
+def api_options():
+    if request.method == "OPTIONS":
+        return _cors_response(make_response("", 204))
+    return None
 
 
 def _workplace(body: dict) -> str:
@@ -154,8 +149,7 @@ def store_sync():
 
 def _accept_handoff(chain: str, text: str) -> dict:
     """Принять вход, снятый на телефоне/закладкой, и сохранить его в хранилище сети."""
-    from app import handoff
-    from app.shopbrowser import store as shopstore
+    from app.shopbrowser import handoff, store as shopstore
 
     try:
         state = handoff.parse(chain, text)
@@ -311,8 +305,19 @@ def device_cartplan():
 def device_cartreport():
     """Отчёт телефона: что легло и какой итог показала корзина сети (app/phonecart.py)."""
     from app import phonecart
+    from app.web import device
 
-    return _device_call("cartreport", phonecart.accept_report)
+    # Модель устройства — в журнал времени правок: по ней телефон отличим от эмулятора.
+    return _device_call("cartreport",
+                        lambda body: phonecart.accept_report(body, device=device.model()))
+
+
+@bp.route("/device/orders", methods=["POST"])
+def device_orders():
+    """Заказы из кабинета сети, прочитанные телефоном: в историю и в артикулы (shoporders.py)."""
+    from app.importers import shoporders
+
+    return _device_call("orders", shoporders.accept)
 
 
 @bp.route("/device/cartprogress", methods=["POST"])
@@ -321,6 +326,15 @@ def device_cartprogress():
     from app import phonecart
 
     return _device_call("cartprogress", phonecart.progress)
+
+
+@bp.route("/device/trace", methods=["POST"])
+def device_trace():
+    """Хроника приложения без отчёта (1.55): сборка идёт дольше 30 с, и отчёта к ней может не быть."""
+    from app import phonecart
+    from app.web import device
+
+    return _device_call("trace", lambda body: phonecart.accept_trace(body, device=device.model()))
 
 
 @bp.route("/device/cards", methods=["POST"])

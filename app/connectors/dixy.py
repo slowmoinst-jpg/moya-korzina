@@ -192,12 +192,12 @@ def read_card(page: str) -> dict | None:
 
 def is_product_url(url: str | None, sku: str) -> bool:
     """Рабочий адрес карточки: /product/<название>-<артикул>/."""
-    return bool(url) and bool(re.search(rf"/product/[^/?#]+-{re.escape(str(sku))}/?$", url))
+    return bool(url) and bool(re.search(rf"/product/[^/?#]+-{re.escape(str(sku))}/?$", url, re.I))
 
 
 def is_bare_url(url: str | None, sku: str) -> bool:
     """/product/<артикул>/ — так адрес собирает поисковый движок каталога, а сайт отвечает 404."""
-    return bool(url) and bool(re.search(rf"/product/{re.escape(str(sku))}/?$", url))
+    return bool(url) and bool(re.search(rf"/product/{re.escape(str(sku))}/?$", url, re.I))
 
 
 # Столько ждать после главной: скрипты Qrator ставят куки, витрина дорисовывается.

@@ -120,10 +120,13 @@ def test_article_is_not_always_a_number():
 
     Первая версия разбора брала только цифры и теряла 387 товаров из 9 061 —
     это было видно лишь по числу строк, то есть никак.
+
+    В адресе буквы строчные, а сеть знает артикул заглавным (xml_id полки «DI00078769»): строчному
+    она отвечает «в наличии 0», и строка каталога раздваивалась (замер 14–15.11.2026: 122 пары).
     """
     assert from_address(REAL[0]).sku == "2000650171"
-    assert from_address(REAL[1]).sku == "10f0049260"
-    assert from_address(REAL[2]).sku == "di00078769"
+    assert from_address(REAL[1]).sku == "10F0049260"
+    assert from_address(REAL[2]).sku == "DI00078769"
 
 
 def test_the_packaging_tail_is_not_taken_for_an_article():

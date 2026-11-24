@@ -1,7 +1,9 @@
+import { searchPhoton } from '../src/shared/addressSearch';
 import { KorzinaBridge } from './device';
 import { loadCachedAuth, loadSessionToken, saveSessionToken } from './storage';
 import type {
   AddressSuggestion,
+  ApkUpdate,
   AuthState,
   SearchResultItem,
   WorkspaceSnapshot,
@@ -42,7 +44,7 @@ async function fetchOnce(path: string, init?: RequestInit): Promise<Response> {
   };
   return fetch(apiUrl(path), {
     ...init,
-    credentials: 'include',
+    credentials: 'same-origin',
     headers,
   });
 }
@@ -60,7 +62,7 @@ async function trySilentReauth(): Promise<boolean> {
       const body = cached.isDemo ? '{}' : JSON.stringify({ phone: cached.phone, pin: '' });
       const res = await fetch(apiUrl(endpoint), {
         method: 'POST',
-        credentials: 'include',
+        credentials: 'same-origin',
         headers: {
           Accept: 'application/json',
           'Content-Type': 'application/json',
@@ -150,14 +152,15 @@ async function requestJson<T>(
   return data as T;
 }
 
-export async function fetchAuthMe(): Promise<AuthState> {
-  const data = await requestJson<AuthState & { ok: boolean }>('/api/auth/me');
+export async function fetchAuthMe(): Promise<AuthState & { apkUpdate?: ApkUpdate }> {
+  const data = await requestJson<AuthState & { ok: boolean; apkUpdate?: ApkUpdate }>('/api/auth/me');
   return {
     authenticated: Boolean(data.authenticated),
     phone: data.phone ?? null,
     phoneLabel: data.phoneLabel || '',
     isDemo: Boolean(data.isDemo),
     pinRequired: Boolean(data.pinRequired),
+    apkUpdate: data.apkUpdate,
   };
 }
 
@@ -201,10 +204,8 @@ export async function fetchSyncSnapshot(): Promise<WorkspaceSnapshot> {
   return data.snapshot;
 }
 
-export async function pushSyncSnapshot(snapshot: WorkspaceSnapshot): Promise<{ ok: boolean; syncedAt: string }> {
-  return requestJson('/api/sync', {
-    method: 'POST',
-    body: JSON.stringify({
+export function snapshotSyncBody(snapshot: WorkspaceSnapshot): string {
+  return JSON.stringify({
       products: snapshot.products,
       baskets: snapshot.baskets,
       nextBasketId: snapshot.nextBasketId,
@@ -220,8 +221,12 @@ export async function pushSyncSnapshot(snapshot: WorkspaceSnapshot): Promise<{ o
       offers: snapshot.offers,
       fnsConnected: snapshot.fnsConnected,
       fnsPhone: snapshot.fnsPhone,
-    }),
-  });
+    });
+}
+
+export async function pushSyncSnapshot(snapshot: WorkspaceSnapshot, body = snapshotSyncBody(snapshot)):
+  Promise<{ ok: boolean; syncedAt: string; basketStamp: string }> {
+  return requestJson('/api/sync', { method: 'POST', body });
 }
 
 export async function fetchLiveRuns(): Promise<{
@@ -235,87 +240,56 @@ export async function fetchLiveRuns(): Promise<{
   return requestJson('/api/runs');
 }
 
-export async function searchServerCatalog(q: string): Promise<SearchResultItem[]> {
+export async function searchServerCatalog(q: string, store?: string): Promise<SearchResultItem[]> {
   const data = await requestJson<{ ok: boolean; results: SearchResultItem[] }>(
-    `/api/search?q=${encodeURIComponent(q)}`
+    `/api/search?q=${encodeURIComponent(q)}${store ? `&store=${encodeURIComponent(store)}` : ''}`
   );
   return data.results || [];
 }
 
-export async function submitManualReceipt(
-  storeCode: string,
-  text: string
-): Promise<{ imported: number; total: number; snapshot: WorkspaceSnapshot }> {
-  return requestJson('/api/receipts/paste', {
-    method: 'POST',
-    body: JSON.stringify({ store_code: storeCode, text }),
-  });
+function replacementParams(stores: string[], unit: string, exclude: number) {
+  const params = new URLSearchParams({ unit, exclude: String(exclude) });
+  for (const store of stores) params.append('store', store);
+  return params;
 }
 
-export async function syncFnsServer(
-  phone?: string,
-  keys?: string
-): Promise<{ snapshot: WorkspaceSnapshot }> {
-  return requestJson('/api/fns/sync', {
-    method: 'POST',
-    body: JSON.stringify({ phone: phone || '', keys: keys || '' }),
-  });
+export type ReceiptSummary = Pick<WorkspaceSnapshot['receipts'][number], 'key' | 'date' | 'store' | 'total'>;
+export type ReceiptLine = { name: string; quantity: number; price: number; total: number };
+
+export async function receiptLines(key: string) {
+  return (await requestJson<{ lines: ReceiptLine[] }>('/api/receipts/other?' + new URLSearchParams({ key }))).lines;
 }
 
-export async function disconnectFnsServer(): Promise<{ snapshot: WorkspaceSnapshot }> {
-  return requestJson('/api/fns/disconnect', {
-    method: 'POST',
-    body: JSON.stringify({}),
-  });
+export async function otherReceiptPage(offset: number) {
+  return (await requestJson<{ receipts: ReceiptSummary[] }>('/api/receipts/other?offset=' + offset)).receipts;
 }
 
-async function suggestAddressDirect(q: string): Promise<AddressSuggestion[]> {
-  try {
-    const r = await fetch(
-      `https://photon.komoot.io/api/?limit=6&q=${encodeURIComponent(q)}`,
-      { headers: { Accept: 'application/json' } }
-    );
-    if (!r.ok) return [];
-    const data = (await r.json()) as {
-      features?: Array<{
-        geometry?: { coordinates?: [number, number] };
-        properties?: Record<string, string>;
-      }>;
-    };
-    const seen = new Set<string>();
-    const out: AddressSuggestion[] = [];
-    for (const f of data.features || []) {
-      const p = f.properties || {};
-      if (p.countrycode && p.countrycode.toUpperCase() !== 'RU') continue;
-      const city = p.city || p.town || p.village || p.state || '';
-      const street = p.street || (p.name && p.name !== city ? p.name : '');
-      const house = p.housenumber || '';
-      const label = [city, street, house].filter(Boolean).join(', ') || p.name || q;
-      const key = label.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const coords = f.geometry?.coordinates || [0, 0];
-      const full = [p.state, p.city, p.district, street, house].filter(Boolean).join(', ') || label;
-      out.push({ label, full, lat: Number(coords[1]), lon: Number(coords[0]) });
-    }
-    return out.slice(0, 6);
-  } catch {
-    return [];
-  }
+export async function searchReplacements(q: string, stores: string[], unit: string, exclude: number) {
+  const params = replacementParams(stores, unit, exclude);
+  params.set('q', q);
+  return requestJson<{ results: SearchResultItem[]; observedStores?: string[] }>('/api/replacements?' + params);
 }
+
+export async function confirmReplacement(row: SearchResultItem, store: string, exclude: number) {
+  const params = replacementParams([store], row.product.unit, exclude);
+  params.set('sku', row.prices[store].sku);
+  params.set('product', String(row.product.id));
+  return (await requestJson<{ item: SearchResultItem }>('/api/replacements?' + params, { method: 'POST' })).item;
+}
+
+export const getFnsStatus = () => requestJson<{
+  running: boolean; message: string; failed: boolean; needsConnection?: boolean; lastSync: string | null;
+}>('/api/fns/status');
 
 export async function suggestAddress(q: string): Promise<AddressSuggestion[]> {
   try {
     const data = await requestJson<{ ok: boolean; items: AddressSuggestion[] }>(
-      `/api/address/suggest?q=${encodeURIComponent(q)}`,
-      undefined,
-      false
+      `/api/address/suggest?q=${encodeURIComponent(q)}`, undefined, false
     );
-    if (data.items && data.items.length > 0) return data.items;
+    return data.items;
   } catch {
-    // fallback to browser-side Photon below
+    return searchPhoton(q);
   }
-  return suggestAddressDirect(q);
 }
 
 export async function reverseGeocode(lat: number, lon: number): Promise<string> {

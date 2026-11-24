@@ -7,18 +7,15 @@ import {
   unitLabel,
 } from '../../src/shared/format';
 import { ChainMark, Icon, MoneyExact, MoneyWhole, ProductPic } from '../components/Icons';
-import { MobileTabs } from '../components/MobileTabs';
 import type { BasketItemView } from '../engine';
 import type { WorkspaceSnapshot } from '../types';
 
 interface PricesScreenProps {
   ws: WorkspaceSnapshot;
   items: BasketItemView[];
-  bestTotal: number | null;
   isDesktop: boolean;
   onUpdateQty: (productId: number, nextQty: number) => void;
   onOpenBasket: () => void;
-  onOpenCheaper: () => void;
   onOpenSettings: () => void;
 }
 
@@ -27,11 +24,9 @@ type FilterTab = 'basket' | 'all' | 'stores';
 export const PricesScreen: React.FC<PricesScreenProps> = ({
   ws,
   items,
-  bestTotal,
   isDesktop,
   onUpdateQty,
   onOpenBasket,
-  onOpenCheaper,
   onOpenSettings,
 }) => {
   const [tab, setTab] = useState<FilterTab>(() => (items.length > 0 ? 'basket' : 'all'));
@@ -396,20 +391,6 @@ export const PricesScreen: React.FC<PricesScreenProps> = ({
         )}
       </div>
 
-      {!isDesktop && (
-        <div className="ph-foot">
-          <MobileTabs
-            active="basket"
-            itemsCount={items.length}
-            bestTotal={bestTotal}
-            onSelect={(t) => {
-              if (t === 'basket') onOpenBasket();
-              else if (t === 'cheaper') onOpenCheaper();
-              else if (t === 'settings') onOpenSettings();
-            }}
-          />
-        </div>
-      )}
     </div>
   );
 };

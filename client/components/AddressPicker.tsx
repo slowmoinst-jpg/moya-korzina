@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { apiUrl, reverseGeocode, suggestAddress } from '../api';
 import type { AddressSuggestion, LeafletMap, LeafletMarker } from '../types';
 import { Icon } from './Icons';
@@ -48,9 +48,13 @@ export const AddressPicker: React.FC<AddressPickerProps> = ({
   const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
   const [loadingSuggest, setLoadingSuggest] = useState(false);
   const [searchedEmpty, setSearchedEmpty] = useState(false);
+  const [searchFailed, setSearchFailed] = useState(false);
   const [showMap, setShowMap] = useState(false);
   const [mapReady, setMapReady] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const formId = useId();
+  const pickerRef = useRef<HTMLDivElement>(null);
 
   const mapBoxRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
@@ -61,7 +65,26 @@ export const AddressPicker: React.FC<AddressPickerProps> = ({
   useEffect(() => {
     setValue(address || '');
     setCoords(point);
-  }, [address, point]);
+  }, [address, point?.[0], point?.[1]]);
+
+  useEffect(() => {
+    if (!editing || !pickerRef.current?.closest('.spa-mobile-shell')) return;
+    let frame = 0;
+    const revealField = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        pickerRef.current?.closest('section')?.scrollIntoView({ block: 'start' });
+      });
+    };
+    revealField();
+    window.addEventListener('resize', revealField);
+    window.visualViewport?.addEventListener('resize', revealField);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', revealField);
+      window.visualViewport?.removeEventListener('resize', revealField);
+    };
+  }, [editing]);
 
   useEffect(() => {
     return () => {
@@ -71,11 +94,14 @@ export const AddressPicker: React.FC<AddressPickerProps> = ({
 
   const handleInput = (next: string) => {
     setValue(next);
+    setCoords(null);
+    setSuggestions([]);
+    setSearchFailed(false);
     setSavedNotice(false);
     setSearchedEmpty(false);
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
     const trimmed = next.trim();
-    if (trimmed.length < 2) {
+    if (trimmed.length < 3) {
       reqSeqRef.current += 1;
       setSuggestions([]);
       setLoadingSuggest(false);
@@ -92,11 +118,11 @@ export const AddressPicker: React.FC<AddressPickerProps> = ({
       } catch {
         if (seq !== reqSeqRef.current) return;
         setSuggestions([]);
-        setSearchedEmpty(true);
+        setSearchFailed(true);
       } finally {
         if (seq === reqSeqRef.current) setLoadingSuggest(false);
       }
-    }, 240);
+    }, 400);
   };
 
   const applySuggestion = (s: AddressSuggestion) => {
@@ -107,6 +133,7 @@ export const AddressPicker: React.FC<AddressPickerProps> = ({
     setSuggestions([]);
     setLoadingSuggest(false);
     setSearchedEmpty(false);
+    setSearchFailed(false);
     onSave(s.label, pt);
     setSavedNotice(true);
     if (mapRef.current && markerRef.current) {
@@ -141,11 +168,16 @@ export const AddressPicker: React.FC<AddressPickerProps> = ({
         const marker = window.L.marker(start, { draggable: true, icon: pinIcon }).addTo(map);
 
         const updateFromLatLng = async (lat: number, lng: number) => {
+          const seq = ++reqSeqRef.current;
+          setLoadingSuggest(false);
+          setSuggestions([]);
+          setSearchedEmpty(false);
+          setSearchFailed(false);
           const pt: [number, number] = [lat, lng];
-          setCoords(pt);
           try {
             const addr = await reverseGeocode(lat, lng);
-            if (!active) return;
+            if (!active || reqSeqRef.current !== seq) return;
+            setCoords(pt);
             setValue(addr);
             onSave(addr, pt);
             setSavedNotice(true);
@@ -185,6 +217,10 @@ export const AddressPicker: React.FC<AddressPickerProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    reqSeqRef.current += 1;
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    setLoadingSuggest(false);
+    setSearchFailed(false);
     const cleaned = value.trim();
     onSave(cleaned || null, cleaned ? coords : null);
     setSuggestions([]);
@@ -193,15 +229,21 @@ export const AddressPicker: React.FC<AddressPickerProps> = ({
   };
 
   return (
-    <div className="spa-addr">
-      <form className="addr" onSubmit={handleSubmit}>
+    <div className="spa-addr" ref={pickerRef}>
+      <form className="addr" id={formId} onSubmit={handleSubmit}>
         <div className="spa-addr-field">
           <input
             type="text"
             value={value}
+            onFocus={() => setEditing(true)}
+            onBlur={() => setEditing(false)}
             onChange={(e) => handleInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Escape') {
+                reqSeqRef.current += 1;
+                if (debounceRef.current) window.clearTimeout(debounceRef.current);
+                setLoadingSuggest(false);
+                setSearchFailed(false);
                 setSuggestions([]);
                 setSearchedEmpty(false);
               }
@@ -222,9 +264,6 @@ export const AddressPicker: React.FC<AddressPickerProps> = ({
             </button>
           )}
         </div>
-        <button type="submit" className="bt sm lime" disabled={disabled}>
-          Сохранить
-        </button>
       </form>
 
       {loadingSuggest && (
@@ -249,11 +288,15 @@ export const AddressPicker: React.FC<AddressPickerProps> = ({
 
       {!loadingSuggest && searchedEmpty && value.trim().length >= 3 && (
         <div className="spa-suggest-status">
-          Подсказок не нашлось — уточните город и улицу (например: Санкт-Петербург, Невский 28) или выберите точку на карте.
+          Адрес не найден. Уточните улицу и дом или укажите точку на карте.
         </div>
       )}
+      {searchFailed && <div className="spa-suggest-status">Поиск адресов временно недоступен. Можно сохранить адрес вручную.</div>}
 
       <div className="spa-addr-actions">
+        <button type="submit" form={formId} className="bt sm lime" disabled={disabled}>
+          Сохранить
+        </button>
         <button
           type="button"
           className="bt sm"

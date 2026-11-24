@@ -308,11 +308,12 @@ def _priced(lines: list[BasketLine], store_code: str) -> list[BasketLine]:
     цен она равна нулю, а ноль в этом месте не «неизвестно», а «бесплатно»: он
     выглядит как ответ, и сверка по нему пройдёт успешно при любой ошибке.
     """
-    from app import service
+    from app import freshness, location, service
 
     store = repo.get_store(store_code)
     if not store:
         return lines
+    point = location.point_key()
     for line in lines:
         if not line.product_id:
             continue
@@ -321,14 +322,16 @@ def _priced(lines: list[BasketLine], store_code: str) -> list[BasketLine]:
         # Иначе сумма наряда спорила бы с «Результатом».
         product = repo.get_product(line.product_id)
         found = service.line_price(line.product_id, store, line.qty, line.unit,
-                                   product.weight_g if product else None)
+                                   product.weight_g if product else None, point_key=point)
         if found is not None:
             # Соседей в наряде нет — сверяем с историей этой же позиции в этой сети.
             # Мусорная цена тут особенно вредна: по наряду телефон кладёт товар в
-            # корзину, а человек видит «итог» в нашем окне.
+            # корзину, а человек видит «итог» в нашем окне. История хранит цену
+            # упаковки, а found["value"] — вся позиция: 15.11.2026 три сырка Дикси
+            # (209,97 ₽ против обычных 49,99 ₽ за штуку) выпали из наряда как «вдвое выше».
             mapping = repo.confirmed_mapping(line.product_id, store.id) or {}
-            why = service.price_suspect(store_code, str(mapping.get("sku") or ""),
-                                        found["value"])
+            shelf = (freshness.price_for(line.product_id, store.id, point_key=point) or {}).get("price")
+            why = service.price_suspect(store_code, str(mapping.get("sku") or ""), shelf)
             if why:
                 line.notes[store_code] = why
                 continue

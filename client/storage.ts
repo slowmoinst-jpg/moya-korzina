@@ -110,3 +110,14 @@ export function saveBasketViewMode(mode: 'grid' | 'list'): void {
     // ignore
   }
 }
+export type BasketLayout = { panel: 'top' | 'bottom'; add: 'first' | 'last' };
+
+const layoutKey = 'korzina.basket.layout.v1';
+export function loadBasketLayout(): BasketLayout {
+  let stored: Partial<BasketLayout> | null = null;
+  try { stored = JSON.parse(localStorage.getItem(layoutKey) || 'null'); } catch { /* unavailable */ }
+  return { panel: stored?.panel === 'top' ? 'top' : 'bottom', add: stored?.add === 'last' ? 'last' : 'first' };
+}
+export function saveBasketLayout(layout: BasketLayout): void {
+  try { localStorage.setItem(layoutKey, JSON.stringify(layout)); } catch { /* storage disabled */ }
+}

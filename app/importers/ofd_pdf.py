@@ -26,11 +26,20 @@ class ReceiptRow:
 
 
 @dataclass
+class FiscalPayment:
+    stage: int
+    at: str
+    seller: str
+
+
+@dataclass
 class Receipt:
     date: str                      # 'YYYY-MM-DD'
     store_name: str
     rows: list[ReceiptRow] = field(default_factory=list)
     total: float = 0.0
+    sender: str = ""               # адрес отправителя чека: у общей доставки X5 сеть видна по нему (app/chains.py)
+    fiscal_payment: FiscalPayment | None = None
 
 
 # --- регулярные выражения --------------------------------------------------
@@ -216,6 +225,8 @@ def _ensure_product(raw_name: str, qty: float | None = None) -> tuple[int, bool]
     weighed = (fractional or sold_by_weight(raw_name)) and not grams
     existing = repo.find_product_by_name(name)
     if existing and existing.id:
+        changed = not existing.active
+        existing.active = True
         if weighed and existing.unit == "pcs" and not existing.weight_g \
                 and not _in_a_basket(existing.id):
             # Товар, заведённый штучным по первому чеку, пришёл дробным количеством —
@@ -223,6 +234,8 @@ def _ensure_product(raw_name: str, qty: float | None = None) -> tuple[int, bool]
             # считают по ней (service.is_weighed). Но не у товара, что лежит в
             # корзине: там его «2» набраны штуками, и перевод сделал бы их килограммами.
             existing.unit = "kg"
+            changed = True
+        if changed:
             repo.upsert_product(existing)
         return existing.id, False
     unit = "kg" if weighed else "pcs"

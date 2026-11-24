@@ -264,6 +264,13 @@ def test_the_catalog_does_not_give_a_latin_name_for_a_russian_receipt(monkeypatc
     assert phonecart._catalog_name(raw) is None
 
 
+def test_generic_product_and_size_do_not_identify_a_branded_catalog_item(monkeypatch):
+    monkeypatch.setattr("app.catalog.store.search_items",
+                        lambda query, limit=3: [{"name": "Молоко Домик в деревне 930 мл"}])
+
+    assert phonecart._catalog_name("Молоко 1 л") is None
+
+
 def test_the_catalog_skips_a_latin_candidate_and_takes_the_russian_one(monkeypatch):
     """Латинского кандидата пропускаем и смотрим дальше: русское имя в базе есть."""
     raw = "Parmalat молоко 1 8 1 л"
@@ -340,6 +347,9 @@ def test_ordinary_goods_with_service_words_in_the_middle_are_not_cut(no_catalog)
     "Плата   за доставку",
     "Сборка",
     "СБОРКА И УПАКОВКА",
+    "Пакет ПЯТЕРОЧКА 65х40 см",            # фирменный пакет с кассы (14.11.2026, заказ Пятёрочки от 1 ноября)
+    "Пятерочка 65х40см",                   # он же в корзине: слово «Пакет» при разборе чека потерялось
+    " ПАКЕТ  Перекрёсток 40x60 см",        # латинская «x», лишние пробелы, «ё»
 ])
 def test_service_roots_are_recognised(name):
     """Корни узнаются без учёта регистра, лишних пробелов и с «ё» вместо «е»."""
@@ -352,6 +362,10 @@ def test_service_roots_are_recognised(name):
     "Сборная солянка 300 г",               # «сбор» в начале, но это не «сборка»
     "Вода питьевая плата за доставку",     # «плата за» не в начале строки
     "Крем для рук «Такси» 75 мл",          # «такси» в середине
+    "Пакеты для мусора 30 л",              # обычный товар, не пакет с кассы
+    "Пакет-майка 100 шт",
+    "Салфетки 20х20 см",                   # размер есть, названия сети нет
+    "Пятерочка Пельмени 400 г",            # название сети есть, размера в сантиметрах нет
 ])
 def test_ordinary_goods_are_not_service_lines(name):
     assert phonecart._service_line(name) is False

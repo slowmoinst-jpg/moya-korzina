@@ -284,6 +284,10 @@ _WAL_LOCKS: dict[str, threading.Lock] = {}
 # существующей базы их не донесёт.
 LATE_COLUMNS = (("chain_products", "price_seen", "TEXT"),
                 ("chain_products", "gtin", "TEXT"),
+                ("chain_products", "detail_checked_at", "TEXT"),
+                ("chain_products", "detail_requested_at", "TEXT"),
+                ("chain_products", "photo_digest", "TEXT"),
+                ("chain_products", "photo_after", "INTEGER NOT NULL DEFAULT 0"),
                 # Прежний номер единого товара у строки, чья привязка сброшена сменой
                 # названия, фасовки или штрихкода: по нему пересборка сохраняет номер
                 # и ведёт переадресацию (refresh._keep_numbers).
@@ -293,6 +297,8 @@ LATE_COLUMNS = (("chain_products", "price_seen", "TEXT"),
 # Индексы по поздним колонкам: в SCHEMA их ставить нельзя — у старой базы колонки
 # ещё нет, и скрипт упал бы раньше, чем ALTER её добавит.
 LATE_INDEXES = ("CREATE INDEX IF NOT EXISTS idx_cp_gtin ON chain_products(gtin)",
+                "CREATE INDEX IF NOT EXISTS idx_cp_photo_due ON chain_products(chain,photo_after)"
+                " WHERE active=1",
                 "CREATE INDEX IF NOT EXISTS idx_cp_prev ON chain_products(prev_item_id)")
 
 
@@ -315,7 +321,9 @@ LATE_INDEXES = ("CREATE INDEX IF NOT EXISTS idx_cp_gtin ON chain_products(gtin)"
 #     вовсе. 226 854 строки остались без веса и единицы — и привязки человека к ним
 #     тоже (у METRO 140 привязок, ни одной с весом), поэтому наряд не мог пересчитать,
 #     сколько упаковок класть в корзину сети.
-SCHEMA_VERSION = 8
+# 9 — артикулы Дикси в заглавном виде (16.11.2026): карта сайта отдавала их строчными, и тот же
+#     товар жил в каталоге двумя строками, «DI…» с ценой и «di…» без неё (_dixy_upper).
+SCHEMA_VERSION = 9
 LENTA_PER_KG_SINCE = "2026-09-27"   # с этого дня сборщик Ленты пишет развесному цену за кг
 
 
@@ -439,7 +447,50 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # стереть цену, пока метка жива.
         conn.execute("UPDATE chain_products SET price_seen = NULL"
                      " WHERE price IS NULL AND price_seen IS NOT NULL")
+    if version < 9:
+        _dixy_upper(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _dixy_upper(conn: sqlite3.Connection) -> None:
+    """Артикулы Дикси — в заглавный вид, каким их знает сама сеть (xml_id витрины и корзины).
+
+    Адрес карточки пишет артикул строчным («…-di00078791/»), и сборщик заводил по карте сайта
+    вторую строку того же товара: латинское название из адреса, без цены и фасовки (замер
+    15.11.2026: 122 пары, 91 разведена по разным единым товарам). Строчному артикулу сеть
+    отвечает «в наличии 0». Строчная строка без заглавной пары переименовывается. Если есть обе,
+    остаётся заглавная: она забирает у строчной рабочий адрес карточки, даты и признак «на
+    витрине», а без своего единого товара — и его. Единый товар строчной строки, оставшийся без
+    строк, переадресуется к товару заглавной, чтобы привязки людей к нему не рвались.
+    """
+    low_only = "chain='dixy' AND sku != upper(sku) AND sku NOT LIKE '%-%'"
+    for low in conn.execute(f"SELECT * FROM chain_products WHERE {low_only}").fetchall():
+        top = conn.execute("SELECT * FROM chain_products WHERE chain='dixy' AND sku=?",
+                           (str(low["sku"]).upper(),)).fetchone()
+        if top is None:
+            conn.execute("UPDATE chain_products SET sku=upper(sku) WHERE id=?", (low["id"],))
+            continue
+        orphan = None
+        if top["item_id"] is None:
+            conn.execute("UPDATE chain_products SET item_id=?, link_method=?, link_score=? WHERE id=?",
+                         (low["item_id"], low["link_method"], low["link_score"], top["id"]))
+        elif low["item_id"] is not None and low["item_id"] != top["item_id"] and not conn.execute(
+                "SELECT 1 FROM chain_products WHERE id != ? AND (item_id = ? OR prev_item_id = ?) LIMIT 1",
+                (low["id"], low["item_id"], low["item_id"])).fetchone():
+            orphan = int(low["item_id"])
+        conn.execute("UPDATE chain_products SET url=COALESCE(?, url), active=MAX(active, ?),"
+                     " last_seen=MAX(last_seen, ?), first_seen=MIN(first_seen, ?) WHERE id=?",
+                     (low["url"], low["active"], low["last_seen"], low["first_seen"], top["id"]))
+        conn.execute("DELETE FROM chain_products WHERE id=?", (low["id"],))
+        if orphan is not None:
+            conn.execute("DELETE FROM catalog_items WHERE id=?", (orphan,))
+            conn.execute("UPDATE item_aliases SET new_id=? WHERE new_id=?", (top["item_id"], orphan))
+            conn.execute("INSERT INTO item_aliases (old_id, new_id, since) VALUES (?,?,?)"
+                         " ON CONFLICT(old_id) DO UPDATE SET new_id=excluded.new_id, since=excluded.since",
+                         (orphan, top["item_id"], now()))
+    for table in ("price_history", "chain_prices", "chain_misses"):
+        conn.execute(f"UPDATE OR IGNORE {table} SET sku=upper(sku) WHERE {low_only}")
+        conn.execute(f"DELETE FROM {table} WHERE {low_only}")
 
 
 # ---------- запись обхода ----------
@@ -836,14 +887,21 @@ def upsert_products(chain: str, products: Iterable[ChainProduct], seen_at: str |
                      p.image, p.barcode, code, p.price, stock, price_seen, stamp, stamp))
                 added += 1
                 continue
-            changed = (row["name"] != p.name or row["weight_g"] != p.weight_g
-                       or row["category"] != p.category or (row["barcode"] or None) != (p.barcode or None))
+            same_name = row["name"] == p.name
+            weight = row["weight_g"] if same_name and p.weight_g is None else p.weight_g
+            category = row["category"] if same_name and not p.category else p.category
+            changed = (not same_name or row["weight_g"] != weight or row["category"] != category
+                       or bool(p.barcode and row["barcode"] != p.barcode))
             # Цена, которой обход не принёс, остаётся прежней — но со СВОЕЙ датой
             # (price_seen), а не с датой этого обхода: иначе недельная цена уезжала в
             # базу человека как свежая.
             conn.execute(
-                "UPDATE chain_products SET name=?, brand=COALESCE(?, brand), weight_g=?, unit=COALESCE(?, unit),"
-                " category=?, url=COALESCE(?, url), image=COALESCE(?, image), barcode=COALESCE(?, barcode),"
+                "UPDATE chain_products SET name=?, brand=COALESCE(NULLIF(?,''), brand),"
+                " weight_g=?, unit=COALESCE(?, unit),"
+                " category=?, url=COALESCE(NULLIF(?,''), url),"
+                    " photo_after=CASE WHEN NULLIF(?, '') IS NOT NULL AND ? IS NOT image"
+                    " THEN 0 ELSE photo_after END,"
+                    " image=COALESCE(NULLIF(?,''), image), barcode=COALESCE(?, barcode),"
                 # gtin держится в согласии с barcode: сеть сменила код на внутренний или
                 # пустой — прежний GTIN не должен находить строку «по штрихкоду».
                 " gtin=CASE WHEN ? IS NULL THEN gtin ELSE ? END,"
@@ -852,8 +910,8 @@ def upsert_products(chain: str, products: Iterable[ChainProduct], seen_at: str |
                 + (", prev_item_id=COALESCE(item_id, prev_item_id), item_id=NULL,"
                    " link_method=NULL, link_score=NULL" if changed else "")
                 + " WHERE id=?",
-                (p.name, p.brand, p.weight_g, p.unit, p.category, p.url, p.image, p.barcode,
-                 p.barcode, code, p.price, stock, price_seen, stamp, row["id"]))
+                (p.name, p.brand, weight, p.unit, category, p.url, p.image, p.image, p.image, p.barcode or None,
+                 p.barcode or None, code, p.price, stock, price_seen, stamp, row["id"]))
             updated += int(changed)
         conn.commit()
     return seen, added, updated
@@ -1236,6 +1294,7 @@ def thin_skus(chain: str, limit: int) -> list[str]:
     без цены, но с маркой и штрихкодом — и в добор не попадали вовсе.
     """
     _ready()
+    cutoff = (datetime.now() - timedelta(hours=20)).isoformat(timespec="microseconds")
     with connect() as conn:
         return [str(r["sku"]) for r in conn.execute(
             "SELECT p.sku,"
@@ -1244,9 +1303,11 @@ def thin_skus(chain: str, limit: int) -> list[str]:
             " (SELECT COUNT(*) FROM chain_products q WHERE q.item_id=p.item_id AND q.active=1"
             "   AND q.chain<>p.chain) AS kin"
             " FROM chain_products p WHERE p.chain=? AND p.active=1"
-            " AND (p.brand IS NULL OR p.barcode IS NULL OR p.price IS NULL)"
-            " ORDER BY (priced_kin>0) DESC, (kin>0) DESC, p.first_seen LIMIT ?",
-            (chain, int(limit)))]
+            " AND (p.brand IS NULL OR p.barcode IS NULL OR COALESCE(p.price,0)<=0)"
+            " AND COALESCE(p.detail_checked_at,'')<=?"
+            " ORDER BY (p.detail_checked_at IS NOT NULL), (priced_kin>0) DESC, (kin>0) DESC,"
+            " COALESCE(p.detail_checked_at,p.first_seen),p.id LIMIT ?",
+            (chain, cutoff, int(limit)))]
 
 
 def stale_price_skus(chain: str, limit: int, older_than_hours: float = 20.0) -> list[str]:
@@ -1284,6 +1345,47 @@ def stale_price_skus(chain: str, limit: int, older_than_hours: float = 20.0) -> 
             " AND COALESCE(price_seen, first_seen) <= ?"
             " ORDER BY COALESCE(price_seen, first_seen) ASC, id ASC LIMIT ?",
             (chain, cutoff, int(limit)))]
+
+
+def detail_refresh_skus(chain: str, limit: int) -> list[str]:
+    """Reserve part of the existing nightly budget for incomplete cards and rotate misses."""
+    if limit <= 0:
+        return []
+    _ready()
+    cutoff = (datetime.now() - timedelta(hours=20)).isoformat(timespec="microseconds")
+    stock_gap = " OR in_stock IS NULL" if chain == "lenta" else ""
+    with connect() as conn:
+        gaps = [r[0] for r in conn.execute(
+            "SELECT sku FROM chain_products WHERE chain=? AND active=1"
+            " AND COALESCE(detail_checked_at, first_seen)<=?"
+            f" AND (COALESCE(price,0)<=0 OR COALESCE(image,'')='' {stock_gap})"
+            " ORDER BY (detail_requested_at IS NOT NULL) DESC, detail_requested_at,"
+            " COALESCE(detail_checked_at, first_seen), id LIMIT ?",
+            (chain, cutoff, limit))]
+        stale = [r[0] for r in conn.execute(
+            "SELECT sku FROM chain_products WHERE chain=? AND active=1 AND price>0"
+            " AND COALESCE(price_seen,first_seen)<=? AND COALESCE(detail_checked_at,'')<=?"
+            " ORDER BY COALESCE(price_seen,first_seen),id LIMIT ?", (chain, cutoff, cutoff, limit))]
+    reserve = max(1, limit // 4)
+    return list(dict.fromkeys(gaps[:reserve] + stale + gaps[reserve:]))[:limit]
+
+
+def mark_detail_checked(chain: str, sku: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE chain_products SET detail_checked_at=?,detail_requested_at=NULL WHERE chain=? AND sku=?",
+                     (now(), chain, sku))
+
+
+def request_details(cards: list[tuple[str, str]]) -> None:
+    """Remember incomplete visible cards for the existing, rate-limited detail crawl."""
+    if not cards:
+        return
+    cutoff = (datetime.now() - timedelta(hours=20)).isoformat(timespec="microseconds")
+    with connect() as conn:
+        conn.execute("PRAGMA busy_timeout=75")
+        conn.executemany("UPDATE chain_products SET detail_requested_at=? WHERE chain=? AND sku=?"
+                         " AND active=1 AND detail_requested_at IS NULL AND COALESCE(detail_checked_at,'')<=?",
+                         [(now(), c, s, cutoff) for c, s in set(cards)])
 
 
 def products_of_chain(chain: str, active_only: bool = True) -> list[dict]:
@@ -1503,7 +1605,8 @@ def search_folded(terms, limit: int = 80, conn: sqlite3.Connection | None = None
 
 
 def search_items(query: str, limit: int = 20, conn: sqlite3.Connection | None = None, *,
-                 by_name: bool = False) -> list[dict]:
+                 by_name: bool = False, chain: str | None = None,
+                 purchased: set[int] | None = None) -> list[dict]:
     """Поиск по единым товарам: все слова запроса должны войти в название.
 
     Порядок считает сам SQL, до LIMIT: пересортировка в Python видела только первые
@@ -1526,6 +1629,14 @@ def search_items(query: str, limit: int = 20, conn: sqlite3.Connection | None = 
 
     forms = [("i.norm", (w,)) for w in ordered_words(query)]
     if by_name:
+        if any(words[0] in ("яйцо", "яйца") for _, words in forms):
+            def egg_forms(word: str) -> tuple[str, ...]:
+                if word in ("яйцо", "яйца"):
+                    return ("яйцо", "яйца")
+                if re.fullmatch("[сc][012]", word):
+                    return ("с" + word[1], "c" + word[1])
+                return (word,)
+            forms = [(col, egg_forms(words[0])) for col, words in forms]
         # Родовые слова обязательны, как остальные: «сыр российский» без «сыр» отдавал шоколад
         # «Российский». LIKE различает регистр у кириллицы, а LOWER() её не берёт: три написания.
         noise = dict.fromkeys(w for w in re.findall(r"[0-9a-zа-я]+", query.lower()) if w in NOISE_WORDS)
@@ -1533,16 +1644,37 @@ def search_items(query: str, limit: int = 20, conn: sqlite3.Connection | None = 
     if not forms:
         return []
     where = " AND ".join("(" + " OR ".join(f"{col} LIKE ?" for _ in f) + ")" for col, f in forms)
+    if chain:
+        where += (" AND EXISTS (SELECT 1 FROM chain_products cp WHERE cp.item_id=i.id"
+                  " AND cp.chain=? AND cp.active=1 AND cp.in_stock=1 AND cp.price>0"
+                  + _NOT_PLACEHOLDER.replace("p.", "cp.") + ")")
     column, head = forms[0]       # слова — из [0-9a-zа-я], подстановочных % и _ в них нет
     whole = " OR ".join(f"{column} = ? OR {column} LIKE ?" for _ in head)
     prefix = " OR ".join(f"{column} LIKE ?" for _ in head)
     params = ([f"%{w}%" for _, f in forms for w in f]
+              + ([chain] if chain else [])
               + [x for w in head for x in (w, f"{w} %")] + [f"{w}%" for w in head] + [limit])
+    sellable = ("MAX(CASE WHEN p.price>0 AND p.in_stock=1 THEN 1 ELSE 0 END) DESC, "
+                if by_name else "")
+    join = "LEFT JOIN"
+    if purchased is not None:
+        join = "JOIN"
+        if chain:
+            where += " AND p.chain=?"
+        # SQL ordering must precede LIMIT, including for a favourite that is last by name.
+        sellable = ("i.id IN (SELECT value FROM json_each(?)) DESC,"
+                    " MAX(CASE WHEN p.in_stock=1 THEN 1 ELSE 0 END) DESC,"
+                    " CASE WHEN MAX(CASE WHEN p.in_stock=1 THEN 1 ELSE 0 END)=1"
+                    " THEN COALESCE(MIN(CASE WHEN p.in_stock=1 AND p.price>0 THEN p.price END),1e20)"
+                    " ELSE COALESCE(MIN(CASE WHEN p.price>0 THEN p.price END),1e20) END, ")
+        index = sum(len(f) for _, f in forms) + int(bool(chain))
+        params[index:index] = ([chain] if chain else []) + [json.dumps(sorted(purchased))]
     sql = ("SELECT i.*, COUNT(DISTINCT p.chain) AS chains_n,"
            " GROUP_CONCAT(DISTINCT p.chain) AS chain_codes"
-           " FROM catalog_items i LEFT JOIN chain_products p ON p.item_id=i.id AND p.active=1"
+           f" FROM catalog_items i {join} chain_products p ON p.item_id=i.id AND p.active=1"
+           + (_NOT_PLACEHOLDER if by_name else "") +
            f" WHERE {where} GROUP BY i.id"
-           f" ORDER BY CASE WHEN {whole} THEN 0 WHEN {prefix} THEN 1 ELSE 2 END,"
+           f" ORDER BY {sellable}CASE WHEN {whole} THEN 0 WHEN {prefix} THEN 1 ELSE 2 END,"
            " chains_n DESC, LENGTH(i.name), i.id LIMIT ?")
     if conn is not None:                 # сопоставление зовёт тысячи раз: init уже был
         rows = conn.execute(sql, params).fetchall()

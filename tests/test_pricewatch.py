@@ -331,15 +331,16 @@ def test_the_watch_runs_in_its_own_thread(monkeypatch):
 
 def test_the_service_starts_the_watch(monkeypatch):
     """Служба korzina-jobs поднимает дозор вместе с приёмной дверью, до обхода."""
-    from app.catalog import store, worker
+    from app.catalog import photos, store, worker
 
     events = []
     monkeypatch.setattr(store, "init", lambda: None)
     monkeypatch.setattr(worker.api, "serve_in_background", lambda: events.append("api"))
     monkeypatch.setattr(worker.pricewatch, "serve_in_background", lambda: events.append("watch"))
+    monkeypatch.setattr(photos, "serve_in_background", lambda: events.append("photos"))
     monkeypatch.setattr(store, "revive_stuck", lambda: (_ for _ in ()).throw(SystemExit))
 
     with pytest.raises(SystemExit):
         worker.serve()
 
-    assert events == ["api", "watch"]
+    assert events == ["api", "watch", "photos"]

@@ -1,3 +1,5 @@
+import { searchPhoton } from '../shared/addressSearch.js';
+import { matchesProductQuery, purchasedProducts, rankProducts } from '../shared/searchRank.js';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import {
   DEMO_PHONE,
@@ -209,108 +211,12 @@ apiRouter.post('/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-// Public address autocomplete proxy (Photon prefix autocomplete + Nominatim house search)
 apiRouter.get('/address/suggest', async (req, res) => {
-  const q = String(req.query.q || '').trim();
-  if (q.length < 2) {
-    res.json({ ok: true, items: [] });
-    return;
+  try {
+    res.json({ ok: true, items: await searchPhoton(String(req.query.q || '')) });
+  } catch {
+    res.status(503).json({ ok: false, error: 'Поиск адресов временно недоступен' });
   }
-
-  type AddrItem = { label: string; full: string; lat: number; lon: number };
-  const results: AddrItem[] = [];
-  const seen = new Set<string>();
-  const pushUnique = (item: AddrItem) => {
-    const key = item.label.toLowerCase().replace(/\s+/g, ' ').trim();
-    if (!key || seen.has(key) || !Number.isFinite(item.lat) || !Number.isFinite(item.lon)) return;
-    seen.add(key);
-    results.push(item);
-  };
-
-  const fetchNominatim = async (): Promise<AddrItem[]> => {
-    try {
-      const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=ru&limit=6&q=${encodeURIComponent(q)}`;
-      const r = await fetch(url, {
-        headers: {
-          'User-Agent': 'MoyaKorzina/1.0 (local-first-spa)',
-          'Accept-Language': 'ru',
-        },
-        signal: AbortSignal.timeout(4000),
-      });
-      if (!r.ok) return [];
-      const data = (await r.json()) as Array<{
-        display_name?: string;
-        lat?: string;
-        lon?: string;
-        address?: Record<string, string>;
-      }>;
-      return data.map((item) => {
-        const a = item.address || {};
-        const city = a.city || a.town || a.village || a.municipality || a.state || '';
-        const road = a.road || a.pedestrian || a.residential || a.suburb || '';
-        const house = a.house_number || '';
-        const short = [city, road, house].filter(Boolean).join(', ') || item.display_name || q;
-        return {
-          label: short,
-          full: item.display_name || short,
-          lat: Number(item.lat),
-          lon: Number(item.lon),
-        };
-      });
-    } catch {
-      return [];
-    }
-  };
-
-  const fetchPhoton = async (): Promise<AddrItem[]> => {
-    try {
-      const url = `https://photon.komoot.io/api/?limit=8&q=${encodeURIComponent(q)}`;
-      const r = await fetch(url, {
-        headers: {
-          'User-Agent': 'MoyaKorzina/1.0 (local-first-spa)',
-          'Accept-Language': 'ru',
-        },
-        signal: AbortSignal.timeout(4000),
-      });
-      if (!r.ok) return [];
-      const data = (await r.json()) as {
-        features?: Array<{
-          geometry?: { coordinates?: [number, number] };
-          properties?: Record<string, string>;
-        }>;
-      };
-      const features = (data.features || []).filter(
-        (f) => !f.properties?.countrycode || f.properties.countrycode.toUpperCase() === 'RU'
-      );
-      return features.map((f) => {
-        const p = f.properties || {};
-        const city = p.city || p.town || p.village || p.state || '';
-        const street = p.street || (p.name && p.name !== city ? p.name : '');
-        const house = p.housenumber || '';
-        const label = [city, street, house].filter(Boolean).join(', ') || p.name || q;
-        const full = [p.country, p.state, p.city, p.district, street, house]
-          .filter(Boolean)
-          .filter((v, idx, arr) => arr.indexOf(v) === idx)
-          .join(', ');
-        const coords = f.geometry?.coordinates || [0, 0];
-        return {
-          label,
-          full: full || label,
-          lat: Number(coords[1]),
-          lon: Number(coords[0]),
-        };
-      });
-    } catch {
-      return [];
-    }
-  };
-
-  const [nomItems, phoItems] = await Promise.all([fetchNominatim(), fetchPhoton()]);
-  // Prefer Nominatim exact house/street matches first, then Photon prefix completions
-  for (const item of nomItems) pushUnique(item);
-  for (const item of phoItems) pushUnique(item);
-
-  res.json({ ok: true, items: results.slice(0, 6) });
 });
 
 // Public reverse geocode proxy
@@ -533,6 +439,7 @@ apiRouter.get('/search', (req, res) => {
     return;
   }
   const tokens = q.split(/\s+/).filter(Boolean);
+  const store = String(req.query.store || '');
   const results: Array<{
     product: Product;
     prices: Record<string, StoreProductPrice>;
@@ -542,8 +449,7 @@ apiRouter.get('/search', (req, res) => {
 
   for (const p of ws.products.values()) {
     if (!p.active) continue;
-    const hay = `${p.name} ${p.brand || ''} ${p.category || ''}`.toLowerCase();
-    if (!tokens.every((t) => hay.includes(t))) continue;
+    if (!matchesProductQuery(p, tokens, q)) continue;
     const pMap = ws.prices.get(p.id);
     const pricesRec: Record<string, StoreProductPrice> = {};
     if (pMap) {
@@ -551,7 +457,8 @@ apiRouter.get('/search', (req, res) => {
         pricesRec[code] = snap;
       }
     }
-    const chainsCount = pMap ? pMap.size : 0;
+    if (store && !(pricesRec[store]?.in_stock && pricesRec[store].price > 0)) continue;
+    const chainsCount = Object.values(pricesRec).filter(p => p.in_stock && p.price > 0).length;
     const parts: string[] = [];
     if (p.weight_g) parts.push(`${Math.round(p.weight_g)} г`);
     else parts.push(p.unit === 'kg' ? 'на вес' : 'шт');
@@ -563,10 +470,43 @@ apiRouter.get('/search', (req, res) => {
       chainsCount,
       small: parts.join(' · '),
     });
-    if (results.length >= 30) break;
   }
 
-  res.json({ ok: true, results });
+  res.json({ ok: true, results: rankProducts(results, purchasedProducts(ws.history), store).slice(0,30) });
+});
+
+apiRouter.route('/replacements').all((req, res) => {
+  if (!['GET', 'POST'].includes(req.method)) { res.sendStatus(405); return; }
+  const ws = (res.locals.auth as AuthLocals).workspace!;
+  const stores = [req.query.store].flat().map(String);
+  const unit = req.query.unit;
+  const exclude = Number(req.query.exclude);
+  if (!exclude || !['pcs','kg'].includes(String(unit)) || stores.length > 2 ||
+      stores.some(code => !SEED_STORES.some(store => store.code === code))) {
+    res.status(400).json({error:'Выберите вариант корзины заново'}); return;
+  }
+  const normalize = (name: string) => name.toLowerCase().replace(/яйцо/gu,'яйца')
+    .replace(/c([012])/gu,'с$1').replace(/(\d+)\s*шт/gu,'$1 шт');
+  const tokens = normalize(String(req.query.q || '')).trim().split(/\s+/);
+  const bought = purchasedProducts(ws.history);
+  const results = [];
+  for (const product of ws.products.values()) {
+    if (!product.active || product.unit !== unit || product.id === exclude) continue;
+    if (!tokens.every(t => normalize(product.name).includes(t))) continue;
+    const prices = Object.fromEntries([...(ws.prices.get(product.id) || [])].filter(([code,p]) =>
+      stores.includes(code) && p.source === 'live' && p.in_stock && p.price > 0 &&
+      Date.parse(p.fetched_at) >= Date.now() - 6 * 3600000));
+    if (!Object.keys(prices).length) continue;
+    results.push({product:{...product,previouslyBought:bought.has(product.id)},prices,
+      available:true,chainsCount:Object.keys(prices).length,small:''});
+  }
+  if (req.method === 'POST') {
+    const row = results.find(r => r.product.id === Number(req.query.product) && r.prices[stores[0]]?.sku === req.query.sku);
+    if (!row) { res.status(409).json({error:'Магазин больше не подтверждает эту замену'}); return; }
+    res.json({ok:true,item:row});
+  } else {
+    res.json({ok:true,results:rankProducts(results,bought).slice(0,30)});
+  }
 });
 
 apiRouter.post('/receipts/paste', (req, res) => {
