@@ -169,9 +169,18 @@ export interface StorePerk {
   bonus_max_pct: number;
 }
 
+export type StoreQuoteReason =
+  | 'login'
+  | 'refused'
+  | 'empty'
+  | 'cant'
+  | 'failed'
+  | 'lost';
+
 export interface StoreCartQuote {
   store_code: string;
   status: 'idle' | 'collecting' | 'ready' | 'error';
+  reason?: StoreQuoteReason | null;
   stamp: string | null;
   updated_at: string | null;
   address: string | null;
@@ -187,6 +196,7 @@ export interface StoreCartQuote {
   bonus_max_use: number;
   store_total: number | null;
   note: string | null;
+  cart_link?: string | null;
 }
 
 export interface Workspace {

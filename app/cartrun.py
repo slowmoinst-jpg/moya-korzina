@@ -77,6 +77,7 @@ from app.carttotal import NETWORK, OURS, Total
 log = logging.getLogger(__name__)
 
 KEY = "cartrun.rows"
+LINK_REV_KEY = "phonecart.link_rev"
 
 # Дороги.
 LINK, BROWSER, API, PHONE = "link", "browser", "api", "phone"
@@ -323,11 +324,37 @@ def live(row: Row) -> dict | None:
     return {"at": 0, "total": row.planned, "now": row.now}
 
 
-def _stamp(items) -> str:
+def _link_rev() -> int:
+    from app import repo
+
+    raw = repo.get_setting(LINK_REV_KEY)
+    try:
+        return int(raw) if raw else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def bump_link_rev() -> int:
+    """Поднять ревизию привязок, когда фоновый поиск нашёл новый артикул.
+
+    Отпечаток корзины (stamp_of) меняется — телефон видит это при следующем опросе
+    и автоматически добирает найденную позицию без ручного перезапуска.
+    """
+    from app import repo
+
+    with _WRITE:
+        nxt = _link_rev() + 1
+        repo.set_setting(LINK_REV_KEY, str(nxt))
+        return nxt
+
+
+def _stamp(items, link_rev: int = 0) -> str:
     """Отпечаток корзины: другой состав — другая ссылка-корзина.
 
     Запасной товар входит в кортеж позиции только когда он задан, чтобы отпечатки
-    корзин без запасных не поменялись.
+    корзин без запасных не поменялись. При ненулевой ревизии привязок (link_rev)
+    она подмешивается в тот же 12-значный hex-хеш, чтобы формат штампа оставался
+    совместим с проверкой _stamp_text на телефоне и сервере.
     """
     rows = []
     for i in items:
@@ -339,14 +366,15 @@ def _stamp(items) -> str:
         else:
             rows.append((pid, qty))
     pairs = sorted(rows)
-    return hashlib.sha1(repr(pairs).encode("utf-8")).hexdigest()[:12]
+    payload = repr(pairs) if not link_rev else repr((pairs, "link_rev", int(link_rev)))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
 
 
 def stamp_of(basket_id: int) -> str:
     """Отпечаток корзины по её номеру. По нему телефон видит, менялась ли она с прошлой сборки."""
     from app import repo
 
-    return _stamp(repo.basket_items(int(basket_id)))
+    return _stamp(repo.basket_items(int(basket_id)), link_rev=_link_rev())
 
 
 def _lines(code: str, basket_id: int):

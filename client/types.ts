@@ -45,6 +45,7 @@ export interface WorkspaceSnapshot {
   storePerks?: Record<string, StorePerk>;
   applyBonuses?: boolean;
   lastBasketId: number | null;
+  basketStamp?: string | null;
   repeated: { key: string; basket: number } | null;
   fnsConnected: boolean;
   fnsPhone: string | null;

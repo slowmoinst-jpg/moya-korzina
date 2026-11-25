@@ -359,8 +359,8 @@ def match_all(progress: Callable[[str], None] | None = None) -> dict:
         canons: list[dict] = []
         staged: list[tuple] = []
         links_to_write: list[tuple] = []
-        for group, number in zip(groups, keep):
-            canon = matching.canonical(group)
+        for gi, (group, number) in enumerate(zip(groups, keep)):
+            canon = canon_of.get(gi) or matching.canonical(group)
             canons.append(canon)
             values = (canon["name"], canon["norm"], canon["brand"], canon["weight_g"], canon["unit"],
                       canon["category"], canon["barcode"], canon["fnorm"])
@@ -403,14 +403,30 @@ def match_all(progress: Callable[[str], None] | None = None) -> dict:
                 " OR catalog_items.category IS NOT s.category"
                 " OR catalog_items.barcode IS NOT s.barcode"
                 " OR catalog_items.fnorm IS NOT s.fnorm)", (started,))
-        for row_id, item_id, method, score, prev in links_to_write:
-            if prev is not None and prev != item_id:
+        if links_to_write:
+            with_prev = [
+                (prev, item_id, method, score, row_id)
+                for row_id, item_id, method, score, prev in links_to_write
+                if prev is not None and prev != item_id
+            ]
+            without_prev = [
+                (item_id, method, score, row_id)
+                for row_id, item_id, method, score, prev in links_to_write
+                if prev is None or prev == item_id
+            ]
+            if with_prev:
                 # Номер строки меняется — прежний остаётся в её памяти (спящий номер).
-                conn.execute("UPDATE chain_products SET prev_item_id=?, item_id=?, link_method=?,"
-                             " link_score=? WHERE id=?", (prev, item_id, method, score, row_id))
-            else:
-                conn.execute("UPDATE chain_products SET item_id=?, link_method=?, link_score=?"
-                             " WHERE id=?", (item_id, method, score, row_id))
+                conn.executemany(
+                    "UPDATE chain_products SET prev_item_id=?, item_id=?, link_method=?,"
+                    " link_score=? WHERE id=?",
+                    with_prev,
+                )
+            if without_prev:
+                conn.executemany(
+                    "UPDATE chain_products SET item_id=?, link_method=?, link_score=?"
+                    " WHERE id=?",
+                    without_prev,
+                )
         # Номер, который снова жив, старой переадресацией никуда больше не ведёт.
         alive = [n for n in keep if n is not None]
         for i in range(0, len(alive), 500):

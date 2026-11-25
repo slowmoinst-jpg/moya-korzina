@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { humanDay, PHONE_CHAINS } from '../src/shared/format';
 import type { StorePerk } from '../src/types';
 import {
@@ -15,13 +15,6 @@ import {
   syncFnsServer,
 } from './api';
 import { KorzinaBridge } from './device';
-import {
-  applyManualReceiptLocal,
-  buildLocalWorkspace,
-  DEMO_PHONE,
-  formatPhoneDisplayLocal,
-  resolveLoginLocal,
-} from './localSeed';
 import { Icon } from './components/Icons';
 import {
   buildBoardClient,
@@ -34,12 +27,7 @@ import {
   groupOrdersByMonth,
 } from './engine';
 import { BasketScreen } from './screens/BasketScreen';
-import { BasketsScreen } from './screens/BasketsScreen';
 import { CheaperScreen } from './screens/CheaperScreen';
-import { LoginScreen } from './screens/LoginScreen';
-import { OrdersScreen } from './screens/OrdersScreen';
-import { PricesScreen } from './screens/PricesScreen';
-import { SettingsScreen } from './screens/SettingsScreen';
 import {
   isSyncDirty,
   loadBasketViewMode,
@@ -48,6 +36,7 @@ import {
   saveBasketViewMode,
   saveCachedAuth,
   saveCachedSnapshot,
+  scheduleSaveCachedSnapshot,
   setSyncDirty,
 } from './storage';
 import type {
@@ -58,6 +47,22 @@ import type {
   SpaScreen,
   WorkspaceSnapshot,
 } from './types';
+
+const BasketsScreen = lazy(() =>
+  import('./screens/BasketsScreen').then((m) => ({ default: m.BasketsScreen }))
+);
+const LoginScreen = lazy(() =>
+  import('./screens/LoginScreen').then((m) => ({ default: m.LoginScreen }))
+);
+const OrdersScreen = lazy(() =>
+  import('./screens/OrdersScreen').then((m) => ({ default: m.OrdersScreen }))
+);
+const PricesScreen = lazy(() =>
+  import('./screens/PricesScreen').then((m) => ({ default: m.PricesScreen }))
+);
+const SettingsScreen = lazy(() =>
+  import('./screens/SettingsScreen').then((m) => ({ default: m.SettingsScreen }))
+);
 
 function readScreenFromLocation(): SpaScreen {
   if (typeof window === 'undefined') return 'basket';
@@ -113,10 +118,17 @@ export const App: React.FC = () => {
   );
 
   const syncTimerRef = useRef<number | null>(null);
-  const syncInFlightRef = useRef<Promise<void> | null>(null);
+  const syncInFlightRef = useRef<Promise<string | null> | null>(null);
+  const serverBasketStampRef = useRef<string | null>(ws?.basketStamp ?? null);
+  const pricesVersionRef = useRef<number | null>(null);
+  const activeBasketIdRef = useRef<number | null>(null);
   const collectTimerRef = useRef<number | null>(null);
   const lastCollectedKeyRef = useRef<string>('');
   const toastTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    serverBasketStampRef.current = ws?.basketStamp ?? null;
+  }, [ws?.phone, ws?.basketStamp]);
 
   const notify = useCallback((msg: string) => {
     setToast(msg);
@@ -225,17 +237,29 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('online', onOnline);
   }, [ws, notify]);
 
-  const flushSync = useCallback((snapshot: WorkspaceSnapshot): Promise<void> => {
-    if (snapshot.isDemo) return Promise.resolve();
+  const flushSync = useCallback((snapshot: WorkspaceSnapshot): Promise<string | null> => {
+    if (snapshot.isDemo) return Promise.resolve(null);
     const p = pushSyncSnapshot(snapshot)
       .then((res) => {
         setSyncDirty(snapshot.phone, false);
+        const nextStamp = res.basketStamp || null;
+        if (nextStamp) {
+          serverBasketStampRef.current = nextStamp;
+          setWs((prev) => {
+            if (!prev || prev.basketStamp === nextStamp) return prev;
+            const updated = { ...prev, basketStamp: nextStamp };
+            scheduleSaveCachedSnapshot(updated);
+            return updated;
+          });
+        }
         if (res.serverStarted && res.serverStarted.length > 0) {
           setActiveCollecting((prev) => [...new Set([...prev, ...res.serverStarted!])]);
         }
+        return nextStamp;
       })
       .catch(() => {
         // Keep dirty flag for next online sync
+        return null;
       })
       .finally(() => {
         if (syncInFlightRef.current === p) {
@@ -246,13 +270,13 @@ export const App: React.FC = () => {
     return p;
   }, []);
 
-  // Persist locally immediately (0ms) and schedule fast debounced background server sync
+  // Persist locally debounced (never blocks rapid +/- clicks) and schedule fast background server sync
   const commitWorkspace = useCallback(
     (updater: (prev: WorkspaceSnapshot) => WorkspaceSnapshot) => {
       setWs((prev) => {
         if (!prev) return prev;
         const next = updater(prev);
-        saveCachedSnapshot(next);
+        scheduleSaveCachedSnapshot(next);
 
         if (!next.isDemo) {
           setSyncDirty(next.phone, true);
@@ -271,6 +295,7 @@ export const App: React.FC = () => {
   // Derived data calculated locally in <3ms
   const activeBasket = useMemo(() => (ws ? getActiveBasket(ws) : null), [ws]);
   const activeBasketId = activeBasket?.id ?? null;
+  activeBasketIdRef.current = activeBasketId;
 
   const items = useMemo(
     () => (ws ? getActiveBasketItems(ws, activeBasketId) : []),
@@ -301,11 +326,17 @@ export const App: React.FC = () => {
     [ws, activeBasketId]
   );
 
-  const orders = useMemo(() => (ws ? buildOrdersClient(ws) : []), [ws]);
-  const groupedOrders = useMemo(() => groupOrdersByMonth(orders), [orders]);
+  const orders = useMemo(
+    () => (ws && screen === 'orders' ? buildOrdersClient(ws) : []),
+    [ws, screen]
+  );
+  const groupedOrders = useMemo(
+    () => (screen === 'orders' ? groupOrdersByMonth(orders) : []),
+    [orders, screen]
+  );
   const storeTotals = useMemo(
-    () => (ws ? computeSingleStoreTotals(ws, activeBasketId) : {}),
-    [ws, activeBasketId]
+    () => (ws && screen === 'settings' ? computeSingleStoreTotals(ws, activeBasketId) : {}),
+    [ws, activeBasketId, screen]
   );
 
   const basketStamp = useMemo(
@@ -318,23 +349,33 @@ export const App: React.FC = () => {
     return PHONE_CHAINS.filter((c) => ws.connections[c]?.connected).join(',');
   }, [ws]);
 
-  // Pull live collection quotes, prices, connections, and detected bonuses from server
+  // Pull live collection quotes, delta prices for active basket, connections, and detected bonuses from server
   const refreshLiveRuns = useCallback(async () => {
     const busy = KorzinaBridge.busy();
     setActiveCollecting([...new Set([...busy.going, ...busy.soon])]);
     try {
-      const live = await fetchLiveRuns();
+      const live = await fetchLiveRuns({
+        basketId: activeBasketIdRef.current,
+        pricesVersion: pricesVersionRef.current,
+      });
+      if (live.basketStamp) {
+        serverBasketStampRef.current = live.basketStamp;
+      }
+      if (typeof live.pricesVersion === 'number') {
+        pricesVersionRef.current = live.pricesVersion;
+      }
       setWs((prev) => {
         if (!prev) return prev;
         const next: WorkspaceSnapshot = {
           ...prev,
           storeQuotes: live.storeQuotes,
           connections: { ...prev.connections, ...live.connections },
-          prices: { ...prev.prices, ...live.prices },
+          prices: live.prices ? { ...prev.prices, ...live.prices } : prev.prices,
           storePerks: { ...(prev.storePerks || {}), ...live.storePerks },
+          basketStamp: live.basketStamp || prev.basketStamp || null,
           syncedAt: live.syncedAt,
         };
-        saveCachedSnapshot(next);
+        scheduleSaveCachedSnapshot(next);
         return next;
       });
       const collectingFromQuotes = Object.values(live.storeQuotes || {})
@@ -387,18 +428,23 @@ export const App: React.FC = () => {
       if (!force && lastCollectedKeyRef.current === collectKey) return;
       lastCollectedKeyRef.current = collectKey;
 
+      let syncedStamp: string | null = null;
       if (!ws.isDemo) {
         if (syncTimerRef.current) {
           window.clearTimeout(syncTimerRef.current);
           syncTimerRef.current = null;
         }
         if (syncInFlightRef.current) {
-          await syncInFlightRef.current;
+          syncedStamp = await syncInFlightRef.current;
         }
         if (isSyncDirty(ws.phone)) {
-          await flushSync(ws);
+          syncedStamp = (await flushSync(ws)) || syncedStamp;
         }
       }
+
+      const stampForBridge =
+        (!ws.isDemo && (syncedStamp || serverBasketStampRef.current || ws.basketStamp)) ||
+        basketStamp;
 
       const chains = PHONE_CHAINS.map((code) => ({
         code,
@@ -409,7 +455,7 @@ export const App: React.FC = () => {
 
       KorzinaBridge.collect({
         basket: activeBasketId,
-        stamp: basketStamp,
+        stamp: stampForBridge,
         address: ws.address || '',
         point: ws.point,
         chains,
@@ -435,13 +481,14 @@ export const App: React.FC = () => {
 
   // Auth handlers (server-first with seamless Local-First fallback if offline or proxy-redirected)
   const handleLogin = async (phone: string, pin: string) => {
-    const [normalized, validationErr] = resolveLoginLocal(phone);
-    if (!normalized) {
-      throw new Error(validationErr || 'Введите номер телефона');
+    const digits = phone.replace(/\D/g, '');
+    if (!digits) {
+      throw new Error('Введите номер телефона');
     }
 
     try {
       const res = await loginByPhone(phone, pin);
+      pricesVersionRef.current = null;
       setAuth(res.auth);
       saveCachedAuth(res.auth);
       setWs(res.snapshot);
@@ -454,14 +501,20 @@ export const App: React.FC = () => {
         throw err;
       }
       // Backend unreachable or intercepted by preview proxy redirect — open Local-First workspace immediately
+      const seed = await import('./localSeed');
+      const [normalized, validationErr] = seed.resolveLoginLocal(phone);
+      if (!normalized) {
+        throw new Error(validationErr || 'Введите номер телефона');
+      }
       const localAuth: AuthState = {
         authenticated: true,
         phone: normalized,
-        phoneLabel: formatPhoneDisplayLocal(normalized),
+        phoneLabel: seed.formatPhoneDisplayLocal(normalized),
         isDemo: false,
         pinRequired: false,
       };
-      const localWs = loadCachedSnapshot(normalized) || buildLocalWorkspace(normalized);
+      const localWs = loadCachedSnapshot(normalized) || seed.buildLocalWorkspace(normalized);
+      pricesVersionRef.current = null;
       setAuth(localAuth);
       saveCachedAuth(localAuth);
       setWs(localWs);
@@ -476,6 +529,7 @@ export const App: React.FC = () => {
   const handleDemo = async () => {
     try {
       const res = await loginDemo();
+      pricesVersionRef.current = null;
       setAuth(res.auth);
       saveCachedAuth(res.auth);
       setWs(res.snapshot);
@@ -487,14 +541,16 @@ export const App: React.FC = () => {
       if (!(err instanceof ApiUnavailableError)) {
         throw err;
       }
+      const seed = await import('./localSeed');
       const localAuth: AuthState = {
         authenticated: true,
-        phone: DEMO_PHONE,
+        phone: seed.DEMO_PHONE,
         phoneLabel: 'Демо',
         isDemo: true,
         pinRequired: false,
       };
-      const localWs = loadCachedSnapshot(DEMO_PHONE) || buildLocalWorkspace(DEMO_PHONE);
+      const localWs = loadCachedSnapshot(seed.DEMO_PHONE) || seed.buildLocalWorkspace(seed.DEMO_PHONE);
+      pricesVersionRef.current = null;
       setAuth(localAuth);
       saveCachedAuth(localAuth);
       setWs(localWs);
@@ -603,6 +659,16 @@ export const App: React.FC = () => {
       notify(`Добавлено: ${habit.name}`);
     },
     [handleUpdateQty, notify]
+  );
+
+  const handleAddTopupProduct = useCallback(
+    (productId: number, productName: string) => {
+      const existing = items.find((i) => i.product_id === productId);
+      const nextQty = existing ? Math.round((existing.qty + 1) * 1000) / 1000 : 1;
+      handleUpdateQty(productId, nextQty);
+      notify(`Добавлено: ${productName}`);
+    },
+    [items, handleUpdateQty, notify]
   );
 
   const handleAddAllHabits = useCallback(() => {
@@ -914,9 +980,10 @@ export const App: React.FC = () => {
   const handlePasteReceipt = useCallback(
     async (storeCode: string, text: string) => {
       if (ws?.isDemo) {
+        const seed = await import('./localSeed');
         let importedCount = 0;
         commitWorkspace((prev) => {
-          const res = applyManualReceiptLocal(prev, storeCode, text);
+          const res = seed.applyManualReceiptLocal(prev, storeCode, text);
           importedCount = res.imported;
           return res.next;
         });
@@ -931,9 +998,10 @@ export const App: React.FC = () => {
         notify(`Добавлено ${res.imported} поз. из чека`);
       } catch (err) {
         if (err instanceof ApiUnavailableError) {
+          const seed = await import('./localSeed');
           let importedCount = 0;
           commitWorkspace((prev) => {
-            const res = applyManualReceiptLocal(prev, storeCode, text);
+            const res = seed.applyManualReceiptLocal(prev, storeCode, text);
             importedCount = res.imported;
             return res.next;
           });
@@ -951,6 +1019,13 @@ export const App: React.FC = () => {
     saveBasketViewMode(mode);
   }, []);
 
+  const collectingChains = useMemo(() => {
+    const fromQuotes = Object.values(ws?.storeQuotes || {})
+      .filter((q) => q.status === 'collecting')
+      .map((q) => q.store_code);
+    return [...new Set([...activeCollecting, ...fromQuotes])];
+  }, [activeCollecting, ws?.storeQuotes]);
+
   if (booting) {
     return (
       <div className="spa-boot">
@@ -962,25 +1037,30 @@ export const App: React.FC = () => {
     );
   }
 
+  const screenFallback = (
+    <div className="spa-boot">
+      <span>Загружаем…</span>
+    </div>
+  );
+
   if (!auth?.authenticated || !ws) {
     return (
-      <LoginScreen
-        pinRequired={Boolean(auth?.pinRequired)}
-        onLogin={handleLogin}
-        onDemo={handleDemo}
-      />
+      <Suspense fallback={screenFallback}>
+        <LoginScreen
+          pinRequired={Boolean(auth?.pinRequired)}
+          onLogin={handleLogin}
+          onDemo={handleDemo}
+        />
+      </Suspense>
     );
   }
 
   const bestTotal = board.places.length > 0 ? board.places[0].total : null;
 
   const applyBonuses = ws.applyBonuses !== false;
-  const collectingChains = useMemo(() => {
-    const fromQuotes = Object.values(ws.storeQuotes || {})
-      .filter((q) => q.status === 'collecting')
-      .map((q) => q.store_code);
-    return [...new Set([...activeCollecting, ...fromQuotes])];
-  }, [activeCollecting, ws.storeQuotes]);
+
+  const effectiveBasketStamp =
+    (!ws.isDemo && (ws.basketStamp || serverBasketStampRef.current)) || basketStamp;
 
   const leftScreenContent = (() => {
     if (screen === 'cheaper' && !isDesktop) {
@@ -988,12 +1068,14 @@ export const App: React.FC = () => {
         <CheaperScreen
           ws={ws}
           basketId={activeBasketId}
+          basketStamp={effectiveBasketStamp}
           board={board}
           itemsCount={items.length}
           applyBonuses={applyBonuses}
           activeCollecting={collectingChains}
           onToggleApplyBonuses={handleToggleApplyBonuses}
           onPickPlace={(idx) => setPickedPlace(idx)}
+          onAddTopupProduct={handleAddTopupProduct}
           onBack={() => navigate('basket')}
           onOpenSettings={() => navigate('settings')}
           onRefreshLive={handleRefreshLive}
@@ -1013,69 +1095,77 @@ export const App: React.FC = () => {
 
     if (screen === 'orders') {
       return (
-        <OrdersScreen
-          groupedOrders={groupedOrders}
-          repeatedKey={ws.repeated?.key ?? null}
-          onRepeatOrder={handleRepeatOrder}
-          onBack={() => navigate('basket')}
-          onOpenSettings={() => navigate('settings')}
-        />
+        <Suspense fallback={screenFallback}>
+          <OrdersScreen
+            groupedOrders={groupedOrders}
+            repeatedKey={ws.repeated?.key ?? null}
+            onRepeatOrder={handleRepeatOrder}
+            onBack={() => navigate('basket')}
+            onOpenSettings={() => navigate('settings')}
+          />
+        </Suspense>
       );
     }
 
     if (screen === 'baskets') {
       return (
-        <BasketsScreen
-          ws={ws}
-          activeBasketId={activeBasketId}
-          onSelectBasket={handleSelectBasket}
-          onCreateBasket={handleCreateBasket}
-          onDeleteBasket={handleDeleteBasket}
-          onBack={() => navigate('basket')}
-        />
+        <Suspense fallback={screenFallback}>
+          <BasketsScreen
+            ws={ws}
+            activeBasketId={activeBasketId}
+            onSelectBasket={handleSelectBasket}
+            onCreateBasket={handleCreateBasket}
+            onDeleteBasket={handleDeleteBasket}
+            onBack={() => navigate('basket')}
+          />
+        </Suspense>
       );
     }
 
     if (screen === 'prices') {
       return (
-        <PricesScreen
-          ws={ws}
-          items={items}
-          bestTotal={bestTotal}
-          isDesktop={isDesktop}
-          onUpdateQty={handleUpdateQty}
-          onOpenBasket={() => navigate('basket')}
-          onOpenCheaper={() => navigate('cheaper')}
-          onOpenSettings={() => navigate('settings')}
-        />
+        <Suspense fallback={screenFallback}>
+          <PricesScreen
+            ws={ws}
+            items={items}
+            bestTotal={bestTotal}
+            isDesktop={isDesktop}
+            onUpdateQty={handleUpdateQty}
+            onOpenBasket={() => navigate('basket')}
+            onOpenCheaper={() => navigate('cheaper')}
+            onOpenSettings={() => navigate('settings')}
+          />
+        </Suspense>
       );
     }
 
     if (screen === 'settings') {
       return (
-        <SettingsScreen
-          ws={ws}
-          storeTotals={storeTotals}
-          itemsCount={items.length}
-          bestTotal={bestTotal}
-          isDesktop={isDesktop}
-          activeCollecting={collectingChains}
-          onToggleStore={handleToggleStore}
-          onUpdateStorePerk={handleUpdateStorePerk}
-          onSaveAddress={handleSaveAddress}
-          onToggleOffer={handleToggleOffer}
-          onAddOffer={handleAddOffer}
-          onDeleteOffer={handleDeleteOffer}
-          onSyncFns={handleSyncFns}
-          onDisconnectFns={handleDisconnectFns}
-          onPasteReceipt={handlePasteReceipt}
-          onOpenBasket={() => navigate('basket')}
-          onOpenCheaper={() => navigate('cheaper')}
-          onOpenPrices={() => navigate('prices')}
-          onLogout={handleLogout}
-          initialAuthStore={pendingAuthStore}
-          onClearInitialAuthStore={() => setPendingAuthStore(null)}
-        />
+        <Suspense fallback={screenFallback}>
+          <SettingsScreen
+            ws={ws}
+            storeTotals={storeTotals}
+            itemsCount={items.length}
+            bestTotal={bestTotal}
+            isDesktop={isDesktop}
+            activeCollecting={collectingChains}
+            onToggleStore={handleToggleStore}
+            onUpdateStorePerk={handleUpdateStorePerk}
+            onSaveAddress={handleSaveAddress}
+            onToggleOffer={handleToggleOffer}
+            onAddOffer={handleAddOffer}
+            onDeleteOffer={handleDeleteOffer}
+            onSyncFns={handleSyncFns}
+            onDisconnectFns={handleDisconnectFns}
+            onPasteReceipt={handlePasteReceipt}
+            onOpenBasket={() => navigate('basket')}
+            onOpenCheaper={() => navigate('cheaper')}
+            onOpenPrices={() => navigate('prices')}
+            onLogout={handleLogout}
+            initialAuthStore={pendingAuthStore}
+            onClearInitialAuthStore={() => setPendingAuthStore(null)}
+          />
+        </Suspense>
       );
     }
 
@@ -1174,12 +1264,14 @@ export const App: React.FC = () => {
               <CheaperScreen
                 ws={ws}
                 basketId={activeBasketId}
+                basketStamp={effectiveBasketStamp}
                 board={board}
                 embedded
                 applyBonuses={applyBonuses}
                 activeCollecting={collectingChains}
                 onToggleApplyBonuses={handleToggleApplyBonuses}
                 onPickPlace={(idx) => setPickedPlace(idx)}
+                onAddTopupProduct={handleAddTopupProduct}
                 onRefreshLive={handleRefreshLive}
                 onConnectStore={(code) => {
                   if (KorzinaBridge.available()) {

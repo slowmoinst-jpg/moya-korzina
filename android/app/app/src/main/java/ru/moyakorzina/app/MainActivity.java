@@ -841,6 +841,8 @@ public class MainActivity extends Activity {
     private static final long PLAN_PREFETCH_TTL_MS = 30_000L;
     private final Map<String, JSONObject> prefetchedPlans = new HashMap<>();
     private final Map<String, Long> prefetchedPlanAt = new HashMap<>();
+    private final Set<String> prefetchInFlight = new HashSet<>();
+    private final Map<String, List<Runnable>> prefetchWaiters = new HashMap<>();
 
     private String cartApiJsCached = null;
 
@@ -2162,39 +2164,67 @@ public class MainActivity extends Activity {
     /** Забрать наряды сразу для всех стартующих сетей одним POST /api/device/cartplans. */
     private void prefetchBatchPlans(final int basket, final String stamp, final List<String> codes) {
         if (basket < 0 || stamp == null || stamp.isEmpty() || codes == null || codes.size() < 2) return;
+        final List<String> pendingCodes = new ArrayList<>();
+        final List<String> pendingKeys = new ArrayList<>();
+        long nowCheck = SystemClock.uptimeMillis();
+        for (String c : codes) {
+            String ck = planCacheKey(basket, stamp, c);
+            Long cachedAt = prefetchedPlanAt.get(ck);
+            if (cachedAt != null && (nowCheck - cachedAt) < PLAN_PREFETCH_TTL_MS && prefetchedPlans.containsKey(ck)) {
+                continue;
+            }
+            if (prefetchInFlight.contains(ck)) continue;
+            pendingCodes.add(c);
+            pendingKeys.add(ck);
+        }
+        if (pendingCodes.size() < 2) return;
         JSONObject body = new JSONObject();
         try {
             JSONArray storesArr = new JSONArray();
-            for (String c : codes) storesArr.put(c);
+            for (String c : pendingCodes) storesArr.put(c);
             body.put("stores", storesArr);
             body.put("background", true);
             body.put("basket", basket);
         } catch (Exception ignored) { return; }
+        for (String ck : pendingKeys) prefetchInFlight.add(ck);
         call("/api/device/cartplans", body, (status, text) -> {
-            if (status != 200) return;
             try {
-                JSONObject resp = new JSONObject(text);
-                JSONObject plans = resp.optJSONObject("plans");
-                if (plans == null) return;
-                long now = SystemClock.uptimeMillis();
-                Iterator<String> keys = plans.keys();
-                while (keys.hasNext()) {
-                    String code = keys.next();
-                    JSONObject p = plans.optJSONObject(code);
-                    if (p != null && p.optBoolean("ok", false)) {
-                        String ck = planCacheKey(basket, stamp, code);
-                        prefetchedPlans.put(ck, p);
-                        prefetchedPlanAt.put(ck, now);
+                if (status == 200) {
+                    JSONObject resp = new JSONObject(text);
+                    JSONObject plans = resp.optJSONObject("plans");
+                    if (plans != null) {
+                        long now = SystemClock.uptimeMillis();
+                        Iterator<String> keys = plans.keys();
+                        while (keys.hasNext()) {
+                            String code = keys.next();
+                            JSONObject p = plans.optJSONObject(code);
+                            if (p != null && p.optBoolean("ok", false)) {
+                                String ck = planCacheKey(basket, stamp, code);
+                                prefetchedPlans.put(ck, p);
+                                prefetchedPlanAt.put(ck, now);
+                            }
+                        }
                     }
                 }
-            } catch (Exception ignored) { }
+            } catch (Exception ignored) {
+            } finally {
+                for (String ck : pendingKeys) {
+                    prefetchInFlight.remove(ck);
+                    List<Runnable> waiters = prefetchWaiters.remove(ck);
+                    if (waiters != null) {
+                        for (Runnable w : waiters) {
+                            try { w.run(); } catch (Exception ignored) { }
+                        }
+                    }
+                }
+            }
         });
     }
 
     /** Взять у сервера наряд: позиции этой сети, правила кнопок, корзину и её отпечаток. */
     private void askPlan(final CartRun r, final Runnable then) {
         loadLedger(r);
-        // Быстрый путь: если наряд уже предзагружен пакетом /api/device/cartplans и не нужен drop/override — 0 мс!
+        // Быстрый путь: если наряд уже предзагружен (или прямо сейчас летит) пакетом /api/device/cartplans и не нужен drop/override — без дублирующего POST!
         if (r.slot != null && r.linesOverride == null && r.basket >= 0 && !r.stamp.isEmpty()) {
             boolean needsDropLookup = false;
             Iterator<String> itCheck = r.cart.keys();
@@ -2202,7 +2232,7 @@ public class MainActivity extends Activity {
                 if (r.urls.optString(itCheck.next(), "").isEmpty()) { needsDropLookup = true; break; }
             }
             if (!needsDropLookup) {
-                String ck = planCacheKey(r.basket, r.stamp, r.code);
+                final String ck = planCacheKey(r.basket, r.stamp, r.code);
                 JSONObject cached = prefetchedPlans.remove(ck);
                 Long at = prefetchedPlanAt.remove(ck);
                 if (cached != null && at != null && (SystemClock.uptimeMillis() - at) < PLAN_PREFETCH_TTL_MS) {
@@ -2210,8 +2240,31 @@ public class MainActivity extends Activity {
                     applyPlanJson(r, cached, then);
                     return;
                 }
+                if (prefetchInFlight.contains(ck)) {
+                    List<Runnable> waiters = prefetchWaiters.get(ck);
+                    if (waiters == null) {
+                        waiters = new ArrayList<>();
+                        prefetchWaiters.put(ck, waiters);
+                    }
+                    waiters.add(() -> {
+                        if (!alive(r)) return;
+                        JSONObject p = prefetchedPlans.remove(ck);
+                        Long pAt = prefetchedPlanAt.remove(ck);
+                        if (p != null && pAt != null && (SystemClock.uptimeMillis() - pAt) < PLAN_PREFETCH_TTL_MS) {
+                            r.planAt = SystemClock.uptimeMillis();
+                            applyPlanJson(r, p, then);
+                        } else {
+                            askPlanSingle(r, then);
+                        }
+                    });
+                    return;
+                }
             }
         }
+        askPlanSingle(r, then);
+    }
+
+    private void askPlanSingle(final CartRun r, final Runnable then) {
         JSONObject body = new JSONObject();
         try {
             body.put("store", r.code);
@@ -5341,8 +5394,11 @@ public class MainActivity extends Activity {
 
             // Пятёрочка: «обрыв» — это 403 защиты сети, спрятанный CORS «*». Её куки обновляет
             // только скрипт своей страницы, robots.txt этого не умеет (эмулятор, 09.11.2026).
+            // Перекрёсток, METRO и Впрок при 401 также обновляют токен/сессию заходом на главную.
             boolean pyatRefresh = "pyaterochka".equals(r.code) && ("net".equals(stage) || "auth".equals(stage));
-            if ((("auth".equals(stage) && "perekrestok".equals(r.code)) || pyatRefresh) && !r.cartApiRefreshed) {
+            boolean authRefresh = "auth".equals(stage)
+                && ("perekrestok".equals(r.code) || "metro".equals(r.code) || "vprok".equals(r.code));
+            if ((authRefresh || pyatRefresh) && !r.cartApiRefreshed) {
                 r.cartApiRefreshed = true;
                 status(r, r.name + ": обновляю вход на сайте сети", false);
                 go(r, origin + "/");
@@ -5350,6 +5406,16 @@ public class MainActivity extends Activity {
                     if (!alive(r)) return;
                     runCartApiPayload(r, origin, rest, skippedLines, skippedReasons, linesInput, inputLinesBySku);
                 });
+                return;
+            }
+
+            if ("rate".equals(stage)) {
+                String rateWhy = why.isEmpty()
+                    ? "сеть временно ограничила частоту (429), повторю позже"
+                    : why;
+                status(r, r.name + ": пауза по лимиту сети (" + rateWhy + ")", true);
+                Log.i(TAG, r.name + ": 429 rate-limit — не переходим на касания (" + rateWhy + ")");
+                failRun(r, fitWhy(rateWhy));
                 return;
             }
 

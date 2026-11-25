@@ -250,6 +250,8 @@ def get_conn() -> sqlite3.Connection:
             conn.execute("PRAGMA journal_mode = WAL")
         _WAL.add(path)
     conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA cache_size = -16000")
+    conn.execute("PRAGMA temp_store = MEMORY")
     return conn
 
 

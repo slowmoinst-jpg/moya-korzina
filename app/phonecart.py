@@ -390,7 +390,7 @@ def _landed_skus(store: str) -> frozenset[str]:
     )
 
 
-def plan(body: dict) -> dict:
+def plan(body: dict, shared: dict | None = None) -> dict:
     """Наряд для телефона: вся последняя корзина, переложенная на артикулы этой сети.
 
     Не только позиции лучшего варианта, а вся корзина: смысл в том, чтобы каждая
@@ -409,7 +409,11 @@ def plan(body: dict) -> dict:
     top_up = bool(body.get("top_up"))
     background = bool(body.get("background"))
     picked = {k: v for k, v in body.items() if k in ("basket", "lines")}
-    found = {"linked": 0, "recent": 0, "later": 0} if picked.get("lines") is not None else _link(picked, store, live=not background)
+    found = (
+        {"linked": 0, "recent": 0, "later": 0}
+        if picked.get("lines") is not None
+        else _link(picked, store, live=not background, shared=shared)
+    )
     lines, empty_note = api._plan_lines(picked, store)
     # Служебные строки чека («Аренда транспортного средства», «Сборка») — не товар:
     # в наряд и в поиск они не идут. Отсекаем ДО cartplan.build, иначе они попали бы
@@ -553,6 +557,15 @@ def plans(body: dict) -> dict:
     out_plans: dict[str, dict] = {}
     basket_id = None
     stamp = ""
+    # Общий кэш на весь пакет сетей: корзина, товары и resolve в catalog.db читаются
+    # один раз на позицию вместо 4–11 повторных проходов по каждой сети.
+    shared: dict[str, Any] = {
+        "baskets": None,
+        "items_by_basket": {},
+        "products": {},
+        "resolved": {},
+        "adopted": set(),
+    }
     for code in stores_clean:
         sub: dict[str, Any] = {"store": code, "background": background}
         if top_up:
@@ -566,7 +579,7 @@ def plans(body: dict) -> dict:
         if code in drops_map and isinstance(drops_map[code], list):
             sub["drop"] = drops_map[code]
         try:
-            p = plan(sub)
+            p = plan(sub, shared=shared)
             out_plans[code] = p
             if basket_id is None and p.get("basket") is not None:
                 basket_id = p.get("basket")
@@ -940,12 +953,24 @@ def _ask_later(product_ids: list[int], store: str) -> None:
         return
 
     def _worker():
-        from app import matcher, users
+        from app import cartrun, matcher, users
 
         try:
             users.open_workspace(phone)
             try:
-                matcher.auto_match(product_ids, [store])
+                shop = repo.get_store(store)
+                before_real = {
+                    pid for pid in product_ids
+                    if shop and repo.confirmed_mapping(pid, shop.id, real_only=True)
+                }
+                res = matcher.auto_match(product_ids, [store]) or {}
+                if res.get("auto") and shop:
+                    found_new = any(
+                        pid not in before_real and repo.confirmed_mapping(pid, shop.id, real_only=True)
+                        for pid in product_ids
+                    )
+                    if found_new:
+                        cartrun.bump_link_rev()
             finally:
                 users.deactivate()
         except Exception:  # noqa: BLE001 — фоновый поиск не должен ронять процесс
@@ -958,7 +983,7 @@ def _ask_later(product_ids: list[int], store: str) -> None:
         log.warning("поток фонового поиска link-%s не запустился", store, exc_info=True)
 
 
-def _link(picked: dict, store: str, live: bool = True) -> dict:
+def _link(picked: dict, store: str, live: bool = True, shared: dict | None = None) -> dict:
     """Опознать в едином каталоге позиции корзины, которых эта сеть ещё не знает.
 
     ЗАЧЕМ. Товар из чека связан только с сетью чека, и наряд в другую сеть выходил
@@ -993,7 +1018,12 @@ def _link(picked: dict, store: str, live: bool = True) -> dict:
     from app.catalog import refresh
 
     shop = repo.get_store(store)
-    baskets = repo.list_baskets()
+    if shared is not None and shared.get("baskets") is not None:
+        baskets = shared["baskets"]
+    else:
+        baskets = repo.list_baskets()
+        if shared is not None:
+            shared["baskets"] = baskets
     if shop is None or not baskets:
         return {"linked": 0, "recent": 0, "later": 0}
     try:
@@ -1001,7 +1031,12 @@ def _link(picked: dict, store: str, live: bool = True) -> dict:
     except (TypeError, ValueError):
         return {"linked": 0, "recent": 0, "later": 0}                       # неверный номер объяснит _plan_lines
     basket = next((b for b in baskets if int(b["id"]) == basket_id), None)
-    items = repo.basket_items(basket_id)
+    if shared is not None and basket_id in shared["items_by_basket"]:
+        items = shared["items_by_basket"][basket_id]
+    else:
+        items = repo.basket_items(basket_id)
+        if shared is not None:
+            shared["items_by_basket"][basket_id] = items
     linked = tried = searched = by_search = skipped = recent = 0
     ask_later_ids: list[int] = []
     db_path = str(config.db_path())
@@ -1022,7 +1057,12 @@ def _link(picked: dict, store: str, live: bool = True) -> dict:
         # означало «не класть и не спрашивать» — так двенадцать позиций demo исчезали.
         if repo.confirmed_mapping(product_id, shop.id, real_only=True):
             continue
-        product = repo.get_product(product_id)
+        if shared is not None and product_id in shared["products"]:
+            product = shared["products"][product_id]
+        else:
+            product = repo.get_product(product_id)
+            if shared is not None:
+                shared["products"][product_id] = product
         if product is None:
             continue
         # Позиция уже исследовалась недавно — не тратим время на повторный поиск
@@ -1033,10 +1073,19 @@ def _link(picked: dict, store: str, live: bool = True) -> dict:
 
         tried += 1
         try:
-            found = refresh.resolve(product.name, product.brand, product.weight_g,
-                                    product.unit, product.barcode)
+            if shared is not None and product_id in shared["resolved"]:
+                found = shared["resolved"][product_id]
+            else:
+                found = refresh.resolve(product.name, product.brand, product.weight_g,
+                                        product.unit, product.barcode)
+                if shared is not None:
+                    shared["resolved"][product_id] = found
             if found and any(r.get("chain") == store for r in found.get("chains") or []):
-                refresh.adopt(int(found["id"]), product_id=product_id)
+                adopt_key = (int(found["id"]), product_id)
+                if shared is None or adopt_key not in shared["adopted"]:
+                    refresh.adopt(int(found["id"]), product_id=product_id)
+                    if shared is not None:
+                        shared["adopted"].add(adopt_key)
                 linked += 1
                 _tried_mark("link", db_path, store, product_id)
                 continue

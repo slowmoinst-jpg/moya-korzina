@@ -1,7 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   goods,
   num,
+  qtyLabel,
   stepForUnit,
   unitLabel,
 } from '../../src/shared/format';
@@ -10,6 +11,7 @@ import { ChainMark, Icon, MoneyWhole, ProductPic } from '../components/Icons';
 import { MobileTabs } from '../components/MobileTabs';
 import type { BasketItemView } from '../engine';
 import { localSearchProducts } from '../engine';
+import { getUnconfirmedStores } from '../utils/unconfirmed';
 import type {
   ClientBoard,
   HabitItem,
@@ -66,28 +68,59 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
   const [searchResults, setSearchResults] = useState<SearchResultItem[]>([]);
   const [searching, setSearching] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [warnOpen, setWarnOpen] = useState(false);
+  const [activeTileId, setActiveTileId] = useState<number | null>(null);
   const searchDebounceRef = useRef<number | null>(null);
+  const tileTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     return () => {
       if (searchDebounceRef.current) window.clearTimeout(searchDebounceRef.current);
+      if (tileTimerRef.current) window.clearTimeout(tileTimerRef.current);
     };
   }, []);
 
-  const storeNameByCode = new Map(ws.stores.map((s) => [s.code, s.name]));
+  const openTileOverlay = useCallback((pid: number) => {
+    setActiveTileId(pid);
+    if (tileTimerRef.current) window.clearTimeout(tileTimerRef.current);
+    tileTimerRef.current = window.setTimeout(() => {
+      setActiveTileId(null);
+      tileTimerRef.current = null;
+    }, 3000);
+  }, []);
 
-  const minPriceInfo = (pid: number): { price: number; storeName: string } | null => {
-    const pMap = ws.prices[String(pid)];
-    if (!pMap) return null;
-    let best: { price: number; storeName: string } | null = null;
-    for (const [code, snap] of Object.entries(pMap)) {
-      if (!snap.in_stock) continue;
-      if (!best || snap.price < best.price) {
-        best = { price: snap.price, storeName: storeNameByCode.get(code) || code };
+  const bumpTileOverlayTimer = useCallback((pid: number) => {
+    setActiveTileId(pid);
+    if (tileTimerRef.current) window.clearTimeout(tileTimerRef.current);
+    tileTimerRef.current = window.setTimeout(() => {
+      setActiveTileId(null);
+      tileTimerRef.current = null;
+    }, 3000);
+  }, []);
+
+  const storeNameByCode = useMemo(
+    () => new Map(ws.stores.map((s) => [s.code, s.name])),
+    [ws.stores]
+  );
+
+  const minPriceByPid = useMemo(() => {
+    const map = new Map<number, { price: number; storeName: string }>();
+    for (const [pidKey, pMap] of Object.entries(ws.prices)) {
+      if (!pMap) continue;
+      let best: { price: number; storeName: string } | null = null;
+      for (const [code, snap] of Object.entries(pMap)) {
+        if (!snap.in_stock) continue;
+        if (!best || snap.price < best.price) {
+          best = { price: snap.price, storeName: storeNameByCode.get(code) || code };
+        }
       }
+      if (best) map.set(Number(pidKey), best);
     }
-    return best;
-  };
+    return map;
+  }, [ws.prices, storeNameByCode]);
+
+  const minPriceInfo = (pid: number): { price: number; storeName: string } | null =>
+    minPriceByPid.get(pid) || null;
 
   const handleSearchChange = (next: string) => {
     setQuery(next);
@@ -122,14 +155,32 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
     }, 180);
   };
 
-  const inBasketMap = new Map(items.map((it) => [it.product_id, it.qty]));
+  const inBasketMap = useMemo(
+    () => new Map(items.map((it) => [it.product_id, it.qty])),
+    [items]
+  );
 
   const stepItem = (productId: number, currentQty: number, unit: 'pcs' | 'kg', delta: number) => {
     const step = stepForUnit(unit);
     const raw = Math.round((currentQty + delta * step) * 1000) / 1000;
     const nextQty = raw <= 0.0001 ? 0 : raw;
     onUpdateQty(productId, nextQty);
+    if (nextQty <= 0 && activeTileId === productId) {
+      setActiveTileId(null);
+    }
   };
+
+  const unconfirmedStores = useMemo(
+    () =>
+      getUnconfirmedStores(
+        ws.stores,
+        ws.connections,
+        ws.storeQuotes,
+        activeCollecting,
+        items.length
+      ),
+    [ws.stores, ws.connections, ws.storeQuotes, activeCollecting, items.length]
+  );
 
   const bestTotal = board.places.length > 0 ? board.places[0].total : null;
   const colsClass =
@@ -154,7 +205,9 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
               {basketsCount > 1 && <Icon name="down" className="i" />}
             </button>
             {items.length > 0 && (
-              <span className="spa-title-sub">{goods(items.length)}</span>
+              <span className="spa-title-sub" aria-label={goods(items.length)}>
+                {isDesktop ? goods(items.length) : items.length}
+              </span>
             )}
           </div>
 
@@ -203,7 +256,7 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
                 aria-label="Таблица цен"
                 title="Таблица цен"
               >
-                <Icon name="list" />
+                <Icon name="table" />
               </button>
             )}
             <button
@@ -321,17 +374,67 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
           )}
         </div>
 
-        {activeCollecting.length > 0 && items.length > 0 && (
+        {isDesktop && activeCollecting.length > 0 && items.length > 0 && (
           <div className="spa-live-pill" role="status">
-            <span className="spa-pulse" aria-hidden="true" />
+            <span className="lv-spin" aria-hidden="true" />
             <span>
-              Проверяем цены, наличие и доставку:{' '}
+              Проверяем сети:{' '}
               {activeCollecting
                 .slice(0, 3)
                 .map((c) => storeNameByCode.get(c) || c)
                 .join(', ')}
-              {activeCollecting.length > 3 ? ` и ещё ${activeCollecting.length - 3}` : ''}
+              {activeCollecting.length > 3 ? ` +${activeCollecting.length - 3}` : ''}
             </span>
+          </div>
+        )}
+
+        {unconfirmedStores.length > 0 && (
+          <div className="spa-warn-bar" role="status">
+            <button
+              type="button"
+              className="spa-warn-head"
+              aria-expanded={warnOpen}
+              onClick={() => setWarnOpen((v) => !v)}
+            >
+              <span className="spa-warn-title">
+                {unconfirmedStores.length === 1
+                  ? `${unconfirmedStores[0].storeName} — ${unconfirmedStores[0].label}`
+                  : `Не подтвердили корзину: ${unconfirmedStores
+                      .slice(0, 2)
+                      .map((s) => s.storeName)
+                      .join(', ')}${
+                      unconfirmedStores.length > 2
+                        ? ` и ещё ${unconfirmedStores.length - 2}`
+                        : ''
+                    }`}
+              </span>
+              <Icon name="down" className={`i spa-warn-chev${warnOpen ? ' open' : ''}`} />
+            </button>
+
+            {warnOpen && (
+              <ul className="spa-warn-list">
+                {unconfirmedStores.map((st) => (
+                  <li key={st.storeCode} className="spa-warn-item">
+                    <span className="spa-warn-store">
+                      <ChainMark code={st.storeCode} />
+                      <span className="spa-warn-txt">
+                        <strong>{st.storeName}</strong>
+                        <span>{st.label}</span>
+                      </span>
+                    </span>
+                    {st.needsSettings && (
+                      <button
+                        type="button"
+                        className="bt sm"
+                        onClick={onOpenSettings}
+                      >
+                        Войти
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
 
@@ -349,38 +452,59 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
               const isLastUnit = item.qty <= stepForUnit(item.unit) + 1e-9;
 
               if (viewMode === 'grid') {
+                const isEditing = activeTileId === item.product_id;
                 return (
-                  <div key={item.product_id} className="it">
-                    <div className="it-top">
-                      <ProductPic photo={item.photo} title={item.name} />
-                      {displayPrice !== undefined && (
-                        <div className="pr">
-                          <MoneyWhole value={displayPrice} />
+                  <div
+                    key={item.product_id}
+                    className={`it tile${isEditing ? ' editing' : ''}`}
+                  >
+                    <div className="tile-photo-wrap">
+                      <button
+                        type="button"
+                        className="tile-trigger"
+                        onClick={() => openTileOverlay(item.product_id)}
+                        aria-label={`Изменить количество: ${item.name} (${qtyLabel(item.qty, item.unit)})`}
+                      >
+                        <ProductPic photo={item.photo} title={item.name} />
+                        {!isEditing && (
+                          <span className="qty-badge">{qtyLabel(item.qty, item.unit)}</span>
+                        )}
+                      </button>
+
+                      {isEditing && (
+                        <div className="qty-overlay" role="group" aria-label={`Количество: ${item.name}`}>
+                          <button
+                            type="button"
+                            className={isLastUnit ? 'del' : ''}
+                            aria-label={isLastUnit ? `Убрать ${item.name}` : `Уменьшить ${item.name}`}
+                            onClick={() => {
+                              stepItem(item.product_id, item.qty, item.unit, -1);
+                              if (!isLastUnit) bumpTileOverlayTimer(item.product_id);
+                            }}
+                          >
+                            <Icon name={isLastUnit ? 'trash' : 'minus'} />
+                          </button>
+                          <span className="n">{num(item.qty)}</span>
+                          <button
+                            type="button"
+                            aria-label={`Добавить ${item.name}`}
+                            onClick={() => {
+                              stepItem(item.product_id, item.qty, item.unit, 1);
+                              bumpTileOverlayTimer(item.product_id);
+                            }}
+                          >
+                            <Icon name="plus" />
+                          </button>
                         </div>
                       )}
                     </div>
+
+                    {displayPrice !== undefined && (
+                      <div className="pr">
+                        <MoneyWhole value={displayPrice} />
+                      </div>
+                    )}
                     <div className="nm">{item.name}</div>
-                    <div className="qty">
-                      <button
-                        type="button"
-                        className={isLastUnit ? 'del' : ''}
-                        aria-label={isLastUnit ? 'Убрать' : 'Уменьшить'}
-                        onClick={() => stepItem(item.product_id, item.qty, item.unit, -1)}
-                      >
-                        <Icon name={isLastUnit ? 'trash' : 'minus'} />
-                      </button>
-                      <span className="n">
-                        {num(item.qty)}
-                        {item.unit === 'kg' ? ' кг' : ''}
-                      </span>
-                      <button
-                        type="button"
-                        aria-label="Добавить"
-                        onClick={() => stepItem(item.product_id, item.qty, item.unit, 1)}
-                      >
-                        <Icon name="plus" />
-                      </button>
-                    </div>
                   </div>
                 );
               }
@@ -499,7 +623,26 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
           {board.places.length > 0 && (
             <div className="live">
               <div className="lv-h">
-                <span>Где дешевле сейчас</span>
+                {activeCollecting.length > 0 ? (
+                  <span className="lv-progress" role="status">
+                    <span className="lv-spin" aria-hidden="true" />
+                    <span>
+                      Считаем{' '}
+                      {Math.max(
+                        0,
+                        Object.values(ws.connections).filter((c) => c.connected).length -
+                          activeCollecting.length
+                      )}
+                      /
+                      {Math.max(
+                        activeCollecting.length,
+                        Object.values(ws.connections).filter((c) => c.connected).length
+                      )}
+                    </span>
+                  </span>
+                ) : (
+                  <span>Где дешевле сейчас</span>
+                )}
                 <button
                   type="button"
                   className="lv-all"

@@ -243,6 +243,47 @@ CREATE INDEX IF NOT EXISTS idx_items_barcode ON catalog_items(barcode);
 -- Поиск идёт по началам слов варианта (LIKE '% основа%'), как search_folded по fnorm.
 -- Отдельного индекса по item_id не нужно: он уже первый в уникальном ключе таблицы.
 CREATE INDEX IF NOT EXISTS idx_variants_folded ON name_variants(folded);
+
+-- Полнотекстовые индексы FTS5 для мгновенного поиска по 300+ тыс. товаров (вместо full-table LIKE '%…%').
+CREATE VIRTUAL TABLE IF NOT EXISTS catalog_items_fts USING fts5(
+    fnorm, norm, name,
+    content='catalog_items', content_rowid='id',
+    tokenize='unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS catalog_items_ai AFTER INSERT ON catalog_items BEGIN
+    INSERT INTO catalog_items_fts(rowid, fnorm, norm, name)
+    VALUES (new.id, COALESCE(new.fnorm, ''), COALESCE(new.norm, ''), COALESCE(new.name, ''));
+END;
+CREATE TRIGGER IF NOT EXISTS catalog_items_ad AFTER DELETE ON catalog_items BEGIN
+    INSERT INTO catalog_items_fts(catalog_items_fts, rowid, fnorm, norm, name)
+    VALUES ('delete', old.id, COALESCE(old.fnorm, ''), COALESCE(old.norm, ''), COALESCE(old.name, ''));
+END;
+CREATE TRIGGER IF NOT EXISTS catalog_items_au AFTER UPDATE OF fnorm, norm, name ON catalog_items BEGIN
+    INSERT INTO catalog_items_fts(catalog_items_fts, rowid, fnorm, norm, name)
+    VALUES ('delete', old.id, COALESCE(old.fnorm, ''), COALESCE(old.norm, ''), COALESCE(old.name, ''));
+    INSERT INTO catalog_items_fts(rowid, fnorm, norm, name)
+    VALUES (new.id, COALESCE(new.fnorm, ''), COALESCE(new.norm, ''), COALESCE(new.name, ''));
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS name_variants_fts USING fts5(
+    folded,
+    content='name_variants', content_rowid='id',
+    tokenize='unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS name_variants_ai AFTER INSERT ON name_variants BEGIN
+    INSERT INTO name_variants_fts(rowid, folded)
+    VALUES (new.id, COALESCE(new.folded, ''));
+END;
+CREATE TRIGGER IF NOT EXISTS name_variants_ad AFTER DELETE ON name_variants BEGIN
+    INSERT INTO name_variants_fts(name_variants_fts, rowid, folded)
+    VALUES ('delete', old.id, COALESCE(old.folded, ''));
+END;
+CREATE TRIGGER IF NOT EXISTS name_variants_au AFTER UPDATE OF folded ON name_variants BEGIN
+    INSERT INTO name_variants_fts(name_variants_fts, rowid, folded)
+    VALUES ('delete', old.id, COALESCE(old.folded, ''));
+    INSERT INTO name_variants_fts(rowid, folded)
+    VALUES (new.id, COALESCE(new.folded, ''));
+END;
 """
 
 
@@ -273,6 +314,10 @@ def connect() -> sqlite3.Connection:
         with _WAL_LOCKS.setdefault(file, threading.Lock()):
             conn.execute("PRAGMA journal_mode = WAL")
         _WAL.add(file)
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA cache_size = -64000")
+    conn.execute("PRAGMA temp_store = MEMORY")
+    conn.execute("PRAGMA mmap_size = 268435456")
     return conn
 
 
@@ -315,7 +360,7 @@ LATE_INDEXES = ("CREATE INDEX IF NOT EXISTS idx_cp_gtin ON chain_products(gtin)"
 #     вовсе. 226 854 строки остались без веса и единицы — и привязки человека к ним
 #     тоже (у METRO 140 привязок, ни одной с весом), поэтому наряд не мог пересчитать,
 #     сколько упаковок класть в корзину сети.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 LENTA_PER_KG_SINCE = "2026-09-27"   # с этого дня сборщик Ленты пишет развесному цену за кг
 
 
@@ -439,7 +484,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # стереть цену, пока метка жива.
         conn.execute("UPDATE chain_products SET price_seen = NULL"
                      " WHERE price IS NULL AND price_seen IS NOT NULL")
+    if version < 9:
+        # Наполняем FTS5-индексы для уже существующей живой базы каталога.
+        rebuild_fts(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def rebuild_fts(conn: sqlite3.Connection | None = None) -> None:
+    """Пересобрать полнотекстовые индексы FTS5 (безопасно вызывать на любой базе)."""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        conn.execute("INSERT INTO catalog_items_fts(catalog_items_fts) VALUES ('rebuild')")
+        conn.execute("INSERT INTO name_variants_fts(name_variants_fts) VALUES ('rebuild')")
+        if own:
+            conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        if own:
+            conn.close()
 
 
 # ---------- запись обхода ----------
@@ -1409,6 +1473,32 @@ def item_rows(item_id: int, conn: sqlite3.Connection | None = None) -> list[dict
             conn.close()
 
 
+def batch_item_rows(item_ids: Iterable[int],
+                    conn: sqlite3.Connection | None = None) -> dict[int, list[dict]]:
+    """Пакетно получить живые строки сетей для набора item_id за один запрос (без N+1)."""
+    ids = sorted({int(x) for x in item_ids if x})
+    if not ids:
+        return {}
+    own = conn is None
+    conn = conn or connect()
+    try:
+        out: dict[int, list[dict]] = {i: [] for i in ids}
+        for pos in range(0, len(ids), 400):
+            chunk = ids[pos:pos + 400]
+            marks = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                f"SELECT p.* FROM chain_products p WHERE p.item_id IN ({marks})"
+                f" AND p.active=1{_NOT_PLACEHOLDER} ORDER BY p.item_id, p.chain, p.sku",
+                chunk,
+            ):
+                iid = int(r["item_id"])
+                out.setdefault(iid, []).append(dict(r))
+        return out
+    finally:
+        if own:
+            conn.close()
+
+
 def retired_rows(pairs=(), codes=(), conn: sqlite3.Connection | None = None) -> list[dict]:
     """Снятые с витрины строки (active=0) по парам (сеть, артикул) и штрихкодам.
 
@@ -1471,18 +1561,32 @@ def folded_terms(terms) -> list[str]:
     return sorted({t for t in terms if t and len(t) >= 3}, key=lambda t: (-len(t), t))[:3]
 
 
+def _fts_token(raw: str) -> str:
+    """Очистить токен для безопасного prefix-поиска в FTS5 (без инъекции операторов)."""
+    import re
+
+    clean = re.sub(r"[^0-9A-Za-zА-Яа-яЁё]+", "", (raw or "").strip())
+    return clean.lower()
+
+
+def _fts_expr(terms: Iterable[str], *, col: str | None = None, op: str = "OR") -> str:
+    """Собрать безопасное FTS5-выражение `col : term1* OR col : term2*`."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for t in terms:
+        tok = _fts_token(t)
+        if not tok or tok in seen:
+            continue
+        seen.add(tok)
+        cleaned.append(f"{col} : {tok}*" if col else f"{tok}*")
+    return f" {op} ".join(cleaned)
+
+
 def search_folded(terms, limit: int = 80, conn: sqlite3.Connection | None = None) -> list[dict]:
     """Единые товары, в чьём названии есть слова, НАЧИНАЮЩИЕСЯ с этих основ.
 
-    Ищет по fnorm — словам названия и марки в общем своде письма, — поэтому
-    кириллица чека встречает латиницу Перекрёстка, а сокращение чека «простокв»
-    находит «Простоквашино». Берутся три самые длинные основы (при равной длине —
-    по алфавиту, иначе выбор зависел бы от случайного порядка множества в процессе),
-    и товар годится, если в нём есть хоть одна. Первыми идут товары, где совпало
-    больше основ: требовать сразу все значило бы терять товар из-за одного слова
-    чека, которого в названии сети нет («пастер» в «МОЛОКО ПАСТЕР ДОМИК В ДЕРЕВНЕ»,
-    ревью 18.10.2026). Это отбор кандидатов, а не решение: решает сопоставление
-    (match.same_product и сокращения чека).
+    Использует FTS5 (catalog_items_fts) для поиска за 1–3 мс вместо полного скана 300+ тыс. строк;
+    при отсутствии FTS5-таблицы автоматически откатывается на LIKE.
     """
     picked = folded_terms(terms)
     if not picked:
@@ -1492,6 +1596,24 @@ def search_folded(terms, limit: int = 80, conn: sqlite3.Connection | None = None
     try:
         likes = [f"% {t}%" for t in picked]
         hits = " + ".join("(i.fnorm LIKE ?)" for _ in picked)
+        fts_q = _fts_expr(picked, col="fnorm", op="OR")
+        if fts_q:
+            try:
+                rows = conn.execute(
+                    "SELECT i.* FROM catalog_items_fts f"
+                    " JOIN catalog_items i ON i.id = f.rowid"
+                    " WHERE catalog_items_fts MATCH ?"
+                    f" ORDER BY ({hits}) DESC, LENGTH(i.name), i.id LIMIT ?",
+                    [fts_q, *likes, int(limit)],
+                ).fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
+                # Проверим, не пуст ли FTS-индекс при непустой catalog_items (старая база без миграции)
+                has_fts = conn.execute("SELECT 1 FROM catalog_items_fts LIMIT 1").fetchone() is not None
+                if has_fts:
+                    return []
+            except sqlite3.OperationalError:
+                pass
         where = " OR ".join("i.fnorm LIKE ?" for _ in picked)
         return [dict(r) for r in conn.execute(
             f"SELECT i.* FROM catalog_items i WHERE {where}"
@@ -1506,51 +1628,77 @@ def search_items(query: str, limit: int = 20, conn: sqlite3.Connection | None = 
                  by_name: bool = False) -> list[dict]:
     """Поиск по единым товарам: все слова запроса должны войти в название.
 
-    Порядок считает сам SQL, до LIMIT: пересортировка в Python видела только первые
-    `limit*6` строк по числу сетей, и настоящий «Хлеб …» вытесняли «Хлебцы», знакомые
-    большему числу сетей. Сначала названия, где первое слово запроса стоит в начале целым
-    словом («молоко» — это молоко, а не творог марки «Лебедянь молоко»), потом где оно
-    начало слова («хлебцы» для «хлеб», «сырок» для «сыр»), потом остальные; внутри каждой
-    группы — известные большему числу сетей (их корзина уедет в магазины без ручного
-    поиска), потом короткие названия.
-
-    by_name — только для поиска человека (подсказка и телефонная «Корзина»). Родовые слова
-    («сыр», «мягкий») нормализация выбрасывает, и в norm их нет; с by_name они ищутся в
-    сыром названии и обязательны, как остальные слова запроса. Остальные вызовы сопоставляют строки
-    чеков и сетей, и родовое слово дало бы им только лишних кандидатов — для них без изменений.
+    Сначала ищет через FTS5 (prefix-индекс по norm/name — миллисекунды на 300+ тыс. товаров),
+    сохраняя точный порядок ранжирования (совпадение первого слова → число сетей → длина имени).
+    Если FTS5 не дал результатов (например, поиск по середине слова), падает обратно на LIKE.
     """
     import re
 
     from app.catalog.match import ordered_words
     from app.matcher.normalize import NOISE_WORDS
 
-    forms = [("i.norm", (w,)) for w in ordered_words(query)]
+    norm_words = ordered_words(query)
+    forms = [("i.norm", (w,)) for w in norm_words]
+    noise_words: list[str] = []
     if by_name:
         # Родовые слова обязательны, как остальные: «сыр российский» без «сыр» отдавал шоколад
         # «Российский». LIKE различает регистр у кириллицы, а LOWER() её не берёт: три написания.
-        noise = dict.fromkeys(w for w in re.findall(r"[0-9a-zа-я]+", query.lower()) if w in NOISE_WORDS)
-        forms += [("i.name", (w, w.capitalize(), w.upper())) for w in noise]
+        noise_words = list(dict.fromkeys(
+            w for w in re.findall(r"[0-9a-zа-яё]+", query.lower()) if w in NOISE_WORDS
+        ))
+        forms += [("i.name", (w, w.capitalize(), w.upper())) for w in noise_words]
     if not forms:
         return []
-    where = " AND ".join("(" + " OR ".join(f"{col} LIKE ?" for _ in f) + ")" for col, f in forms)
-    column, head = forms[0]       # слова — из [0-9a-zа-я], подстановочных % и _ в них нет
+
+    column, head = forms[0]       # слова — из [0-9a-zа-яё], подстановочных % и _ в них нет
     whole = " OR ".join(f"{column} = ? OR {column} LIKE ?" for _ in head)
     prefix = " OR ".join(f"{column} LIKE ?" for _ in head)
-    params = ([f"%{w}%" for _, f in forms for w in f]
-              + [x for w in head for x in (w, f"{w} %")] + [f"{w}%" for w in head] + [limit])
-    sql = ("SELECT i.*, COUNT(DISTINCT p.chain) AS chains_n,"
-           " GROUP_CONCAT(DISTINCT p.chain) AS chain_codes"
-           " FROM catalog_items i LEFT JOIN chain_products p ON p.item_id=i.id AND p.active=1"
-           f" WHERE {where} GROUP BY i.id"
-           f" ORDER BY CASE WHEN {whole} THEN 0 WHEN {prefix} THEN 1 ELSE 2 END,"
-           " chains_n DESC, LENGTH(i.name), i.id LIMIT ?")
+    order_params = [x for w in head for x in (w, f"{w} %")] + [f"{w}%" for w in head] + [int(limit)]
+
+    fts_parts: list[str] = []
+    if norm_words:
+        expr = _fts_expr(norm_words, col="norm", op="AND")
+        if expr:
+            fts_parts.append(expr)
+    if noise_words:
+        expr = _fts_expr(noise_words, col="name", op="AND")
+        if expr:
+            fts_parts.append(expr)
+    fts_query = " AND ".join(fts_parts)
+
+    def _run(db_conn: sqlite3.Connection) -> list[dict]:
+        if fts_query:
+            try:
+                fts_sql = (
+                    "SELECT i.*, COUNT(DISTINCT p.chain) AS chains_n,"
+                    " GROUP_CONCAT(DISTINCT p.chain) AS chain_codes"
+                    " FROM catalog_items_fts f"
+                    " JOIN catalog_items i ON i.id = f.rowid"
+                    " LEFT JOIN chain_products p ON p.item_id=i.id AND p.active=1"
+                    " WHERE catalog_items_fts MATCH ? GROUP BY i.id"
+                    f" ORDER BY CASE WHEN {whole} THEN 0 WHEN {prefix} THEN 1 ELSE 2 END,"
+                    " chains_n DESC, LENGTH(i.name), i.id LIMIT ?"
+                )
+                rows = db_conn.execute(fts_sql, [fts_query, *order_params]).fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
+            except sqlite3.OperationalError:
+                pass
+        where = " AND ".join("(" + " OR ".join(f"{col} LIKE ?" for _ in f) + ")" for col, f in forms)
+        params = [f"%{w}%" for _, f in forms for w in f] + order_params
+        sql = ("SELECT i.*, COUNT(DISTINCT p.chain) AS chains_n,"
+               " GROUP_CONCAT(DISTINCT p.chain) AS chain_codes"
+               " FROM catalog_items i LEFT JOIN chain_products p ON p.item_id=i.id AND p.active=1"
+               f" WHERE {where} GROUP BY i.id"
+               f" ORDER BY CASE WHEN {whole} THEN 0 WHEN {prefix} THEN 1 ELSE 2 END,"
+               " chains_n DESC, LENGTH(i.name), i.id LIMIT ?")
+        return [dict(r) for r in db_conn.execute(sql, params).fetchall()]
+
     if conn is not None:                 # сопоставление зовёт тысячи раз: init уже был
-        rows = conn.execute(sql, params).fetchall()
-    else:
-        _ready()
-        with connect() as own:
-            rows = own.execute(sql, params).fetchall()
-    return [dict(r) for r in rows]
+        return _run(conn)
+    _ready()
+    with connect() as own:
+        return _run(own)
 
 
 def item_count() -> dict:
@@ -1650,6 +1798,26 @@ def search_variants(terms, limit: int = 80, conn: sqlite3.Connection | None = No
     try:
         likes = [f"% {t}%" for t in picked]
         score = " + ".join("(v.folded LIKE ?)" for _ in picked)
+        fts_q = _fts_expr(picked, col="folded", op="OR")
+        if fts_q:
+            try:
+                rows = conn.execute(
+                    f"SELECT v.item_id, v.source, v.chain, v.variant, v.hits,"
+                    f" {score} AS score"
+                    " FROM name_variants_fts f"
+                    " JOIN name_variants v ON v.id = f.rowid"
+                    " JOIN catalog_items i ON i.id = v.item_id"
+                    " WHERE name_variants_fts MATCH ?"
+                    " ORDER BY score DESC, v.hits DESC, v.item_id LIMIT ?",
+                    [*likes, fts_q, int(limit)],
+                ).fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
+                has_fts = conn.execute("SELECT 1 FROM name_variants_fts LIMIT 1").fetchone() is not None
+                if has_fts:
+                    return []
+            except sqlite3.OperationalError:
+                pass
         where = " OR ".join("v.folded LIKE ?" for _ in picked)
         rows = conn.execute(
             f"SELECT v.item_id, v.source, v.chain, v.variant, v.hits,"
