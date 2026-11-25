@@ -23,6 +23,7 @@ export type IconName =
   | 'grid'
   | 'list'
   | 'tag'
+  | 'table'
   | 'more'
   | 'search';
 
@@ -125,6 +126,12 @@ export const Icon: React.FC<{ name: IconName; className?: string }> = ({ name, c
         <>
           <path d="M3.5 3.5h7.8l8.7 8.7a1.5 1.5 0 0 1 0 2.1L14.3 20a1.5 1.5 0 0 1-2.1 0l-8.7-8.7z" />
           <circle cx="7.8" cy="7.8" r="1.1" />
+        </>
+      )}
+      {name === 'table' && (
+        <>
+          <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+          <path d="M3.5 9.5h17M9.5 9.5v10M15 9.5v10" />
         </>
       )}
       {name === 'more' && <path d="M5.5 12h.01M12 12h.01M18.5 12h.01" strokeWidth={3} />}

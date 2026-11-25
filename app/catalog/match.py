@@ -772,7 +772,8 @@ def compatible(a: Row, b: Row) -> bool:
     return True
 
 
-def same_product(a: Row, b: Row, brand_vocab: frozenset[str] = frozenset()
+def same_product(a: Row, b: Row, brand_vocab: frozenset[str] = frozenset(),
+                 fbrand_vocab: frozenset[str] | None = None
                  ) -> tuple[bool, str, float]:
     """Один ли это товар. Возвращает (да/нет, способ, уверенность)."""
     # Решает штрихкод, если оба кода настоящие или оба внутренние одной сети. Если
@@ -791,8 +792,7 @@ def same_product(a: Row, b: Row, brand_vocab: frozenset[str] = frozenset()
         return True, "words", 0.95 if (a.weight_g and b.weight_g) else 0.8
     small, big = (a.words, b.words) if len(a.words) <= len(b.words) else (b.words, a.words)
     if small < big and a.weight_g and b.weight_g:
-        marks = brand_vocab | a.brand_words | b.brand_words
-        if small & marks:
+        if (small & brand_vocab) or (small & a.brand_words) or (small & b.brand_words):
             return True, "words", 0.85
 
     # Второй заход — по своду письма, и только если строгое сравнение не нашло
@@ -804,12 +804,12 @@ def same_product(a: Row, b: Row, brand_vocab: frozenset[str] = frozenset()
         fsmall, fbig = ((a.fwords, b.fwords) if len(a.fwords) <= len(b.fwords)
                         else (b.fwords, a.fwords))
         if fsmall < fbig and a.weight_g and b.weight_g:
-            fmarks = _folded_vocab(brand_vocab) | a.fbrand | b.fbrand
+            fv = _folded_vocab(brand_vocab) if fbrand_vocab is None else fbrand_vocab
             # Лишнее слово здесь — только описание (DESCRIPTORS, SORT_WORDS, GENERIC_HEADS): вкус,
             # начинка, серия и другой изготовитель делают другой товар. Замена «j» на «i» в fold
             # впервые свела «sokolad molocnyj alpen gold 90g» с «Шоколад молочный Alpen Gold Oreo 85г»
             # и сотни таких пар (ревью 13.11.2026: из 25 новых вложений 9 — разные товары, 9 сомнительны).
-            if fsmall & fmarks and (fbig - fsmall) <= _INCLUSION_EXTRAS:
+            if ((fsmall & fv) or (fsmall & a.fbrand) or (fsmall & b.fbrand)) and (fbig - fsmall) <= _INCLUSION_EXTRAS:
                 return True, "translit", 0.8
     return False, "", 0.0
 
@@ -848,25 +848,52 @@ def cluster(products: list[dict]) -> list[list[tuple[Row, str, float]]]:
     """
     rows = [prepare(p) for p in products]
     vocab = brand_vocabulary(rows)
+    fvocab = _folded_vocab(vocab)
     union = _Union()
     how: dict[int, tuple[str, float]] = {}
 
     by_barcode: dict[str, list[Row]] = defaultdict(list)
+    by_fwords: dict[frozenset[str], list[Row]] = defaultdict(list)
     by_head: dict[str, list[Row]] = defaultdict(list)
     for r in rows:
         if r.bkey:
             by_barcode[r.bkey].append(r)
-        # Корзины — ПО СВОДУ ПИСЬМА, а не по самому слову. Иначе «молоко» и moloko
-        # попадают в разные корзины и не встречаются никогда: перебор идёт только
-        # внутри корзины, и второй заход по своду в same_product до них не дошёл бы.
-        for head in r.forder[:2]:
-            by_head[head].append(r)
+        if r.fwords:
+            by_fwords[r.fwords].append(r)
+        # После прохода по точному набору слов (by_fwords) в корзинах головных слов
+        # сработать может только строгое вложение слов (требует weight_g у обеих сторон)
+        # или редкая строка с пустым fwords. Строки без weight_g сюда класть незачем.
+        if (r.weight_g and r.fwords) or (r.words and not r.fwords):
+            # Корзины — ПО СВОДУ ПИСЬМА, а не по самому слову. Иначе «молоко» и moloko
+            # попадают в разные корзины и не встречаются никогда: перебор идёт только
+            # внутри корзины, и второй заход по своду в same_product до них не дошёл бы.
+            for head in r.forder[:2]:
+                by_head[head].append(r)
 
     for group in by_barcode.values():
         for other in group[1:]:
             union.union(group[0].id, other.id)
             how[other.id] = ("barcode", 1.0)
             how.setdefault(group[0].id, ("barcode", 1.0))
+
+    # Быстрый O(N) проход по точному совпадению набора слов в своде письма: склеивает
+    # подавляющее большинство межсетевых двойников до попарного обхода больших корзин.
+    for group in by_fwords.values():
+        if len(group) < 2:
+            continue
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                if a.chain == b.chain and not (a.bkey and b.bkey):
+                    continue
+                if a.marks != b.marks or a.packs != b.packs:
+                    continue
+                if union.find(a.id) == union.find(b.id):
+                    continue
+                ok, method, score = same_product(a, b, vocab, fvocab)
+                if ok:
+                    union.union(a.id, b.id)
+                    how.setdefault(a.id, (method, score))
+                    how.setdefault(b.id, (method, score))
 
     # ЗДЕСЬ БЫЛО МНОЖЕСТВО ВСЕХ СРАВНЁННЫХ ПАР, И ОНО УБИВАЛО СОПОСТАВЛЕНИЕ.
     #
@@ -877,25 +904,41 @@ def cluster(products: list[dict]) -> list[list[tuple[Row, str, float]]]:
     # Fix Price лежали в каталогах сетей, но в единые товары не попадали, а
     # catalog_items стоял на цифрах от 19.09. Снаружи это выглядело как «всё ok».
     #
-    # Множество берегло время: пара, попавшая в две корзины сразу, сравнивалась бы
-    # дважды. Замер показал, чего это стоило: одно сравнение — 1,2 мкс, все 195 млн
-    # пар это ЧЕТЫРЕ МИНУТЫ. То есть память тратилась гигабайтами ради минут.
-    #
-    # Вместо него — проверка по самому объединению: если строки уже в одной группе,
-    # сравнивать их незачем. Она не только бесплатна по памяти, но и отсекает больше
-    # работы, чем отсекало множество: пара пропускается и тогда, когда её склеили
-    # через третью строку. Потолок на размер корзины не понадобился — он резал бы
-    # совпадения у «вино», «сыр», «напиток», где строк по шесть тысяч.
+    # Вместо множества пар — сортировка корзины по числу слов + проверка строгого
+    # вложения fwords (C-операция `af < bf`) и объединения: отсекает 99%+ пар до
+    # вызова same_product без затрат памяти.
     for group in by_head.values():
         if len(group) < 2:
             continue
-        for i, a in enumerate(group):
-            for b in group[i + 1:]:
-                if a.chain == b.chain and not (a.bkey and b.bkey):
+        group.sort(key=lambda r: len(r.fwords))
+        n = len(group)
+        for i in range(n - 1):
+            a = group[i]
+            af = a.fwords
+            a_len = len(af)
+            a_marks = a.marks
+            a_packs = a.packs
+            a_unit = a.unit
+            a_fbrand = a.fbrand
+            a_chain = a.chain
+            a_bkey = a.bkey
+            for j in range(i + 1, n):
+                b = group[j]
+                bf = b.fwords
+                if af and bf:
+                    if len(bf) == a_len or not (af < bf):
+                        continue
+                if a_marks != b.marks or a_packs != b.packs:
+                    continue
+                if a_unit and b.unit and a_unit != b.unit:
+                    continue
+                if a_fbrand and b.fbrand and not (a_fbrand & b.fbrand):
+                    continue
+                if a_chain == b.chain and not (a_bkey and b.bkey):
                     continue   # два артикула одной сети с одним названием — не склеиваем
                 if union.find(a.id) == union.find(b.id):
                     continue   # уже одна группа: ни сравнение, ни склейка ничего не изменят
-                ok, method, score = same_product(a, b, vocab)
+                ok, method, score = same_product(a, b, vocab, fvocab)
                 if ok:
                     union.union(a.id, b.id)
                     how.setdefault(a.id, (method, score))
@@ -908,7 +951,7 @@ def cluster(products: list[dict]) -> list[list[tuple[Row, str, float]]]:
 
     out: list[list[tuple[Row, str, float]]] = []
     for group in groups.values():
-        out.extend(_gather_twins(_split_chained(group, vocab)) if len(group) > 2 else [group])
+        out.extend(_gather_twins(_split_chained(group, vocab, fvocab)) if len(group) > 2 else [group])
     return out
 
 
@@ -948,7 +991,8 @@ def _gather_twins(parts: list[list[tuple[Row, str, float]]]) -> list[list[tuple[
     return [part for part in gathered if part]
 
 
-def _split_chained(group: list[tuple[Row, str, float]], vocab: frozenset[str]
+def _split_chained(group: list[tuple[Row, str, float]], vocab: frozenset[str],
+                   fvocab: frozenset[str] | None = None
                    ) -> list[list[tuple[Row, str, float]]]:
     """Разбить группу так, чтобы каждый её член совпадал с эталоном НАПРЯМУЮ.
 
@@ -975,6 +1019,7 @@ def _split_chained(group: list[tuple[Row, str, float]], vocab: frozenset[str]
     """
     rest = list(group)
     out: list[list[tuple[Row, str, float]]] = []
+    fv = _folded_vocab(vocab) if fvocab is None else fvocab
     while rest:
         seed = max(rest, key=lambda item: (len(item[0].words), len(item[0].name)))
         kept, dropped = [seed], []
@@ -1013,7 +1058,7 @@ def _split_chained(group: list[tuple[Row, str, float]], vocab: frozenset[str]
             if any(_numbers_clash(rep, row) for rep in clash_reps.values()):
                 dropped.append(item)
                 continue
-            if not same_product(seed[0], row, vocab)[0]:
+            if not same_product(seed[0], row, vocab, fv)[0]:
                 dropped.append(item)
                 continue
             kept.append(item)

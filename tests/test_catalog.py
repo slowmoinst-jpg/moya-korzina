@@ -615,9 +615,9 @@ def test_a_crowded_head_word_does_not_cost_a_pair_per_comparison(monkeypatch):
     real = match.same_product
     calls = {"n": 0}
 
-    def counted(a, b, vocab):
+    def counted(a, b, vocab, fbrand_vocab=None):
         calls["n"] += 1
-        return real(a, b, vocab)
+        return real(a, b, vocab, fbrand_vocab)
 
     monkeypatch.setattr(match, "same_product", counted)
 

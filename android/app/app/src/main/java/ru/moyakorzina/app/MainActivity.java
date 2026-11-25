@@ -1083,6 +1083,12 @@ public class MainActivity extends Activity {
     private static final String CARTAPI_POLL =
         "(function(k){var a=window.__kzApi;return a&&a[k]?JSON.stringify(a[k]):'';})(%s)";
 
+    private static final long PLAN_PREFETCH_TTL_MS = 30_000L;
+    private final Map<String, JSONObject> prefetchedPlans = new HashMap<>();
+    private final Map<String, Long> prefetchedPlanAt = new HashMap<>();
+    private final Set<String> prefetchInFlight = new HashSet<>();
+    private final Map<String, List<Runnable>> prefetchWaiters = new HashMap<>();
+
     private String cartApiJsCached = null;
 
     private static String cartApiOrigin(String chain) {
@@ -1746,7 +1752,7 @@ public class MainActivity extends Activity {
                 if (req.isForMainFrame() && path.matches("/|/login|/phone/(basket|settings|orders|cheaper|prices|baskets|receipts)")) {
                     asset = "index.html";
                     type = "text/html";
-                } else if (path.matches("/(?:phone/)?assets/index-[A-Za-z0-9_-]+\\.(js|css)")) {
+                } else if (path.matches("/(?:phone/)?assets/[A-Za-z0-9_-]+-[A-Za-z0-9_-]+\\.(js|css)")) {
                     asset = path.substring(path.indexOf("assets/"));
                     type = asset.endsWith(".js") ? "application/javascript" : "text/css";
                 } else {
@@ -2554,8 +2560,116 @@ public class MainActivity extends Activity {
     }
 
     /** Взять у сервера наряд: позиции этой сети, правила кнопок, корзину и её отпечаток. */
+    private static String planCacheKey(int basket, String stamp, String code) {
+        return basket + ":" + (stamp == null ? "" : stamp) + ":" + (code == null ? "" : code);
+    }
+
+    /** Забрать наряды сразу для всех стартующих сетей одним POST /api/device/cartplans. */
+    private void prefetchBatchPlans(final int basket, final String stamp, final List<String> codes) {
+        if (basket < 0 || stamp == null || stamp.isEmpty() || codes == null || codes.size() < 2) return;
+        final List<String> pendingCodes = new ArrayList<>();
+        final List<String> pendingKeys = new ArrayList<>();
+        long nowCheck = SystemClock.uptimeMillis();
+        for (String c : codes) {
+            String ck = planCacheKey(basket, stamp, c);
+            Long cachedAt = prefetchedPlanAt.get(ck);
+            if (cachedAt != null && (nowCheck - cachedAt) < PLAN_PREFETCH_TTL_MS && prefetchedPlans.containsKey(ck)) {
+                continue;
+            }
+            if (prefetchInFlight.contains(ck)) continue;
+            pendingCodes.add(c);
+            pendingKeys.add(ck);
+        }
+        if (pendingCodes.size() < 2) return;
+        JSONObject body = new JSONObject();
+        try {
+            JSONArray storesArr = new JSONArray();
+            for (String c : pendingCodes) storesArr.put(c);
+            body.put("stores", storesArr);
+            body.put("background", true);
+            body.put("app_version", BuildConfig.VERSION_NAME);
+            body.put("basket", basket);
+        } catch (Exception ignored) { return; }
+        for (String ck : pendingKeys) prefetchInFlight.add(ck);
+        call("/api/device/cartplans", body, (status, text) -> {
+            try {
+                if (status == 200) {
+                    JSONObject resp = new JSONObject(text);
+                    JSONObject plans = resp.optJSONObject("plans");
+                    if (plans != null) {
+                        long now = SystemClock.uptimeMillis();
+                        Iterator<String> keys = plans.keys();
+                        while (keys.hasNext()) {
+                            String code = keys.next();
+                            JSONObject p = plans.optJSONObject(code);
+                            if (p != null && p.optBoolean("ok", false) && stamp.equals(p.optString("stamp"))) {
+                                String ck = planCacheKey(basket, stamp, code);
+                                prefetchedPlans.put(ck, p);
+                                prefetchedPlanAt.put(ck, now);
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+            } finally {
+                for (String ck : pendingKeys) {
+                    prefetchInFlight.remove(ck);
+                    List<Runnable> waiters = prefetchWaiters.remove(ck);
+                    if (waiters != null) {
+                        for (Runnable w : waiters) {
+                            try { w.run(); } catch (Exception ignored) { }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /** Взять у сервера наряд: позиции этой сети, правила кнопок, корзину и её отпечаток. */
+    private boolean useBatchPlan(final CartRun r, final Runnable then) {
+        // Быстрый путь: если наряд уже предзагружен (или прямо сейчас летит) пакетом /api/device/cartplans и не нужен drop/override — без дублирующего POST!
+        if (r.slot != null && r.linesOverride == null && r.basket >= 0 && !r.stamp.isEmpty()) {
+            boolean needsDropLookup = false;
+            Iterator<String> itCheck = r.cart.keys();
+            while (itCheck.hasNext()) {
+                if (r.urls.optString(itCheck.next(), "").isEmpty()) { needsDropLookup = true; break; }
+            }
+            if (!needsDropLookup) {
+                final String ck = planCacheKey(r.basket, r.stamp, r.code);
+                JSONObject cached = prefetchedPlans.remove(ck);
+                Long at = prefetchedPlanAt.remove(ck);
+                if (cached != null && at != null && (SystemClock.uptimeMillis() - at) < PLAN_PREFETCH_TTL_MS) {
+                    r.planAt = SystemClock.uptimeMillis();
+                    applyPlanJson(r, cached, then);
+                    return true;
+                }
+                if (prefetchInFlight.contains(ck)) {
+                    List<Runnable> waiters = prefetchWaiters.get(ck);
+                    if (waiters == null) {
+                        waiters = new ArrayList<>();
+                        prefetchWaiters.put(ck, waiters);
+                    }
+                    waiters.add(() -> {
+                        if (!alive(r)) return;
+                        JSONObject p = prefetchedPlans.remove(ck);
+                        Long pAt = prefetchedPlanAt.remove(ck);
+                        if (p != null && pAt != null && (SystemClock.uptimeMillis() - pAt) < PLAN_PREFETCH_TTL_MS) {
+                            r.planAt = SystemClock.uptimeMillis();
+                            applyPlanJson(r, p, then);
+                        } else {
+                            askPlan(r, then);
+                        }
+                    });
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private void askPlan(final CartRun r, final Runnable then) {
         loadLedger(r);
+        if (useBatchPlan(r, then)) return;
         JSONObject body = new JSONObject();
         try {
             body.put("store", r.code);
@@ -2598,6 +2712,20 @@ public class MainActivity extends Activity {
         // Фоновый наряд можно спросить дважды: по номеру вопроса (ask) сервер считает его один раз.
         if (r.slot != null) callTwice("/api/device/cartplan", body, got, () -> alive(r));
         else call("/api/device/cartplan", body, got);
+    }
+
+    private void applyPlanJson(CartRun r, JSONObject plan, Runnable then) {
+        try {
+                applyPlan(r, plan);
+                // Правка по касанию (1.27) выводит из этого наряда следующий, не спрашивая сервер.
+                if (r.slot != null && r.linesOverride == null) {
+                    memory().edit().putString("plan." + r.code, plan.toString())
+                        .putLong("planAt." + r.code, System.currentTimeMillis()).apply();
+                }
+                then.run();
+            } catch (Exception e) {
+                failRun(r, "Сервер ответил непонятно: " + e.getMessage());
+            }
     }
 
     /** Разложить наряд по сборке: правила, позиции, снятие своего, поиск незнакомых, отпечаток. */
@@ -5617,6 +5745,9 @@ public class MainActivity extends Activity {
         // другой правки.
         Set<String> started = new HashSet<>();
         for (int i = 0; i < starting.length(); i++) started.add(starting.optString(i));
+        if (order == null && started.size() >= 2) {
+            prefetchBatchPlans(basket, stamp, new ArrayList<>(started));
+        }
         long now = SystemClock.uptimeMillis();
         for (Slot s : slots.values()) {
             if (!started.contains(s.code)) {

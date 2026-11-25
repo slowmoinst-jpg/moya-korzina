@@ -61,7 +61,40 @@ export function loadCachedSnapshot(phone: string): WorkspaceSnapshot | null {
   return null;
 }
 
+let pendingSnapshot: WorkspaceSnapshot | null = null;
+let snapshotTimer: number | null = null;
+let flushListenersBound = false;
+
+export function flushPendingSnapshot(): void {
+  if (snapshotTimer !== null) {
+    window.clearTimeout(snapshotTimer);
+    snapshotTimer = null;
+  }
+  if (!pendingSnapshot) return;
+  const toWrite = pendingSnapshot;
+  pendingSnapshot = null;
+  try {
+    localStorage.setItem(SNAPSHOT_PREFIX + toWrite.phone, JSON.stringify(toWrite));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function bindFlushListeners(): void {
+  if (flushListenersBound || typeof window === 'undefined') return;
+  flushListenersBound = true;
+  window.addEventListener('pagehide', flushPendingSnapshot);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPendingSnapshot();
+  });
+}
+
 export function saveCachedSnapshot(snapshot: WorkspaceSnapshot): void {
+  pendingSnapshot = null;
+  if (snapshotTimer !== null) {
+    window.clearTimeout(snapshotTimer);
+    snapshotTimer = null;
+  }
   try {
     localStorage.setItem(SNAPSHOT_PREFIX + snapshot.phone, JSON.stringify(snapshot));
   } catch {
@@ -69,7 +102,19 @@ export function saveCachedSnapshot(snapshot: WorkspaceSnapshot): void {
   }
 }
 
+export function scheduleSaveCachedSnapshot(snapshot: WorkspaceSnapshot, delayMs = 260): void {
+  if (typeof window === 'undefined') return;
+  bindFlushListeners();
+  pendingSnapshot = snapshot;
+  if (snapshotTimer !== null) window.clearTimeout(snapshotTimer);
+  snapshotTimer = window.setTimeout(() => {
+    snapshotTimer = null;
+    flushPendingSnapshot();
+  }, delayMs);
+}
+
 export function clearCachedSnapshot(phone: string): void {
+  if (pendingSnapshot?.phone === phone) pendingSnapshot = null;
   try {
     localStorage.removeItem(SNAPSHOT_PREFIX + phone);
     localStorage.removeItem(DIRTY_PREFIX + phone);
@@ -97,9 +142,9 @@ export function setSyncDirty(phone: string, dirty: boolean): void {
 
 export function loadBasketViewMode(): 'grid' | 'list' {
   try {
-    return localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'list';
+    return localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'grid';
   } catch {
-    return 'list';
+    return 'grid';
   }
 }
 

@@ -589,15 +589,35 @@ apiRouter.post('/fns/disconnect', (_req, res) => {
 });
 
 // Fast live status endpoint polled by window.kzRunsChanged() after Android background collection
-apiRouter.get('/runs', (_req, res) => {
+apiRouter.get('/runs', (req, res) => {
   const auth = res.locals.auth as AuthLocals;
   const ws = auth.workspace!;
   const snap = serializeWorkspace(ws);
+  const rawBasket = req.query.basket;
+  const targetBasketId =
+    typeof rawBasket === 'string' && rawBasket.trim() !== '' && Number.isFinite(Number(rawBasket))
+      ? Number(rawBasket)
+      : snap.lastBasketId;
+  let prices: typeof snap.prices | null = snap.prices;
+  if (targetBasketId !== null && snap.basketItems[String(targetBasketId)]) {
+    const filtered: typeof snap.prices = {};
+    for (const item of snap.basketItems[String(targetBasketId)]) {
+      const k = String(item.product_id);
+      if (snap.prices[k]) filtered[k] = snap.prices[k];
+    }
+    prices = filtered;
+  }
+  const pricesVersion = Object.keys(snap.prices).length;
+  const rawPv = typeof req.query.pv === 'string' ? Number(req.query.pv) : NaN;
+  if (Number.isFinite(rawPv) && rawPv === pricesVersion) {
+    prices = null;
+  }
   res.json({
     ok: true,
     storeQuotes: snap.storeQuotes,
     connections: snap.connections,
-    prices: snap.prices,
+    prices,
+    pricesVersion,
     storePerks: snap.storePerks,
     applyBonuses: snap.applyBonuses,
     syncedAt: snap.syncedAt,

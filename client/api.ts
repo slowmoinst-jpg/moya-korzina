@@ -229,15 +229,24 @@ export async function pushSyncSnapshot(snapshot: WorkspaceSnapshot, body = snaps
   return requestJson('/api/sync', { method: 'POST', body });
 }
 
-export async function fetchLiveRuns(): Promise<{
+export async function fetchLiveRuns(opts?: {
+  basketId?: number | null;
+  pricesVersion?: number | null;
+}): Promise<{
   storeQuotes: NonNullable<WorkspaceSnapshot['storeQuotes']>;
   connections: WorkspaceSnapshot['connections'];
-  prices: WorkspaceSnapshot['prices'];
+  prices: WorkspaceSnapshot['prices'] | null;
+  pricesVersion?: number | null;
   storePerks: NonNullable<WorkspaceSnapshot['storePerks']>;
   applyBonuses: boolean;
+  basketStamp?: string | null;
   syncedAt: string;
 }> {
-  return requestJson('/api/runs');
+  const params = new URLSearchParams();
+  if (opts?.basketId != null) params.set('basket', String(opts.basketId));
+  if (opts?.pricesVersion != null) params.set('pv', String(opts.pricesVersion));
+  const qs = params.toString();
+  return requestJson(qs ? `/api/runs?${qs}` : '/api/runs');
 }
 
 export async function searchServerCatalog(q: string, store?: string): Promise<SearchResultItem[]> {

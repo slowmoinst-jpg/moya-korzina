@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   buildStoreSearchUrl,
   goods,
@@ -16,6 +16,7 @@ import type { BoardPlace, ClientBoard, WorkspaceSnapshot } from '../types';
 interface CheaperScreenProps {
   ws: WorkspaceSnapshot;
   basketId: number | null;
+  basketStamp?: string | null;
   board: ClientBoard;
   itemsCount?: number;
   embedded?: boolean;
@@ -23,6 +24,7 @@ interface CheaperScreenProps {
   activeCollecting?: string[];
   onToggleApplyBonuses?: (next: boolean) => void;
   onPickPlace: (index: number) => void;
+  onAddTopupProduct?: (productId: number, productName: string) => void;
   onBack?: () => void;
   onOpenSettings?: () => void;
   onRefreshLive?: () => void;
@@ -37,6 +39,7 @@ function formatOrderAmount(amount: number) {
 export const CheaperScreen: React.FC<CheaperScreenProps> = ({
   ws,
   basketId,
+  basketStamp,
   board,
   itemsCount = 0,
   embedded = false,
@@ -44,6 +47,7 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
   activeCollecting = [],
   onToggleApplyBonuses,
   onPickPlace,
+  onAddTopupProduct,
   onBack,
   onOpenSettings,
   onRefreshLive,
@@ -53,24 +57,190 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
   const [showMore, setShowMore] = useState(false);
   const [openStoreCode, setOpenStoreCode] = useState<string | null>(null);
   const [orderedCodes, setOrderedCodes] = useState<Record<string, boolean>>({});
+  const [frozenOrderKeys, setFrozenOrderKeys] = useState<string[] | null>(null);
+
+  const boardListRef = useRef<HTMLOListElement | null>(null);
+  const prevRectsRef = useRef<Map<string, number>>(new Map());
+  const touchFrozenRef = useRef<boolean>(false);
+  const unfreezeTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    setOrderedCodes({});
+  }, [basketId, basketStamp]);
+
+  useEffect(() => {
+    return () => {
+      if (unfreezeTimerRef.current) window.clearTimeout(unfreezeTimerRef.current);
+    };
+  }, []);
+
+  const placeKey = (p: BoardPlace) => p.codes.join('+');
+
+  const handleBoardTouchStart = useCallback(() => {
+    if (unfreezeTimerRef.current) {
+      window.clearTimeout(unfreezeTimerRef.current);
+      unfreezeTimerRef.current = null;
+    }
+    if (!touchFrozenRef.current) {
+      touchFrozenRef.current = true;
+      setFrozenOrderKeys(board.places.map(placeKey));
+    }
+  }, [board.places]);
+
+  const handleBoardTouchEnd = useCallback(() => {
+    if (!touchFrozenRef.current) return;
+    if (unfreezeTimerRef.current) window.clearTimeout(unfreezeTimerRef.current);
+    unfreezeTimerRef.current = window.setTimeout(() => {
+      touchFrozenRef.current = false;
+      setFrozenOrderKeys(null);
+      unfreezeTimerRef.current = null;
+    }, 800);
+  }, []);
+
+  const displayedPlaces = useMemo(() => {
+    if (!frozenOrderKeys) return board.places;
+    const byKey = new Map(board.places.map((p) => [placeKey(p), p]));
+    const ordered: BoardPlace[] = [];
+    for (const k of frozenOrderKeys) {
+      const found = byKey.get(k);
+      if (found) {
+        ordered.push(found);
+        byKey.delete(k);
+      }
+    }
+    for (const rest of byKey.values()) ordered.push(rest);
+    return ordered;
+  }, [board.places, frozenOrderKeys]);
+
+  const displayedSig = displayedPlaces.map(placeKey).join('|');
+
+  useLayoutEffect(() => {
+    const listEl = boardListRef.current;
+    if (!listEl) return;
+    const reduced =
+      typeof window !== 'undefined' &&
+      window.matchMedia &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const items = Array.from(listEl.querySelectorAll<HTMLLIElement>('li[data-place]'));
+    const nextRects = new Map<string, number>();
+    for (const el of items) {
+      const k = el.dataset.place || '';
+      if (k) nextRects.set(k, el.getBoundingClientRect().top);
+    }
+    if (!reduced && prevRectsRef.current.size > 0) {
+      for (const el of items) {
+        const k = el.dataset.place || '';
+        const prevTop = prevRectsRef.current.get(k);
+        const curTop = nextRects.get(k);
+        if (prevTop === undefined || curTop === undefined) continue;
+        const dy = prevTop - curTop;
+        if (Math.abs(dy) >= 2) {
+          el.style.transition = 'none';
+          el.style.transform = `translateY(${dy}px)`;
+          void el.offsetHeight;
+          el.style.transition = 'transform 240ms ease-in-out';
+          el.style.transform = 'translateY(0)';
+        }
+      }
+    }
+    prevRectsRef.current = nextRects;
+  }, [displayedSig]);
 
   const chosen = board.chosenVariant;
-  const parts: StorePartMeta[] = chosen
-    ? chosen.stores.map((sb) => buildStorePartMeta(ws, sb))
-    : [];
-  const storesByCode = new Map(ws.stores.map((s) => [s.code, s]));
+  const storesByCode = useMemo(
+    () => new Map(ws.stores.map((s) => [s.code, s])),
+    [ws.stores]
+  );
+  const productsById = useMemo(
+    () => new Map(ws.products.map((p) => [p.id, p])),
+    [ws.products]
+  );
+  const parts: StorePartMeta[] = useMemo(
+    () => (chosen ? chosen.stores.map((sb) => buildStorePartMeta(ws, sb, productsById)) : []),
+    [ws, chosen, productsById]
+  );
+  const bestTotal = board.places.length > 0 ? board.places[0].total : null;
 
-  const renderMinimumOrder = (part: StoreBreakdown, showStoreName = false) => {
+  const inBasketIds = useMemo(
+    () =>
+      new Set(
+        (basketId !== null ? ws.basketItems[String(basketId)] || [] : []).map((i) => i.product_id)
+      ),
+    [ws.basketItems, basketId]
+  );
+  const historyCounts = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const row of ws.history) {
+      if (row.product_id != null) {
+        map.set(row.product_id, (map.get(row.product_id) || 0) + 1);
+      }
+    }
+    return map;
+  }, [ws.history]);
+
+  const getTopupSuggestions = (storeCode: string, shortfall: number) => {
+    const candidates: Array<{ id: number; name: string; price: number; score: number }> = [];
+    for (const prod of ws.products) {
+      if (!prod.active || inBasketIds.has(prod.id)) continue;
+      const sp = ws.prices[String(prod.id)]?.[storeCode];
+      if (!sp || sp.in_stock === false || !(sp.price > 0)) continue;
+      const times = historyCounts.get(prod.id) || 0;
+      const ratio = sp.price / Math.max(shortfall, 1);
+      // Prefer habitual items whose price closes or nearly closes shortfall without huge overspend
+      const coversBonus = sp.price >= shortfall && sp.price <= shortfall * 1.65 ? 30 : 0;
+      const nearBonus = Math.max(0, 20 - Math.abs(ratio - 1) * 18);
+      const habitBonus = times > 0 ? 50 + Math.min(times, 10) * 5 : 0;
+      const overspendPenalty = sp.price > shortfall * 2.5 ? 25 : 0;
+      candidates.push({
+        id: prod.id,
+        name: prod.name,
+        price: sp.price,
+        score: habitBonus + coversBonus + nearBonus - overspendPenalty,
+      });
+    }
+    candidates.sort((a, b) => b.score - a.score || a.price - b.price);
+    return candidates.slice(0, 3);
+  };
+
+  const renderMinimumOrder = (
+    part: StoreBreakdown,
+    showStoreName = false,
+    showTopups = false
+  ) => {
     const minimum = storesByCode.get(part.store_code)?.min_order;
     if (!part.below_min_order || !minimum) return null;
     const shortfall = Math.round((minimum - part.subtotal) * 100) / 100;
     if (shortfall <= 0) return null;
+    const topups =
+      showTopups && onAddTopupProduct
+        ? getTopupSuggestions(part.store_code, shortfall)
+        : [];
     return (
-      <div key={part.store_code} className="note warn spa-order-minimum">
-        {showStoreName && <strong>{part.store_name} · </strong>}
-        <span>Заказ от {formatOrderAmount(minimum)}</span>
-        {' · '}
-        <span>добавьте товаров на {formatOrderAmount(shortfall)}</span>
+      <div key={part.store_code}>
+        <div className="note warn spa-order-minimum">
+          {showStoreName && <strong>{part.store_name} · </strong>}
+          <span>Заказ от {formatOrderAmount(minimum)}</span>
+          {' · '}
+          <span>добавьте товаров на {formatOrderAmount(shortfall)}</span>
+        </div>
+        {topups.length > 0 && onAddTopupProduct && (
+          <div className="spa-topup-wrap">
+            <span className="spa-topup-label">Чем добить до минималки:</span>
+            <div className="spa-topup-chips">
+              {topups.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="spa-topup-chip"
+                  onClick={() => onAddTopupProduct(item.id, item.name)}
+                >
+                  <span className="spa-topup-name">+ {item.name}</span>
+                  <span className="spa-topup-price">{wholeText(item.price)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -84,27 +254,54 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
 
   const handleOrder = (part: StorePartMeta) => {
     if (KorzinaBridge.available()) {
-      const linesPayload = part.breakdown.lines.map((ln) => ({
-        product_id: ln.product_id,
-        name: ln.product_name,
-        qty: ln.qty,
-        unit: ln.unit,
-      }));
       if (part.needsLogin) {
         KorzinaBridge.login(part.code);
         onNotify(`Открываем вход ${part.where}…`);
         return;
       }
+
+      if (orderedCodes[part.code]) {
+        KorzinaBridge.openStore(part.code);
+        return;
+      }
+
+      const storesMap: Record<
+        string,
+        Array<{ product_id: number; name: string; qty: number; unit: string }>
+      > = {};
+      for (const p of parts) {
+        storesMap[p.code] = p.breakdown.lines.map((ln) => ({
+          product_id: ln.product_id,
+          name: ln.product_name,
+          qty: ln.qty,
+          unit: ln.unit,
+        }));
+      }
+
       const accepted = KorzinaBridge.ordered({
-        store: part.code,
+        stamp: basketStamp || '',
         basket: basketId,
-        lines: linesPayload,
+        stores: storesMap,
       });
-      if (!accepted) {
+
+      const quote = ws.storeQuotes?.[part.code];
+      const alreadyReadySingle =
+        parts.length === 1 &&
+        quote?.status === 'ready' &&
+        (!basketStamp || !quote.stamp || quote.stamp === basketStamp);
+
+      if (!accepted || alreadyReadySingle) {
         KorzinaBridge.openStore(part.code);
       }
+
       setOrderedCodes((prev) => ({ ...prev, [part.code]: true }));
-      onNotify(`Заказ передан в приложение: ${part.name}`);
+      onNotify(
+        accepted
+          ? parts.length > 1
+            ? `Заказ передан: собираем долю в ${part.name} и убираем лишнее в других сетях`
+            : `Заказ передан в ${part.name}, лишнее в других сетях убираем`
+          : `Открываем ${part.name}…`
+      );
       return;
     }
 
@@ -128,7 +325,11 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
     const isOn = p.on;
     const stores = board.allVariants[p.n]?.stores ?? [];
     return (
-      <li key={p.n} className={`pl${isBest ? ' best' : ''}${isOn ? ' on' : ''}`}>
+      <li
+        key={placeKey(p)}
+        data-place={placeKey(p)}
+        className={`pl${isBest ? ' best' : ''}${isOn ? ' on' : ''}`}
+      >
         <button
           type="button"
           className="pl-in"
@@ -257,7 +458,18 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
               </button>
             )}
 
-            <ol className="board">{board.places.map(renderPlaceRow)}</ol>
+            <ol
+              ref={boardListRef}
+              className="board"
+              onTouchStart={handleBoardTouchStart}
+              onTouchEnd={handleBoardTouchEnd}
+              onTouchCancel={handleBoardTouchEnd}
+              onPointerDown={handleBoardTouchStart}
+              onPointerUp={handleBoardTouchEnd}
+              onPointerCancel={handleBoardTouchEnd}
+            >
+              {displayedPlaces.map(renderPlaceRow)}
+            </ol>
 
             {board.morePlaces.length > 0 && (
               <div className="more-box">
@@ -317,7 +529,7 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
                         <Icon name="down" className={`i chev${expanded ? ' rot' : ''}`} />
                       </button>
 
-                      {renderMinimumOrder(sb)}
+                      {renderMinimumOrder(sb, false, true)}
 
                       <div className="thumbs">
                         {part.thumbs.map((t, i) => (
@@ -425,31 +637,52 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
               <div className="spa-cta-wrap">
                 {parts.map((part, idx) => {
                   const done = orderedCodes[part.code];
+                  const cartLink = ws.storeQuotes?.[part.code]?.cart_link || null;
+                  const directWebCart = !KorzinaBridge.available() && !part.needsLogin && Boolean(cartLink);
                   return (
                     <div key={part.code} className="spa-cta-row">
-                      <button
-                        type="button"
-                        className={`cta${idx > 0 ? ' alt' : ''}`}
-                        onClick={() => handleOrder(part)}
-                      >
-                        <span>
-                          {done
-                            ? `✓ Готово для ${part.name}`
-                            : part.needsLogin
-                              ? `Подключить ${part.whom} и заказать`
-                              : `Заказать ${part.where}`}
-                        </span>
-                        <span className="r">
-                          <MoneyWhole value={part.total} />
-                        </span>
-                      </button>
-                      {!KorzinaBridge.available() && !part.needsLogin && (
+                      {directWebCart && cartLink ? (
                         <a
-                          href={buildStoreSearchUrl(part.code, part.breakdown.lines)}
+                          href={cartLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          className={`cta${idx > 0 ? ' alt' : ''}`}
+                          onClick={() => setOrderedCodes((prev) => ({ ...prev, [part.code]: true }))}
+                        >
+                          <span>
+                            {done
+                              ? `✓ Открыть корзину ${part.where}`
+                              : `Открыть корзину ${part.where}`}
+                          </span>
+                          <span className="r">
+                            <MoneyWhole value={part.total} />
+                          </span>
+                        </a>
+                      ) : (
+                        <button
+                          type="button"
+                          className={`cta${idx > 0 ? ' alt' : ''}`}
+                          onClick={() => handleOrder(part)}
+                        >
+                          <span>
+                            {done
+                              ? `✓ Открыть ${part.name}`
+                              : part.needsLogin
+                                ? `Подключить ${part.whom} и заказать`
+                                : `Заказать ${part.where}`}
+                          </span>
+                          <span className="r">
+                            <MoneyWhole value={part.total} />
+                          </span>
+                        </button>
+                      )}
+                      {!directWebCart && (!KorzinaBridge.available() || Boolean(cartLink)) && !part.needsLogin && (
+                        <a
+                          href={cartLink || buildStoreSearchUrl(part.code, part.breakdown.lines)}
                           target="_blank"
                           rel="noreferrer"
                           className="spa-ext-link"
-                          title={`Открыть сайт ${part.name}`}
+                          title={cartLink ? `Открыть собранную корзину ${part.name}` : `Открыть сайт ${part.name}`}
                         >
                           <Icon name="out" />
                         </a>
@@ -469,31 +702,52 @@ export const CheaperScreen: React.FC<CheaperScreenProps> = ({
             <div className="spa-cta-wrap">
               {parts.map((part, idx) => {
                 const done = orderedCodes[part.code];
+                const cartLink = ws.storeQuotes?.[part.code]?.cart_link || null;
+                const directWebCart = !KorzinaBridge.available() && !part.needsLogin && Boolean(cartLink);
                 return (
                   <div key={part.code} className="spa-cta-row">
-                    <button
-                      type="button"
-                      className={`cta${idx > 0 ? ' alt' : ''}`}
-                      onClick={() => handleOrder(part)}
-                    >
-                      <span>
-                        {done
-                          ? `✓ Готово для ${part.name}`
-                          : part.needsLogin
-                            ? `Подключить ${part.whom} и заказать`
-                            : `Заказать ${part.where}`}
-                      </span>
-                      <span className="r">
-                        <MoneyWhole value={part.total} />
-                      </span>
-                    </button>
-                    {!KorzinaBridge.available() && !part.needsLogin && (
+                    {directWebCart && cartLink ? (
                       <a
-                        href={buildStoreSearchUrl(part.code, part.breakdown.lines)}
+                        href={cartLink}
+                        target="_blank"
+                        rel="noreferrer"
+                        className={`cta${idx > 0 ? ' alt' : ''}`}
+                        onClick={() => setOrderedCodes((prev) => ({ ...prev, [part.code]: true }))}
+                      >
+                        <span>
+                          {done
+                            ? `✓ Открыть корзину ${part.where}`
+                            : `Открыть корзину ${part.where}`}
+                        </span>
+                        <span className="r">
+                          <MoneyWhole value={part.total} />
+                        </span>
+                      </a>
+                    ) : (
+                      <button
+                        type="button"
+                        className={`cta${idx > 0 ? ' alt' : ''}`}
+                        onClick={() => handleOrder(part)}
+                      >
+                        <span>
+                          {done
+                            ? `✓ Открыть ${part.name}`
+                            : part.needsLogin
+                              ? `Подключить ${part.whom} и заказать`
+                              : `Заказать ${part.where}`}
+                        </span>
+                        <span className="r">
+                          <MoneyWhole value={part.total} />
+                        </span>
+                      </button>
+                    )}
+                    {!directWebCart && (!KorzinaBridge.available() || Boolean(cartLink)) && !part.needsLogin && (
+                      <a
+                        href={cartLink || buildStoreSearchUrl(part.code, part.breakdown.lines)}
                         target="_blank"
                         rel="noreferrer"
                         className="spa-ext-link"
-                        title={`Открыть сайт ${part.name}`}
+                        title={cartLink ? `Открыть собранную корзину ${part.name}` : `Открыть сайт ${part.name}`}
                       >
                         <Icon name="out" />
                       </a>

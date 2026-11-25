@@ -66,6 +66,11 @@ RETRY_SECONDS = 6 * 3600
 LINK_BUDGET_SECONDS = 2.5
 _TRIED: dict[tuple[str, str, str, int], float] = {}
 _TRIED_LOCK = threading.Lock()
+_QUERY_CACHE_TTL = 600.0
+_QUERY_CACHE: dict[tuple[str, int, str], tuple[float, str]] = {}
+_QUERY_CACHE_LOCK = threading.Lock()
+DIXY_NIDS_KEY = "phonecart.dixy_nids"
+DIXY_NIDS_LIMIT = 4000
 
 
 def _tried_mark(kind: str, db_path: str, store: str, product_id: int) -> None:
@@ -227,16 +232,18 @@ GLUED_PAGES: tuple[str, ...] = ("pyaterochka",)
 # телефон знает, что на самом деле лежит в корзине сети, а не только что он клал сам.
 FULL_CART: dict[str, tuple[str, ...]] = {
     "magnit": ("/webgate/v1/carts/lite", "/webgate/v1/checkout/preview"),
+    "metro": ("/graphql",),
+    "vprok": ("/web/api/v1/checkout/positionV2", "/web/api/v1/checkout/dropDownV2"),
 }
 
 # Сети, чей запрос записи корзины СТАВИТ количество, а не прибавляет: повтор с тем же
 # числом ничего не удваивает, и прибавка к лежащей позиции — тот же запрос с итоговым
 # числом. Магнит, замер на эмуляторе 18.10.2026: «В корзину» шлёт PUT carts/lite с одной
 # позицией и qnty 1, а «+» на карточке, где Алёнки лежало 2, — ВСЮ корзину с qnty 3 у
-# Алёнки и прежними числами у остальных; в ответе Алёнки 3, прочие на месте. Значит,
-# перечисленным позициям запрос ставит число, неперечисленные не трогает. Остальным
-# сетям, пока не замерено, прибавку телефон делает касаниями «+», по одной упаковке.
-QTY_SETS: tuple[str, ...] = ("magnit",)
+# Алёнки и прежними числами у остальных; в ответе Алёнки 3, прочие на месте. METRO
+# (GraphQL saveOrderDraft) и Впрок (PUT /web/api/v1/checkout/positionV2) проверены живьём:
+# ставят количество пачкой и не трогают неперечисленные позиции.
+QTY_SETS: tuple[str, ...] = ("magnit", "metro", "vprok")
 
 # Телефон кладёт эти сети запросами из cartapi.js (APK 1.24, Магнит — с 1.26, METRO — с 1.27, Самокат — с 1.29,
 # Впрок — с 1.62: старые версии адреса их окна не знают и кладут касаниями); убрать сеть из кортежа — вернуть
@@ -330,8 +337,8 @@ def rules(store: str, app_version: str | None = None) -> dict:
         "pause_ms": int(round(cart._step_pause() * 1000)),
         "click_pause_ms": int(round(cart.CLICK_PAUSE * 1000)),
         # Темп повтора запроса сети «положить в корзину» (приложение 1.8): не чаще
-        # connectors.rate_limit_rps — единственное настоящее ограничение (CLAUDE.md).
-        "request_pause_ms": _request_pause_ms(),
+        # connectors.rate_limit_rps (или индивидуального лимита сети в config.yaml).
+        "request_pause_ms": _request_pause_ms(store),
         "cart_pages": list(CART_PAGES.get(store, ())),
         "hosts": list(cartrecord.CHAIN_HOSTS[store]),
         # Сеть, у которой замерено: нажатие обязано уйти запросом к корзине. Нет
@@ -344,7 +351,7 @@ def rules(store: str, app_version: str | None = None) -> dict:
         "qty_sets": store in QTY_SETS,
         # Телефон кладёт эти сети запросами из cartapi.js (APK 1.24): Перекрёсток, Пятёрочка, Дикси.
         "api": store in API_CARTS and _version(app_version) >= API_SINCE.get(store, ()),
-        "api_burst": 3,
+        "api_burst": _api_burst(store),
         "empty_cart": EMPTY_CART,
         # Сигнал бот-проверки (Пятёрочка, Этап 1): паттерн на странице означает «сеть
         # встретила проверкой». При обнаружении приложение делает паузу check_pause_ms
@@ -479,15 +486,95 @@ def _find_place(store: str, addr: str) -> dict | None:
             "near": near, "deliver": [str(s["code"]) for s in stores if s.get("delivery")]}
 
 
-def _request_pause_ms() -> int:
-    """Пауза между запросами к корзине сети, мс: 1 / connectors.rate_limit_rps, не меньше 300."""
+def _request_pause_ms(store: str | None = None) -> int:
+    """Пауза между запросами к корзине сети, мс: 1 / rps, не меньше 300.
+
+    Сначала ищется индивидуальный лимит сети `connectors.chain_rate_limit_rps.<store>`,
+    затем общий `connectors.rate_limit_rps`. Это позволяет не душить быстрые
+    авторизованные API (Магнит, Перекрёсток) и держать строгий темп там, где жёсткий антибот.
+    """
     from app import config
 
+    rps_raw = None
+    if store:
+        rps_raw = config.get(f"connectors.chain_rate_limit_rps.{store}")
+    if rps_raw is None:
+        rps_raw = config.get("connectors.rate_limit_rps", 1.0)
     try:
-        rps = float(config.get("connectors.rate_limit_rps", 1.0) or 1.0)
+        rps = float(rps_raw or 1.0)
     except (TypeError, ValueError):
         rps = 1.0
     return max(300, int(round(1000.0 / rps))) if rps > 0 else 1000
+
+
+def _api_burst(store: str | None = None) -> int:
+    """Сколько быстрых запросов подряд допускает ведро токенов cartapi.js (по умолчанию 3)."""
+    from app import config
+
+    raw = config.get(f"connectors.chain_api_burst.{store}") if store else None
+    if raw is None:
+        raw = config.get("connectors.api_burst", 3)
+    try:
+        val = int(raw or 3)
+    except (TypeError, ValueError):
+        val = 3
+    return max(1, min(10, val))
+
+
+def _dixy_nids() -> dict[str, dict]:
+    """Кэш числовых id Дикси (xml_id → {id, ratio}), накопленный отчётами телефона."""
+    raw = repo.get_setting(DIXY_NIDS_KEY)
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for sku, val in parsed.items():
+        if not isinstance(val, dict):
+            continue
+        nid = str(val.get("id") or "").strip()
+        if not nid.isdigit():
+            continue
+        try:
+            ratio = float(val.get("ratio") or 1)
+        except (TypeError, ValueError):
+            ratio = 1.0
+        out[str(sku)] = {"id": nid, "ratio": ratio if ratio > 0 else 1.0}
+    return out
+
+
+def _save_dixy_nids(incoming: Any) -> int:
+    """Сохранить новые пары xml_id → {id, ratio} Дикси, чтобы не тянуть HTML карточек повторно."""
+    if not isinstance(incoming, dict) or not incoming:
+        return 0
+    current = _dixy_nids()
+    added = 0
+    for raw_sku, raw_val in list(incoming.items())[:ITEMS_LIMIT]:
+        sku = _text(raw_sku, 40)
+        if not sku or not isinstance(raw_val, dict):
+            continue
+        nid = str(raw_val.get("id") or "").strip()
+        if not nid.isdigit():
+            continue
+        try:
+            ratio = float(raw_val.get("ratio") or 1)
+        except (TypeError, ValueError):
+            ratio = 1.0
+        entry = {"id": nid, "ratio": ratio if ratio > 0 else 1.0}
+        if current.get(sku) != entry:
+            current[sku] = entry
+            added += 1
+    if not added:
+        return 0
+    if len(current) > DIXY_NIDS_LIMIT:
+        keys = list(current.keys())[-DIXY_NIDS_LIMIT:]
+        current = {k: current[k] for k in keys}
+    repo.set_setting(DIXY_NIDS_KEY, json.dumps(current, ensure_ascii=False))
+    return added
 
 
 def _check_pause_ms() -> int:
@@ -515,7 +602,7 @@ _TWINS: dict[tuple, list] = {}
 TWIN_WAIT_SEC = 3.0                 # дольше повтор не ждёт: первый завис — считает сам
 
 
-def plan(body: dict) -> dict:
+def plan(body: dict, shared: dict | None = None) -> dict:
     """Наряд для телефона (собирает _plan). Пока он считается, фоновый счёт ждёт: wait_for_plans."""
     began = time.monotonic()
     ask = body.get("ask")               # время работы телефона в мс: _count отбросил бы всё больше 1e9
@@ -529,7 +616,7 @@ def plan(body: dict) -> dict:
         if first is not mine and first[0].wait(TWIN_WAIT_SEC) and first[1] is not None:
             joined = True
             return first[1]
-        mine[1] = _plan(body)           # сюда же идёт повтор, чей первый запрос упал или завис
+        mine[1] = _plan(body) if shared is None else _plan(body, shared=shared)           # сюда же идёт повтор, чей первый запрос упал или завис
         return mine[1]
     finally:
         with _PLANS_LOCK:
@@ -545,7 +632,7 @@ def plan(body: dict) -> dict:
                  ", ответ первого запроса" if joined else "")
 
 
-def _plan(body: dict) -> dict:
+def _plan(body: dict, shared: dict | None = None) -> dict:
     """Наряд для телефона: вся последняя корзина, переложенная на артикулы этой сети.
 
     Не только позиции лучшего варианта, а вся корзина: смысл в том, чтобы каждая
@@ -559,7 +646,11 @@ def _plan(body: dict) -> dict:
     store = _store(body)
     background = bool(body.get("background"))
     picked = {k: v for k, v in body.items() if k in ("basket", "lines")}
-    found = {"linked": 0, "recent": 0, "later": 0} if picked.get("lines") is not None else _link(picked, store, live=not background)
+    found = (
+        {"linked": 0, "recent": 0, "later": 0}
+        if picked.get("lines") is not None
+        else _link(picked, store, live=not background, shared=shared)
+    )
     lines, empty_note = api._plan_lines(picked, store)
     # Служебные строки чека («Аренда транспортного средства», «Сборка») — не товар:
     # в наряд и в поиск они не идут. Отсекаем ДО cartplan.build, иначе они попали бы
@@ -661,6 +752,23 @@ def _plan(body: dict) -> dict:
            # ли корзина с прошлой сборки в этой сети, и без перемен её не повторяет.
            "basket": basket_id,
            "stamp": _stamp(basket_id, custom_lines=picked.get("lines"))}
+    if store == "dixy":
+        cached_nids = _dixy_nids()
+        if cached_nids:
+            relevant_nids: dict[str, dict] = {}
+            for row in rows:
+                sku_key = str(row.get("sku") or "")
+                entry = cached_nids.get(sku_key)
+                if entry:
+                    row["nid"] = entry["id"]
+                    row["ratio"] = entry["ratio"]
+                    relevant_nids[sku_key] = entry
+            for drop_sku in (body.get("drop") or [])[:DROP_LIMIT]:
+                ds = str(drop_sku).strip()
+                if ds in cached_nids:
+                    relevant_nids[ds] = cached_nids[ds]
+            if relevant_nids:
+                res["dixy_nids"] = relevant_nids
     if "drop" in body:
         # Своё, что телефон снимет из корзины сети (1.19): карточка и название по артикулу.
         st = repo.get_store(store)
@@ -672,6 +780,74 @@ def _plan(body: dict) -> dict:
                 item["url"] = sp["url"]
             res["drop"].append(item)
     return res
+
+
+def plans(body: dict) -> dict:
+    """Пакетный наряд сразу для нескольких сетей за один HTTP-запрос телефона.
+
+    Вместо 4–11 последовательных POST /api/device/cartplan при каждой правке корзины
+    телефон забирает все нужные наряды одним раундтрипом.
+    """
+    raw_stores = body.get("stores")
+    if not isinstance(raw_stores, list) or not raw_stores:
+        raise ValueError("нужен непустой список сетей (stores)")
+
+    stores_clean: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_stores[:len(CHAINS)]:
+        code = str(raw or "").strip().lower()
+        if code in CHAINS and code not in seen:
+            seen.add(code)
+            stores_clean.append(code)
+    if not stores_clean:
+        raise ValueError("в списке stores нет известных приложению сетей")
+
+    drops_map = body.get("drops") if isinstance(body.get("drops"), dict) else {}
+    lines_map = body.get("lines_by_store") if isinstance(body.get("lines_by_store"), dict) else {}
+    background = bool(body.get("background", True))
+    top_up = bool(body.get("top_up"))
+
+    out_plans: dict[str, dict] = {}
+    basket_id = None
+    stamp = ""
+    # Общий кэш на весь пакет сетей: корзина, товары и resolve в catalog.db читаются
+    # один раз на позицию вместо 4–11 повторных проходов по каждой сети.
+    shared: dict[str, Any] = {
+        "baskets": None,
+        "items_by_basket": {},
+        "products": {},
+        "resolved": {},
+        "adopted": set(),
+    }
+    for code in stores_clean:
+        sub: dict[str, Any] = {"store": code, "background": background, "app_version": body.get("app_version")}
+        if top_up:
+            sub["top_up"] = True
+        if body.get("basket") is not None:
+            sub["basket"] = body.get("basket")
+        if code in lines_map and lines_map[code] is not None:
+            sub["lines"] = lines_map[code]
+        elif body.get("lines") is not None:
+            sub["lines"] = body.get("lines")
+        if code in drops_map and isinstance(drops_map[code], list):
+            sub["drop"] = drops_map[code]
+        try:
+            p = plan(sub, shared=shared)
+            out_plans[code] = p
+            if basket_id is None and p.get("basket") is not None:
+                basket_id = p.get("basket")
+            if not stamp and p.get("stamp"):
+                stamp = str(p.get("stamp") or "")
+        except Exception as exc:  # noqa: BLE001 — одна сеть не роняет пакет
+            log.warning("пакетный наряд для %s не собрался: %s", code, exc)
+            out_plans[code] = {"ok": False, "store": code, "error": str(exc)}
+
+    return {
+        "ok": True,
+        "basket": basket_id,
+        "stamp": stamp,
+        "plans": out_plans,
+    }
 
 
 def _search_lines(unresolved: list[dict], store: str) -> list[dict]:
@@ -1036,12 +1212,24 @@ def _ask_later(product_ids: list[int], store: str) -> None:
         return
 
     def _worker():
-        from app import matcher, users
+        from app import cartrun, matcher, users
 
         try:
             users.open_workspace(phone)
             try:
-                matcher.auto_match(product_ids, [store])
+                shop = repo.get_store(store)
+                before_real = {
+                    pid for pid in product_ids
+                    if shop and repo.confirmed_mapping(pid, shop.id, real_only=True)
+                }
+                res = matcher.auto_match(product_ids, [store]) or {}
+                if res.get("auto") and shop:
+                    found_new = any(
+                        pid not in before_real and repo.confirmed_mapping(pid, shop.id, real_only=True)
+                        for pid in product_ids
+                    )
+                    if found_new:
+                        cartrun.bump_link_rev()
             finally:
                 users.deactivate()
         except Exception:  # noqa: BLE001 — фоновый поиск не должен ронять процесс
@@ -1070,7 +1258,7 @@ def _unknown(product_id: int, product: Any) -> dict:
     return row
 
 
-def _link(picked: dict, store: str, live: bool = True) -> dict:
+def _link(picked: dict, store: str, live: bool = True, shared: dict | None = None) -> dict:
     """Опознать в едином каталоге позиции корзины, которых эта сеть ещё не знает.
 
     ЗАЧЕМ. Товар из чека связан только с сетью чека, и наряд в другую сеть выходил
@@ -1105,7 +1293,12 @@ def _link(picked: dict, store: str, live: bool = True) -> dict:
     from app.catalog import refresh
 
     shop = repo.get_store(store)
-    baskets = repo.list_baskets()
+    if shared is not None and shared.get("baskets") is not None:
+        baskets = shared["baskets"]
+    else:
+        baskets = repo.list_baskets()
+        if shared is not None:
+            shared["baskets"] = baskets
     if shop is None or not baskets:
         return {"linked": 0, "recent": 0, "later": 0}
     try:
@@ -1113,7 +1306,12 @@ def _link(picked: dict, store: str, live: bool = True) -> dict:
     except (TypeError, ValueError):
         return {"linked": 0, "recent": 0, "later": 0}                       # неверный номер объяснит _plan_lines
     basket = next((b for b in baskets if int(b["id"]) == basket_id), None)
-    items = repo.basket_items(basket_id)
+    if shared is not None and basket_id in shared["items_by_basket"]:
+        items = shared["items_by_basket"][basket_id]
+    else:
+        items = repo.basket_items(basket_id)
+        if shared is not None:
+            shared["items_by_basket"][basket_id] = items
     linked = tried = searched = by_search = skipped = recent = 0
     ask_later_ids: list[int] = []
     db_path = str(config.db_path())
@@ -1134,7 +1332,12 @@ def _link(picked: dict, store: str, live: bool = True) -> dict:
         # означало «не класть и не спрашивать» — так двенадцать позиций demo исчезали.
         if repo.confirmed_mapping(product_id, shop.id, real_only=True):
             continue
-        product = repo.get_product(product_id)
+        if shared is not None and product_id in shared["products"]:
+            product = shared["products"][product_id]
+        else:
+            product = repo.get_product(product_id)
+            if shared is not None:
+                shared["products"][product_id] = product
         if product is None:
             continue
         # Позиция уже исследовалась недавно — не тратим время на повторный поиск
@@ -1145,10 +1348,19 @@ def _link(picked: dict, store: str, live: bool = True) -> dict:
 
         tried += 1
         try:
-            about = (product.name, product.brand, product.weight_g, product.unit, product.barcode)
-            found = _asked_once(("resolve", *about), RESOLVE_SECONDS, lambda: refresh.resolve(*about))
+            if shared is not None and product_id in shared["resolved"]:
+                found = shared["resolved"][product_id]
+            else:
+                about = (product.name, product.brand, product.weight_g, product.unit, product.barcode)
+                found = _asked_once(("resolve", *about), RESOLVE_SECONDS, lambda: refresh.resolve(*about))
+                if shared is not None:
+                    shared["resolved"][product_id] = found
             if found and any(r.get("chain") == store for r in found.get("chains") or []):
-                refresh.adopt(int(found["id"]), product_id=product_id)
+                adopt_key = (int(found["id"]), product_id)
+                if shared is None or adopt_key not in shared["adopted"]:
+                    refresh.adopt(int(found["id"]), product_id=product_id)
+                    if shared is not None:
+                        shared["adopted"].add(adopt_key)
                 linked += 1
                 _tried_mark("link", db_path, store, product_id)
                 continue
@@ -1440,6 +1652,11 @@ def accept_report(body: dict, device: str = "") -> dict:
     }
     trace = _trace(body.get("trace"))
     repo.set_setting(REPORT_KEY + store, json.dumps(report, ensure_ascii=False))
+    if store == "dixy" and body.get("dixy_nids"):
+        try:
+            _save_dixy_nids(body.get("dixy_nids"))
+        except Exception:  # noqa: BLE001
+            log.warning("dixy: не удалось сохранить кэш числовых id", exc_info=True)
     if trace:
         note_trace(report, trace, device)
     lag, waited = report["lag_ms"], report["plan_ms"]
@@ -2133,6 +2350,6 @@ def accept_trace(body: dict, device: str = "") -> dict:
 
 
 __all__ = ["CHAINS", "CART_PAGES", "KINDS", "API_TOTALS", "FULL_CART", "QTY_SETS", "API_CARTS",
-           "EMPTY_CART", "rules", "plan", "accept_report", "accept_cards", "progress",
+           "EMPTY_CART", "rules", "plan", "plans", "accept_report", "accept_cards", "progress",
            "network_total", "total_of", "last", "lags", "note_lag", "fails", "note_fail",
            "traces", "note_trace", "accept_trace"]

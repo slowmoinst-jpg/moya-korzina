@@ -498,8 +498,12 @@ export interface StorePartMeta {
   breakdown: StoreBreakdown;
 }
 
-export function buildStorePartMeta(ws: WorkspaceSnapshot, breakdown: StoreBreakdown): StorePartMeta {
-  const byId = new Map(ws.products.map((p) => [p.id, p]));
+export function buildStorePartMeta(
+  ws: WorkspaceSnapshot,
+  breakdown: StoreBreakdown,
+  productsById?: Map<number, Product>
+): StorePartMeta {
+  const byId = productsById || new Map(ws.products.map((p) => [p.id, p]));
   const code = breakdown.store_code;
   const kind = KIND_BY_STORE[code] || 'list';
   const byLink = kind === 'link';

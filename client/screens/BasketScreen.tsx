@@ -1,3 +1,4 @@
+import { getUnconfirmedStores } from '../utils/unconfirmed';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   goods,
@@ -67,6 +68,10 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
   onOpenPrices,
   onOpenSettings,
 }) => {
+  const [warnOpen, setWarnOpen] = useState(false);
+  const unconfirmed = React.useMemo(() => getUnconfirmedStores(
+    ws.stores, ws.connections, ws.storeQuotes || {}, activeCollecting, items.length
+  ), [ws.stores, ws.connections, ws.storeQuotes, activeCollecting, items.length]);
   const [layout] = useState(loadBasketLayout);
   const [catalog, setCatalog] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -543,7 +548,14 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
         </div>
 
         {collectionNotice && items.length > 0 && (
-          <div className="note warn" role="status">{collectionNotice}</div>
+          <div className="note warn" role="status">
+            {unconfirmed.length > 0 ? <>
+              <button type="button" className="spa-warn-head" aria-expanded={warnOpen} onClick={() => setWarnOpen(!warnOpen)}>
+                {collectionNotice}<Icon name="down" />
+              </button>
+              {warnOpen && unconfirmed.map(store => <div key={store.storeCode}>{store.storeName} · {store.label}</div>)}
+            </> : collectionNotice}
+          </div>
         )}
 
         {activeCollecting.length > 0 && items.length > 0 && (

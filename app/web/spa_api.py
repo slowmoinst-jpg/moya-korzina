@@ -190,13 +190,26 @@ def _product_photos(pids: list[int], titles: dict[int, str] | None = None) -> di
         return {}
 
 
-def _bulk_latest_prices() -> dict[str, dict[str, dict]]:
-    """Все свежие цены по подтверждённым связям одним SQL-запросом."""
+def _prices_version() -> int:
+    return int(db.query("SELECT COALESCE(MAX(id), 0) AS v FROM store_prices")[0]["v"])
+
+
+def _bulk_latest_prices(product_ids: list[int] | None = None) -> dict[str, dict[str, dict]]:
+    """Все свежие цены по подтверждённым связям одним SQL-запросом (или только для нужных товаров)."""
+    params: list = []
+    pid_filter = ""
+    if product_ids is not None:
+        clean_ids = sorted({int(x) for x in product_ids if x is not None})
+        if not clean_ids:
+            return {}
+        placeholders = ",".join("?" for _ in clean_ids)
+        pid_filter = f"AND m.product_id IN ({placeholders})"
+        params.extend(clean_ids)
     from app import freshness
     cutoff = (datetime.now() - timedelta(hours=freshness.max_age_hours())).isoformat(timespec="seconds")
     point = location.point_key()
     rows = db.query(
-        """
+        f"""
         SELECT
             m.product_id,
             s.code AS store_code,
@@ -218,12 +231,12 @@ def _bulk_latest_prices() -> dict[str, dict[str, dict]]:
                 (v.point_key IS NOT NULL AND v.fetched_at>=?) DESC, v.fetched_at DESC, v.id DESC) AS rn
             FROM store_prices v WHERE v.point_key IS NULL OR v.point_key=?
         ) p ON p.store_product_id=sp.id AND p.rn=1
-        WHERE m.confirmed = 1
+        WHERE m.confirmed = 1 {pid_filter}
         ORDER BY (p.in_stock=1 AND p.price>0 AND p.fetched_at>=? AND COALESCE(p.source,'')!='fallback') DESC,
                  (p.source IS 'cart' AND p.fetched_at>=?) DESC,
                  (p.point_key IS NOT NULL AND p.fetched_at>=?) DESC,
                  CASE WHEN p.in_stock=1 AND p.fetched_at>=? THEN p.price END, p.fetched_at DESC, p.id DESC
-        """, (cutoff, cutoff, point, cutoff, cutoff, cutoff, cutoff)
+        """, (cutoff, cutoff, point, *params, cutoff, cutoff, cutoff, cutoff)
     )
     prices: dict[str, dict[str, dict]] = {}
     for r in rows:
@@ -251,10 +264,11 @@ def _bulk_latest_prices() -> dict[str, dict[str, dict]]:
 
 def _serialize_connections(stores: list) -> dict[str, dict]:
     by_code = {c.store_code: c for c in store_accounts.connections()}
+    raw_runs = cartrun._all()
     out: dict[str, dict] = {}
     for st in stores:
         c = by_code.get(st.code)
-        row = cartrun.get(st.code)
+        row = cartrun.Row.of(raw_runs.get(st.code))
         last_ts = (
             (row.finished_at or row.started_at)
             if row
@@ -272,11 +286,26 @@ def _serialize_connections(stores: list) -> dict[str, dict]:
     return out
 
 
+def _quote_reason(row: cartrun.Row) -> str | None:
+    if row.state == cartrun.LOGIN:
+        return "login"
+    if row.state == cartrun.REFUSED:
+        return "refused"
+    if row.state == cartrun.EMPTY:
+        return "empty"
+    if row.state == cartrun.CANT:
+        return "cant"
+    if row.state == cartrun.FAILED:
+        return "lost" if row.lost else "failed"
+    return None
+
+
 def _serialize_quotes(stores: list, address: str | None) -> dict[str, dict]:
     out: dict[str, dict] = {}
     by_code = {c.store_code: c for c in store_accounts.connections()}
+    raw_runs = cartrun._all()
     for st in stores:
-        row = cartrun.get(st.code)
+        row = cartrun.Row.of(raw_runs.get(st.code))
         if not row or row.state == cartrun.IDLE:
             continue
         if row.state == cartrun.GOING:
@@ -297,9 +326,12 @@ def _serialize_quotes(stores: list, address: str | None) -> dict[str, dict]:
         total_cnt = int(row.planned or (avail + len(missing_names)))
         acc = by_code.get(st.code)
         bonus_bal = float(acc.points) if (acc and acc.points is not None) else 0.0
+        raw_link = str(row.link or "").strip()
+        cart_link = raw_link if raw_link.startswith(("http://", "https://")) else None
         out[st.code] = {
             "store_code": st.code,
             "status": status,
+            "reason": _quote_reason(row),
             "stamp": row.stamp or None,
             "updated_at": row.finished_at or row.started_at or None,
             "address": address,
@@ -315,6 +347,7 @@ def _serialize_quotes(stores: list, address: str | None) -> dict[str, dict]:
             "bonus_max_use": round(bonus_bal, 2),
             "store_total": float(tot.sum) if (tot and tot.source == "network") else None,
             "note": row.note or None,
+            "cart_link": cart_link,
         }
     return out
 
@@ -469,6 +502,7 @@ def serialize_workspace(phone: str) -> dict:
     if not isinstance(repeated, dict):
         repeated = None
     fns_connected, fns_phone, fns_synced_at = _fns_state()
+    _, active_stamp = _active_basket_id_and_stamp()
 
     return {
         "phone": phone,
@@ -506,6 +540,7 @@ def serialize_workspace(phone: str) -> dict:
         "storePerks": store_perks,
         "applyBonuses": apply_bonuses,
         "lastBasketId": last_basket_id,
+        "basketStamp": active_stamp or None,
         "repeated": repeated,
         "fnsConnected": fns_connected,
         "fnsPhone": fns_phone,
@@ -938,12 +973,18 @@ def _search_products(query: str, limit: int = 30, chain: str | None = None) -> l
                 bought_masters = {canonical(mid) for mid in bought_masters}
                 hits = catalog_store.search_items(q, limit=limit * 2, conn=conn, by_name=True,
                                                   chain=chain, purchased=bought_masters)
+                candidate_hits = []
                 for h in hits:
                     item_id = int(h.get("id") or 0)
                     name = str(h.get("name") or "").strip()
                     if not item_id or not name:
                         continue
-                    rows = catalog_store.item_rows(item_id, conn=conn) or []
+                    candidate_hits.append((item_id, name, h))
+                rows_by_item = catalog_store.batch_item_rows(
+                    [item_id for item_id, _, _ in candidate_hits], conn=conn
+                )
+                for item_id, name, h in candidate_hits:
+                    rows = rows_by_item.get(item_id) or []
                     cat_prices: dict[str, dict] = {}
                     photo_url: str | None = None
                     for r in rows:
@@ -1150,6 +1191,60 @@ def _serve_tile(z: int, x: int, y: int):
     return resp
 
 
+def _active_basket_id_and_stamp() -> tuple[int | None, str]:
+    """Текущая активная корзина и её отпечаток состава."""
+    baskets = repo.list_baskets()
+    if not baskets:
+        return None, ""
+    raw_last = repo.get_setting(SETTING_LAST_BASKET)
+    active_id = None
+    if raw_last:
+        try:
+            cand = int(raw_last)
+            if any(int(b["id"]) == cand for b in baskets):
+                active_id = cand
+        except (TypeError, ValueError):
+            pass
+    if active_id is None:
+        active_id = int(baskets[0]["id"])
+    items = repo.basket_items(active_id)
+    if not items:
+        return active_id, ""
+    return active_id, cartrun.stamp_of(active_id)
+
+
+def _auto_start_server_carts(phone: str, basket_id: int | None, stamp: str) -> list[str]:
+    """Параллельно запустить серверные сети (дорога LINK: Лента, ВкусВилл) при правке корзины.
+
+    Не трогает сети телефона (Пятёрочка, Самокат, Дикси, Перекрёсток, Магнит) и не мешает
+    Android-сборке: по одному daemon-потоку на сеть, только если для этого stamp ещё не собрано.
+    """
+    if not phone or phone == users.DEMO or basket_id is None or not stamp:
+        return []
+    started: list[str] = []
+    for code in cartrun.networks():
+        if cartrun.road(code) != cartrun.LINK:
+            continue
+        cur = cartrun.get(code)
+        if cartrun.alive(cur):
+            started.append(code)
+            continue
+        if (
+            cur is not None
+            and cur.state == cartrun.DONE
+            and cur.basket_id == int(basket_id)
+            and cur.stamp == stamp
+        ):
+            continue
+        try:
+            rows = cartrun.start(phone, int(basket_id), only=code)
+            if any(r.code == code and r.state == cartrun.GOING for r in rows):
+                started.append(code)
+        except Exception as exc:  # noqa: BLE001 — фоновый старт не должен ломать /api/sync
+            log.warning("автосборка %s после sync не стартовала: %s", code, exc)
+    return started
+
+
 # ---------- регистрация маршрутов на Blueprint api ----------
 
 def register_routes(bp: Blueprint) -> None:
@@ -1236,12 +1331,19 @@ def register_routes(bp: Blueprint) -> None:
         if not isinstance(body, dict):
             return _json({"ok": False, "error": "Ожидается JSON-объект"}, 400)
 
+        prev_bid, prev_stamp = _active_basket_id_and_stamp()
         _apply_sync(body)
-        basket = repo.get_setting(SETTING_LAST_BASKET)
+        next_bid, next_stamp = _active_basket_id_and_stamp()
+        server_started: list[str] = []
+        if next_bid is not None and next_stamp and (
+            next_bid != prev_bid or next_stamp != prev_stamp
+        ):
+            server_started = _auto_start_server_carts(phone, next_bid, next_stamp)
         return _json({
             "ok": True,
             "syncedAt": _now_iso(),
-            "basketStamp": cartrun.stamp_of(int(basket)) if basket and basket.isdecimal() else "",
+            "basketStamp": next_stamp,
+            "serverStarted": server_started,
         })
 
     @bp.route("/runs", methods=["GET"])
@@ -1253,14 +1355,44 @@ def register_routes(bp: Blueprint) -> None:
         stores = repo.list_stores()
         addr = location.address()
         apply_bonuses_raw = repo.get_setting(SETTING_APPLY_BONUSES)
+        active_bid, active_stamp = _active_basket_id_and_stamp()
+        current_pv = _prices_version()
+        client_pv_raw = request.args.get("pv")
+        client_pv: int | None = None
+        if client_pv_raw is not None and str(client_pv_raw).strip() != "":
+            try:
+                client_pv = int(client_pv_raw)
+            except (TypeError, ValueError):
+                client_pv = None
+
+        prices_payload: dict | None
+        if client_pv is not None and client_pv == current_pv:
+            prices_payload = None
+        else:
+            raw_bid = request.args.get("basket")
+            target_bid = active_bid
+            if raw_bid is not None and str(raw_bid).strip() != "":
+                try:
+                    target_bid = int(raw_bid)
+                except (TypeError, ValueError):
+                    target_bid = active_bid
+            if target_bid is not None:
+                items = repo.basket_items(target_bid)
+                pids = [int(it["product_id"]) for it in items if it.get("product_id") is not None]
+                prices_payload = _bulk_latest_prices(pids)
+            else:
+                prices_payload = _bulk_latest_prices()
+
         return _json(
             {
                 "ok": True,
                 "storeQuotes": _serialize_quotes(stores, addr),
                 "connections": _serialize_connections(stores),
-                "prices": _bulk_latest_prices(),
+                "prices": prices_payload,
+                "pricesVersion": current_pv,
                 "storePerks": _load_json_setting(SETTING_STORE_PERKS, {}),
                 "applyBonuses": False if apply_bonuses_raw == "0" else True,
+                "basketStamp": active_stamp or None,
                 "syncedAt": _now_iso(),
             }
         )

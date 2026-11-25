@@ -13,5 +13,6 @@
     "resolveJsonModule": true,
     "isolatedModules": true
   },
-  "include": ["client/**/*.ts", "client/**/*.tsx", "src/optimizer.ts", "src/types.ts", "src/shared/**/*.ts"]
+  "include": ["client/**/*.ts", "client/**/*.tsx", "src/optimizer.ts", "src/types.ts", "src/shared/**/*.ts"],
+  "exclude": ["**/*.test.ts"]
 }

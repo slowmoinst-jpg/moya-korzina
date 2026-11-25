@@ -301,6 +301,14 @@ def device_cartplan():
     return _device_call("cartplan", phonecart.plan)
 
 
+@bp.route("/device/cartplans", methods=["POST"])
+def device_cartplans():
+    """Пакетный наряд сразу для нескольких сетей за один HTTP-запрос (app/phonecart.py)."""
+    from app import phonecart
+
+    return _device_call("cartplans", phonecart.plans)
+
+
 @bp.route("/device/cartreport", methods=["POST"])
 def device_cartreport():
     """Отчёт телефона: что легло и какой итог показала корзина сети (app/phonecart.py)."""
