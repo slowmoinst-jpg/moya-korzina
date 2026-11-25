@@ -1,4 +1,3 @@
-import { loadBasketLayout, saveBasketLayout, type BasketLayout } from '../storage';
 import { getFnsStatus } from '../api';
 import React, { useEffect, useState } from 'react';
 import {
@@ -66,8 +65,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   initialAuthStore,
   onClearInitialAuthStore,
 }) => {
-  const [layout, setLayout] = useState(loadBasketLayout);
-  const updateLayout = (next: BasketLayout) => { setLayout(next); saveBasketLayout(next); };
   const [authStoreCode, setAuthStoreCode] = useState<string | null>(null);
   const [storeSessionInput, setStoreSessionInput] = useState('');
   const [perkLabel, setPerkLabel] = useState('');
@@ -259,36 +256,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         <header className="top">
           <h1>Настройки</h1>
         </header>
-
-        <section className="sec basket-layout">
-          <div className="sh"><h2>Вид корзины</h2></div>
-          <div className="card">
-            <div className="layout-setting" role="radiogroup" aria-labelledby="basket-panel-title">
-              <h3 id="basket-panel-title">Панель «Где дешевле»</h3>
-              <div className="layout-options">
-                {(['top', 'bottom'] as const).map(value => (
-                  <label key={value}>
-                    <input type="radio" name="basket-panel" checked={layout.panel === value}
-                      onChange={() => updateLayout({ ...layout, panel: value })} />
-                    <span>{value === 'top' ? 'Над списком' : 'Под списком'}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div className="layout-setting" role="radiogroup" aria-labelledby="basket-add-title">
-              <h3 id="basket-add-title">Строка «Добавить товар»</h3>
-              <div className="layout-options">
-                {(['first', 'last'] as const).map(value => (
-                  <label key={value}>
-                    <input type="radio" name="basket-add" checked={layout.add === value}
-                      onChange={() => updateLayout({ ...layout, add: value })} />
-                    <span>{value === 'first' ? 'В начале группы' : 'В конце группы'}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          </div>
-        </section>
 
         {ws.isDemo && (
           <div className="note spa-demo-note">

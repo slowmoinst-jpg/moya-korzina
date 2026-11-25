@@ -128,7 +128,6 @@ export const App: React.FC = () => {
   });
   const [booting, setBooting] = useState<boolean>(() => !loadCachedAuth());
   const [screen, setScreen] = useState<SpaScreen>(() => readScreenFromLocation());
-  const [basketMode, setBasketMode] = useState<'best' | 'single' | null>(null);
   const [pickedPlace, setPickedPlace] = useState<number | null>(null);
   const [pendingAuthStore, setPendingAuthStore] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>(() => loadBasketViewMode());
@@ -582,7 +581,6 @@ export const App: React.FC = () => {
       setWs(res.snapshot);
       saveCachedSnapshot(res.snapshot);
       setPickedPlace(null);
-      setBasketMode(null);
       navigate('basket');
       return;
     } catch (err) {
@@ -610,7 +608,6 @@ export const App: React.FC = () => {
       saveCachedSnapshot(localWs);
       setSyncDirty(normalized, true);
       setPickedPlace(null);
-      setBasketMode(null);
       navigate('basket');
       notify('Работаем локально на устройстве — синхронизация выполнится при подключении к серверу');
     }
@@ -625,7 +622,6 @@ export const App: React.FC = () => {
       setWs(res.snapshot);
       saveCachedSnapshot(res.snapshot);
       setPickedPlace(null);
-      setBasketMode(null);
       navigate('basket');
       return;
     } catch (err) {
@@ -647,7 +643,6 @@ export const App: React.FC = () => {
       setWs(localWs);
       saveCachedSnapshot(localWs);
       setPickedPlace(null);
-      setBasketMode(null);
       navigate('basket');
     }
   };
@@ -663,7 +658,6 @@ export const App: React.FC = () => {
     setAuth({ authenticated: false, phone: null, phoneLabel: '', isDemo: false, pinRequired: Boolean(auth?.pinRequired) });
     setWs(null);
     setPickedPlace(null);
-      setBasketMode(null);
     navigate('basket');
   };
 
@@ -770,6 +764,28 @@ export const App: React.FC = () => {
     [items, handleUpdateQty, notify]
   );
 
+  const handleAddAllHabits = useCallback(() => {
+    if (!habits.length) return;
+    commitWorkspace((prev) => {
+      const { next, basketId } = ensureBasket(prev);
+      const key = String(basketId);
+      const list = [...(next.basketItems[key] || [])];
+      const existing = new Set(list.map((i) => i.product_id));
+      for (const h of habits) {
+        if (!existing.has(h.pid)) {
+          list.push({ basket_id: basketId, product_id: h.pid, qty: h.qty || 1 });
+          existing.add(h.pid);
+        }
+      }
+      return {
+        ...next,
+        basketItems: { ...next.basketItems, [key]: list },
+        lastBasketId: basketId,
+      };
+    });
+    notify(`Добавлено ${habits.length} привычных товаров`);
+  }, [habits, commitWorkspace, notify]);
+
   const handleClearBasket = useCallback(() => {
     if (activeBasketId === null) return;
     commitWorkspace((prev) => ({
@@ -777,7 +793,6 @@ export const App: React.FC = () => {
       basketItems: { ...prev.basketItems, [String(activeBasketId)]: [] },
     }));
     setPickedPlace(null);
-      setBasketMode(null);
     notify('Корзина очищена');
   }, [activeBasketId, commitWorkspace, notify]);
 
@@ -818,7 +833,6 @@ export const App: React.FC = () => {
         };
       });
       setPickedPlace(null);
-      setBasketMode(null);
       notify(`Заказ из ${order.store_name} добавлен как новая корзина`);
       navigate('basket');
     },
@@ -829,7 +843,6 @@ export const App: React.FC = () => {
     (id: number) => {
       commitWorkspace((prev) => ({ ...prev, lastBasketId: id }));
       setPickedPlace(null);
-      setBasketMode(null);
       navigate('basket');
     },
     [commitWorkspace, navigate]
@@ -854,7 +867,6 @@ export const App: React.FC = () => {
         };
       });
       setPickedPlace(null);
-      setBasketMode(null);
       navigate('basket');
     },
     [commitWorkspace, navigate]
@@ -874,7 +886,6 @@ export const App: React.FC = () => {
         };
       });
       setPickedPlace(null);
-      setBasketMode(null);
     },
     [commitWorkspace]
   );
@@ -1085,18 +1096,6 @@ export const App: React.FC = () => {
 
   const applyBonuses = ws.applyBonuses !== false;
   const collectingChains = collection?.expired ? [] : collection?.pending || [];
-  const collectionNotice = collection?.expired
-    ? collection.syncing
-      ? 'Корзина пока не синхронизирована с сервером'
-      : collection.pending.length
-        ? 'Часть сетей не ответила за 5 секунд'
-        : collection.failed.length
-          ? 'Часть сетей не подтвердила корзину'
-          : ''
-    : collection?.failed.length && !collection.pending.length
-      ? 'Часть сетей не подтвердила корзину'
-      : '';
-
   const effectiveBasketStamp =
     (!ws.isDemo && (ws.basketStamp || serverBasketStampRef.current)) || basketStamp;
 
@@ -1202,20 +1201,19 @@ export const App: React.FC = () => {
     return (
       <BasketScreen
         ws={ws}
-        mode={basketMode}
-        onMode={setBasketMode}
         basketName={activeBasket?.name || 'Корзина'}
+        basketsCount={ws.baskets.length}
         items={items}
         habits={habits}
         board={board}
         viewMode={viewMode}
         isDesktop={isDesktop}
         activeCollecting={collectingChains}
-        collectionNotice={collectionNotice}
         onChangeView={handleChangeView}
         onUpdateQty={handleUpdateQty}
         onAddFromSearch={handleAddFromSearch}
         onAddHabit={handleAddHabit}
+        onAddAllHabits={handleAddAllHabits}
         onClearBasket={handleClearBasket}
         onOpenCheaper={(placeIdx) => {
           setPickedPlace(placeIdx);
@@ -1333,11 +1331,14 @@ export const App: React.FC = () => {
     <div className="ph spa-mobile-shell">
       {apkUpdate && <ApkUpdateBanner update={apkUpdate} />}
       {leftScreenContent}
-      <MobileTabs
-        active={screen === 'orders' || screen === 'settings' ? screen : 'basket'}
-        itemsCount={items.length}
-        onSelect={navigate}
-      />
+      {screen !== 'basket' && (
+        <MobileTabs
+          active={screen === 'cheaper' || screen === 'settings' ? screen : 'basket'}
+          itemsCount={items.length}
+          bestTotal={bestTotal}
+          onSelect={navigate}
+        />
+      )}
       {toast && (
         <div className="spa-toast" role="status">
           {toast}
