@@ -184,6 +184,10 @@ android {
         // 1.66: обновление загружается прямо в системный установщик Android.
         versionCode 83
         versionName "1.79"
+        if (project.hasProperty("releaseVersionCode")) {
+            versionCode project.property("releaseVersionCode").toInteger()
+            versionName project.property("releaseVersionName")
+        }
 
         // Адрес сервера — при сборке, а не в коде: -PkorzinaServer=https://… или
         // переменная KORZINA_SERVER. Пусто — приложение скажет об этом на экране.

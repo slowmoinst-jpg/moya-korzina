@@ -1,0 +1,13 @@
+[Unit]
+Description=Release merged Moya Korzina pull requests
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/korzina-pr-release.env
+ExecStart=/usr/bin/python3 -u /opt/korzina/pr-release/after-pr.py
+Nice=10
+CPUWeight=20
+TimeoutStartSec=90min
