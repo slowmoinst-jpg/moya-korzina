@@ -116,6 +116,44 @@ def test_bought_catalog_item_ranks_before_limit_and_only_in_its_store(catalog):
     assert hits({ids["11"]}, chain="magnit") == [ids["11"], ids["12"]]
 
 
+def test_search_items_uses_fts5_for_by_name_purchased_and_eggs(catalog):
+    store.upsert_products("magnit", [
+        P("201", "Сыр Российский 200 г", price=210, in_stock=True),
+        P("202", "Шоколад Российский 90 г", price=89, in_stock=True),
+        P("203", "Яйцо куриное Завтрак C1, 10 шт", price=115, in_stock=True),
+        P("204", "Молоко Простоквашино 2,5% 930 мл", price=99, in_stock=True),
+    ])
+    store.upsert_products("dixy", [
+        P("301", "Сыр Российский 200 г", price=195, in_stock=True),
+    ])
+    refresh.match_all()
+
+    # Родовое слово («сыр») не даёт шоколаду попасть в выдачу и использует FTS5
+    cheese = store.search_items("сыр российский", by_name=True, purchased=set())
+    assert [r["name"] for r in cheese] == ["Сыр Российский 200 г"]
+
+    # Яйца С1 / c1 и фильтр по сети работают через FTS5
+    eggs = store.search_items("Яйца С1", by_name=True, purchased=set())
+    assert len(eggs) == 1 and "C1" in eggs[0]["name"]
+    assert store.search_items("Яйца С1", by_name=True, chain="dixy", purchased=set()) == []
+
+    # Поиск по середине слова откатывается на LIKE и всё равно находит товар
+    mid = store.search_items("квашино", by_name=True, purchased=set())
+    assert len(mid) == 1 and "Простоквашино" in mid[0]["name"]
+
+    # Проверяем реальный план запроса SQLite: FTS5 действительно задействован при by_name + purchased + chain
+    with store.connect() as conn:
+        plan_rows = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT i.* FROM catalog_items_fts f"
+            " CROSS JOIN catalog_items i ON i.id = f.rowid"
+            " JOIN chain_products p ON p.item_id=i.id AND p.active=1"
+            " WHERE catalog_items_fts MATCH ? AND p.chain=?",
+            ("(norm : яйцо* OR norm : яйца*) AND (norm : с1* OR norm : c1*)", "magnit"),
+        ).fetchall()
+    plan_text = " ".join(str(r["detail"]) for r in plan_rows)
+    assert "VIRTUAL TABLE INDEX" in plan_text and "INTEGER PRIMARY KEY" in plan_text
+
+
 def test_partial_feed_preserves_pack_photo_and_link(catalog):
     store.upsert_products("lenta", [P("35", "Мука", weight_g=1000, category="Бакалея",
         barcode="4601234567893", image="https://example.test/flour.jpg")])

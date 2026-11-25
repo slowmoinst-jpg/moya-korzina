@@ -44,6 +44,7 @@ interface BasketScreenProps {
   onOpenBaskets: () => void;
   onOpenPrices: () => void;
   onOpenSettings: () => void;
+  onConnectStore?: (storeCode: string) => void;
 }
 
 export const BasketScreen: React.FC<BasketScreenProps> = ({
@@ -67,6 +68,7 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
   onOpenBaskets,
   onOpenPrices,
   onOpenSettings,
+  onConnectStore,
 }) => {
   const [warnOpen, setWarnOpen] = useState(false);
   const unconfirmed = React.useMemo(() => getUnconfirmedStores(
@@ -548,14 +550,53 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
         </div>
 
         {collectionNotice && items.length > 0 && (
-          <div className="note warn" role="status">
-            {unconfirmed.length > 0 ? <>
-              <button type="button" className="spa-warn-head" aria-expanded={warnOpen} onClick={() => setWarnOpen(!warnOpen)}>
-                {collectionNotice}<Icon name="down" />
+          unconfirmed.length > 0 ? (
+            <div className="spa-warn-bar" role="status">
+              <button
+                type="button"
+                className="spa-warn-head"
+                aria-expanded={warnOpen}
+                onClick={() => setWarnOpen((open) => !open)}
+              >
+                <span className="spa-warn-title">{collectionNotice}</span>
+                <span className={`spa-warn-chev${warnOpen ? ' open' : ''}`} aria-hidden="true">
+                  <Icon name="down" />
+                </span>
               </button>
-              {warnOpen && unconfirmed.map(store => <div key={store.storeCode}>{store.storeName} · {store.label}</div>)}
-            </> : collectionNotice}
-          </div>
+              {warnOpen && (
+                <ul className="spa-warn-list">
+                  {unconfirmed.map((store) => (
+                    <li key={store.storeCode} className="spa-warn-item">
+                      <span className="spa-warn-store">
+                        <ChainMark code={store.storeCode} />
+                        <span className="spa-warn-txt">
+                          <strong>{store.storeName}</strong>
+                          <span>{store.label}</span>
+                        </span>
+                      </span>
+                      {store.needsSettings && (
+                        <button
+                          type="button"
+                          className="bt sm"
+                          onClick={() =>
+                            onConnectStore
+                              ? onConnectStore(store.storeCode)
+                              : onOpenSettings()
+                          }
+                        >
+                          Войти
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : (
+            <div className="note warn" role="status">
+              {collectionNotice}
+            </div>
+          )
         )}
 
         {activeCollecting.length > 0 && items.length > 0 && (

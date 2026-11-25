@@ -1793,33 +1793,40 @@ def search_items(query: str, limit: int = 20, conn: sqlite3.Connection | None = 
            f" ORDER BY {sellable}CASE WHEN {whole} THEN 0 WHEN {prefix} THEN 1 ELSE 2 END,"
            " chains_n DESC, LENGTH(i.name), i.id LIMIT ?")
 
-    fts_parts: list[str] = []
-    if norm_words:
-        expr = _fts_expr(norm_words, col="norm", op="AND")
+    fts_groups: list[str] = []
+    for col, variants in forms:
+        fts_col = col.split(".", 1)[1]
+        expr = _fts_expr(variants, col=fts_col, op="OR")
         if expr:
-            fts_parts.append(expr)
-    if noise_words:
-        expr = _fts_expr(noise_words, col="name", op="AND")
-        if expr:
-            fts_parts.append(expr)
-    fts_query = " AND ".join(fts_parts)
+            fts_groups.append(f"({expr})" if " OR " in expr else expr)
+    fts_query = " AND ".join(fts_groups)
+
+    fts_sql = (
+        "SELECT i.*, COUNT(DISTINCT p.chain) AS chains_n,"
+        " GROUP_CONCAT(DISTINCT p.chain) AS chain_codes"
+        " FROM catalog_items_fts f"
+        " CROSS JOIN catalog_items i ON i.id = f.rowid"
+        f" {join} chain_products p ON p.item_id=i.id AND p.active=1"
+        + (_NOT_PLACEHOLDER if by_name else "") +
+        f" WHERE catalog_items_fts MATCH ? AND {where} GROUP BY i.id"
+        f" ORDER BY {sellable}CASE WHEN {whole} THEN 0 WHEN {prefix} THEN 1 ELSE 2 END,"
+        " chains_n DESC, LENGTH(i.name), i.id LIMIT ?"
+    )
 
     def _run(db_conn: sqlite3.Connection) -> list[dict]:
-        if fts_query and not by_name and not chain and purchased is None:
+        if fts_query:
             try:
-                fts_sql = (
-                    "SELECT i.*, COUNT(DISTINCT p.chain) AS chains_n,"
-                    " GROUP_CONCAT(DISTINCT p.chain) AS chain_codes"
-                    " FROM catalog_items_fts f"
-                    " JOIN catalog_items i ON i.id = f.rowid"
-                    " LEFT JOIN chain_products p ON p.item_id=i.id AND p.active=1"
-                    " WHERE catalog_items_fts MATCH ? GROUP BY i.id"
-                    f" ORDER BY CASE WHEN {whole} THEN 0 WHEN {prefix} THEN 1 ELSE 2 END,"
-                    " chains_n DESC, LENGTH(i.name), i.id LIMIT ?"
-                )
-                rows = db_conn.execute(fts_sql, [fts_query, *[x for w in head for x in (w, f"{w} %")], *[f"{w}%" for w in head], int(limit)]).fetchall()
+                rows = db_conn.execute(fts_sql, [fts_query, *params]).fetchall()
                 if rows:
                     return [dict(r) for r in rows]
+                # Если FTS5 нашёл кандидатов по словам, но они отсеялись фильтрами сети/наличия,
+                # полный LIKE-скан не нужен; откатываемся на LIKE только для поиска в середине слова
+                # или пустого (неперестроенного) FTS5-индекса.
+                if db_conn.execute(
+                    "SELECT 1 FROM catalog_items_fts WHERE catalog_items_fts MATCH ? LIMIT 1",
+                    (fts_query,),
+                ).fetchone() is not None:
+                    return []
             except sqlite3.OperationalError:
                 pass
         return [dict(r) for r in db_conn.execute(sql, params).fetchall()]

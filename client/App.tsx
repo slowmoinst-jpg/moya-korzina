@@ -1225,6 +1225,15 @@ export const App: React.FC = () => {
         onOpenBaskets={() => navigate('baskets')}
         onOpenPrices={() => navigate('prices')}
         onOpenSettings={() => navigate('settings')}
+        onConnectStore={(code) => {
+          if (KorzinaBridge.available()) {
+            KorzinaBridge.login(code);
+            notify('Открываем вход в магазин…');
+            return;
+          }
+          setPendingAuthStore(code);
+          navigate('settings');
+        }}
       />
     );
   })();
