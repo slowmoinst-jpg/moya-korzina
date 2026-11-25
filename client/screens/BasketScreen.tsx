@@ -353,7 +353,7 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
       </div>)}</div></section>}
   </>;
   return (
-    <div className="spa-screen">
+    <div className="spa-screen spa-basket-screen">
       {layout.panel === 'top' && panel}
       <div className="ph-body">
         <header className="spa-basket-top">

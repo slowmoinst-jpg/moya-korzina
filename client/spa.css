@@ -949,6 +949,32 @@ a.cta {
   line-height: 1.45;
 }
 
+.spa-basket-screen {
+  --shadow-sm: 0 1px 2px rgba(17, 18, 20, 0.04), 0 2px 8px rgba(17, 18, 20, 0.03);
+  --r-md: 14px;
+  --r-lg: 18px;
+  --r-xl: 22px;
+  --s-magnit: #E31E24;
+  --s-pyaterochka: #E4002B;
+  --s-vkusvill: #00A651;
+  --s-lenta: #004A98;
+  --s-dixy: #F36F21;
+  --s-samokat: #FF335F;
+  --s-metro: #003B7E;
+  --s-perekrestok: #37A536;
+  --s-fixprice: #1E7E34;
+  --s-vprok: #2E8B57;
+  --s-monetka: #D9232E;
+}
+
+.spa-basket-screen .basket-group .lg {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: #fff;
+  font: 700 11px 'Unbounded', sans-serif;
+}
+
 /* ==========================================================================
    Basket Items — Sleek List Rows & Clean 2-Column Grid Cards
    ========================================================================== */
@@ -1041,160 +1067,62 @@ a.cta {
   min-width: 30px;
   padding: 0 4px;
   text-align: center;
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 800;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-/* Grid View — Dense 3-column tiles per DESIGN.md (photo + qty badge + tap overlay stepper) */
+/* Grid View — Clean 2-col cards */
 .items.grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.items.grid .it {
+  background: var(--card);
+  border-radius: var(--r-lg);
+  padding: 12px;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid rgba(17, 18, 20, 0.04);
+  display: flex;
+  flex-direction: column;
   gap: 8px;
 }
 
-.items.grid .it.tile {
-  background: var(--card);
-  border-radius: var(--r-lg);
-  padding: 6px;
+.items.grid .it-top {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  border: 2px solid transparent;
-  transition: border-color 100ms ease;
-}
-
-.items.grid .it.tile.editing {
-  border-color: var(--ink);
-}
-
-.tile-photo-wrap {
-  position: relative;
-  width: 100%;
-  height: 88px;
-  border-radius: var(--r-md);
-  background: var(--surface);
-  overflow: hidden;
-}
-
-.tile-trigger {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  display: block;
-  padding: 0;
-  text-align: left;
-}
-
-.tile-trigger .pic {
-  width: 100%;
-  height: 100%;
-  border-radius: var(--r-md);
-  background: var(--surface);
-}
-
-.tile-trigger .pic .i {
-  width: 24px;
-  height: 24px;
-  opacity: 0.45;
-}
-
-.qty-badge {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
-  min-height: 26px;
-  padding: 0 8px;
-  border-radius: 999px;
-  background: var(--ink);
-  color: #FFFFFF;
-  font-size: 12px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.qty-overlay {
-  position: absolute;
-  left: 4px;
-  right: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-  height: 40px;
-  border-radius: 999px;
-  background: var(--card);
-  box-shadow: 0 2px 8px rgba(17, 18, 20, 0.16);
-  display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  padding: 0 2px;
-  z-index: 2;
+  gap: 8px;
 }
 
-.qty-overlay button {
-  position: relative;
-  width: 36px;
-  height: 36px;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ink);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.qty-overlay button::before {
-  content: '';
-  position: absolute;
-  inset: -4px;
-}
-
-.qty-overlay button:active {
-  background: var(--surface-hover);
-}
-
-.qty-overlay button .i {
-  width: 16px;
-  height: 16px;
-}
-
-.qty-overlay .n {
-  font-size: 13px;
-  font-weight: 800;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-  min-width: 18px;
-  text-align: center;
-}
-
-.items.grid .it.tile .pr {
+.items.grid .it .pr {
   font-family: 'Unbounded', sans-serif;
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
-  line-height: 1.1;
-  padding: 0 2px;
 }
 
-.items.grid .it.tile .nm {
-  font-size: 12px;
-  font-weight: 600;
+.items.grid .it .nm {
+  font-size: 13px;
+  font-weight: 700;
   color: var(--ink);
-  line-height: 1.25;
+  line-height: 1.3;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  min-height: 30px;
-  padding: 0 2px 2px;
+  min-height: 34px;
+}
+
+.items.grid .it .qty {
+  width: 100%;
+  justify-content: space-between;
+  margin-top: auto;
 }
 
 /* ==========================================================================
