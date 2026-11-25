@@ -1385,8 +1385,10 @@ a.cta {
 
 .lv .top-l {
   display: flex;
-  align-items: center;
-  gap: 5px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
   min-width: 0;
 }
 
@@ -1401,12 +1403,13 @@ a.cta {
   font-size: 12px;
   font-weight: 700;
   color: var(--ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .lv .pr {
+  margin-top: auto;
   font-family: 'Unbounded', sans-serif;
   font-size: 14px;
   font-weight: 600;
