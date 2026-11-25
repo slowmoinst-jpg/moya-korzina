@@ -7,7 +7,13 @@ Requires=docker.service
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/korzina-pr-release.env
-ExecStart=/usr/bin/python3 -u /opt/korzina/pr-release/after-pr.py
+ExecStart=/usr/bin/python3 -u /usr/local/lib/korzina-release/after-pr.py
+Environment=DOCKER_CONFIG=/opt/korzina/pr-release/docker-config HOME=/opt/korzina/pr-release
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/opt/korzina/pr-release /opt/korzina/deploy.lock /var/lib/docker/volumes/korzina-data/_data/apk
 Nice=10
 CPUWeight=20
 TimeoutStartSec=90min

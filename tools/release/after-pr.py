@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 ROOT = Path("/opt/korzina/pr-release")
+PROGRAMS = Path(__file__).resolve().parent
 REPO = ROOT / "repo.git"
 APPLIED = "refs/korzina/applied"
 API = "https://api.github.com/repos/slowmoinst-jpg/moya-korzina"
@@ -77,7 +78,7 @@ def archive_previous(apks):
 
 
 def start(image):
-    run("bash", ROOT / "start-containers.sh", env={**os.environ, "KORZINA_IMAGE": image})
+    run("bash", PROGRAMS / "server-deploy.sh", env={**os.environ, "KORZINA_IMAGE": image})
     run("curl", "-fsS", "-o", "/dev/null", "--retry", "8", "--retry-connrefused",
         "--max-time", "5", "http://127.0.0.1:8765/api/health")
 
@@ -119,7 +120,7 @@ def publish(src, sha, apks, origin):
         raise ValueError("Invalid published version")
     prefix, patch = old.rsplit(".", 1)
     version = f"{prefix}.{int(patch) + 1}"
-    run("bash", src / "tools/release/build.sh", str(src), sha, version, str((apks / "moya-korzina.apk").resolve()))
+    run("bash", PROGRAMS / "build.sh", str(src), sha, version, str((apks / "moya-korzina.apk").resolve()))
     if not idle() or (apks / "distribution.paused").exists():
         return False
     releases = apks / "releases"
@@ -132,7 +133,6 @@ def publish(src, sha, apks, origin):
     digest = hashlib.sha256((target / "moya-korzina.apk").read_bytes()).hexdigest()
     old_image = output("docker", "inspect", "-f", "{{.Image}}", "korzina")
     run("docker", "tag", old_image, "korzina:pr-previous")
-    shutil.copyfile(src / "tools/server-deploy.sh", ROOT / "start-containers.sh")
     atomic_text(PENDING, json.dumps(dict(target=sha, apk=previous_apk, image=old_image)))
     try:
         start("korzina:pr-candidate")
