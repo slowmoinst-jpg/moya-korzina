@@ -2,16 +2,14 @@ import React from 'react';
 import { Icon } from './Icons';
 
 interface MobileTabsProps {
-  active: 'basket' | 'cheaper' | 'settings';
+  active: 'basket' | 'orders' | 'settings';
   itemsCount: number;
-  bestTotal: number | null;
-  onSelect: (tab: 'basket' | 'cheaper' | 'settings') => void;
+  onSelect: (tab: 'basket' | 'orders' | 'settings') => void;
 }
 
 export const MobileTabs: React.FC<MobileTabsProps> = ({
   active,
   itemsCount,
-  bestTotal,
   onSelect,
 }) => {
   return (
@@ -31,16 +29,14 @@ export const MobileTabs: React.FC<MobileTabsProps> = ({
 
       <button
         type="button"
-        className={`tab${active === 'cheaper' ? ' on' : ''}`}
-        aria-current={active === 'cheaper' ? 'page' : undefined}
-        onClick={() => onSelect('cheaper')}
+        className={`tab${active === 'orders' ? ' on' : ''}`}
+        aria-current={active === 'orders' ? 'page' : undefined}
+        onClick={() => onSelect('orders')}
       >
         <span className="tab-ic">
           <Icon name="receipt" />
         </span>
-        <span>
-          {bestTotal !== null ? `${Math.round(bestTotal)} ₽` : 'Где дешевле'}
-        </span>
+        <span>Заказы</span>
       </button>
 
       <button

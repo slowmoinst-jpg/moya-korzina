@@ -678,19 +678,50 @@ a.cta {
   color: var(--ink);
 }
 
-.spa-title-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 40px;
-  text-align: left;
-  min-width: 0;
+.spa-basket-top {
+  margin-bottom: 12px;
 }
 
-.spa-title-btn h1 {
+.spa-basket-top .top {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.spa-basket-top h1 {
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.spa-basket-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.spa-basket-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 40px;
+  min-width: 0;
+  text-align: left;
+  color: var(--ink2);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.spa-basket-switch span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.spa-basket-switch .i {
+  width: 16px;
+  height: 16px;
+  flex: none;
 }
 
 .spa-title-sub {
@@ -1290,17 +1321,16 @@ a.cta {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-.live {
-  padding: 10px 12px 8px;
-  border-bottom: 1px solid var(--line-soft);
+.spa-basket-foot {
+  padding: 6px 12px 0;
 }
 
-.lv-h {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
+.cta.basket-compare {
+  min-height: 44px;
+  padding: 6px 10px;
+  justify-content: flex-start;
+  gap: 6px;
+  text-align: left;
 }
 
 .lv-h > span {
@@ -1346,9 +1376,25 @@ a.cta {
   font-weight: 700;
   color: var(--ink);
   padding: 2px 4px;
+  white-space: nowrap;
 }
 
-.lv-all .i {
+.basket-compare > :first-child {
+  margin-right: auto;
+}
+
+.basket-compare .r,
+.basket-compare-coverage {
+  flex: none;
+  white-space: nowrap;
+}
+
+.basket-compare-coverage {
+  font-size: 11px;
+}
+
+.basket-compare .i {
+  flex: none;
   width: 14px;
   height: 14px;
 }
@@ -1385,10 +1431,8 @@ a.cta {
 
 .lv .top-l {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-  width: 100%;
+  align-items: center;
+  gap: 5px;
   min-width: 0;
 }
 
@@ -1403,13 +1447,12 @@ a.cta {
   font-size: 12px;
   font-weight: 700;
   color: var(--ink);
-  max-width: 100%;
-  overflow-wrap: anywhere;
-  white-space: normal;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .lv .pr {
-  margin-top: auto;
   font-family: 'Unbounded', sans-serif;
   font-size: 14px;
   font-weight: 600;
