@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
+import { receiptLines, otherReceiptPage, type ReceiptLine, type ReceiptSummary } from '../api';
 import { goods, num, rub } from '../../src/shared/format';
 import { ChainMark, Icon, MoneyWhole, ProductPic } from '../components/Icons';
-import type { OrderEntry } from '../types';
+import type { OrderEntry, WorkspaceSnapshot } from '../types';
 
 interface OrdersScreenProps {
   groupedOrders: Array<[string, OrderEntry[]]>;
+  otherReceipts?: WorkspaceSnapshot['otherReceipts'];
   repeatedKey: string | null;
   onRepeatOrder: (order: OrderEntry) => void;
   onBack: () => void;
@@ -13,12 +15,30 @@ interface OrdersScreenProps {
 
 export const OrdersScreen: React.FC<OrdersScreenProps> = ({
   groupedOrders,
+  otherReceipts,
   repeatedKey,
   onRepeatOrder,
   onBack,
   onOpenSettings,
 }) => {
   const [expandedKeys, setExpandedKeys] = useState<Record<string, boolean>>({});
+
+  const [older, setOlder] = useState<ReceiptSummary[]>([]);
+  const [moreBusy, setMoreBusy] = useState(false);
+  const [moreError, setMoreError] = useState(false);
+  const [contents, setContents] = useState<Record<string, ReceiptLine[] | 'error'>>({});
+  const archived = [...new Map([...(otherReceipts?.recent || []), ...older].map(r => [r.key, r])).values()];
+  const loadMore = async () => {
+    if (moreBusy) return;
+    setMoreBusy(true); setMoreError(false);
+    try { const rows = await otherReceiptPage(archived.length); setOlder(prev => [...prev, ...rows]); }
+    catch { setMoreError(true); }
+    finally { setMoreBusy(false); }
+  };
+  const openReceipt = async (key: string) => {
+    try { const lines = await receiptLines(key); setContents(prev => ({ ...prev, [key]: lines })); }
+    catch { setContents(prev => ({ ...prev, [key]: 'error' })); }
+  };
 
   const toggle = (key: string) => {
     setExpandedKeys((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -36,16 +56,16 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
           </div>
         </header>
 
-        {groupedOrders.length === 0 ? (
+        {groupedOrders.length === 0 && !otherReceipts?.count ? (
           <div className="card empty">
             <h2>Заказов пока нет</h2>
             <p>
-              Подключите «Мои чеки» ФНС или вставьте текст чека в Настройках — история покупок и привычные товары появятся здесь.
+              Здесь появятся покупки из ваших чеков ФНС.
             </p>
             {onOpenSettings && (
               <button type="button" className="bt sm lime" onClick={onOpenSettings}>
                 <Icon name="receipt" />
-                <span>Подключить чеки в Настройках</span>
+                <span>Перейти в настройки</span>
               </button>
             )}
           </div>
@@ -105,7 +125,7 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
                         </div>
                       )}
 
-                      <div className="of">
+                      {ord.lines.some((line) => line.repeatable) && <div className="of">
                         <button
                           type="button"
                           className={`bt sm${isRepeated ? ' spa-lime-btn' : ''}`}
@@ -120,13 +140,40 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({
                             <span>Повторить заказ</span>
                           )}
                         </button>
-                      </div>
+                      </div>}
                     </article>
                   );
                 })}
               </div>
             </section>
           ))
+        )}
+        {!!otherReceipts?.count && (
+          <section className="sec">
+            <div className="sh"><h2>Другие магазины</h2><span className="cnt">{otherReceipts.count}</span></div>
+            <div className="card list-c">
+              {archived.map(receipt => {
+                const lines = contents[receipt.key];
+                return (
+                  <details key={receipt.key} className="other-receipts"
+                    onToggle={e => { if (e.currentTarget.open) void openReceipt(receipt.key); }}>
+                    <summary className="row">
+                      <span className="who"><span className="nm">{receipt.store}</span>
+                        <small className="sub"> · {receipt.date?.split('-').reverse().join('.')}</small></span>
+                      <MoneyWhole value={receipt.total} /><Icon name="next" className="i chev" />
+                    </summary>
+                    {Array.isArray(lines) && lines.length ? <ul>{lines.map((line, i) => <li key={i}>
+                      <span>{line.name} · {num(line.quantity)} × {rub(line.price)}</span><b>{rub(line.total)}</b>
+                    </li>)}</ul> : <div className="sub spa-pad" role="status">{lines === 'error' ? 'Не удалось открыть чек.'
+                      : lines ? 'Состав чека пока недоступен.' : 'Открываем чек…'}</div>}
+                  </details>
+                );
+              })}
+            </div>
+            {archived.length < otherReceipts.count && <button className="bt sm" disabled={moreBusy}
+              onClick={loadMore}>{moreBusy ? 'Загружаем…' : 'Показать ещё'}</button>}
+            {moreError && <div className="sub" role="status">Не удалось загрузить следующие чеки.</div>}
+          </section>
         )}
       </div>
     </div>

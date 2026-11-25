@@ -466,7 +466,7 @@ def calculate(basket_id: int, refresh: bool = True,
             from app.matcher import refresh_prices, refresh_prices_parallel
 
             store_codes = [s.code for s in repo.list_stores()]
-            product_ids = [it["product_id"] for it in items]
+            product_ids = list(repo.priced_pids(items))     # и запасные: замена не должна выпасть из расчёта
             if refresh_budget:
                 # Сети ждут не по очереди, а разом: у каждой свой поток. Общий срок — и есть
                 # срок для самой медленной, поэтому он же — её личный.
@@ -680,8 +680,13 @@ def basket_doubts(basket_id: int) -> list[dict]:
             # Подтверждённое единой базой уже прошло её правила (штрихкод, мост,
             # равные слова или полное сокращение чека при той же фасовке), а
             # похожесть букв с усечённым именем эталона из чека («Паст простоквашино
-            # 2 5») засыпала бы «Результат» ложными сомнениями (критика 17.10.2026).
-            if repo.mapping_method(product.id, mapping["id"]) == "master":
+            # 2 5») засыпала бы «Результат» ложными сомнениями (критика 17.10.2026). То же у «самой
+            # дешёвой строки вида» (app/catalog/produce.py): «Морковь 1 кг» против весовой «Морковь» — 0,74.
+            # И у строгой сверки названий (x5.fill_chains): она строже, а «Чипсы lay» против
+            # «Чипсы Lays» здесь дало бы сомнение «бренд». И у поиска самой витрины Впрока
+            # (app/catalog/vprokfind.py): карточка прошла того же судью, а «Ясно солн хлопья
+            # овсян №3» против «Хлопья Ясно солнышко Овсяные №3» похожестью букв не пройдёт.
+            if repo.mapping_method(product.id, mapping["id"]) in ("master", "cheapest", "strict", "vprok"):
                 continue
             raw = mapping.get("raw_name") or ""
             flags = doubts(product, raw, mapping.get("weight_g"))

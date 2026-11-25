@@ -1,3 +1,4 @@
+import { matchesProductQuery } from '../shared/searchRank.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -618,8 +619,7 @@ export function searchProducts(
 
   for (const p of ws.products.values()) {
     if (!p.active) continue;
-    const hay = `${p.name} ${p.brand || ''} ${p.category || ''}`.toLowerCase();
-    if (!tokens.every((t) => hay.includes(t))) continue;
+    if (!matchesProductQuery(p, tokens, q)) continue;
     const pMap = ws.prices.get(p.id);
     const chainsCount = pMap ? pMap.size : 0;
     const parts: string[] = [];

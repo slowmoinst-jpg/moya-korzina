@@ -22,6 +22,7 @@ export type IconName =
   | 'alert'
   | 'grid'
   | 'list'
+  | 'tag'
   | 'table'
   | 'more'
   | 'search';
@@ -121,6 +122,12 @@ export const Icon: React.FC<{ name: IconName; className?: string }> = ({ name, c
         </>
       )}
       {name === 'list' && <path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01" />}
+      {name === 'tag' && (
+        <>
+          <path d="M3.5 3.5h7.8l8.7 8.7a1.5 1.5 0 0 1 0 2.1L14.3 20a1.5 1.5 0 0 1-2.1 0l-8.7-8.7z" />
+          <circle cx="7.8" cy="7.8" r="1.1" />
+        </>
+      )}
       {name === 'table' && (
         <>
           <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
@@ -151,8 +158,8 @@ export const ChainMark: React.FC<{ code: string; name?: string }> = ({ code, nam
 };
 
 export const ProductPic: React.FC<{ photo?: string | null; title?: string }> = ({ photo, title }) => {
-  const [broken, setBroken] = useState(false);
-  const valid = !broken && photo && /^https?:\/\//i.test(photo);
+  const [broken, setBroken] = useState<string | null>(null);
+  const valid = broken !== photo && photo && /^https?:\/\//i.test(photo);
   return (
     <span className="pic" title={title}>
       {valid ? (
@@ -162,7 +169,7 @@ export const ProductPic: React.FC<{ photo?: string | null; title?: string }> = (
           loading="lazy"
           decoding="async"
           referrerPolicy="no-referrer"
-          onError={() => setBroken(true)}
+          onError={() => setBroken(photo)}
         />
       ) : (
         <Icon name="bag" />

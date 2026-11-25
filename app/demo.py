@@ -58,7 +58,7 @@ LIST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo_baske
 # рабочих мест и наливается init_db.
 CONTENT_TABLES = ("variant_lines", "variants", "basket_items", "baskets", "offers", "cards",
                   "purchase_history", "product_mapping", "store_prices", "link_rejects",
-                  "store_products", "products", "receipts", "settings")
+                  "store_products", "products", "other_receipt_contents", "receipt_payments", "receipts", "settings")
 
 _LOCK = threading.Lock()
 

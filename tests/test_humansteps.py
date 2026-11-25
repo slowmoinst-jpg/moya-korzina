@@ -104,6 +104,7 @@ def test_board_covers_every_chain_and_names_the_next_step(monkeypatch):
         _Conn("pyaterochka", True), _Conn("dixy", True), _Conn("metro", True),
         _Conn("lenta", False)])
 
+    monkeypatch.setattr(humansteps.repo, "list_stores", lambda: [])
     board = {r["code"]: r for r in humansteps.board()}
 
     assert set(board) == {"pyaterochka", "dixy", "metro", "lenta"}
@@ -129,6 +130,7 @@ def test_board_takes_the_saved_login_over_the_connection_flag(monkeypatch):
     monkeypatch.setattr(humansteps.store_accounts, "connections", lambda: [
         _Conn("lenta", False), _Conn("dixy", False), _Conn("magnit", False)])
 
+    monkeypatch.setattr(humansteps.repo, "list_stores", lambda: [])
     by_flag = {r["code"]: r for r in humansteps.board()}
     assert not by_flag["lenta"]["connected"] and "подключить" in by_flag["lenta"]["next"]
 

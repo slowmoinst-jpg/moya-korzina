@@ -123,7 +123,9 @@ def basket_products(limit: int) -> list[int]:
     seen: dict[int, None] = {}
     for basket in repo.list_baskets()[:max(1, limit)]:
         for item in repo.basket_items(int(basket["id"])):
-            seen.setdefault(int(item["product_id"]), None)
+            for pid in (item["product_id"], item.get("fallback_product_id")):   # запасной — тоже
+                if pid:
+                    seen.setdefault(int(pid), None)
     return list(seen)
 
 

@@ -104,6 +104,8 @@ class MetroCrawler(Crawler):
         return ChainProduct(
             sku=article,
             name=name,
+            image=next((url for url in (row.get("images") or []) if isinstance(url, str)
+                        and url.startswith(("https://", "http://"))), None),
             brand=str(manufacturer.get("name") or "") or None,
             weight_g=_weight_g(row),
             unit=_unit(row),

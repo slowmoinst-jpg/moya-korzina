@@ -82,6 +82,10 @@ class Unauthorized(CabinetError):
     """Ключ не подошёл: истёк, отозван или его нет."""
 
 
+class PermissionDenied(CabinetError):
+    """The provider has refused access for this connection."""
+
+
 class NoFiscalData(CabinetError):
     """Чек в ленте есть, а его состава у ФНС уже нет.
 
@@ -236,7 +240,9 @@ class Cabinet:
             payload = response.json() if response.content else None
         except ValueError:
             payload = response.text
-        if response.status_code in (401, 403):
+        if response.status_code == 403:
+            raise PermissionDenied("ФНС не разрешила этому подключению читать чеки.", status=403)
+        if response.status_code == 401:
             message, code = _error_of(payload, response.status_code)
             raise Unauthorized(message, status=response.status_code, code=code, payload=payload)
         if response.status_code >= 400:
@@ -304,7 +310,9 @@ class Cabinet:
     def list_page(self, token: str, offset: int, limit: int = PAGE) -> dict:
         payload = self._post(LIST, {"limit": limit, "offset": offset,
                                     "orderBy": "CREATED_DATE:DESC"}, token=token)
-        return payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict) or not isinstance(payload.get("receipts"), list):
+            raise CabinetError("ФНС не вернула список чеков.")
+        return payload
 
     def fiscal_data(self, token: str, key: str) -> Any:
         return self._post(FISCAL, {"key": key}, token=token)
@@ -317,7 +325,11 @@ class Cabinet:
             return "auth", str(exc)
         except NoFiscalData:
             return "gone", None
+        except (PermissionDenied, CaptchaRequired):
+            raise
         except CabinetError as exc:
+            if exc.status == 429:
+                raise
             return "error", str(exc)
         if self.pause:
             time.sleep(self.pause)

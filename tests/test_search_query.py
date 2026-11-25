@@ -46,6 +46,33 @@ def test_a_found_canonical_name_wins(monkeypatch):
     assert answer == "Молоко Neo High Protein безлактозное 0,5%, 950 мл"
 
 
+def test_the_catalog_is_asked_for_a_name_once(monkeypatch):
+    """Имя для поиска нужно наряду каждой сети при каждой правке: каталог спрашиваем о нём один раз."""
+    asked = []
+    monkeypatch.setattr(phonecart, "_catalog_name", lambda text: asked.append(text) or "Молоко Нео 0,5% 950 мл")
+
+    answers = {phonecart._query_name(0, "Молоко neo 0 5") for _ in range(3)}
+
+    assert answers == {"Молоко Нео 0,5% 950 мл"}
+    assert asked == ["Молоко neo 0 5"]
+
+
+def test_a_catalog_failure_is_not_remembered(monkeypatch):
+    """Каталог не ответил — ищем как написан товар, а отказ не запоминаем: следующий наряд спросит снова."""
+    answers = iter([RuntimeError("каталог занят"), "Молоко Нео 0,5% 950 мл"])
+
+    def catalog(text):
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(phonecart, "_catalog_name", catalog)
+
+    assert phonecart._query_name(0, "Молоко neo 0 5") == "Молоко neo 0,5"
+    assert phonecart._query_name(0, "Молоко neo 0 5") == "Молоко Нео 0,5% 950 мл"
+
+
 def test_a_link_to_the_unified_base_is_still_first(monkeypatch):
     """Привязка к единому товару — главный довод, поиск по каталогу её не заменяет."""
     monkeypatch.setattr(phonecart.repo, "master_of", lambda pid: {"master_id": 5})

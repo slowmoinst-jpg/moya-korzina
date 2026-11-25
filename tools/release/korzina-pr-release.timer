@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for merged Moya Korzina pull requests
+
+[Timer]
+OnBootSec=90s
+OnUnitInactiveSec=2min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

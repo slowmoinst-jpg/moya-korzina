@@ -1,7 +1,9 @@
 """Доступ к данным. Единственный слой, через который UI и модули ходят в SQLite."""
 from __future__ import annotations
 
+import json
 import math
+import sqlite3
 from datetime import datetime
 
 from app.db import get_conn, init_db  # noqa: F401  (init_db реэкспортируется для UI)
@@ -442,8 +444,8 @@ def drop_base_links(product_id: int) -> None:
         c.commit()
 
 
-def raw_names(product_id: int, limit: int = 3) -> list[str]:
-    """Строки чеков, которыми товар приходил, свежие первыми.
+def raw_names(product_id: int, limit: int = 3, store_id: int | None = None) -> list[str]:
+    """Строки чеков, которыми товар приходил, свежие первыми; store_id — только чеки этой сети.
 
     Название эталона — уже нормализованное и теряет голову и процент строки чека:
     «МОЛ.ПАСТ.ПРОСТОКВАШИНО 2,5%» становится «Паст простоквашино 2 5». Искать
@@ -452,8 +454,9 @@ def raw_names(product_id: int, limit: int = 3) -> list[str]:
     with get_conn() as c:
         rows = c.execute("SELECT raw_name, MAX(date) AS last FROM purchase_history"
                          " WHERE product_id=? AND raw_name IS NOT NULL AND raw_name != ''"
+                         " AND (? IS NULL OR store_id=?)"
                          " GROUP BY raw_name ORDER BY last DESC LIMIT ?",
-                         (product_id, int(limit))).fetchall()
+                         (product_id, store_id, store_id, int(limit))).fetchall()
     return [r["raw_name"] for r in rows]
 
 
@@ -479,6 +482,20 @@ def set_master(product_id: int, master_id: int | None, method: str | None) -> No
         c.commit()
 
 
+def real_pairs(product_ids) -> set[tuple[int, int]]:
+    """Пары (товар, магазин) с подтверждённым НАСТОЯЩИМ артикулом — одним запросом на весь список."""
+    ids = sorted({int(p) for p in product_ids if p})
+    if not ids:
+        return set()
+    marks = ",".join("?" for _ in ids)
+    with get_conn() as c:
+        return {(int(r[0]), int(r[1])) for r in c.execute(
+            "SELECT DISTINCT m.product_id, sp.store_id FROM product_mapping m"
+            " JOIN store_products sp ON sp.id = m.store_product_id"
+            " JOIN stores s ON s.id = sp.store_id"
+            f" WHERE m.confirmed=1 AND m.product_id IN ({marks}) AND {real_sku_sql()}", ids)}
+
+
 def coverage(basket_id: int) -> list[dict]:
     """Какие товары корзины не уедут в корзину каждой сети: [{code, name, known, of, unknown}].
 
@@ -487,16 +504,7 @@ def coverage(basket_id: int) -> list[dict]:
     каждую пару «товар — сеть». Порядок — как в справочнике магазинов.
     """
     items = basket_items(basket_id)
-    ids = sorted({int(it["product_id"]) for it in items if it.get("product_id")})
-    known: set[tuple[int, int]] = set()
-    if ids:
-        marks = ",".join("?" for _ in ids)
-        with get_conn() as c:
-            known = {(int(r[0]), int(r[1])) for r in c.execute(
-                "SELECT DISTINCT m.product_id, sp.store_id FROM product_mapping m"
-                " JOIN store_products sp ON sp.id = m.store_product_id"
-                " JOIN stores s ON s.id = sp.store_id"
-                f" WHERE m.confirmed=1 AND m.product_id IN ({marks}) AND {real_sku_sql()}", ids)}
+    known = real_pairs(it.get("product_id") for it in items)
     out: list[dict] = []
     for store in list_stores():
         unknown = [it.get("name") or "—" for it in items
@@ -757,13 +765,27 @@ def basket_items(basket_id: int) -> list[dict]:
     """Позиции корзины. name — эталон (ключ поиска и сопоставления), title — для глаз человека."""
     with get_conn() as c:
         items = [dict(r) for r in c.execute(
-            "SELECT bi.product_id, bi.qty, bi.fallback_product_id, p.name, p.unit, p.weight_g, p.brand"
+            "SELECT bi.product_id, bi.qty, bi.fallback_product_id, bi.preferred_store, p.name, p.unit, p.weight_g, p.brand"
             " FROM basket_items bi JOIN products p ON p.id = bi.product_id WHERE bi.basket_id=? ORDER BY p.name",
             (basket_id,))]
     titles = human_titles({int(i["product_id"]): i["name"] for i in items})
     for item in items:
         item["title"] = titles.get(int(item["product_id"])) or item["name"]
     return items
+
+
+def priced_pids(items: list[dict]) -> tuple[int, ...]:
+    """Товары, чьи цены нужны расчёту: позиции корзины и их запасные («если нет — беру это»).
+
+    Запасной в корзине не лежит. Без него в списке цен его снимок протух бы, и замена
+    выпала бы из расчёта через срок свежести цены.
+    """
+    found: set[int] = set()
+    for item in items:
+        found.add(int(item["product_id"]))
+        if item.get("fallback_product_id"):
+            found.add(int(item["fallback_product_id"]))
+    return tuple(sorted(found))
 
 
 def set_basket_fallback(basket_id: int, product_id: int, fallback_product_id: int | None) -> None:
@@ -814,9 +836,9 @@ def add_history_row(date: str, store_id: int | None, product_id: int | None, raw
 
 
 def list_history(date_from: str | None = None, date_to: str | None = None,
-                 store_id: int | None = None) -> list[dict]:
+                 store_id: int | None = None, *, limit: int | None = None) -> list[dict]:
     sql = ("SELECT h.*, s.name AS store_name, s.code AS store_code,"
-           " p.name AS product_name, p.unit AS unit FROM purchase_history h"
+           " p.name AS product_name, p.unit AS unit FROM effective_purchase_history h"
            " LEFT JOIN stores s ON s.id = h.store_id LEFT JOIN products p ON p.id = h.product_id WHERE 1=1")
     params: list = []
     if date_from:
@@ -828,8 +850,12 @@ def list_history(date_from: str | None = None, date_to: str | None = None,
     if store_id:
         sql += " AND h.store_id = ?"
         params.append(store_id)
+    sql += " ORDER BY h.date DESC, h.id"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
     with get_conn() as c:
-        rows = [dict(r) for r in c.execute(sql + " ORDER BY h.date DESC, h.id", tuple(params))]
+        rows = [dict(r) for r in c.execute(sql, params)]
     # product_name — то, что читает человек: строка чека с раскрытыми сокращениями.
     # product_key — эталон (products.name), по нему ищет и сопоставляет коннектор чеков
     # (connectors/history сверяет его с запросом; подмени он имя, цены Пятёрочки пропали бы).
@@ -886,8 +912,19 @@ def note_receipt(key: str, date: str | None = None, store: str | None = None,
         c.commit()
 
 
+def save_receipt_payment(conn: sqlite3.Connection, key: str,
+                         payment: tuple[int, str, str]) -> None:
+    conn.execute(
+        "INSERT INTO receipt_payments (receipt_key, stage, fiscal_at, signature) VALUES (?,?,?,?)"
+        " ON CONFLICT(receipt_key) DO UPDATE SET stage=excluded.stage,"
+        " fiscal_at=excluded.fiscal_at, signature=excluded.signature",
+        (key, *payment),
+    )
+
+
 def mark_receipt_imported(key: str, date: str | None, store: str | None,
-                          total: float | None, rows: int, source: str = "lkdr") -> None:
+                          total: float | None, rows: int, source: str = "lkdr", *,
+                          payment: tuple[int, str, str] | None = None) -> None:
     if not key:
         return
     with get_conn() as c:
@@ -898,6 +935,8 @@ def mark_receipt_imported(key: str, date: str | None, store: str | None,
             "   date = excluded.date, store = excluded.store, total = excluded.total,"
             "   rows = excluded.rows, source = excluded.source, imported_at = excluded.imported_at",
             (key, date, store, total, rows, source, NOW(), NOW()))
+        if payment is not None and rows > 0:
+            save_receipt_payment(c, key, payment)
         c.commit()
 
 
@@ -922,8 +961,10 @@ def mark_receipt_unavailable(key: str) -> None:
     if not key:
         return
     with get_conn() as c:
-        c.execute("UPDATE receipts SET rows = ? WHERE key = ? AND imported_at IS NULL",
-                  (NO_DATA, key))
+        c.execute("INSERT OR IGNORE INTO other_receipt_contents(receipt_key, lines)"
+                  " SELECT key,'[]' FROM receipts WHERE key=? AND rows=?", (key, OTHER_STORE))
+        c.execute("UPDATE receipts SET rows = ? WHERE key = ? AND imported_at IS NULL AND COALESCE(rows,0) != ?",
+                  (NO_DATA, key, OTHER_STORE))
         c.commit()
 
 
@@ -958,7 +999,7 @@ OTHER_STORE = -2   # в поле rows: чек магазина, где мы не
 
 
 def mark_receipt_other_store(key: str, date: str | None, store: str | None,
-                             total: float | None, source: str = "lkdr") -> None:
+                             total: float | None, source: str = "lkdr", *, lines: list[dict] | None = None) -> None:
     """Чек из магазина, где приложение не собирает заказы: в заказы он не идёт.
 
     Запоминаем его, а не выбрасываем: чтобы следующая загрузка не спрашивала его
@@ -975,15 +1016,44 @@ def mark_receipt_other_store(key: str, date: str | None, store: str | None,
             "   store = COALESCE(receipts.store, excluded.store)"
             " WHERE receipts.imported_at IS NULL",
             (key, date, store, total, OTHER_STORE, source, NOW()))
+        if lines:
+            c.execute("INSERT OR IGNORE INTO other_receipt_contents(receipt_key,lines)"
+                      " SELECT key,? FROM receipts WHERE key=? AND rows=? AND imported_at IS NULL",
+                      (json.dumps(lines, ensure_ascii=False), key, OTHER_STORE))
         c.commit()
 
 
-def other_store_receipts() -> list[dict]:
+def other_store_receipts(*, limit: int = -1, offset: int = 0) -> list[dict]:
     """Отложенные чеки других магазинов — для строки «Не добавлены»."""
     with get_conn() as c:
         return [dict(r) for r in c.execute(
-            "SELECT * FROM receipts WHERE imported_at IS NULL AND rows = ? ORDER BY date DESC, key",
-            (OTHER_STORE,))]
+            "SELECT * FROM receipts WHERE imported_at IS NULL AND rows = ? ORDER BY date DESC, key LIMIT ? OFFSET ?",
+            (OTHER_STORE, limit, offset))]
+
+
+def other_receipts_with_contents() -> set[str]:
+    with get_conn() as c:
+        return {row[0] for row in c.execute("SELECT receipt_key FROM other_receipt_contents")}
+
+
+def other_receipt_lines(key: str) -> list[dict]:
+    with get_conn() as c:
+        row = c.execute("SELECT d.lines FROM other_receipt_contents d JOIN receipts r"
+                        " ON r.key=d.receipt_key WHERE r.key=? AND r.rows=?", (key, OTHER_STORE)).fetchone()
+    return json.loads(row[0]) if row else []
+
+
+def saved_receipt_count() -> int:
+    with get_conn() as c:
+        return c.execute("SELECT count(*) FROM receipts WHERE imported_at IS NOT NULL OR rows=?",
+                         (OTHER_STORE,)).fetchone()[0]
+
+
+def receipt_has_contents(key: str) -> bool:
+    with get_conn() as c:
+        return c.execute("SELECT 1 FROM receipts WHERE key=? AND imported_at IS NOT NULL"
+                         " UNION ALL SELECT 1 FROM other_receipt_contents WHERE receipt_key=? LIMIT 1",
+                         (key, key)).fetchone() is not None
 
 
 def other_store_receipt_keys() -> set[str]:

@@ -1,9 +1,7 @@
 """Связка кабинета ФНС с рабочим местом: ключи в настройках, загрузка одной командой.
 
-Как это выглядит для человека. Ввёл телефон при входе → на экране «Мои чеки»
-нажал «Получить код» → вписал шесть цифр из СМС → всё. Дальше при каждом входе
-приложение само сходит в кабинет, возьмёт новые чеки и скажет, сколько взяло.
-Смотреть ему ничего не надо.
+После подключения планировщик app.fns.background проверяет новые чеки и при
+закрытом приложении. Кнопка «Обновить» запускает внеочередную проверку.
 
 Что где лежит. В таблице settings рабочего места: fns.device_id (случайный
 идентификатор «устройства», кабинет привязывает к нему ключи), fns.token и
@@ -18,12 +16,14 @@ fns.refresh_token, fns.phone, fns.connected_at, fns.last_sync_at, fns.last_resul
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime
 from typing import Any, Callable
 
 from app import chains, config, repo
 from app.fns.client import Cabinet, CabinetError, Unauthorized, new_device_id
 from app.importers.bundle import import_bundle
+from app.importers.sources import parse_receipt_json
 
 K_DEVICE = "fns.device_id"
 K_TOKEN = "fns.token"
@@ -32,6 +32,7 @@ K_PHONE = "fns.phone"
 K_CONNECTED = "fns.connected_at"
 K_SYNCED = "fns.last_sync_at"
 K_RESULT = "fns.last_result"
+_credentials_lock = threading.RLock()
 
 
 def _now() -> str:
@@ -169,8 +170,9 @@ def connect_with_keys(text: str, phone: str | None = None, cabinet: Cabinet | No
 
 def disconnect() -> None:
     """Забыть ключи. Чеки, уже загруженные в историю, остаются."""
-    for key in (K_TOKEN, K_REFRESH, K_PHONE, K_CONNECTED, K_SYNCED, K_RESULT):
-        repo.set_setting(key, None)
+    with _credentials_lock:
+        for key in (K_TOKEN, K_REFRESH, K_PHONE, K_CONNECTED, K_SYNCED, K_RESULT):
+            repo.set_setting(key, None)
 
 
 def _refreshed(cabinet: Cabinet) -> str | None:
@@ -178,9 +180,12 @@ def _refreshed(cabinet: Cabinet) -> str | None:
     if not refresh:
         return None
     tokens = cabinet.refresh(refresh)
-    repo.set_setting(K_TOKEN, tokens.token)
-    if tokens.refresh_token:
-        repo.set_setting(K_REFRESH, tokens.refresh_token)
+    with _credentials_lock:
+        if repo.get_setting(K_REFRESH) != refresh:
+            raise CabinetError("Подключение изменилось во время обновления.")
+        repo.set_setting(K_TOKEN, tokens.token)
+        if tokens.refresh_token:
+            repo.set_setting(K_REFRESH, tokens.refresh_token)
     return tokens.token
 
 
@@ -188,13 +193,47 @@ def _renewed(cabinet: Cabinet) -> str:
     """Ключ истёк посреди работы: обновляем по refresh-токену или сдаёмся честно."""
     try:
         token = _refreshed(cabinet)
-    except CabinetError:
+    except Unauthorized:
         token = None
     if not token:
         disconnect()
         raise CabinetError("Кабинет перестал узнавать ключ — подключите его заново на "
                            "экране «Мои чеки».")
     return token
+
+
+def senders(keys: list[str], cabinet: Cabinet | None = None) -> dict[str, str]:
+    """Адрес отправителя чека по ключу. В базе его нет, а общую доставку судят по нему
+    (chains.shared), поэтому состав уже загруженных чеков спрашиваем у кабинета заново.
+
+    Кабинет не узнал ключ, а обновить его нечем — отдаём, что успели, и настройки не трогаем:
+    проход chains.settle оставит такие чеки как были.
+    """
+    token = repo.get_setting(K_TOKEN)
+    if not keys or not token:
+        return {}
+    cabinet = cabinet or make_cabinet()
+    found: dict[str, str] = {}
+    for last in (False, True):                      # второй заход — с обновлённым ключом
+        stale = []
+        for key, kind, data in cabinet.fiscal_many(token, keys):
+            if kind == "auth":
+                stale.append(key)
+            elif kind == "ok":
+                try:
+                    found[key] = parse_receipt_json(data).sender
+                except ValueError:                  # чек без позиций: судить не по чему
+                    pass
+        if not stale or last:                       # после второго отказа ключ не обновляем
+            break
+        try:
+            token = _refreshed(cabinet)
+        except CabinetError:
+            token = None
+        if not token:
+            break
+        keys = stale
+    return found
 
 
 def _settle(entry: dict, kind: str, data: Any, taken: list[dict],
@@ -266,16 +305,22 @@ def sync(on_step: Callable[[str, int, int], None] | None = None,
     # Чеки, по которым ФНС уже сказала «состава нет», из очереди исключены: иначе
     # каждая проверка заново спрашивала бы сто с лишним чеков 2018 года ради того же
     # отказа — и минуту работы, и лишний стук в ФНС.
-    skip = known | repo.unavailable_receipt_keys() | repo.other_store_receipt_keys()
+    archived = repo.other_store_receipt_keys()
+    missing_contents = archived - repo.other_receipts_with_contents()
+    skip = known | repo.unavailable_receipt_keys() | archived
     # Чек магазина, где мы не собираем заказы, откладывается ещё по описи — его состав
     # у ФНС не спрашиваем вовсе (app/chains.py). Опись без названия продавца не
-    # судим: такой чек возьмём, а решит store_receipts по самому чеку.
+    # судим: такой чек возьмём, а решит store_receipts по самому чеку. Так же с общей
+    # доставкой X5 (chains.shared): чья она, видно только внутри чека.
     for e in entries:
-        if e["key"] in skip or not _named(e.get("store")) or chains.accepts(e.get("store")):
+        if e["key"] in skip or not _named(e.get("store")) or chains.accepts(e.get("store")) \
+                or chains.shared(e.get("store")):
             continue
         repo.mark_receipt_other_store(e["key"], e.get("date"), e.get("store"), e.get("total"))
         skip.add(e["key"])
     need = [e for e in entries if e["key"] not in skip]
+    # Восстанавливаем состав старых чеков постепенно, используя ключи текущей описи кабинета.
+    need.extend([e for e in entries if e["key"] in missing_contents][:batch])
     # В очередь идёт не только то, что кабинет показал сейчас, но и то, что у нас уже
     # записано невзятым. Опись читается постранично, и пока её читаешь, лента в
     # кабинете живёт: часть чеков в этот заход просто не показывается. Ключи их у нас

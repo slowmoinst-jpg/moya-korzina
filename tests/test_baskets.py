@@ -303,6 +303,20 @@ def test_due_items_only_overdue(cycles):
     assert [h["product_id"] for h in due] == [cycles["milk"]]
 
 
+def test_due_items_drop_dead_habits_and_put_the_orderable_first(cycles):
+    """Купленное дважды подряд три года назад — не «пора докупить»; то, чего не знает ни одна сеть, — в конце."""
+    store = repo.get_store("pyaterochka")
+    old = repo.upsert_product(Product(None, "Баранка", unit="pcs"))
+    for day in ("2023-03-01", "2023-03-02"):
+        repo.add_history_row(day, store.id, old, "Баранка", 1, 50.0, 50.0)
+    kefir = repo.upsert_product(Product(None, "Кефир", unit="pcs"))
+    for day in ("2026-09-08", "2026-09-15"):
+        repo.add_history_row(day, store.id, kefir, "Кефир", 1, 90.0, 90.0)
+    repo.confirm_mapping(kefir, repo.upsert_store_product(store.id, "3345678", "Кефир 1%"))
+
+    assert [h["product_id"] for h in baskets.due_items(cycles["today"])] == [kefir, cycles["milk"]]
+
+
 def test_usual_takes_what_runs_out_this_week(cycles):
     """Молоко кончилось, масло куплено шесть дней назад на месяц — его не берём."""
     usual = {h["product_id"] for h in baskets.usual_items(cycles["today"])}

@@ -67,6 +67,46 @@ def bundle(taken: list[dict], catalogue: list[dict] | None = None) -> str:
     }, ensure_ascii=False)
 
 
+def delivery_receipt(key, hour, stage, *, cash=0, prepaid=0, product="Молоко Parmalat 1 л"):
+    doc = receipt(key, "2026-09-08", "Самокат", [(product, 1, 80500)])
+    fiscal = doc["fiscalData"]
+    fiscal.update(dateTime=f"2026-09-08T{hour}:00", operationType=1, userInn="1234567890",
+                  ecashTotalSum=cash, prepaidSum=prepaid)
+    fiscal["items"][0]["paymentType"] = stage
+    return doc
+
+
+@pytest.mark.parametrize("settlement_first", [False, True])
+def test_prepayment_and_settlement_count_as_one_purchase(db, settlement_first):
+    paid = delivery_receipt("paid", "08:53", 1, cash=80500)
+    settled = delivery_receipt("settled", "09:13", 4, prepaid=80500)
+    first, second = (settled, paid) if settlement_first else (paid, settled)
+    import_bundle(bundle([first]))
+    assert len(repo.list_history()) == 1
+    import_bundle(bundle([second]))
+    assert repo.imported_receipt_keys() == {"paid", "settled"}
+    assert [row["receipt_key"] for row in repo.list_history()] == ["settled"]
+    assert receipts.loaded()["total"] == 805
+
+    repo.forget_receipt("settled")
+    assert [row["receipt_key"] for row in repo.list_history()] == ["paid"]
+
+
+@pytest.mark.parametrize("kind", ["other_purchase", "other_product", "ambiguous"])
+def test_does_not_merge_unproven_delivery_pairs(db, kind):
+    paid = delivery_receipt("paid", "08:53", 1, cash=80500)
+    settled = delivery_receipt("settled", "09:13", 4, prepaid=80500)
+    if kind == "other_purchase":
+        settled["fiscalData"].update(ecashTotalSum=80500, prepaidSum=0)
+    elif kind == "other_product":
+        settled["fiscalData"]["items"][0]["name"] = "Молоко другой марки 1 л"
+    docs = [paid, settled]
+    if kind == "ambiguous":
+        docs.append(delivery_receipt("second-payment", "08:58", 1, cash=80500))
+    import_bundle(bundle(docs))
+    assert {row["receipt_key"] for row in repo.list_history()} == {r["key"] for r in docs}
+
+
 # ---------- разбор ----------
 def test_bundle_is_split_into_receipts_and_catalogue():
     parsed = parse_bundle(bundle(TWO))
@@ -110,6 +150,82 @@ def test_import_writes_history_and_counts_receipts(db):
     assert result["total"] == 274.30 + 329.00
     assert result["period"] == ("2026-08-16", "2026-08-20")
     assert len(repo.list_history()) == 3
+
+
+def test_mobile_replay_restores_ozon_lines_without_creating_products(db):
+    from app.importers.bundle import store_receipts
+    from app.importers.ofd_pdf import Receipt, ReceiptRow
+
+    repo.mark_receipt_other_store("old", "2026-11-23", "Озон", 274)
+    record = {"key": "old", "receipt": Receipt("2026-11-23", "Озон",
+              [ReceiptRow("Покупка", 2, 137, 274)], 274)}
+    assert len(store_receipts([record])["other"]) == 1
+    assert repo.other_receipt_lines("old") == [{"name": "Покупка", "quantity": 2, "price": 137, "total": 274}]
+    assert store_receipts([record])["skipped"] == 1
+    assert len(repo.other_store_receipts()) == 1
+    assert not repo.list_history()
+
+
+def test_only_groceries_from_recognised_chains_create_products(db):
+    from app.importers.bundle import store_receipts
+    from app.importers.ofd_pdf import Receipt, ReceiptRow
+
+    frozen = "Хинкали замороженные 500 г"
+    restaurant = "Хинкали, порция 4 штуки"
+    lab = "01-123 Общий анализ крови"
+    records = [("", [restaurant]), ("Кафе у дома", [restaurant]),
+               ("Лента", [frozen, lab, "Доставка"])]
+    for index, (seller, names) in enumerate(records):
+        lines = [ReceiptRow(name, 1, 100, 100) for name in names]
+        receipt = Receipt("2026-11-20", seller, lines, 100 * len(lines))
+        store_receipts([{"key": f"test-{index}", "receipt": receipt}])
+
+    rows = {row["raw_name"]: row for row in repo.list_history()}
+    assert rows[frozen]["product_id"] is not None
+    assert all(rows[name]["product_id"] is None for name in (restaurant, lab, "Доставка"))
+    assert len(repo.list_products()) == 1
+    assert repo.other_store_receipt_keys() == {"test-1"}
+
+
+def test_cleanup_removes_old_receipt_only_cards_and_preserves_receipts(db):
+    from app import baskets
+    from app.importers.receipt_products import clean_legacy
+    from app.models import Product
+
+    store = repo.get_store("lenta")
+    lab = repo.upsert_product(Product(id=None, name="Общий анализ крови"))
+    restaurant = repo.upsert_product(Product(id=None, name="Хинкали, порция"))
+    frozen = repo.upsert_product(Product(id=None, name="Хинкали замороженные 500 г"))
+    confirmed = repo.upsert_product(Product(id=None, name="Молоко"))
+    for key, pid, sid, name, seller in [
+        ("lab", lab, store.id, "Общий анализ крови", "Лента"),
+        ("menu", restaurant, None, "Хинкали, порция", "Кафе"),
+        ("frozen", frozen, store.id, "Хинкали замороженные 500 г", "Лента"),
+        ("old", confirmed, None, "Молоко", "Лента"),
+    ]:
+        repo.add_history_row("2026-11-20", sid, pid, name, 1, 100, 100, key)
+        repo.mark_receipt_imported(key, "2026-11-20", seller, 100, 1, "lkdr")
+    basket = repo.create_basket("Старая копия чека", source="history")
+    repo.set_basket_item(basket, restaurant, 1)
+    repo.set_basket_item(basket, frozen, 1)
+    repo.set_basket_fallback(basket, frozen, restaurant)
+    sp = repo.upsert_store_product(store.id, "catalog-1", "Хинкали замороженные 500 г")
+    repo.confirm_mapping(restaurant, sp, confirmed=True, method="master")
+
+    with repo.get_conn() as conn:
+        expected = {"unlinked": 2, "archived": 2, "resolved": 1}
+        assert clean_legacy(conn) == expected
+        assert repo.get_product(restaurant).active
+        assert clean_legacy(conn, apply=True) == expected
+        conn.commit()
+        assert clean_legacy(conn) == {"unlinked": 0, "archived": 0, "resolved": 0}
+
+    assert {p.id for p in repo.list_products()} == {frozen, confirmed}
+    assert {r["product_id"] for r in baskets.orderable_history()} == {frozen, confirmed}
+    rows = {r["receipt_key"]: r for r in repo.list_history()}
+    assert len(rows) == 4 and sum(r["total"] for r in rows.values()) == 400
+    assert rows["menu"]["product_id"] is rows["lab"]["product_id"] is None
+    assert [(r["product_id"], r["fallback_product_id"]) for r in repo.basket_items(basket)] == [(frozen, None)]
 
 
 def test_second_run_adds_nothing(db):

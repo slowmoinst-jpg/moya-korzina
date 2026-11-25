@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS basket_items (
     product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
     qty REAL NOT NULL,
     fallback_product_id INTEGER,
+    preferred_store TEXT,
     PRIMARY KEY (basket_id, product_id)
 );
 
@@ -146,6 +147,37 @@ CREATE TABLE IF NOT EXISTS receipts (
     source TEXT,                    -- lkdr | file | paste
     seen_at TEXT,                   -- когда чек впервые попался на глаза
     imported_at TEXT                -- когда позиции легли в историю; NULL — ещё не загружен
+);
+
+CREATE TABLE IF NOT EXISTS other_receipt_contents (
+    receipt_key TEXT PRIMARY KEY REFERENCES receipts(key) ON DELETE CASCADE,
+    lines TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS receipt_payments (
+    receipt_key TEXT PRIMARY KEY REFERENCES receipts(key) ON DELETE CASCADE,
+    stage INTEGER NOT NULL CHECK (stage IN (1, 4)),
+    fiscal_at TEXT NOT NULL,
+    signature TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_receipt_payments_pair ON receipt_payments(signature, stage);
+
+CREATE VIEW IF NOT EXISTS effective_purchase_history AS
+WITH candidates AS (
+    SELECT advance.receipt_key AS advance_key,
+           COUNT(*) OVER (PARTITION BY advance.receipt_key) AS settlements,
+           COUNT(*) OVER (PARTITION BY settlement.receipt_key) AS advances
+    FROM receipt_payments advance
+    JOIN receipt_payments settlement ON settlement.signature = advance.signature
+    WHERE advance.stage = 1 AND settlement.stage = 4
+      AND julianday(settlement.fiscal_at) BETWEEN julianday(advance.fiscal_at)
+                                               AND julianday(advance.fiscal_at) + 1
+)
+SELECT h.* FROM purchase_history h
+WHERE NOT EXISTS (
+    SELECT 1 FROM candidates pair
+    WHERE pair.advance_key = h.receipt_key AND pair.settlements = 1 AND pair.advances = 1
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -288,6 +320,7 @@ LATE_COLUMNS: list[tuple[str, str, str]] = [
     ("product_mapping", "seen_name", "TEXT"),
     # Запасной товар строки корзины («если нет — беру это», решение владельца 01.11.2026)
     ("basket_items", "fallback_product_id", "INTEGER"),
+    ("basket_items", "preferred_store", "TEXT"),
 ]
 
 
@@ -320,7 +353,53 @@ def _add_late_indexes(conn: sqlite3.Connection) -> None:
 # Дикси. У Магнита, Ленты, ВкусВилла и METRO единица шла от самой сети — её не трогаем.
 FALSE_KG_CHAINS = ("pyaterochka", "samokat", "fixprice", "dixy")
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+
+
+def _migrate_dixy_case(conn: sqlite3.Connection) -> None:
+    """Версия 4 (16.11.2026) — артикулы Дикси в заглавном виде, каким их знает сама сеть.
+
+    Адрес карточки Дикси пишет артикул строчным («…-di00078791/»), а витрина и корзина сети знают
+    его заглавным (xml_id «DI00078791»): строчному сеть отвечает «в наличии 0». Артикул из адреса
+    попадал сюда как есть — отчётом телефона и единой базой, где тот же товар жил двумя строками.
+    Строчный артикул без заглавной пары переименовывается. Если есть обе строки, связи и снимки
+    цен строчной переходят заглавной, подтверждение не теряется, строчная строка удаляется.
+    Заглушки («hist-…», «dixy-…») под правило не попадают: в них есть дефис.
+    """
+    shop = conn.execute("SELECT id FROM stores WHERE code='dixy'").fetchone()
+    if shop is None:
+        return
+
+    def real(sku: str) -> bool:
+        return bool(re.fullmatch(r"[0-9a-z]{6,}", sku)) and sku != sku.upper()
+
+    for r in conn.execute("SELECT id, sku FROM store_products WHERE store_id=? AND sku != upper(sku)",
+                          (shop["id"],)).fetchall():
+        sku = str(r["sku"])
+        if not real(sku):
+            continue
+        twin = conn.execute("SELECT id FROM store_products WHERE store_id=? AND sku=?",
+                            (shop["id"], sku.upper())).fetchone()
+        if twin is None:
+            conn.execute("UPDATE store_products SET sku=? WHERE id=?", (sku.upper(), r["id"]))
+            continue
+        conn.execute(
+            "UPDATE product_mapping SET confirmed=1, confirmed_at=l.confirmed_at, method=l.method,"
+            " seen_name=l.seen_name FROM (SELECT product_id, confirmed_at, method, seen_name"
+            " FROM product_mapping WHERE store_product_id=? AND confirmed=1) l"
+            " WHERE product_mapping.store_product_id=? AND product_mapping.product_id=l.product_id"
+            " AND product_mapping.confirmed=0", (r["id"], twin["id"]))
+        conn.execute("UPDATE OR IGNORE product_mapping SET store_product_id=? WHERE store_product_id=?",
+                     (twin["id"], r["id"]))
+        conn.execute("UPDATE store_prices SET store_product_id=? WHERE store_product_id=?",
+                     (twin["id"], r["id"]))
+        conn.execute("DELETE FROM store_products WHERE id=?", (r["id"],))
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='link_rejects'").fetchone():
+        for r in conn.execute("SELECT product_id, sku FROM link_rejects WHERE store_id=?",
+                              (shop["id"],)).fetchall():
+            if real(str(r["sku"])):
+                conn.execute("UPDATE OR IGNORE link_rejects SET sku=? WHERE product_id=? AND store_id=?"
+                             " AND sku=?", (str(r["sku"]).upper(), r["product_id"], shop["id"], r["sku"]))
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -343,6 +422,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         _migrate_preview_rows(conn)
     if version < 3:
         _migrate_store_sizes(conn)
+    if version < 4:
+        _migrate_dixy_case(conn)
     if version < SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 

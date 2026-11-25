@@ -75,6 +75,23 @@ def no_background_linking(monkeypatch):
     monkeypatch.setattr(link, "link_soon", lambda phone, sync=False: False)
 
 
+@pytest.fixture(autouse=True)
+def fresh_catalog_answers():
+    """Ответы каталога, которые помнит наряд телефону (phonecart._asked_once), у каждого теста свои."""
+    from app import phonecart
+
+    phonecart._ANSWERS.clear()
+    phonecart._ANSWER_GATES.clear()
+
+
+@pytest.fixture(autouse=True)
+def no_plans_wait(monkeypatch):
+    """Наряды телефона после правки в тестах не ждут: иначе поток просыпался бы в чужом тесте."""
+    from app import phonecart
+
+    monkeypatch.setattr(phonecart, "PLANS_WAIT_SEC", 0)
+
+
 # Фоновые работы, которые кончаются сами и открывают рабочее место человека в своём потоке:
 # прогрев «Где дешевле», расчёт корзины, поиск позиций, загрузка из ФНС, сдача корзины в сетях,
 # сбор цен и передача корзины человеку. Остальные потоки (`korzina-api`, `pricewatch`) живут, пока

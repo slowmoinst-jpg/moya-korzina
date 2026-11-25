@@ -21,11 +21,38 @@ import logging
 from typing import Any
 
 from app import chains, repo
+from app.catalog.nonfood import is_receipt_product
 from app.db import init_db
 from app.importers.ofd_pdf import Receipt, _ensure_product, _remember_barcode, _resolve_store_id
 from app.importers.sources import parse_receipt_json
+from app.matcher.normalize import display_name
 
 log = logging.getLogger(__name__)
+
+ORDER_KEY = "order:"    # ключ заказа из кабинета сети: order:<сеть>:<номер> (shoporders.py)
+
+
+def same_purchase(store_id: int, day: str, total: float, orders: bool) -> bool:
+    """Лежит ли эта покупка в истории записью другого вида: orders — заказом из кабинета
+    сети, иначе чеком.
+
+    Одну покупку приносят два источника: кабинет сети отдаёт заказ, ФНС — его же чеки (у
+    доставки их два: предоплата и расчёт). Кто пришёл вторым, строк в историю не добавляет.
+    Признак — та же сеть, тот же итог и соседний день: заказ около полуночи и его чек
+    расходятся датой.
+    """
+    # shortcut: заказ, который сеть изменила после оплаты или пробила несколькими чеками, по
+    # итогу не узнаётся и ляжет второй раз (замер 16.11.2026, Самокат: 2 заказа из 69). И
+    # наоборот: пара не расходуется, две покупки в сети на одну сумму в соседние дни сойдут
+    # за одну, пока у второй нет своей записи. Станет заметно — сверять ещё и состав.
+    with repo.get_conn() as c:
+        return c.execute(
+            "SELECT 1 FROM receipts r WHERE r.imported_at IS NOT NULL"
+            " AND (r.key LIKE ?) = ? AND ABS(r.total - ?) < 0.005"
+            " AND ABS(julianday(r.date) - julianday(?)) <= 1"
+            " AND EXISTS (SELECT 1 FROM purchase_history h"
+            " WHERE h.receipt_key = r.key AND h.store_id = ?) LIMIT 1",
+            (ORDER_KEY + "%", int(orders), total, day, store_id)).fetchone() is not None
 
 
 def fingerprint(receipt: Receipt) -> str:
@@ -40,6 +67,17 @@ def fingerprint(receipt: Receipt) -> str:
     parts += [f"{r.raw_name}|{r.qty}|{r.total}" for r in receipt.rows]
     digest = hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
     return f"fp:{digest[:16]}"
+
+
+def receipt_payment(receipt: Receipt, store_id: int | None) -> tuple[int, str, str] | None:
+    """Полный состав покупки без учёта порядка строк и реквизитов чека."""
+    fiscal = receipt.fiscal_payment
+    if fiscal is None or not store_id:
+        return None
+    lines = sorted((" ".join(row.raw_name.casefold().split()), row.qty, row.unit_price, row.total)
+                   for row in receipt.rows)
+    signature = json.dumps([fiscal.seller, store_id, receipt.total, lines], ensure_ascii=False)
+    return fiscal.stage, fiscal.at, hashlib.sha256(signature.encode("utf-8")).hexdigest()
 
 
 def _as_data(payload: str | bytes | dict | list) -> Any:
@@ -191,8 +229,8 @@ def store_receipts(items: list[dict], store_code: str | None = None,
     загрузка повторяется, и второй заход обязан быть безвредным.
     """
     init_db()
-    # отложенный чек другого магазина второй раз не разбирается — он уже решён
-    known = repo.imported_receipt_keys() | repo.other_store_receipt_keys()
+    # Старым чекам могли сохранить только сумму и продавца.
+    known: set[str] = set()
 
     imported: list[dict] = []
     skipped: list[dict] = []
@@ -204,38 +242,54 @@ def store_receipts(items: list[dict], store_code: str | None = None,
     for item in items:
         receipt = item["receipt"]
         key = item.get("key") or fingerprint(receipt)
-        if key in known:
+        if key in known or repo.receipt_has_contents(key):
             skipped.append({"key": key, "date": receipt.date, "total": receipt.total})
             continue
 
         # Заказами становятся только чеки сетей, где мы собираем заказ (app/chains.py).
         # Аптека, кафе, незнакомый продавец — откладываются, в историю не пишутся.
-        # Чек совсем без продавца (вставленный текст заказа) судить не по чему — его
-        # добавил сам человек, и он принимается, как и в загрузке из ФНС.
-        chain = store_code or chains.resolve(receipt.store_name)
+        # Чек без продавца сохраняем в историю. Без подтверждённой сети его строки
+        # не становятся товарными карточками.
+        chain = store_code or chains.resolve(receipt.store_name, receipt.sender)
         seller = str(receipt.store_name or "").strip().strip("—-").strip()
         unnamed = not chain and seller.lower() in ("", "неизвестный магазин")
         if not unnamed and not chains.accepts(store_code=chain):
             repo.mark_receipt_other_store(key, receipt.date, receipt.store_name or chain,
-                                          receipt.total, source)
+                                          receipt.total, source, lines=[
+                    {"name": r.raw_name, "quantity": r.qty, "price": r.unit_price, "total": r.total}
+                    for r in receipt.rows])
             known.add(key)
             other.append({"key": key, "date": receipt.date, "store": receipt.store_name or chain or "—",
                           "total": receipt.total})
             continue
 
         store_id, store_label = _resolve_store_id(receipt, chain)
+        # Чек покупки, которая уже пришла заказом из кабинета сети: учтён, строк не добавляет.
+        if store_id and not key.startswith(ORDER_KEY) \
+                and same_purchase(store_id, receipt.date, receipt.total, orders=True):
+            for row in receipt.rows:            # штрихкод есть только в чеке: товару он нужен
+                product = (row.barcode and is_receipt_product(row.raw_name)
+                           and repo.find_product_by_name(display_name(row.raw_name)))
+                if product:
+                    _remember_barcode(product.id, row.barcode)
+            repo.mark_receipt_imported(key, receipt.date, store_label, receipt.total, 0, source)
+            known.add(key)
+            skipped.append({"key": key, "date": receipt.date, "total": receipt.total})
+            continue
         for row in receipt.rows:
-            product_id, is_new = _ensure_product(row.raw_name, row.qty)
-            created += int(is_new)
-            if row.barcode:
-                _remember_barcode(product_id, row.barcode)
+            product_id = None
+            if store_id and is_receipt_product(row.raw_name):
+                product_id, is_new = _ensure_product(row.raw_name, row.qty)
+                created += int(is_new)
+                if row.barcode:
+                    _remember_barcode(product_id, row.barcode)
             repo.add_history_row(
                 date=receipt.date, store_id=store_id, product_id=product_id,
                 raw_name=row.raw_name, qty=row.qty, unit_price=row.unit_price,
                 total=row.total, receipt_key=key,
             )
         repo.mark_receipt_imported(key, receipt.date, store_label, receipt.total,
-                                   len(receipt.rows), source)
+                                   len(receipt.rows), source, payment=receipt_payment(receipt, store_id))
         known.add(key)
         rows_total += len(receipt.rows)
         imported.append({"key": key, "date": receipt.date, "store": store_label,
@@ -296,4 +350,5 @@ def import_bundle(payload: str | bytes | dict | list, store_code: str | None = N
                           bundle["catalogue"], bundle["failed"])
 
 
-__all__ = ["parse_bundle", "import_bundle", "store_receipts", "fingerprint"]
+__all__ = ["parse_bundle", "import_bundle", "store_receipts", "fingerprint", "same_purchase",
+           "ORDER_KEY"]

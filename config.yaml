@@ -18,7 +18,7 @@ prices:
     baskets: 3                       # сколько последних корзин рабочего места держать свежими
     demo: true                       # демо тоже: его «Результат» видят гости, по нему проверяют сервер
 orders:
-  chains: [magnit, pyaterochka, vkusvill, lenta, samokat, dixy]
+  chains: [magnit, pyaterochka, vkusvill, lenta, samokat, dixy, perekrestok]
                                      # сети, где собираем заказ в аккаунте человека. Чеки только
                                      # этих сетей становятся заказами (app/chains.py); остальные
                                      # откладываются как «Не добавлены» и в историю не пишутся.

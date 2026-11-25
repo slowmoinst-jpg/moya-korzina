@@ -7,7 +7,7 @@ set -euo pipefail
 
 ROOT=/opt/korzina
 SRC=$ROOT/src
-IMAGE=korzina:latest
+IMAGE=${KORZINA_IMAGE:-korzina:latest}
 NAME=korzina
 VOLUME=korzina-data
 PORT=${PORT:-80}
@@ -51,14 +51,18 @@ probe() {
     fi
 }
 
-cd "$SRC"
-echo "== сборка образа =="
-if ! docker build -t "$IMAGE" . > "$ROOT/build.log" 2>&1; then
-    tail -40 "$ROOT/build.log"
-    echo "сборка не удалась, контейнер не тронут" >&2
-    exit 1
+if [[ -z ${KORZINA_IMAGE:-} ]]; then
+    cd "$SRC"
+    echo "== сборка образа =="
+    if ! docker build -t "$IMAGE" . > "$ROOT/build.log" 2>&1; then
+        tail -40 "$ROOT/build.log"
+        echo "сборка не удалась, контейнер не тронут" >&2
+        exit 1
+    fi
+    tail -2 "$ROOT/build.log"
+else
+    docker image inspect "$IMAGE" >/dev/null
 fi
-tail -2 "$ROOT/build.log"
 
 echo "== замена контейнера =="
 docker rm -f "$NAME" >/dev/null 2>&1 || true
@@ -110,7 +114,7 @@ for i in $(seq 1 30); do
         else
             echo "приёмная дверь на порту $API_PORT молчит — смотрите docker logs $NAME-jobs"
         fi
-        docker image prune -f >/dev/null
+        if [[ -z ${KORZINA_IMAGE:-} ]]; then docker image prune -f >/dev/null; fi
         docker ps --filter "name=$NAME" --format "{{.Names}} {{.Status}} {{.Ports}}"
         exit 0
     fi

@@ -468,15 +468,27 @@ def test_samokat_fill_confirms_sku_from_receipt(catalog, user_db):
     assert maps["samokat"]["method"] == "x5"
 
 
-def test_samokat_fill_ignores_when_not_in_catalog(catalog, user_db):
-    """Строки в каталоге Самоката нет — артикул не подтверждается (несуществующий ломает сборку)."""
+def test_samokat_fill_links_by_the_receipt_name_when_not_in_catalog(catalog, user_db):
+    """Строки в каталоге Самоката нет — артикулом становится слаг названия из чека САМОКАТА.
+
+    Наш каталог сети неполон; есть ли товар на витрине, проверит сама сеть при сборке (404 → «нет в наличии»).
+    Свежая строка чека другой сети артикулом не становится, строка услуги не связывается.
+    """
     shop = ids()["samokat"]
     pid = repo.upsert_product(Product(id=None, name="Вода Шишкин лес, без газа, 5 л", weight_g=5000.0, unit="pcs"))
     repo.add_history_row("2026-10-10", shop, pid, "Вода Шишкин лес, без газа, 5 л", 1, 149.0, 149.0, "s-2")
+    repo.add_history_row("2026-10-12", ids()["perekrestok"], pid, "ВОДА ШИШКИН ЛЕС 5Л", 1, 139.0, 139.0, "p-2")
+    fee = repo.upsert_product(Product(id=None, name="Доставка", weight_g=None, unit="pcs"))
+    repo.add_history_row("2026-10-10", shop, fee, "Доставка", 1, 99.0, 99.0, "s-2")
+
+    assert x5.fill(write=False)["samokat"] == 1
+    assert repo.confirmed_mapping(pid, shop, real_only=True) is None
 
     res = x5.fill()
-    assert res["samokat"] == 0
-    assert repo.confirmed_mapping(pid, shop, real_only=True) is None
+    assert res["samokat"] == 1
+    assert repo.confirmed_mapping(pid, shop, real_only=True)["sku"] == "voda-shishkin-les-bez-gaza-5-l"
+    assert {m["store_code"]: m["method"] for m in repo.product_mappings(pid)}["samokat"] == "x5"
+    assert repo.confirmed_mapping(fee, shop, real_only=True) is None
 
 
 def test_samokat_fill_ignores_when_not_bought_in_samokat(catalog, user_db):
@@ -524,3 +536,112 @@ def test_samokat_fill_preserves_human_confirmed_mapping(catalog, user_db):
     assert cur is not None
     assert cur["sku"] == "human-sku-888"
 
+
+def _bought(name: str, raw: str, weight: float | None) -> Product:
+    pid = repo.upsert_product(Product(id=None, name=name, weight_g=weight, unit="pcs"))
+    repo.add_history_row("2026-11-01", ids()["pyaterochka"], pid, raw, 1, 99.0, 99.0, f"k-{pid}")
+    return repo.get_product(pid)
+
+
+BRAN = ("Отруби хруст овсян 230 г", "ВК/ПОЛ.Отруби хруст.овсян.230г", 230.0)
+FLAKES = ("Ясно солн хлопья овсян 3 350 г", "ЯСНО СОЛН.Хлопья ОВСЯН.№3  350г", 350.0)
+CURD = ("Свитл сырок твор гл ван 45 г", "СВИТЛ.Сырок твор.гл.с ван.45г", 45.0)
+WATER = ("Вода сенежская газированная 1500 г", "Вода СЕНЕЖСКАЯ газированная 1,5л", 1500.0)
+MILK = ("Паст простоквашино 2 5 930 г", "МОЛ.ПАСТ.ПРОСТОКВАШИНО 2,5% 930мл", 930.0)
+CHEESE = ("Ламбер твердый 200 г", "Сыр ЛАМБЕР твердый 200г", 200.0)
+DUMPLINGS = ("Цезарь пельмени классика 800 г", "ЦЕЗАРЬ Пельмени Классика 800г", 800.0)
+STILL = ("Вода сенежская 1500 г", "Вода СЕНЕЖСКАЯ 1,5л", 1500.0)
+
+
+@pytest.mark.parametrize("ours, card, same", [
+    (BRAN, "otrubi vkus polza khrustyashchie ovsyanye 230g", True),
+    (BRAN, "Отруби Вкус и Польза хрустящие овсяные 230г", True),
+    (FLAKES, "khlopya ovsyanye yasno solnyshko 3 350g", True),
+    (CURD, "syrok tvorozhnyy svitlogore glazirovannyy s vanilinom 26 45g", True),
+    (MILK, "moloko prostokvashino pasterizovannoe 2 5 930ml", True),
+    (CHEESE, "syr lamber tverdyy 200g", True),
+    (FLAKES, "khlopya ovsyanye yasno solnyshko 2 500g", False),
+    (BRAN, "otrubi vkus polza khrustyashchie ovsyanye 500g", False),
+    (FLAKES, "khlopya ovsyanye yasno solnyshko 2 350g", False),
+    (FLAKES, "khlopya ovsyanye yasno solnyshko 350g", False),
+    (MILK, "moloko prostokvashino pasterizovannoe 930ml", False),
+    (FLAKES, "khlopya ovsyanye yasno solnyshko", False),
+    (CURD, "syrok tvorozhnyy svitlogore glazirovannyy s vanilinom 4sht 45g", False),
+    (("Предп мука 2 кг", "ПРЕДП.Мука в/с       2кг", 2000.0), "muka frantsuzskaya shtuchka pshenichnaya 2kg", False),
+    (BRAN, "otrubi khrustyashchie ovsyanye lito 230g", False),
+    (BRAN, "Отруби хрустящие овсяные Лито 230 г", False),
+    (CHEESE, "sendvich s syrom lamber tverdym 200g", False),
+    (("Молоко 200 г", "Молоко 200г", 200.0), "moloko 200g", False),
+    (("Отруби хруст овсян", "ВК/ПОЛ.Отруби хруст.овсян.", None), "otrubi vkus polza khrustyashchie ovsyanye 230g", False),
+    (WATER, "voda senezhskaya negazirovannaya 1 5l", False),
+    (WATER, "voda senezhskaya 1 5l", False),
+    (WATER, "voda senezhskaya gazirovannaya 1 5l", True),
+    (STILL, "voda senezhskaya 1 5l", True),
+    (STILL, "voda senezhskaya gazirovannaya 1 5l", False),
+    (STILL, "voda senezhskaya negazirovannaya 1 5l", False),
+    (DUMPLINGS, "Пельмени Цезарь Классика 800 г", True),
+    (DUMPLINGS, "Пельмени Цезарь Классика замороженные 800 г", False),
+    (("La molisana спагетти 500 г", "LA MOLISANA Спагетти 500г", 500.0), "spagetti la molisana 500g", True),
+    (("Гель для душа мандарин 250 г", "Гель для душа мандарин 250мл", 250.0), "gel dlya dusha mandarin 250ml", True),
+    (("Гель для душа мандарин 250 г", "Гель для душа мандарин 250мл", 250.0), "fa gel dlya dusha mandarin 250ml", False),
+    (BRAN, "otrubi ovsyanye 230g", False),
+    (BRAN, None, False),
+], ids=["слаг карточки", "имя карточки кириллицей", "тот же номер и вес", "число есть только на карточке",
+        "тот же процент", "служебное слово карточки первым",
+        "замер: другой вес и номер", "другой вес", "тот же вес, другой номер", "номер есть только у нас",
+        "процент есть только у нас", "фасовки на карточке нет", "упаковка из четырёх",
+        "нашей марки на карточке нет", "чужая марка, наша в чеке сокращена", "чужая марка кириллицей",
+        "другой тип товара", "одно значимое слово", "у нашего товара нет фасовки",
+        "вода без газа", "про газ сказано только у нас", "вода с газом",
+        "про газ молчат обе", "чек про газ молчит, карточка с газом", "чек про газ молчит, карточка без газа",
+        "та же карточка без лишних слов", "мягкое слово judge здесь лишнее",
+        "короткое слово марки есть и у нас", "без марки с обеих сторон", "короткая марка только на карточке",
+        "карточка короче: наших слов на ней нет", "карточки нет"])
+def test_a_card_found_by_the_phone_is_ours_only_with_the_same_pack_numbers_and_words(user_db, ours, card, same):
+    """Замер 13.11.2026: «Ясно солн хлопья овсян №3 350 г» телефон положил карточкой «…2-500g»."""
+    assert x5.found_by_phone(_bought(*ours), card) is same
+
+
+@pytest.mark.parametrize("ours, plain, derived", [
+    (("Кефир простоквашино 1 930 г", "Кефир ПРОСТОКВАШИНО 1% 930мл", 930.0),
+     "kefir prostokvashino 1 930ml", "kefirnyy napitok prostokvashino 1 930ml"),
+    (("Молоко простоквашино 2 5 930 г", "Молоко ПРОСТОКВАШИНО 2,5% 930мл", 930.0),
+     "moloko prostokvashino 2 5 930ml", "molochnyy napitok prostokvashino 2 5 930ml"),
+    (("Сметана простоквашино 15 300 г", "Сметана ПРОСТОКВАШИНО 15% 300г", 300.0),
+     "smetana prostokvashino 15 300g", "smetannyy sous prostokvashino 15 300g"),
+    (("Йогурт чудо 2 5 270 г", "Йогурт ЧУДО 2,5% 270г", 270.0),
+     "Йогурт Чудо 2,5% 270 г", "Йогуртный десерт Чудо 2,5% 270 г"),
+    (("Творог простоквашино 5 200 г", "Творог ПРОСТОКВАШИНО 5% 200г", 200.0),
+     "tvorog prostokvashino 5 200g", "tvorozhnaya massa prostokvashino 5 200g"),
+    (("Чай липтон черный 100 г", "Чай ЛИПТОН черный 100г", 100.0),
+     "chay lipton chernyy 100g", "chaynyy napitok lipton chernyy 100g"),
+    (("Сок добрый яблочный 1000 г", "Сок ДОБРЫЙ яблочный 1л", 1000.0),
+     "sok dobryy yablochnyy 1l", "sokosoderzhashchiy napitok dobryy yablochnyy 1l"),
+    (("Масло простоквашино 82 180 г", "Масло ПРОСТОКВАШИНО 82% 180г", 180.0),
+     "maslo prostokvashino 82 180g", "maslyanyy krem prostokvashino 82 180g"),
+    (("Молоко простоквашино 930 г", "Молоко ПРОСТОКВАШИНО 930мл", 930.0),
+     "moloko prostokvashino 930ml", "prostokvashino kokteyl molochnyy 930ml"),
+    (("Творог простоквашино 200 г", "Творог ПРОСТОКВАШИНО 200г", 200.0),
+     "tvorog prostokvashino 200g", "prostokvashino tvorozhok detskiy 200g"),
+    (MILK, "moloko prostokvashino pasterizovannoe 2 5 930ml",
+     "moloko prostokvashino pasterizovannoe bezlaktoznoe 2 5 930ml"),
+], ids=["кефирный напиток", "молочный напиток", "сметанный соус", "йогуртный десерт", "творожная масса",
+        "чайный напиток", "сокосодержащий напиток", "масляный крем", "марка первой: коктейль",
+        "марка первой: детский творожок", "безлактозное"])
+def test_a_card_of_a_derived_product_of_the_same_brand_and_pack_is_not_ours(user_db, ours, plain, derived):
+    """«Кефир» и «Кефирный напиток» одной марки и фасовки: связь записала бы товару цену соседнего."""
+    product = _bought(*ours)
+
+    assert x5.found_by_phone(product, plain)
+    assert not x5.found_by_phone(product, derived)
+
+
+def test_the_products_own_brand_must_be_on_the_card_the_phone_found(user_db):
+    """Марка товара, если она записана, — такое же обязательное слово, как голова строки чека."""
+    pid = repo.upsert_product(Product(id=None, name="Молоко пастеризованное 930 г", brand="Простоквашино",
+                                      weight_g=930.0, unit="pcs"))
+    milk = repo.get_product(pid)
+
+    assert x5.found_by_phone(milk, "moloko prostokvashino pasterizovannoe 930ml")
+    assert not x5.found_by_phone(milk, "moloko domik v derevne pasterizovannoe 930ml")
+    assert not x5.found_by_phone(milk, "moloko pasterizovannoe 930ml")

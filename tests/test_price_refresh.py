@@ -43,6 +43,20 @@ def _seen(chain: str, sku: str, stamp: str | None) -> None:
         conn.commit()
 
 
+def test_nightly_refresh_retries_unpriced_cards_without_starving_older_prices(base):
+    base.upsert_products("lenta", [ChainProduct("gap", "Без цены"), ChainProduct("next", "Без фото"),
+        ChainProduct("priced", "С ценой", price=100, image="https://example.test/p.jpg", in_stock=True)],
+        seen_at="2026-01-01T00:00:00")
+    assert base.detail_refresh_skus("lenta", 2) == ["gap", "priced"]
+    base.request_details([("lenta", "next")])
+    assert base.detail_refresh_skus("lenta", 2) == ["next", "priced"]
+    base.mark_detail_checked("lenta", "next")
+    base.request_details([("lenta", "next")])
+    assert base.detail_refresh_skus("lenta", 2) == ["gap", "priced"]
+    base.mark_detail_checked("lenta", "gap")
+    assert base.detail_refresh_skus("lenta", 2) == ["priced"]
+
+
 def _price(sku: str, price: float, name: str = "Товар", **fields) -> ChainProduct:
     return ChainProduct(sku=sku, name=name, price=price, **fields)
 

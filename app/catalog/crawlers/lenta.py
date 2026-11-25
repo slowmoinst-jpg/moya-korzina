@@ -67,6 +67,7 @@ def to_product(item: dict) -> ChainProduct | None:
         price = _per_kg(item, price, name) or price
     return ChainProduct(
         sku=str(sku), name=name, weight_g=weight or None, unit=unit,
+        image=item["image"] if isinstance(item.get("image"), str) and item["image"].startswith(("https://", "http://")) else None,
         # МАРКА И ШТРИХКОД ЛЕЖАТ В КАРТОЧКЕ, А МЫ ИХ НЕ БРАЛИ (замер 18.10.2026):
         # из 60 карточек Ленты штрихкод есть у 59, и 27 из них — единичные (EAN-13),
         # а 6 (10 %) уже сейчас сходятся со штрихкодом METRO в единой базе. Марка есть
@@ -207,6 +208,7 @@ class LentaCrawler(Crawler):
         filled = errors = 0
         for n, sku in enumerate(thin, start=1):
             item, why = self.details(sku)
+            store.mark_detail_checked(self.code, sku)
             product = to_product(item) if item else None
             if product:
                 filled += 1
@@ -235,7 +237,7 @@ class LentaCrawler(Crawler):
             return
         from app.catalog import store
 
-        stale = store.stale_price_skus(self.code, self.price_refresh)
+        stale = store.detail_refresh_skus(self.code, self.price_refresh)
         if not stale:
             return
         # ПОТОЛОК ОБХОДА ВАЖНЕЕ ДОБОРА. Свежесть идёт последней, и если до потолка осталось
@@ -253,6 +255,7 @@ class LentaCrawler(Crawler):
         say(f"свежесть цен: перечитываю {len(stale)} карточек, начиная с самой старой")
         refreshed = errors = 0
         for n, sku in enumerate(stale, start=1):
+            store.mark_detail_checked(self.code, sku)
             item, _ = self.details(sku)
             product = to_product(item) if item else None
             if product:

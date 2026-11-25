@@ -282,6 +282,48 @@ def test_a_changed_basket_gets_a_new_link(home, roads):
     assert [code for code, _ in roads["link"]].count("vkusvill") == 2
 
 
+# ---------- корзина ссылкой: числа строки без запроса к сети (MCP Ленты и ВкусВилла) ----------
+
+def test_a_link_cart_counts_what_goes_and_what_it_costs_without_asking_the_chain(home, monkeypatch):
+    asked = []
+    monkeypatch.setattr(handover, "for_store", lambda code, lines: asked.append(code))
+
+    cart = cartrun.link_cart("lenta", home)
+
+    assert (cart["count"], cart["of"]) == (2, 2)
+    assert cart["sum"] == pytest.approx(2 * 92.0 + 48.0), "наш расчёт по ценам сети из базы"
+    assert asked == [], "сеть не спрашиваем: ссылка делается по нажатию"
+    assert cartrun.link_cart("lenta", 10 ** 6) is None, "корзина не прочиталась — чисел нет"
+
+
+def test_link_cart_numbers_are_not_kept_they_follow_the_basket_and_the_prices(home):
+    """Цены и связи товаров меняются и без правки корзины, поэтому числа считаются каждый раз."""
+    cartrun.link_cart("lenta", home)
+    milk = next(i["product_id"] for i in repo.basket_items(home)
+                if "Молоко" in str(i.get("title") or i.get("name")))
+    repo.set_basket_item(home, milk, 3.0)
+    assert cartrun.link_cart("lenta", home)["sum"] == pytest.approx(3 * 92.0 + 48.0)
+
+    kefir = repo.upsert_product(Product(id=None, name="Кефир 1% 900 мл", unit="pcs"))
+    kefir_sp = repo.upsert_store_product(repo.get_store("lenta").id, "103", "Кефир 1% 900 мл",
+                                         url="https://lenta.example/103")
+    repo.confirm_mapping(kefir, kefir_sp, confirmed=True)
+    repo.set_basket_item(home, kefir, 1.0)
+    cart = cartrun.link_cart("lenta", home)
+    assert (cart["count"], cart["of"], cart["sum"]) == (3, 3, None), \
+        "цены кефира ещё нет: неполная сумма выглядела бы итогом"
+
+    repo.save_price(kefir_sp, 70.0)
+    assert cartrun.link_cart("lenta", home)["sum"] == pytest.approx(3 * 92.0 + 48.0 + 70.0), \
+        "цена пришла без правки корзины — число уже новое"
+
+
+def test_a_chain_that_knows_nothing_of_the_basket_has_a_link_cart_of_zero(home):
+    cart = cartrun.link_cart("samokat", home)
+
+    assert (cart["count"], cart["of"], cart["sum"]) == (0, 2, None)
+
+
 # ---------- отказ сети и темп ----------
 
 def test_a_refusal_is_crawlblocked_a_refused_row_and_a_pause_for_the_home_address(

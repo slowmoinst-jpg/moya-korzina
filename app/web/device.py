@@ -11,6 +11,8 @@
 «KorzinaApp/<версия>» (android/app, MainActivity.setUpWeb). Метка видна уже в
 первом запросе, поэтому кнопки моста рисуются сразу, сервером, а не дорисовываются
 скриптом после загрузки — без мигания и без «кнопка появилась через секунду».
+С приложения 1.34 версия в метке не меняется (1.33), а настоящую несёт кука kz_app:
+см. app_version().
 
 ДВЕ ПОЛОВИНЫ ОДНОГО УЗНАВАНИЯ. Этот модуль — серверная: шаблоны. Вторая —
 клиентская: window.Korzina, который приложение вставляет в страницу
@@ -30,11 +32,16 @@
 """
 from __future__ import annotations
 
+import re
+
 from flask import request
 
 # Метка в User-Agent приложения. Слэш в конце — часть метки: без неё слово
 # «KorzinaApp» в чужой строке (например, у расширения) давало бы ложный ответ.
 MARK = "KorzinaApp/"
+# Кука с настоящей версией приложения (ставит MainActivity.setUpWeb с 1.34).
+APP_COOKIE = "kz_app"
+_VERSION = re.compile(r"\d{1,4}(\.\d{1,4}){1,3}", re.ASCII)
 
 # Слова User-Agent обычного браузера на телефоне: Chrome и Safari телефона пишут
 # «Mobile», планшет Android — «Android», iPad — «iPad». У браузера компьютера их нет.
@@ -42,19 +49,34 @@ MOBILE_WORDS = ("Mobile", "Android", "iPhone", "iPad")
 
 
 def app_version() -> str | None:
-    """Версия приложения из User-Agent или None, если пришёл обычный браузер."""
+    """Версия приложения или None, если пришёл обычный браузер.
+
+    С приложения 1.34 версия в метке заморожена (её же видят сайты сетей, и защита сети после
+    каждой смены строки проверяла окно заново), а настоящую несёт кука APP_COOKIE. Куке верим
+    только вместе с меткой: без метки это обычный браузер.
+    """
     ua = request.headers.get("User-Agent") or ""
     at = ua.find(MARK)
     if at < 0:
         return None
+    cookie = request.cookies.get(APP_COOKIE) or ""
+    if _VERSION.fullmatch(cookie):
+        return cookie
     tail = ua[at + len(MARK):]
     # Версия идёт до первого пробела: дальше могут стоять чужие слова строки.
-    return tail.split(None, 1)[0].strip() or None
+    # Метка в самом конце строки — версии нет, а не ошибка страницы.
+    return (tail.split(None, 1) or [""])[0].strip() or None
 
 
 def on_phone() -> bool:
     """Правда ли, что страницу открыло приложение на телефоне владельца."""
     return app_version() is not None
+
+
+def model() -> str:
+    """Модель устройства из строки браузера («sdk_gphone64_x86_64» — эмулятор); нет — пустая строка."""
+    found = re.search(r"; ([^;()]+?) Build/", request.headers.get("User-Agent") or "")
+    return found.group(1).strip() if found else ""
 
 
 def on_mobile() -> bool:
@@ -71,4 +93,4 @@ def install(flask_app) -> None:
         return {"device_phone": on_phone(), "device_app": app_version()}
 
 
-__all__ = ["MARK", "MOBILE_WORDS", "app_version", "on_phone", "on_mobile", "install"]
+__all__ = ["MARK", "MOBILE_WORDS", "app_version", "on_phone", "model", "on_mobile", "install"]

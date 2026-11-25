@@ -1,8 +1,11 @@
 interface RawKorzinaBridge {
   info?: () => string;
+  updateApp?: () => boolean;
   openStore?: (code: string) => boolean;
   login?: (code: string) => boolean;
   openApp?: (path: string) => void;
+  receiptStatus?: (phone: string) => string;
+  leaveReceiptProfile?: () => void;
   openFns?: () => boolean;
   collect?: (json: string) => string;
   busy?: () => string;
@@ -23,6 +26,18 @@ function rawBridge(): RawKorzinaBridge | null {
 export const KorzinaBridge = {
   available(): boolean {
     return rawBridge() !== null;
+  },
+
+  supportsInAppUpdate(): boolean {
+    return typeof rawBridge()?.updateApp === 'function';
+  },
+
+  updateApp(): boolean {
+    try {
+      return rawBridge()?.updateApp?.() === true;
+    } catch {
+      return false;
+    }
   },
 
   info(): { version?: string; server?: string } | null {
@@ -57,9 +72,22 @@ export const KorzinaBridge = {
     return this.openStore(code);
   },
 
+  supportsReceiptLogin(): boolean {
+    return typeof rawBridge()?.receiptStatus === 'function';
+  },
+
+  receiptStatus(phone: string): { connected?: boolean; updated?: string; phase?: string; checked?: number; storedCount?: number; position?: number; total?: number; advanced?: number; millisPerReceipt?: number } {
+    try { return JSON.parse(rawBridge()?.receiptStatus?.(phone) || '{}'); }
+    catch { return {}; }
+  },
+
+  leaveReceiptProfile(): void {
+    rawBridge()?.leaveReceiptProfile?.();
+  },
+
   openFns(): boolean {
     const k = rawBridge();
-    if (!k || typeof k.openFns !== 'function') return false;
+    if (!k || typeof k.receiptStatus !== 'function' || typeof k.openFns !== 'function') return false;
     try {
       k.openFns();
       return true;

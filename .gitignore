@@ -48,3 +48,6 @@ data/_checkup_probe.db
 data/*.local-backup*
 .omc/
 docs/knowledge/**/screens/
+# Сборка клиента на Vite: зависимости и результат, образ собирает их заново (Dockerfile).
+/node_modules/
+/dist/

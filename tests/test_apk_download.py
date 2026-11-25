@@ -22,6 +22,25 @@ BANNER = "Вышла версия {} приложения — установит
 BUNDLED = os.path.join(ROOT, "app", "web", "static", "moya-korzina.apk")
 
 
+@pytest.mark.parametrize("fresh_artifact", [False, True])
+def test_paused_distribution_hides_download_and_update(web, fresh_artifact):
+    client, root = web
+    folder = root / "data" / "apk"
+    folder.mkdir(parents=True)
+    (folder / "distribution.paused").touch()
+    (folder / VERSION_FILE).write_text("1.66\n", encoding="utf-8")
+    if fresh_artifact:
+        (folder / "moya-korzina.apk").write_bytes(b"PK-paused")
+
+    download = client.get(URL)
+    assert download.status_code == 503
+    assert download.headers["Cache-Control"] == "no-store"
+    assert latest_version() is None
+    me = client.get("/api/auth/me", headers={"User-Agent": APP_UA.format("1.65")})
+    assert me.status_code == 200
+    assert me.get_json().get("apkUpdate") is None
+
+
 @pytest.fixture
 def web(tmp_path, monkeypatch):
     from app import users
@@ -100,3 +119,37 @@ def test_latest_version_and_update_for(web):
     assert up_18 == {"version": "1.19", "can_download": True}
 
 
+def test_utf16_version_file_is_ignored(web):
+    _, root = web
+    folder = root / "data" / "apk"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / VERSION_FILE).write_text("1.18", encoding="utf-16")
+    assert latest_version() is None
+
+@pytest.mark.parametrize(("user_agent", "cookie", "can_download"), [
+    (APP_UA.format("1.17"), None, False),
+    (APP_UA.format("1.33"), "1.62", True),
+    (APP_UA.format("1.33"), "1.64", None),
+    (APP_UA.format("1.33"), "1.65", None),
+    ("Mozilla/5.0 Android Mobile", "1.62", None),
+])
+def test_spa_auth_me_offers_update_only_to_older_android(web, user_agent, cookie, can_download):
+    client, root = web
+    folder = root / "data" / "apk"
+    folder.mkdir(parents=True)
+    (folder / VERSION_FILE).write_text("1.64", encoding="utf-8")
+    (folder / "moya-korzina.apk").write_bytes(b"PK-test")
+    if cookie is not None:
+        client.set_cookie("kz_app", cookie)
+
+    response = client.get("/api/auth/me", headers={"User-Agent": user_agent})
+    assert response.status_code == 200
+    update = response.get_json().get("apkUpdate")
+    if can_download is None:
+        assert update is None
+    else:
+        assert update == {
+            "version": "1.64",
+            "canDownload": can_download,
+            "url": "http://localhost" + URL,
+        }

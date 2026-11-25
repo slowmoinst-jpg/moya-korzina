@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Any
 
 from app import chains
-from app.importers.ofd_pdf import Receipt, ReceiptRow
+from app.importers.ofd_pdf import FiscalPayment, Receipt, ReceiptRow
 
 # как называются нужные колонки в выгрузках
 COLUMNS = {
@@ -132,6 +132,32 @@ def _find_receipt_node(node: Any) -> dict | None:
     return None
 
 
+def _fiscal_payment(node: dict, total: float | None) -> FiscalPayment | None:
+    """Распознаёт только полную предоплату и её зачёт без новой оплаты."""
+    if node.get("operationType") != 1 or not total or total < 0:
+        return None
+    seller = str(node.get("userInn") or "").strip()
+    at = str(node.get("dateTime") or "").strip()
+    if not seller or len(at) <= 10:
+        return None
+    try:
+        fiscal_at = datetime.fromisoformat(at).isoformat()
+    except ValueError:
+        return None
+    stage = node["items"][0].get("paymentType") if isinstance(node["items"][0], dict) else None
+    if type(stage) is not int or any(not isinstance(item, dict) or item.get("paymentType") != stage
+                                    for item in node["items"]):
+        return None
+    prepaid = _money(node.get("prepaidSum")) or 0
+    paid = round((_money(node.get("cashTotalSum")) or 0) + (_money(node.get("ecashTotalSum")) or 0), 2)
+    if any(_money(node.get(field)) for field in ("creditSum", "provisionSum")):
+        return None
+    if (stage == 1 and paid == total and prepaid == 0
+            or stage == 4 and prepaid == total and paid == 0):
+        return FiscalPayment(stage, fiscal_at, seller)
+    return None
+
+
 def parse_receipt_json(payload: str | dict) -> Receipt:
     data = json.loads(payload) if isinstance(payload, str) else payload
     node = _find_receipt_node(data)
@@ -183,6 +209,8 @@ def parse_receipt_json(payload: str | dict) -> Receipt:
         store_name=store,
         rows=rows,
         total=total if total is not None else round(sum(r.total for r in rows), 2),
+        sender=str(node.get("sellerAddress") or "").strip(),
+        fiscal_payment=_fiscal_payment(node, total) if len(rows) == len(node["items"]) else None,
     )
 
 

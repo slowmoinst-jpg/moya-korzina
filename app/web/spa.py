@@ -71,6 +71,8 @@ def install(flask_app: Flask) -> None:
 
         if request.path.startswith("/api/"):
             return jsonify({"ok": False, "error": "Маршрут не найден"}), 404
+        if request.path.startswith(("/assets/", "/static/")):
+            return _exc
         folder = _spa_dir()
         if os.path.isfile(os.path.join(folder, "index.html")):
             resp = send_from_directory(folder, "index.html")

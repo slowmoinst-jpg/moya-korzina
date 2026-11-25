@@ -147,7 +147,7 @@ class VkusvillCrawler(Crawler):
             return
         from app.catalog import store
 
-        stale = store.stale_price_skus(self.code, self.refresh)
+        stale = store.detail_refresh_skus(self.code, self.refresh)
         if not stale:
             return
         # Потолок обхода важнее добора: перечитать меньше карточек и закончить обход как
@@ -163,6 +163,7 @@ class VkusvillCrawler(Crawler):
         say(f"свежесть цен: перечитываю {len(stale)} карточек, начиная с самой старой")
         refreshed = errors = 0
         for n, sku in enumerate(stale, start=1):
+            store.mark_detail_checked(self.code, sku)
             item = self.details(sku)
             product = to_product(item) if item else None
             if product:
