@@ -142,9 +142,9 @@ export function setSyncDirty(phone: string, dirty: boolean): void {
 
 export function loadBasketViewMode(): 'grid' | 'list' {
   try {
-    return localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'grid';
+    return localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'list';
   } catch {
-    return 'grid';
+    return 'list';
   }
 }
 
