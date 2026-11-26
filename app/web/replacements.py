@@ -70,6 +70,63 @@ def _observations(codes, cutoff, sku=None):
             yield observation
 
 
+def _norm_brand(brand: str | None) -> str:
+    return re.sub(r"[^0-9a-zа-я]+", " ", (brand or "").casefold().replace("ё", "е")).strip()
+
+
+def _trusted_brands(bought_ids):
+    """Доверенные бренды покупателя из его истории покупок (общие и по категориям)."""
+    if not bought_ids:
+        return set(), {}
+    marks = ",".join("?" for _ in bought_ids)
+    rows = db.query(
+        f"SELECT brand, category FROM products WHERE id IN ({marks}) AND brand IS NOT NULL AND brand != ''",
+        tuple(bought_ids),
+    )
+    overall = set()
+    by_category = {}
+    for row in rows:
+        brand = _norm_brand(row["brand"])
+        if not brand:
+            continue
+        overall.add(brand)
+        cat = (row["category"] or "").casefold().replace("ё", "е").strip()
+        if cat:
+            by_category.setdefault(cat, set()).add(brand)
+    return overall, by_category
+
+
+def _target_reference(exclude: int):
+    """Ориентир по цене, весу и категории исходного товара (чтобы не подсовывать дешёвый СТМ вместо привычного сегмента)."""
+    if not exclude or exclude < 0:
+        return None, None, None
+    prod = db.query("SELECT category, weight_g, unit FROM products WHERE id=?", (exclude,))
+    cat = (prod[0]["category"] or "").casefold().replace("ё", "е").strip() if prod else None
+    weight_g = prod[0]["weight_g"] if prod else None
+    hist = db.query(
+        "SELECT unit_price FROM purchase_history WHERE product_id=? AND unit_price > 0 ORDER BY date DESC, id DESC LIMIT 1",
+        (exclude,),
+    )
+    if hist:
+        return cat, weight_g, float(hist[0]["unit_price"])
+    live = db.query(
+        "SELECT AVG(v.price) AS avg_p FROM store_prices v"
+        " JOIN product_mapping m ON m.store_product_id=v.store_product_id"
+        " WHERE m.product_id=? AND m.confirmed=1 AND v.in_stock=1 AND v.price > 0",
+        (exclude,),
+    )
+    ref_price = float(live[0]["avg_p"]) if live and live[0]["avg_p"] else None
+    return cat, weight_g, ref_price
+
+
+def _norm_unit_price(price: float, weight_g, unit: str) -> float:
+    if unit == "kg":
+        return price
+    if weight_g and weight_g >= 30:
+        return (price / float(weight_g)) * 1000.0
+    return price
+
+
 def search(query, codes, unit, exclude, bought_ids, bought_masters, *, sku=None, selected=None, observed_stores=None):
     store._ready()
     cutoff = (datetime.now() - timedelta(hours=freshness.max_age_hours())).isoformat(timespec="seconds")
@@ -88,6 +145,8 @@ def search(query, codes, unit, exclude, bought_ids, bought_masters, *, sku=None,
         excluded_master = canonical(-exclude) if exclude < 0 else next(
             (canonical(r["master_id"]) for r in people if r["id"] == exclude), None)
         selected_master = canonical(-selected) if selected and selected < 0 else None
+    trusted_brands, trusted_by_cat = _trusted_brands(bought_ids)
+    target_cat, target_weight, target_price = _target_reference(exclude)
     results = {}
     for r in _observations(codes, cutoff, sku):
         code = r["chain"]
@@ -119,10 +178,36 @@ def search(query, codes, unit, exclude, bought_ids, bought_masters, *, sku=None,
             offers[code] = dict(store_code=code, sku=r["sku"], raw_name=r["raw_name"], price=r["price"],
                                 unit=product_unit, weight_g=r["weight_g"], price_per_kg=None,
                                 in_stock=True, fetched_at=r["fetched_at"], source="live")
+
+    def _sort_key(row):
+        prod = row["product"]
+        min_price = min(p["price"] for p in row["prices"].values())
+        cand_brand = _norm_brand(prod.get("brand"))
+        cat_key = target_cat or (prod.get("category") or "").casefold().replace("ё", "е").strip()
+        if prod["previouslyBought"]:
+            row["trustTier"] = "bought"
+            row["trustLabel"] = "Вы покупали"
+            return (0, 0, 0.0, min_price, prod["name"], prod["id"])
+        if cand_brand and (cand_brand in trusted_by_cat.get(cat_key, ()) or cand_brand in trusted_brands):
+            in_cat = 0 if cand_brand in trusted_by_cat.get(cat_key, ()) else 1
+            row["trustTier"] = "brand"
+            row["trustLabel"] = "Ваш бренд"
+            return (1, in_cat, 0.0, min_price, prod["name"], prod["id"])
+        if target_price and target_price > 0:
+            ref_u = _norm_unit_price(target_price, target_weight, unit)
+            cand_u = _norm_unit_price(min_price, prod.get("weight_g"), prod["unit"])
+            ratio = abs(cand_u - ref_u) / ref_u if ref_u > 0 else 9.0
+            if ratio <= 0.25:
+                row["trustTier"] = "price_band"
+                row["trustLabel"] = "В вашей цене"
+                return (2, 0, ratio, min_price, prod["name"], prod["id"])
+        row["trustTier"] = "cheaper"
+        row["trustLabel"] = ""
+        return (3, 0, 0.0, min_price, prod["name"], prod["id"])
+
     for row in results.values():
         row["chainsCount"] = len(row["prices"])
-    return sorted(results.values(), key=lambda r: (not r["product"]["previouslyBought"],
-                  min(p["price"] for p in r["prices"].values()), r["product"]["name"], r["product"]["id"]))[:30]
+    return sorted(results.values(), key=_sort_key)[:30]
 
 
 def materialize(row, code):

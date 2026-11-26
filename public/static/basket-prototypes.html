@@ -1,0 +1,1400 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Моя корзина — 3 прототипа компоновки экрана (390×844)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Unbounded:wght@600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #F3F4F6;
+      --card: #FFFFFF;
+      --well: #F3F4F6;
+      --well2: #E8EAED;
+      --ink: #111214;
+      --ink2: #5F636B;
+      --line: #E6E8EB;
+      --line2: #DADDE1;
+      --soft: #EEF0F2;
+      --lime: #D4F24A;
+      --lime2: #CBEA3C;
+      --green: #17703A;
+      --green-bg: #E8F5EC;
+      --warn: #8A5A00;
+      --warn-bg: #FFF3D1;
+      --warn-bd: #FDE68A;
+      --red: #C40D00;
+      --red-bg: #FEEBEA;
+      --s-magnit: #D8452B;
+      --s-lenta: #3B6FD4;
+      --s-dixy: #C8562F;
+      --s-vkusvill: #2E9E5B;
+      --s-pyaterochka: #E2A32B;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #E5E7EB;
+      color: var(--ink);
+      padding: 28px 24px 48px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .page-head {
+      max-width: 1320px;
+      margin: 0 auto 24px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .page-head h1 {
+      font-family: 'Unbounded', sans-serif;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .page-head p {
+      margin-top: 6px;
+      color: var(--ink2);
+      font-size: 14px;
+      max-width: 780px;
+      line-height: 1.45;
+    }
+    .legend {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .legend-chip {
+      background: var(--card);
+      border: 1px solid var(--line2);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .legend-chip strong {
+      font-family: 'Unbounded', sans-serif;
+      font-size: 13px;
+    }
+
+    .grid-wrap {
+      max-width: 1320px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(3, 390px);
+      justify-content: space-between;
+      gap: 28px;
+    }
+    @media (max-width: 1260px) {
+      .grid-wrap {
+        grid-template-columns: repeat(auto-fit, 390px);
+        justify-content: center;
+      }
+    }
+
+    .proto-col {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .proto-meta {
+      background: var(--card);
+      border: 1px solid var(--line2);
+      border-radius: 16px;
+      padding: 14px 16px;
+    }
+    .proto-tag {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: var(--ink);
+      color: #fff;
+      margin-bottom: 6px;
+    }
+    .proto-tag.rec {
+      background: var(--lime);
+      color: var(--ink);
+    }
+    .proto-meta h2 {
+      font-size: 16px;
+      font-weight: 800;
+      margin-bottom: 4px;
+    }
+    .proto-meta p {
+      font-size: 12.5px;
+      color: var(--ink2);
+      line-height: 1.4;
+    }
+    .metric-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+    .metric {
+      font-size: 11.5px;
+      font-weight: 700;
+      padding: 4px 8px;
+      border-radius: 8px;
+      background: var(--well);
+      color: var(--ink);
+    }
+    .metric.good {
+      background: var(--green-bg);
+      color: var(--green);
+    }
+
+    /* Phone Frame 390x844 */
+    .phone {
+      width: 390px;
+      height: 844px;
+      background: var(--bg);
+      border-radius: 36px;
+      border: 6px solid #1C1E22;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      box-shadow: 0 18px 48px rgba(17, 18, 20, 0.16);
+    }
+    .statusbar {
+      height: 30px;
+      padding: 0 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--ink);
+      background: var(--bg);
+      flex: none;
+    }
+    .statusbar.white { background: var(--card); }
+
+    .screen-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 14px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      scrollbar-width: none;
+    }
+    .screen-body::-webkit-scrollbar { display: none; }
+
+    /* Shared primitives */
+    .num {
+      font-family: 'Unbounded', sans-serif;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+    }
+    .mark {
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      display: inline-grid;
+      place-items: center;
+      font-size: 11px;
+      font-weight: 800;
+      color: #fff;
+      flex: none;
+    }
+    .mark.m { background: var(--s-magnit); }
+    .mark.l { background: var(--s-lenta); }
+    .mark.d { background: var(--s-dixy); }
+    .mark.v { background: var(--s-vkusvill); }
+    .mark.p { background: var(--s-pyaterochka); color: var(--ink); }
+    .mark-stack {
+      display: inline-flex;
+      align-items: center;
+    }
+    .mark-stack .mark + .mark {
+      margin-left: -6px;
+      box-shadow: 0 0 0 2px var(--lime);
+    }
+    .mark-stack.on-white .mark + .mark {
+      box-shadow: 0 0 0 2px var(--card);
+    }
+    .mark-stack.on-well .mark + .mark {
+      box-shadow: 0 0 0 2px var(--well);
+    }
+
+    .ibtn {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      border: none;
+      background: var(--card);
+      color: var(--ink);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      position: relative;
+      font-size: 15px;
+      font-weight: 800;
+      flex: none;
+    }
+    .ibtn.warn-dot::after {
+      content: '';
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 8px;
+      height: 8px;
+      border-radius: 99px;
+      background: #E2A32B;
+      border: 1.5px solid var(--card);
+    }
+    .ibtn.warn-pill {
+      width: auto;
+      padding: 0 9px;
+      gap: 4px;
+      display: inline-flex;
+      background: var(--warn-bg);
+      color: var(--warn);
+      border: 1px solid var(--warn-bd);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    /* Compact single-row header */
+    .hdr-1 {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 40px;
+    }
+    .hdr-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: transparent;
+      border: none;
+      color: var(--ink);
+      cursor: pointer;
+      min-width: 0;
+      text-align: left;
+    }
+    .hdr-switch .t {
+      font-family: 'Unbounded', sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .hdr-switch .cnt {
+      font-size: 11px;
+      font-weight: 800;
+      background: var(--card);
+      border: 1px solid var(--line);
+      padding: 2px 7px;
+      border-radius: 99px;
+      color: var(--ink2);
+      flex: none;
+    }
+    .hdr-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: none;
+    }
+
+    /* Collapsible Search bar */
+    .search-inline {
+      display: none;
+      background: var(--card);
+      border: 1.5px solid var(--ink);
+      border-radius: 12px;
+      padding: 8px 12px;
+      font-size: 13px;
+      color: var(--ink2);
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .search-inline.open { display: flex; }
+
+    /* Store group card */
+    .store-card {
+      background: var(--card);
+      border-radius: 16px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .store-hd {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 2px;
+    }
+    .store-hd-left {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+    .store-hd-left strong {
+      font-size: 14px;
+      font-weight: 800;
+    }
+    .store-hd-left span.sub {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--ink2);
+    }
+    .store-hd-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .store-sum {
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .mini-add {
+      height: 28px;
+      padding: 0 9px;
+      border-radius: 8px;
+      border: 1px dashed var(--line2);
+      background: var(--well);
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .mini-add:hover { background: var(--well2); }
+
+    /* 2-col compact grid (Variant A) */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px;
+    }
+    .tile2 {
+      background: var(--well);
+      border-radius: 12px;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .tile2-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 6px;
+    }
+    .pic-box {
+      width: 38px;
+      height: 38px;
+      border-radius: 9px;
+      background: var(--card);
+      display: grid;
+      place-items: center;
+      font-size: 20px;
+      flex: none;
+    }
+    .tile2 .pr {
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .tile2 .nm {
+      font-size: 11.5px;
+      font-weight: 700;
+      line-height: 1.22;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      min-height: 28px;
+    }
+    .qty-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--card);
+      border-radius: 8px;
+      height: 28px;
+      padding: 0 4px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .qty-row button {
+      width: 24px;
+      height: 24px;
+      border: none;
+      background: transparent;
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--ink);
+      cursor: pointer;
+    }
+
+    /* 3-col ultra-dense grid per DESIGN.md (Variant B) */
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .tile3 {
+      background: var(--well);
+      border-radius: 12px;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      cursor: pointer;
+    }
+    .tile3-photo {
+      height: 62px;
+      border-radius: 8px;
+      background: var(--card);
+      display: grid;
+      place-items: center;
+      font-size: 26px;
+      position: relative;
+    }
+    .tile3-qty {
+      position: absolute;
+      right: 4px;
+      bottom: 4px;
+      background: var(--ink);
+      color: #fff;
+      font-size: 10.5px;
+      font-weight: 800;
+      padding: 2px 6px;
+      border-radius: 99px;
+      line-height: 1.1;
+    }
+    .tile3 .pr {
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .tile3 .nm {
+      font-size: 10.5px;
+      font-weight: 700;
+      line-height: 1.18;
+      color: var(--ink);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      min-height: 25px;
+    }
+
+    /* Compact list rows (Variant C) */
+    .list-compact {
+      display: flex;
+      flex-direction: column;
+    }
+    .row-c {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 2px;
+      border-top: 1px solid var(--soft);
+    }
+    .row-c:first-child { border-top: none; padding-top: 2px; }
+    .row-c .pic-sm {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background: var(--well);
+      display: grid;
+      place-items: center;
+      font-size: 18px;
+      flex: none;
+    }
+    .row-c .info {
+      flex: 1;
+      min-width: 0;
+    }
+    .row-c .nm {
+      font-size: 12.5px;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .row-c .sub {
+      font-size: 11.5px;
+      font-weight: 700;
+      color: var(--ink2);
+    }
+    .row-c .sub b {
+      color: var(--ink);
+      font-family: 'Unbounded', sans-serif;
+      font-size: 11.5px;
+    }
+    .qty-mini {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--well);
+      border-radius: 8px;
+      height: 28px;
+      padding: 0 7px;
+      font-size: 12px;
+      font-weight: 800;
+      flex: none;
+    }
+
+    /* Coverage bar (Variant B top) */
+    .cov-strip {
+      display: grid;
+      grid-template-columns: 1.15fr 1fr;
+      gap: 6px;
+    }
+    .cov-pill {
+      border-radius: 12px;
+      padding: 8px 10px;
+      border: 1.5px solid transparent;
+      background: var(--card);
+      text-align: left;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .cov-pill.active {
+      background: var(--lime);
+      border-color: var(--ink);
+    }
+    .cov-pill .top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .cov-pill .price-line {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .cov-pill .hint {
+      font-size: 10.5px;
+      font-weight: 700;
+      color: var(--ink2);
+    }
+    .cov-pill.active .hint { color: var(--ink); opacity: 0.78; }
+
+    /* Slim status bar */
+    .slim-warn {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      background: var(--warn-bg);
+      border: 1px solid var(--warn-bd);
+      color: var(--warn);
+      border-radius: 10px;
+      padding: 6px 10px;
+      font-size: 11.5px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .slim-warn .act {
+      background: var(--ink);
+      color: #fff;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 6px;
+    }
+
+    /* Replace callout inside single-store mode */
+    .replace-banner {
+      background: var(--warn-bg);
+      border: 1px solid var(--warn-bd);
+      border-radius: 12px;
+      padding: 8px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--warn);
+    }
+    .replace-banner button {
+      background: var(--ink);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 11.5px;
+      font-weight: 800;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    /* Bottom docked bars */
+    .dock {
+      flex: none;
+      background: var(--card);
+      border-top: 1px solid var(--line);
+      padding: 8px 12px;
+    }
+    .dock-a {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .dock-plan {
+      flex: 1;
+      min-width: 0;
+      background: var(--lime);
+      border: 1.5px solid var(--ink);
+      border-radius: 12px;
+      padding: 7px 10px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .dock-plan .l1 {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .dock-plan .l2 {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      margin-top: 1px;
+    }
+    .dock-plan .l2 .num { font-size: 15px; font-weight: 700; }
+    .dock-plan .l2 span { font-size: 11px; font-weight: 700; opacity: 0.78; }
+
+    .cta-dark {
+      height: 46px;
+      padding: 0 14px;
+      border-radius: 12px;
+      border: none;
+      background: var(--ink);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 800;
+      cursor: pointer;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .cta-lime-full {
+      width: 100%;
+      height: 46px;
+      padding: 0 14px;
+      border-radius: 13px;
+      border: none;
+      background: var(--lime);
+      color: var(--ink);
+      font-size: 14px;
+      font-weight: 800;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .cta-lime-full .num { font-size: 15px; }
+
+    /* Variant C unified pill dock */
+    .dock-c {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .dock-c-summary {
+      flex: 1;
+      min-width: 0;
+      background: var(--well);
+      border-radius: 12px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      text-align: left;
+      cursor: pointer;
+    }
+    .dock-c-summary .r1 {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 800;
+      color: var(--ink2);
+    }
+    .dock-c-summary .r2 {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 2px;
+    }
+    .dock-c-summary .r2 .num { font-size: 15px; font-weight: 700; }
+    .dock-c-summary .badge-warn {
+      background: var(--warn-bg);
+      color: var(--warn);
+      border-radius: 6px;
+      padding: 1px 5px;
+      font-size: 10px;
+      font-weight: 800;
+    }
+    .cta-lime {
+      height: 46px;
+      padding: 0 16px;
+      border-radius: 12px;
+      border: none;
+      background: var(--lime);
+      color: var(--ink);
+      font-size: 13.5px;
+      font-weight: 800;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    /* Bottom nav */
+    .tabs {
+      flex: none;
+      height: 56px;
+      background: var(--card);
+      border-top: 1px solid var(--line);
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      padding: 4px 12px 6px;
+    }
+    .tab {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      font-size: 10.5px;
+      font-weight: 700;
+      color: var(--ink2);
+    }
+    .tab.on { color: var(--ink); }
+    .tab .pill {
+      width: 44px;
+      height: 24px;
+      border-radius: 99px;
+      display: grid;
+      place-items: center;
+      font-size: 14px;
+      position: relative;
+    }
+    .tab.on .pill { background: var(--lime); }
+    .tab .b {
+      position: absolute;
+      top: -3px;
+      right: 2px;
+      background: var(--ink);
+      color: #fff;
+      font-size: 9px;
+      font-weight: 800;
+      padding: 1px 4px;
+      border-radius: 99px;
+    }
+
+    /* Bottom sheet overlay inside phone */
+    .sheet-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(17, 18, 20, 0.36);
+      display: none;
+      align-items: flex-end;
+      z-index: 20;
+    }
+    .sheet-backdrop.open { display: flex; }
+    .sheet {
+      width: 100%;
+      background: var(--card);
+      border-radius: 22px 22px 0 0;
+      padding: 14px 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: 76%;
+      overflow-y: auto;
+    }
+    .sheet-handle {
+      width: 36px;
+      height: 4px;
+      border-radius: 99px;
+      background: var(--line2);
+      margin: 0 auto 2px;
+    }
+    .sheet-hd {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .sheet-hd h3 { font-size: 15px; font-weight: 800; }
+    .sheet-close {
+      width: 30px;
+      height: 30px;
+      border-radius: 99px;
+      border: none;
+      background: var(--well);
+      font-size: 16px;
+      cursor: pointer;
+    }
+    .plan-row {
+      border: 1.5px solid var(--line);
+      border-radius: 14px;
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .plan-row.best {
+      background: var(--lime);
+      border-color: var(--ink);
+    }
+    .plan-row .info { display: flex; flex-direction: column; gap: 2px; }
+    .plan-row strong { font-size: 13px; }
+    .plan-row small { font-size: 11.5px; color: var(--ink2); font-weight: 600; }
+    .plan-row.best small { color: var(--ink); opacity: 0.78; }
+    .plan-row .r { text-align: right; }
+    .plan-row .r .num { font-size: 15px; font-weight: 700; display: block; }
+    .plan-row .r span { font-size: 11px; font-weight: 800; color: var(--warn); }
+
+    .warn-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 0;
+      border-top: 1px solid var(--soft);
+      font-size: 12.5px;
+    }
+    .warn-row:first-of-type { border-top: none; }
+    .warn-row .l { display: flex; align-items: center; gap: 8px; }
+    .warn-row small { display: block; font-size: 11px; color: var(--ink2); }
+    .btn-login {
+      background: var(--ink);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .muted-group {
+      font-size: 11.5px;
+      color: var(--ink2);
+      background: var(--well);
+      border-radius: 10px;
+      padding: 8px 10px;
+      line-height: 1.45;
+    }
+    .deliv-foot {
+      font-size: 11px;
+      color: var(--ink2);
+      font-weight: 700;
+      padding: 2px 2px 0;
+      display: flex;
+      justify-content: space-between;
+    }
+  </style>
+</head>
+<body>
+  <header class="page-head">
+    <div>
+      <h1>Оптимизация экрана корзины — 3 прототипа (390×844)</h1>
+      <p>
+        На текущих скриншотах служебные блоки (шапка, контекст, поиск, баннер сетей, кнопка «+ Добавить в Магнит», панель «Где дешевле», вкладки)
+        занимают <strong>~77% высоты экрана</strong> — на сами товары остаётся 1 ряд. Ниже 3 интерактивных варианта на тех же реальных данных
+        (<em>Магнит · 19 ноября, 10 товаров: 6 в Магните + 4 в Ленте = 1 653 ₽</em>). Нажимайте на иконки поиска, ⚠ и переключатели планов внутри телефонов.
+      </p>
+    </div>
+    <div class="legend">
+      <div class="legend-chip">Сейчас под товары: <strong>~23%</strong> (2 шт)</div>
+      <div class="legend-chip">В прототипах: <strong>68–76%</strong> (6–10 шт)</div>
+    </div>
+  </header>
+
+  <main class="grid-wrap">
+    <!-- ==================== VARIANT A ==================== -->
+    <section class="proto-col">
+      <div class="proto-meta">
+        <span class="proto-tag">Вариант А · Эволюция</span>
+        <h2>Компактный фокус (минимум ломки)</h2>
+        <p>Привычная 2-колоночная плитка, но 1-строчная шапка, поиск по иконке 🔍, «+» встроен в шапку магазина, статус сетей в значке ⚠, а внизу 1 строка вместо 2 этажей.</p>
+        <div class="metric-row">
+          <span class="metric good">Товары: ~68% экрана</span>
+          <span class="metric">Видно: 4–6 плиток + Лента</span>
+        </div>
+      </div>
+
+      <div class="phone" id="phoneA">
+        <div class="statusbar"><span>23:09</span><span>5G · 48%</span></div>
+        <div class="screen-body">
+          <div class="hdr-1">
+            <button class="hdr-switch" type="button">
+              <span class="t">Магнит · 19 ноя ▾</span>
+              <span class="cnt">10</span>
+            </button>
+            <div class="hdr-actions">
+              <button class="ibtn" type="button" title="Поиск" onclick="toggleEl('searchA')">🔍</button>
+              <button class="ibtn" type="button" title="Вид">☰</button>
+              <button class="ibtn warn-pill" type="button" title="Статус сетей" onclick="openSheet('sheetWarnA')">⚠ 1</button>
+            </div>
+          </div>
+
+          <div class="search-inline" id="searchA">
+            <span>🔍 Найти и добавить товар…</span>
+            <button type="button" style="border:none;background:none;font-weight:800;cursor:pointer" onclick="toggleEl('searchA')">✕</button>
+          </div>
+
+          <div class="store-card">
+            <div class="store-hd">
+              <div class="store-hd-left">
+                <span class="mark m">М</span>
+                <strong>Магнит</strong>
+                <span class="sub">· 6 шт</span>
+              </div>
+              <div class="store-hd-right">
+                <button class="mini-add" type="button">+ Товар</button>
+                <span class="store-sum num">999 ₽</span>
+              </div>
+            </div>
+            <div class="grid-2">
+              <div class="tile2">
+                <div class="tile2-top"><div class="pic-box">🥫</div><span class="pr num">387 ₽</span></div>
+                <div class="nm">Икра минтая Дальневосточная Русское…</div>
+                <div class="qty-row"><button>−</button><span>3</span><button>+</button></div>
+              </div>
+              <div class="tile2">
+                <div class="tile2-top"><div class="pic-box">🥦</div><span class="pr num">149 ₽</span></div>
+                <div class="nm">Капуста брокколи замороженная, 400 г</div>
+                <div class="qty-row"><button>🗑</button><span>1</span><button>+</button></div>
+              </div>
+              <div class="tile2">
+                <div class="tile2-top"><div class="pic-box">🥗</div><span class="pr num">159 ₽</span></div>
+                <div class="nm">Мексиканская смесь быстрозамороженная</div>
+                <div class="qty-row"><button>🗑</button><span>1</span><button>+</button></div>
+              </div>
+              <div class="tile2">
+                <div class="tile2-top"><div class="pic-box">🥛</div><span class="pr num">95 ₽</span></div>
+                <div class="nm">Молоко ультрапастеризованное 3,2%</div>
+                <div class="qty-row"><button>🗑</button><span>1</span><button>+</button></div>
+              </div>
+            </div>
+            <div class="deliv-foot"><span>Доставка 0 ₽</span><span>Ещё 2 товара ↓</span></div>
+          </div>
+
+          <div class="store-card">
+            <div class="store-hd">
+              <div class="store-hd-left">
+                <span class="mark l">Л</span>
+                <strong>Лента</strong>
+                <span class="sub">· 4 шт</span>
+              </div>
+              <div class="store-hd-right">
+                <button class="mini-add" type="button">+ Товар</button>
+                <span class="store-sum num">654 ₽</span>
+              </div>
+            </div>
+            <div class="grid-2">
+              <div class="tile2">
+                <div class="tile2-top"><div class="pic-box">🥚</div><span class="pr num">119 ₽</span></div>
+                <div class="nm">Яйцо куриное С1 10 шт</div>
+                <div class="qty-row"><button>🗑</button><span>1</span><button>+</button></div>
+              </div>
+              <div class="tile2">
+                <div class="tile2-top"><div class="pic-box">🧀</div><span class="pr num">215 ₽</span></div>
+                <div class="nm">Сыр Российский 200 г</div>
+                <div class="qty-row"><button>🗑</button><span>1</span><button>+</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dock">
+          <div class="dock-a">
+            <button class="dock-plan" type="button" onclick="openSheet('sheetPlansA')">
+              <div class="l1">
+                <span>✓ Все 10 из 10 · 2 маг.</span>
+                <span>Варианты ▾</span>
+              </div>
+              <div class="l2">
+                <span class="num">1 653 ₽</span>
+                <span>с доставкой</span>
+              </div>
+            </button>
+            <button class="cta-dark" type="button">Оформить ›</button>
+          </div>
+        </div>
+
+        <nav class="tabs">
+          <div class="tab on"><div class="pill">🛒<span class="b">10</span></div><span>Корзина</span></div>
+          <div class="tab"><div class="pill">🧾</div><span>Заказы</span></div>
+          <div class="tab"><div class="pill">⚙</div><span>Настройки</span></div>
+        </nav>
+
+        <!-- Sheet: Plans A -->
+        <div class="sheet-backdrop" id="sheetPlansA" onclick="closeSheet(event, 'sheetPlansA')">
+          <div class="sheet">
+            <div class="sheet-handle"></div>
+            <div class="sheet-hd">
+              <h3>Как заказать эти 10 товаров</h3>
+              <button class="sheet-close" type="button" onclick="hideSheet('sheetPlansA')">✕</button>
+            </div>
+            <div class="plan-row best">
+              <div class="info">
+                <strong>✓ Все 10 из 10 · 2 магазина</strong>
+                <small>Магнит (6) + Лента (4) · ничего менять не нужно</small>
+              </div>
+              <div class="r"><span class="num">1 653 ₽</span></div>
+            </div>
+            <div class="plan-row">
+              <div class="info">
+                <strong>Один заказ в Магните</strong>
+                <small>Есть 6 из 10 · можно подобрать 4 замены →</small>
+              </div>
+              <div class="r"><span class="num">999 ₽</span><span>+4 замены</span></div>
+            </div>
+            <div class="plan-row">
+              <div class="info">
+                <strong>Один заказ в Ленте</strong>
+                <small>Есть 5 из 10 · можно подобрать 5 замен →</small>
+              </div>
+              <div class="r"><span class="num">840 ₽</span><span>+5 замен</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sheet: Warnings A -->
+        <div class="sheet-backdrop" id="sheetWarnA" onclick="closeSheet(event, 'sheetWarnA')">
+          <div class="sheet">
+            <div class="sheet-handle"></div>
+            <div class="sheet-hd">
+              <h3>Статус проверки сетей</h3>
+              <button class="sheet-close" type="button" onclick="hideSheet('sheetWarnA')">✕</button>
+            </div>
+            <div class="warn-row">
+              <div class="l"><span class="mark d">Д</span><div><strong>Дикси</strong><small>Нужен повторный вход</small></div></div>
+              <button class="btn-login" type="button">Войти</button>
+            </div>
+            <div class="muted-group">
+              <strong>Не успели ответить за 5 секунд:</strong> ВкусВилл, Пятёрочка, Лента (часть позиций по каталогу).<br/>
+              <strong>Нет этих товаров:</strong> Самокат, Перекрёсток.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== VARIANT B ==================== -->
+    <section class="proto-col">
+      <div class="proto-meta">
+        <span class="proto-tag rec">Вариант Б · Рекомендую под вашу идею</span>
+        <h2>Покрытие 10/10 сверху + 3-колоночная сетка</h2>
+        <p>Прямо решает боль «хватит ли товаров в одном магазине»: не сравнивает 1 653 ₽ с неполными 999 ₽, а предлагает «Все 10/10» или «Один заказ (+4 замены)». В сетке 3×N видны почти все 10 товаров без скролла.</p>
+        <div class="metric-row">
+          <span class="metric good">Товары: ~70% экрана</span>
+          <span class="metric good">Видно: 9 из 10 товаров сразу</span>
+        </div>
+      </div>
+
+      <div class="phone" id="phoneB">
+        <div class="statusbar"><span>23:09</span><span>5G · 48%</span></div>
+        <div class="screen-body">
+          <div class="hdr-1">
+            <button class="hdr-switch" type="button">
+              <span class="t">Магнит · 19 ноя ▾</span>
+              <span class="cnt">10</span>
+            </button>
+            <div class="hdr-actions">
+              <button class="ibtn" type="button" title="Поиск" onclick="toggleEl('searchB')">🔍</button>
+              <button class="ibtn" type="button" title="Вид">☰</button>
+              <button class="ibtn" type="button" title="Ещё">⋯</button>
+            </div>
+          </div>
+
+          <div class="search-inline" id="searchB">
+            <span>🔍 Найти и добавить товар…</span>
+            <button type="button" style="border:none;background:none;font-weight:800;cursor:pointer" onclick="toggleEl('searchB')">✕</button>
+          </div>
+
+          <!-- Smart coverage switcher -->
+          <div class="cov-strip">
+            <button class="cov-pill active" id="tabBAll" type="button" onclick="setModeB('all')">
+              <div class="top">
+                <span class="mark-stack"><span class="mark m">М</span><span class="mark l">Л</span></span>
+                <span>✓ Все 10/10</span>
+              </div>
+              <div class="price-line num">1 653 ₽</div>
+              <div class="hint">2 заказа · без замен</div>
+            </button>
+            <button class="cov-pill" id="tabBSingle" type="button" onclick="setModeB('single')">
+              <div class="top">
+                <span class="mark m">М</span>
+                <span style="color:var(--warn)">6 из 10</span>
+              </div>
+              <div class="price-line">Один заказ</div>
+              <div class="hint">подобрать 4 замены →</div>
+            </button>
+          </div>
+
+          <!-- Slim actionable status line -->
+          <div class="slim-warn" onclick="openSheet('sheetWarnB')">
+            <span>⚠ Дикси: нужен вход · ещё 3 не ответили</span>
+            <span class="act">Войти</span>
+          </div>
+
+          <!-- Replace callout shown only in Single Store mode -->
+          <div class="replace-banner" id="replaceBannerB" style="display:none">
+            <span>В Магните нет 4 товаров из списка</span>
+            <button type="button">Заменить 4 →</button>
+          </div>
+
+          <!-- Magnit 3-col dense grid -->
+          <div class="store-card">
+            <div class="store-hd">
+              <div class="store-hd-left">
+                <span class="mark m">М</span>
+                <strong>Магнит</strong>
+                <span class="sub">· 6 шт</span>
+              </div>
+              <div class="store-hd-right">
+                <button class="mini-add" type="button">+</button>
+                <span class="store-sum num">999 ₽</span>
+              </div>
+            </div>
+            <div class="grid-3">
+              <div class="tile3"><div class="tile3-photo">🥫<span class="tile3-qty">×3</span></div><div class="pr num">387 ₽</div><div class="nm">Икра минтая Русское море</div></div>
+              <div class="tile3"><div class="tile3-photo">🥦<span class="tile3-qty">×1</span></div><div class="pr num">149 ₽</div><div class="nm">Капуста брокколи 400 г</div></div>
+              <div class="tile3"><div class="tile3-photo">🥗<span class="tile3-qty">×1</span></div><div class="pr num">159 ₽</div><div class="nm">Мексиканская смесь 400 г</div></div>
+              <div class="tile3"><div class="tile3-photo">🥛<span class="tile3-qty">×1</span></div><div class="pr num">95 ₽</div><div class="nm">Молоко 3,2% 1 л</div></div>
+              <div class="tile3"><div class="tile3-photo">🍞<span class="tile3-qty">×1</span></div><div class="pr num">69 ₽</div><div class="nm">Хлебцы ржаные 240 г</div></div>
+              <div class="tile3"><div class="tile3-photo">🧈<span class="tile3-qty">×1</span></div><div class="pr num">140 ₽</div><div class="nm">Масло сливочное 180 г</div></div>
+            </div>
+          </div>
+
+          <!-- Lenta 3-col dense grid (immediately visible on same screen!) -->
+          <div class="store-card" id="lentaCardB">
+            <div class="store-hd">
+              <div class="store-hd-left">
+                <span class="mark l">Л</span>
+                <strong>Лента</strong>
+                <span class="sub">· 4 шт</span>
+              </div>
+              <div class="store-hd-right">
+                <button class="mini-add" type="button">+</button>
+                <span class="store-sum num">654 ₽</span>
+              </div>
+            </div>
+            <div class="grid-3">
+              <div class="tile3"><div class="tile3-photo">🥚<span class="tile3-qty">×1</span></div><div class="pr num">119 ₽</div><div class="nm">Яйцо куриное С1 10 шт</div></div>
+              <div class="tile3"><div class="tile3-photo">🧀<span class="tile3-qty">×1</span></div><div class="pr num">215 ₽</div><div class="nm">Сыр Российский 200 г</div></div>
+              <div class="tile3"><div class="tile3-photo">🍗<span class="tile3-qty">×1</span></div><div class="pr num">240 ₽</div><div class="nm">Филе куриное 600 г</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dock">
+          <button class="cta-lime-full" id="ctaB" type="button">
+            <span>К оформлению · 2 заказа</span>
+            <span class="num">1 653 ₽ ›</span>
+          </button>
+        </div>
+
+        <nav class="tabs">
+          <div class="tab on"><div class="pill">🛒<span class="b">10</span></div><span>Корзина</span></div>
+          <div class="tab"><div class="pill">🧾</div><span>Заказы</span></div>
+          <div class="tab"><div class="pill">⚙</div><span>Настройки</span></div>
+        </nav>
+
+        <div class="sheet-backdrop" id="sheetWarnB" onclick="closeSheet(event, 'sheetWarnB')">
+          <div class="sheet">
+            <div class="sheet-handle"></div>
+            <div class="sheet-hd">
+              <h3>Не все сети ответили</h3>
+              <button class="sheet-close" type="button" onclick="hideSheet('sheetWarnB')">✕</button>
+            </div>
+            <div class="warn-row">
+              <div class="l"><span class="mark d">Д</span><div><strong>Дикси</strong><small>Нужен повторный вход</small></div></div>
+              <button class="btn-login" type="button">Войти</button>
+            </div>
+            <div class="muted-group">
+              <strong>Не успели за 5 сек:</strong> ВкусВилл, Пятёрочка, Лента.<br/>
+              <strong>Нет товаров:</strong> Самокат, Перекрёсток.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== VARIANT C ==================== -->
+    <section class="proto-col">
+      <div class="proto-meta">
+        <span class="proto-tag">Вариант В · Максимум списка</span>
+        <h2>Чистый список + шторка «Где дешевле»</h2>
+        <p>Никаких верхних баннеров и вторых этажей: все 10 товаров в двух магазинах читаются списком на одном экране, а выбор варианта и ⚠-статус спрятаны в одну нижнюю пилюлю-док.</p>
+        <div class="metric-row">
+          <span class="metric good">Товары: ~76% экрана</span>
+          <span class="metric good">Все 10 из 10 на 1 экране</span>
+        </div>
+      </div>
+
+      <div class="phone" id="phoneC">
+        <div class="statusbar"><span>23:09</span><span>5G · 48%</span></div>
+        <div class="screen-body">
+          <div class="hdr-1">
+            <button class="hdr-switch" type="button">
+              <span class="t">Магнит · 19 ноя ▾</span>
+              <span class="cnt">10</span>
+            </button>
+            <div class="hdr-actions">
+              <button class="ibtn" type="button" title="Поиск" onclick="toggleEl('searchC')">🔍</button>
+              <button class="ibtn" type="button" title="Плитка">▦</button>
+              <button class="ibtn" type="button" title="Меню">⋯</button>
+            </div>
+          </div>
+
+          <div class="search-inline" id="searchC">
+            <span>🔍 Найти и добавить товар…</span>
+            <button type="button" style="border:none;background:none;font-weight:800;cursor:pointer" onclick="toggleEl('searchC')">✕</button>
+          </div>
+
+          <div class="store-card">
+            <div class="store-hd">
+              <div class="store-hd-left"><span class="mark m">М</span><strong>Магнит</strong><span class="sub">· 6 шт · дост. 0 ₽</span></div>
+              <div class="store-hd-right"><button class="mini-add" type="button">+</button><span class="store-sum num">999 ₽</span></div>
+            </div>
+            <div class="list-compact">
+              <div class="row-c"><div class="pic-sm">🥫</div><div class="info"><div class="nm">Икра минтая Дальневосточная</div><div class="sub"><b>387 ₽</b> · 129 ₽/шт</div></div><div class="qty-mini"><span>−</span><span>3</span><span>+</span></div></div>
+              <div class="row-c"><div class="pic-sm">🥦</div><div class="info"><div class="nm">Капуста брокколи 400 г</div><div class="sub"><b>149 ₽</b></div></div><div class="qty-mini"><span>🗑</span><span>1</span><span>+</span></div></div>
+              <div class="row-c"><div class="pic-sm">🥗</div><div class="info"><div class="nm">Мексиканская смесь 400 г</div><div class="sub"><b>159 ₽</b></div></div><div class="qty-mini"><span>🗑</span><span>1</span><span>+</span></div></div>
+              <div class="row-c"><div class="pic-sm">🥛</div><div class="info"><div class="nm">Молоко ультрапастеризованное</div><div class="sub"><b>95 ₽</b></div></div><div class="qty-mini"><span>🗑</span><span>1</span><span>+</span></div></div>
+              <div class="row-c"><div class="pic-sm">🍞</div><div class="info"><div class="nm">Хлебцы ржаные 240 г</div><div class="sub"><b>69 ₽</b></div></div><div class="qty-mini"><span>🗑</span><span>1</span><span>+</span></div></div>
+              <div class="row-c"><div class="pic-sm">🧈</div><div class="info"><div class="nm">Масло сливочное 180 г</div><div class="sub"><b>140 ₽</b></div></div><div class="qty-mini"><span>🗑</span><span>1</span><span>+</span></div></div>
+            </div>
+          </div>
+
+          <div class="store-card">
+            <div class="store-hd">
+              <div class="store-hd-left"><span class="mark l">Л</span><strong>Лента</strong><span class="sub">· 4 шт · дост. 0 ₽</span></div>
+              <div class="store-hd-right"><button class="mini-add" type="button">+</button><span class="store-sum num">654 ₽</span></div>
+            </div>
+            <div class="list-compact">
+              <div class="row-c"><div class="pic-sm">🥚</div><div class="info"><div class="nm">Яйцо куриное С1 10 шт</div><div class="sub"><b>119 ₽</b></div></div><div class="qty-mini"><span>🗑</span><span>1</span><span>+</span></div></div>
+              <div class="row-c"><div class="pic-sm">🧀</div><div class="info"><div class="nm">Сыр Российский 200 г</div><div class="sub"><b>215 ₽</b></div></div><div class="qty-mini"><span>🗑</span><span>1</span><span>+</span></div></div>
+              <div class="row-c"><div class="pic-sm">🍗</div><div class="info"><div class="nm">Филе куриное 600 г</div><div class="sub"><b>240 ₽</b></div></div><div class="qty-mini"><span>🗑</span><span>1</span><span>+</span></div></div>
+              <div class="row-c"><div class="pic-sm">🍅</div><div class="info"><div class="nm">Томаты черри 250 г</div><div class="sub"><b>80 ₽</b></div></div><div class="qty-mini"><span>🗑</span><span>1</span><span>+</span></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dock">
+          <div class="dock-c">
+            <button class="dock-c-summary" type="button" onclick="openSheet('sheetPlansC')">
+              <div class="r1">
+                <span class="mark-stack on-well"><span class="mark m" style="width:16px;height:16px;font-size:9px">М</span><span class="mark l" style="width:16px;height:16px;font-size:9px">Л</span></span>
+                <span>Все 10/10 ▾</span>
+                <span class="badge-warn">⚠ Дикси</span>
+              </div>
+              <div class="r2">
+                <span class="num">1 653 ₽</span>
+                <span style="font-size:11px;font-weight:700;color:var(--ink2)">другие варианты</span>
+              </div>
+            </button>
+            <button class="cta-lime" type="button">Оформить ›</button>
+          </div>
+        </div>
+
+        <nav class="tabs">
+          <div class="tab on"><div class="pill">🛒<span class="b">10</span></div><span>Корзина</span></div>
+          <div class="tab"><div class="pill">🧾</div><span>Заказы</span></div>
+          <div class="tab"><div class="pill">⚙</div><span>Настройки</span></div>
+        </nav>
+
+        <div class="sheet-backdrop" id="sheetPlansC" onclick="closeSheet(event, 'sheetPlansC')">
+          <div class="sheet">
+            <div class="sheet-handle"></div>
+            <div class="sheet-hd">
+              <h3>Варианты и статус сетей</h3>
+              <button class="sheet-close" type="button" onclick="hideSheet('sheetPlansC')">✕</button>
+            </div>
+            <div class="plan-row best">
+              <div class="info">
+                <strong>✓ Все 10 из 10 · 2 магазина</strong>
+                <small>Магнит (6) + Лента (4)</small>
+              </div>
+              <div class="r"><span class="num">1 653 ₽</span></div>
+            </div>
+            <div class="plan-row">
+              <div class="info">
+                <strong>Один заказ в Магните</strong>
+                <small>6 из 10 в наличии · подобрать 4 замены</small>
+              </div>
+              <div class="r"><span class="num">999 ₽</span><span>+4 замены</span></div>
+            </div>
+            <div class="warn-row">
+              <div class="l"><span class="mark d">Д</span><div><strong>Дикси</strong><small>Нужен повторный вход</small></div></div>
+              <button class="btn-login" type="button">Войти</button>
+            </div>
+            <div class="muted-group">Не успели за 5 сек: ВкусВилл, Пятёрочка, Лента · Нет товаров: Самокат, Перекрёсток</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    function toggleEl(id) {
+      document.getElementById(id).classList.toggle('open');
+    }
+    function openSheet(id) {
+      document.getElementById(id).classList.add('open');
+    }
+    function hideSheet(id) {
+      document.getElementById(id).classList.remove('open');
+    }
+    function closeSheet(ev, id) {
+      if (ev.target.id === id) hideSheet(id);
+    }
+    function setModeB(mode) {
+      const allBtn = document.getElementById('tabBAll');
+      const singleBtn = document.getElementById('tabBSingle');
+      const banner = document.getElementById('replaceBannerB');
+      const lenta = document.getElementById('lentaCardB');
+      const cta = document.getElementById('ctaB');
+      if (mode === 'all') {
+        allBtn.classList.add('active');
+        singleBtn.classList.remove('active');
+        banner.style.display = 'none';
+        lenta.style.display = 'flex';
+        cta.innerHTML = '<span>К оформлению · 2 заказа</span><span class="num">1 653 ₽ ›</span>';
+      } else {
+        allBtn.classList.remove('active');
+        singleBtn.classList.add('active');
+        banner.style.display = 'flex';
+        lenta.style.display = 'none';
+        cta.innerHTML = '<span>Оформить Магнит (6/10)</span><span class="num">999 ₽ ›</span>';
+      }
+    }
+  </script>
+</body>
+</html>

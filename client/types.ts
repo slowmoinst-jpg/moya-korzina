@@ -126,6 +126,8 @@ export interface SearchResultItem {
   prices: Record<string, StoreProductPrice>;
   chainsCount: number;
   small: string;
+  trustTier?: 'bought' | 'brand' | 'price_band' | 'cheaper';
+  trustLabel?: string;
 }
 
 export interface AddressSuggestion {
