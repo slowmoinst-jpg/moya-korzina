@@ -20,7 +20,7 @@ import type {
   SearchResultItem,
   WorkspaceSnapshot,
 } from '../types';
-import { getUnconfirmedStores } from '../utils/unconfirmed';
+import { getUnconfirmedStores, reportTime } from '../utils/unconfirmed';
 import {
   buildTrustProfile,
   estimateSingleStoreWithReplacements,
@@ -36,6 +36,7 @@ interface BasketScreenProps {
   viewMode: 'grid' | 'list';
   isDesktop: boolean;
   collectionNotice: string;
+  reportStores: string[];
   activeCollecting?: string[];
   onChangeView: (mode: 'grid' | 'list') => void;
   onUpdateQty: (productId: number, nextQty: number) => void;
@@ -64,6 +65,7 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
   isDesktop,
   activeCollecting = [],
   collectionNotice,
+  reportStores,
   onChangeView,
   onUpdateQty,
   onAddFromSearch,
@@ -103,10 +105,10 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
         ws.stores,
         ws.connections,
         ws.storeQuotes || {},
-        activeCollecting,
+        reportStores,
         items.length
       ),
-    [ws.stores, ws.connections, ws.storeQuotes, activeCollecting, items.length]
+    [ws.stores, ws.connections, ws.storeQuotes, reportStores, items.length]
   );
 
   const loginNeeded = useMemo(() => unconfirmed.filter((s) => s.needsSettings), [unconfirmed]);
@@ -891,7 +893,7 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
                       <ChainMark code={store.storeCode} />
                       <span className="spa-warn-txt">
                         <strong>{store.storeName}</strong>
-                        <span>{store.label}</span>
+                        <span>{[reportTime(ws.storeQuotes?.[store.storeCode]?.updated_at), store.label].filter(Boolean).join(' · ')}</span>
                       </span>
                     </span>
                     <button
@@ -913,7 +915,7 @@ export const BasketScreen: React.FC<BasketScreenProps> = ({
                       <div key={store.storeCode} className="spa-warn-passive-row">
                         <ChainMark code={store.storeCode} />
                         <span>
-                          <strong>{store.storeName}</strong> · {store.label}
+                          <strong>{store.storeName}</strong> · {[reportTime(ws.storeQuotes?.[store.storeCode]?.updated_at), store.label].filter(Boolean).join(' · ')}
                         </span>
                       </div>
                     ))}

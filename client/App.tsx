@@ -32,6 +32,7 @@ import {
   getHabitsClient,
   groupOrdersByMonth,
 } from './engine';
+import { reportFromCollection } from './utils/unconfirmed';
 import { BasketScreen } from './screens/BasketScreen';
 import { CheaperScreen } from './screens/CheaperScreen';
 import {
@@ -110,6 +111,9 @@ function pushScreenToHistory(screen: SpaScreen): void {
 const COLLECTION_BUDGET_MS = 5000;
 
 interface CollectionWindow {
+  localStamp: string;
+  previousQuotes: WorkspaceSnapshot['storeQuotes'];
+  startMissed: boolean;
   deadline: number;
   starting: string[];
   pending: string[];
@@ -412,11 +416,11 @@ export const App: React.FC = () => {
       if (checking && checking === collectionRef.current && checking.stamp) {
         checking.pending = checking.starting.filter((code) => {
           const quote = live.storeQuotes?.[code];
-          return quote?.stamp !== checking.stamp || quote.status === 'collecting';
+          return !reportFromCollection(quote, checking.stamp, checking.previousQuotes?.[code]);
         });
         checking.failed = checking.starting.filter((code) => {
           const quote = live.storeQuotes?.[code];
-          return quote?.stamp === checking.stamp && quote.status === 'error';
+          return quote?.status === 'error' && !checking.pending.includes(code);
         });
         updateCollection(checking);
       }
@@ -498,6 +502,9 @@ export const App: React.FC = () => {
       const started = force ? 0 : editedAtRef.current;
       editedAtRef.current = 0;
       const checking: CollectionWindow = {
+        localStamp: basketStamp,
+        previousQuotes: ws.storeQuotes,
+        startMissed: false,
         deadline: (started || performance.now()) + COLLECTION_BUDGET_MS,
         starting: [],
         pending: [],
@@ -513,8 +520,11 @@ export const App: React.FC = () => {
         const synced = knownStamp ? { basketStamp: knownStamp } : await syncWorkspace(ws);
         if (checking !== collectionRef.current) return;
         setSyncDirty(ws.phone, false);
+        checking.syncing = false;
+        checking.stamp = synced.basketStamp;
         const remaining = Math.floor(checking.deadline - performance.now());
         if (remaining <= 0) {
+          checking.startMissed = true;
           checking.expired = true;
           updateCollection(checking);
           return;
@@ -526,7 +536,6 @@ export const App: React.FC = () => {
           sent: false,
         }));
 
-        checking.stamp = synced.basketStamp;
         lastCollectedKeyRef.current = `${basketStamp}::${checking.stamp}::${connectedSig}`;
         const result = KorzinaBridge.collect({
           basket: activeBasketId,
@@ -539,11 +548,11 @@ export const App: React.FC = () => {
         const busy = KorzinaBridge.busy();
         checking.starting = result?.starting || [...new Set([...busy.going, ...busy.soon])];
         checking.pending = checking.starting;
-        checking.syncing = false;
         updateCollection(checking);
         if (checking.pending.length) void refreshLiveRuns();
       } catch {
         if (checking !== collectionRef.current) return;
+        checking.startMissed = !checking.syncing;
         checking.expired = true;
         updateCollection(checking);
       }
@@ -1085,7 +1094,9 @@ export const App: React.FC = () => {
 
   const applyBonuses = ws.applyBonuses !== false;
   const collectingChains = collection?.expired ? [] : collection?.pending || [];
-  const collectionNotice = collection?.expired
+  const collectionNotice = collection?.localStamp !== basketStamp ? '' : collection?.startMissed
+    ? 'Корзина сохранена. Сборка в магазинах не началась'
+    : collection?.expired
     ? collection.syncing
       ? 'Корзина пока не синхронизирована с сервером'
       : collection.pending.length
@@ -1212,6 +1223,7 @@ export const App: React.FC = () => {
         isDesktop={isDesktop}
         activeCollecting={collectingChains}
         collectionNotice={collectionNotice}
+        reportStores={collection?.starting.filter((code) => !collection.pending.includes(code) && ws.storeQuotes?.[code]?.stamp === collection.stamp) || []}
         onChangeView={handleChangeView}
         onUpdateQty={handleUpdateQty}
         onAddFromSearch={handleAddFromSearch}
