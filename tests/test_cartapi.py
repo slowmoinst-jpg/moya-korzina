@@ -364,6 +364,24 @@ async function once(slowMs, online) {
 
 
 @pytest.mark.skipif(NODE is None, reason="node не установлен")
+@pytest.mark.parametrize(("event", "detail"), [
+    ("onerror", "ошибка связи"), ("ontimeout", "истекло время ожидания ответа"),
+    ("onabort", "запрос отменён"),
+])
+def test_pyaterochka_distinguishes_xhr_failures(event, detail):
+    out = _run_node_script("""
+global.localStorage = {deviceId: 'test'};
+global.XMLHttpRequest = class {
+  open() {}
+  setRequestHeader() {}
+  send() { this[EVENT](); }
+};
+api.run({chain: 'pyaterochka', lines: [], peek: true}).then(r => console.log(JSON.stringify(r)));
+""".replace("EVENT", json.dumps(event)))
+    assert not out["ok"] and detail in out["why"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node не установлен")
 def test_pyaterochka_write_refusal_is_fast_only_as_the_first_request_of_the_run():
     """Протухшая кука отказывает на самый первый запрос сборки. Запись, оборвавшаяся после принятого чтения, — не она:
     куку не стираем. Правка по памяти начинает прямо с записи — её отказ первый, а значит, быстрый (1.50)."""

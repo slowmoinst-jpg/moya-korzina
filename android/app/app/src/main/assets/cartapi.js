@@ -132,7 +132,7 @@ var KZ_CARTAPI = (function () {
 
   function httpReq(method, url, headers, body, withCredentials) {
     var left = requestDeadline ? requestDeadline - Date.now() : 15000;
-    if (left <= 0) return Promise.resolve({ status: 0, ms: 0, json: null, text: '' });
+    if (left <= 0) return Promise.resolve({ status: 0, ms: 0, json: null, text: '', failure: 'истекло время сборки до отправки запроса' });
     stats.requests++;
     return new Promise(function (resolve) {
       var t0 = Date.now();
@@ -151,30 +151,30 @@ var KZ_CARTAPI = (function () {
           }
         }
       }
-      function done(status, text) {
+      function done(status, text, failure) {
         var ms = Date.now() - t0;
         var json = null;
         try {
           if (text) json = JSON.parse(text);
         } catch (e) {}
-        resolve({ status: status, ms: ms, json: json, text: text || '' });
+        resolve({ status: status, ms: ms, json: json, text: text || '', failure: failure });
       }
       xhr.onload = function () {
         done(xhr.status, xhr.responseText);
       };
       xhr.onerror = function () {
-        done(0, '');
+        done(0, '', 'ошибка связи');
       };
       xhr.ontimeout = function () {
-        done(0, '');
+        done(0, '', 'истекло время ожидания ответа');
       };
       xhr.onabort = function () {
-        done(0, '');
+        done(0, '', 'запрос отменён');
       };
       try {
         xhr.send(body != null ? body : null);
       } catch (e) {
-        done(0, '');
+        done(0, '', 'не удалось отправить запрос');
       }
     });
   }
@@ -769,7 +769,7 @@ var KZ_CARTAPI = (function () {
      * только fast приложение лечит стиранием куки spsc (1.50). Время — самого запроса, без темпа и очереди.
      */
     function netFail(res, lastCart) {
-      var out = makeFail('net', 0, 'Пятёрочка: обрыв сети (' + res.ms + ' мс)', lastCart);
+      var out = makeFail('net', 0, 'Пятёрочка: ' + (res.failure || 'нет HTTP-ответа') + ' (' + res.ms + ' мс)', lastCart);
       out.fast = stats.requests === 1 && res.ms < 8000 && (typeof navigator === 'undefined' || navigator.onLine !== false);
       return out;
     }
