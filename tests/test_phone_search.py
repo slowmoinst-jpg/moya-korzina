@@ -2234,7 +2234,7 @@ def test_a_refused_pyaterochka_cart_node_is_healed_by_erasing_the_stale_protecti
     # «Обрыв» первых запросов Пятёрочки несёт время запроса: быстрый отказ защиты или таймаут.
     with open(os.path.join(ROOT, "android", "app", "app", "src", "main", "assets", "cartapi.js"), encoding="utf-8") as fh:
         js = fh.read()
-    assert js.count("'Пятёрочка: обрыв сети (' + ") == 1 and "return netFail(actRes);" in js and "return netFail(initRes);" in js
+    assert js.count("function netFail(res, lastCart)") == 1 and "return netFail(actRes);" in js and "return netFail(initRes);" in js
     # Все семь «обрывов» Пятёрочки строит netFail: отказ первого запроса сборки — защита, позже — связь.
     for res in ("dRes", "pRes", "putRes", "rDel", "rPut"):
         assert f"if ({res}.status === 0) return netFail({res}, lastCart);" in js, res
